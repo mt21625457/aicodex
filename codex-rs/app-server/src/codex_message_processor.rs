@@ -75,6 +75,8 @@ use codex_app_server_protocol::LogoutAccountResponse;
 use codex_app_server_protocol::McpServerOauthLoginCompletedNotification;
 use codex_app_server_protocol::McpServerOauthLoginParams;
 use codex_app_server_protocol::McpServerOauthLoginResponse;
+use codex_app_server_protocol::McpServerOauthLogoutParams;
+use codex_app_server_protocol::McpServerOauthLogoutResponse;
 use codex_app_server_protocol::McpServerRefreshResponse;
 use codex_app_server_protocol::McpServerStatus;
 use codex_app_server_protocol::MockExperimentalMethodParams;
@@ -216,7 +218,8 @@ use codex_core::find_thread_name_by_id;
 use codex_core::find_thread_names_by_ids;
 use codex_core::find_thread_path_by_id_str;
 use codex_core::git_info::git_diff_to_remote;
-use codex_core::mcp::auth::discover_supported_scopes;
+use codex_core::mcp::auth::McpOAuthLoginSupport;
+use codex_core::mcp::auth::oauth_login_support;
 use codex_core::mcp::auth::resolve_oauth_scopes;
 use codex_core::mcp::collect_mcp_snapshot;
 use codex_core::mcp::group_tools_by_server;
@@ -276,6 +279,7 @@ use codex_protocol::protocol::USER_MESSAGE_BEGIN;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
 use codex_protocol::user_input::UserInput as CoreInputItem;
+use codex_rmcp_client::delete_oauth_tokens;
 use codex_rmcp_client::perform_oauth_login_return_url;
 use codex_state::StateRuntime;
 use codex_state::ThreadMetadataBuilder;
@@ -820,6 +824,10 @@ impl CodexMessageProcessor {
             }
             ClientRequest::McpServerOauthLogin { request_id, params } => {
                 self.mcp_server_oauth_login(to_connection_request_id(request_id), params)
+                    .await;
+            }
+            ClientRequest::McpServerOauthLogout { request_id, params } => {
+                self.mcp_server_oauth_logout(to_connection_request_id(request_id), params)
                     .await;
             }
             ClientRequest::McpServerRefresh { request_id, params } => {
@@ -4544,14 +4552,9 @@ impl CodexMessageProcessor {
             return;
         };
 
-        let (url, http_headers, env_http_headers) = match &server.transport {
-            McpServerTransportConfig::StreamableHttp {
-                url,
-                http_headers,
-                env_http_headers,
-                ..
-            } => (url.clone(), http_headers.clone(), env_http_headers.clone()),
-            _ => {
+        let oauth_config = match oauth_login_support(server).await {
+            McpOAuthLoginSupport::Supported(config) => config,
+            McpOAuthLoginSupport::Unsupported => {
                 let error = JSONRPCErrorError {
                     code: INVALID_REQUEST_ERROR_CODE,
                     message: "OAuth login is only supported for streamable HTTP servers."
@@ -4561,10 +4564,19 @@ impl CodexMessageProcessor {
                 self.outgoing.send_error(request_id, error).await;
                 return;
             }
+            McpOAuthLoginSupport::Unknown(err) => {
+                let error = JSONRPCErrorError {
+                    code: INTERNAL_ERROR_CODE,
+                    message: format!("failed to determine OAuth support for MCP server: {err}"),
+                    data: None,
+                };
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
         };
 
         let discovered_scopes = if scopes.is_none() && server.scopes.is_none() {
-            discover_supported_scopes(&server.transport).await
+            oauth_config.discovered_scopes.clone()
         } else {
             None
         };
@@ -4573,12 +4585,14 @@ impl CodexMessageProcessor {
 
         match perform_oauth_login_return_url(
             &name,
-            &url,
+            &oauth_config.url,
             config.mcp_oauth_credentials_store_mode,
-            http_headers,
-            env_http_headers,
+            oauth_config.http_headers,
+            oauth_config.env_http_headers,
             &resolved_scopes.scopes,
             server.oauth_resource.as_deref(),
+            oauth_config.oauth_authorization_params,
+            oauth_config.oauth_client_metadata_url.as_deref(),
             timeout_secs,
             config.mcp_oauth_callback_port,
             config.mcp_oauth_callback_url.as_deref(),
@@ -4613,6 +4627,101 @@ impl CodexMessageProcessor {
                 let error = JSONRPCErrorError {
                     code: INTERNAL_ERROR_CODE,
                     message: format!("failed to login to MCP server '{name}': {err}"),
+                    data: None,
+                };
+                self.outgoing.send_error(request_id, error).await;
+            }
+        }
+    }
+
+    async fn mcp_server_oauth_logout(
+        &self,
+        request_id: ConnectionRequestId,
+        params: McpServerOauthLogoutParams,
+    ) {
+        let config = match self.load_latest_config(None).await {
+            Ok(config) => config,
+            Err(error) => {
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
+
+        let McpServerOauthLogoutParams { name } = params;
+        let configured_servers = self
+            .thread_manager
+            .mcp_manager()
+            .configured_servers(&config);
+        let Some(server) = configured_servers.get(&name) else {
+            let error = JSONRPCErrorError {
+                code: INVALID_REQUEST_ERROR_CODE,
+                message: format!("No MCP server named '{name}' found."),
+                data: None,
+            };
+            self.outgoing.send_error(request_id, error).await;
+            return;
+        };
+
+        let url = match &server.transport {
+            McpServerTransportConfig::StreamableHttp { url, .. } => url.clone(),
+            _ => {
+                let error = JSONRPCErrorError {
+                    code: INVALID_REQUEST_ERROR_CODE,
+                    message: "OAuth logout is only supported for streamable HTTP servers."
+                        .to_string(),
+                    data: None,
+                };
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
+
+        match delete_oauth_tokens(&name, &url, config.mcp_oauth_credentials_store_mode) {
+            Ok(removed) => {
+                let mcp_servers = match serde_json::to_value(configured_servers) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        let error = JSONRPCErrorError {
+                            code: INTERNAL_ERROR_CODE,
+                            message: format!("failed to serialize MCP servers: {err}"),
+                            data: None,
+                        };
+                        self.outgoing.send_error(request_id, error).await;
+                        return;
+                    }
+                };
+
+                let mcp_oauth_credentials_store_mode =
+                    match serde_json::to_value(config.mcp_oauth_credentials_store_mode) {
+                        Ok(value) => value,
+                        Err(err) => {
+                            let error = JSONRPCErrorError {
+                                code: INTERNAL_ERROR_CODE,
+                                message: format!(
+                                    "failed to serialize MCP OAuth credentials store mode: {err}"
+                                ),
+                                data: None,
+                            };
+                            self.outgoing.send_error(request_id, error).await;
+                            return;
+                        }
+                    };
+
+                let refresh_config = McpServerRefreshConfig {
+                    mcp_servers,
+                    mcp_oauth_credentials_store_mode,
+                };
+                self.thread_manager
+                    .refresh_mcp_servers(refresh_config)
+                    .await;
+
+                let response = McpServerOauthLogoutResponse { removed };
+                self.outgoing.send_response(request_id, response).await;
+            }
+            Err(err) => {
+                let error = JSONRPCErrorError {
+                    code: INTERNAL_ERROR_CODE,
+                    message: format!("failed to logout from MCP server '{name}': {err}"),
                     data: None,
                 };
                 self.outgoing.send_error(request_id, error).await;

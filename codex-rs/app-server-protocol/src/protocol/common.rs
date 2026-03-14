@@ -388,6 +388,11 @@ client_request_definitions! {
         response: v2::McpServerOauthLoginResponse,
     },
 
+    McpServerOauthLogout => "mcpServer/oauth/logout" {
+        params: v2::McpServerOauthLogoutParams,
+        response: v2::McpServerOauthLogoutResponse,
+    },
+
     McpServerRefresh => "config/mcpServer/reload" {
         params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
         response: v2::McpServerRefreshResponse,

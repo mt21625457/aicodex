@@ -199,6 +199,8 @@ async fn perform_oauth_login_retry_without_scopes(
     env_http_headers: Option<HashMap<String, String>>,
     resolved_scopes: &ResolvedMcpOAuthScopes,
     oauth_resource: Option<&str>,
+    oauth_authorization_params: Option<HashMap<String, String>>,
+    oauth_client_metadata_url: Option<&str>,
     callback_port: Option<u16>,
     callback_url: Option<&str>,
 ) -> Result<()> {
@@ -210,6 +212,8 @@ async fn perform_oauth_login_retry_without_scopes(
         env_http_headers.clone(),
         &resolved_scopes.scopes,
         oauth_resource,
+        oauth_authorization_params.clone(),
+        oauth_client_metadata_url,
         callback_port,
         callback_url,
     )
@@ -226,6 +230,8 @@ async fn perform_oauth_login_retry_without_scopes(
                 env_http_headers,
                 &[],
                 oauth_resource,
+                oauth_authorization_params,
+                oauth_client_metadata_url,
                 callback_port,
                 callback_url,
             )
@@ -306,9 +312,13 @@ async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Re
         disabled_tools: None,
         scopes: None,
         oauth_resource: None,
+        oauth_http_headers: None,
+        oauth_env_http_headers: None,
+        oauth_authorization_params: None,
+        oauth_client_metadata_url: None,
     };
 
-    servers.insert(name.clone(), new_entry);
+    servers.insert(name.clone(), new_entry.clone());
 
     ConfigEditsBuilder::new(&codex_home)
         .replace_mcp_servers(&servers)
@@ -318,7 +328,7 @@ async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Re
 
     println!("Added global MCP server '{name}'.");
 
-    match oauth_login_support(&transport).await {
+    match oauth_login_support(&new_entry).await {
         McpOAuthLoginSupport::Supported(oauth_config) => {
             println!("Detected OAuth support. Starting OAuth flow…");
             let resolved_scopes =
@@ -331,6 +341,8 @@ async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Re
                 oauth_config.env_http_headers,
                 &resolved_scopes,
                 None,
+                oauth_config.oauth_authorization_params,
+                oauth_config.oauth_client_metadata_url.as_deref(),
                 config.mcp_oauth_callback_port,
                 config.mcp_oauth_callback_url.as_deref(),
             )
@@ -395,19 +407,19 @@ async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs)
         bail!("No MCP server named '{name}' found.");
     };
 
-    let (url, http_headers, env_http_headers) = match &server.transport {
-        McpServerTransportConfig::StreamableHttp {
-            url,
-            http_headers,
-            env_http_headers,
-            ..
-        } => (url.clone(), http_headers.clone(), env_http_headers.clone()),
-        _ => bail!("OAuth login is only supported for streamable HTTP servers."),
+    let oauth_config = match oauth_login_support(server).await {
+        McpOAuthLoginSupport::Supported(config) => config,
+        McpOAuthLoginSupport::Unsupported => {
+            bail!("OAuth login is only supported for streamable HTTP servers.")
+        }
+        McpOAuthLoginSupport::Unknown(error) => {
+            return Err(error).context("failed to determine MCP OAuth login support");
+        }
     };
 
     let explicit_scopes = (!scopes.is_empty()).then_some(scopes);
     let discovered_scopes = if explicit_scopes.is_none() && server.scopes.is_none() {
-        discover_supported_scopes(&server.transport).await
+        discover_supported_scopes(server).await
     } else {
         None
     };
@@ -416,12 +428,14 @@ async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs)
 
     perform_oauth_login_retry_without_scopes(
         &name,
-        &url,
+        &oauth_config.url,
         config.mcp_oauth_credentials_store_mode,
-        http_headers,
-        env_http_headers,
+        oauth_config.http_headers,
+        oauth_config.env_http_headers,
         &resolved_scopes,
         server.oauth_resource.as_deref(),
+        oauth_config.oauth_authorization_params,
+        oauth_config.oauth_client_metadata_url.as_deref(),
         config.mcp_oauth_callback_port,
         config.mcp_oauth_callback_url.as_deref(),
     )

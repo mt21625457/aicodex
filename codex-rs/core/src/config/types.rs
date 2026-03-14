@@ -104,6 +104,22 @@ pub struct McpServerConfig {
     /// Optional OAuth resource parameter to include during MCP login (RFC 8707).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oauth_resource: Option<String>,
+
+    /// Additional HTTP headers used only for OAuth discovery/registration/token exchange.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth_http_headers: Option<HashMap<String, String>>,
+
+    /// OAuth-only HTTP headers where the value is sourced from an environment variable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth_env_http_headers: Option<HashMap<String, String>>,
+
+    /// Extra authorization URL query parameters for non-standard OAuth providers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth_authorization_params: Option<HashMap<String, String>>,
+
+    /// Optional HTTPS client metadata URL for URL-based client IDs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth_client_metadata_url: Option<String>,
 }
 
 // Raw MCP config shape used for deserialization and JSON Schema generation.
@@ -150,6 +166,14 @@ pub(crate) struct RawMcpServerConfig {
     pub scopes: Option<Vec<String>>,
     #[serde(default)]
     pub oauth_resource: Option<String>,
+    #[serde(default)]
+    pub oauth_http_headers: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub oauth_env_http_headers: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub oauth_authorization_params: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub oauth_client_metadata_url: Option<String>,
 }
 
 impl<'de> Deserialize<'de> for McpServerConfig {
@@ -174,6 +198,10 @@ impl<'de> Deserialize<'de> for McpServerConfig {
         let disabled_tools = raw.disabled_tools.clone();
         let scopes = raw.scopes.clone();
         let oauth_resource = raw.oauth_resource.clone();
+        let oauth_http_headers = raw.oauth_http_headers.clone();
+        let oauth_env_http_headers = raw.oauth_env_http_headers.clone();
+        let oauth_authorization_params = raw.oauth_authorization_params.clone();
+        let oauth_client_metadata_url = raw.oauth_client_metadata_url.clone();
 
         fn throw_if_set<E, T>(transport: &str, field: &str, value: Option<&T>) -> Result<(), E>
         where
@@ -198,6 +226,22 @@ impl<'de> Deserialize<'de> for McpServerConfig {
             throw_if_set("stdio", "http_headers", raw.http_headers.as_ref())?;
             throw_if_set("stdio", "env_http_headers", raw.env_http_headers.as_ref())?;
             throw_if_set("stdio", "oauth_resource", raw.oauth_resource.as_ref())?;
+            throw_if_set("stdio", "oauth_http_headers", raw.oauth_http_headers.as_ref())?;
+            throw_if_set(
+                "stdio",
+                "oauth_env_http_headers",
+                raw.oauth_env_http_headers.as_ref(),
+            )?;
+            throw_if_set(
+                "stdio",
+                "oauth_authorization_params",
+                raw.oauth_authorization_params.as_ref(),
+            )?;
+            throw_if_set(
+                "stdio",
+                "oauth_client_metadata_url",
+                raw.oauth_client_metadata_url.as_ref(),
+            )?;
             McpServerTransportConfig::Stdio {
                 command,
                 args: raw.args.clone().unwrap_or_default(),
@@ -232,6 +276,10 @@ impl<'de> Deserialize<'de> for McpServerConfig {
             disabled_tools,
             scopes,
             oauth_resource,
+            oauth_http_headers,
+            oauth_env_http_headers,
+            oauth_authorization_params,
+            oauth_client_metadata_url,
         })
     }
 }

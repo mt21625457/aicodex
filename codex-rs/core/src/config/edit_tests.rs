@@ -561,6 +561,10 @@ fn blocking_replace_mcp_servers_round_trips() {
             disabled_tools: None,
             scopes: None,
             oauth_resource: None,
+            oauth_http_headers: None,
+            oauth_env_http_headers: None,
+            oauth_authorization_params: None,
+            oauth_client_metadata_url: None,
         },
     );
 
@@ -586,6 +590,10 @@ fn blocking_replace_mcp_servers_round_trips() {
             disabled_tools: Some(vec!["forbidden".to_string()]),
             scopes: None,
             oauth_resource: Some("https://resource.example.com".to_string()),
+            oauth_http_headers: None,
+            oauth_env_http_headers: None,
+            oauth_authorization_params: None,
+            oauth_client_metadata_url: None,
         },
     );
 
@@ -655,6 +663,10 @@ foo = { command = "cmd" }
             disabled_tools: None,
             scopes: None,
             oauth_resource: None,
+            oauth_http_headers: None,
+            oauth_env_http_headers: None,
+            oauth_authorization_params: None,
+            oauth_client_metadata_url: None,
         },
     );
 
@@ -700,6 +712,10 @@ foo = { command = "cmd" } # keep me
             disabled_tools: None,
             scopes: None,
             oauth_resource: None,
+            oauth_http_headers: None,
+            oauth_env_http_headers: None,
+            oauth_authorization_params: None,
+            oauth_client_metadata_url: None,
         },
     );
 
@@ -744,6 +760,10 @@ foo = { command = "cmd", args = ["--flag"] } # keep me
             disabled_tools: None,
             scopes: None,
             oauth_resource: None,
+            oauth_http_headers: None,
+            oauth_env_http_headers: None,
+            oauth_authorization_params: None,
+            oauth_client_metadata_url: None,
         },
     );
 
@@ -789,6 +809,10 @@ foo = { command = "cmd" }
             disabled_tools: None,
             scopes: None,
             oauth_resource: None,
+            oauth_http_headers: None,
+            oauth_env_http_headers: None,
+            oauth_authorization_params: None,
+            oauth_client_metadata_url: None,
         },
     );
 

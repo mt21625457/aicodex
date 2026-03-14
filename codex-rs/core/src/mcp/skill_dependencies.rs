@@ -221,7 +221,7 @@ pub(crate) async fn maybe_install_mcp_dependencies(
     }
 
     for (name, server_config) in added {
-        let oauth_config = match oauth_login_support(&server_config.transport).await {
+        let oauth_config = match oauth_login_support(&server_config).await {
             McpOAuthLoginSupport::Supported(config) => config,
             McpOAuthLoginSupport::Unsupported => continue,
             McpOAuthLoginSupport::Unknown(err) => {
@@ -251,6 +251,8 @@ pub(crate) async fn maybe_install_mcp_dependencies(
             oauth_config.env_http_headers.clone(),
             &resolved_scopes.scopes,
             server_config.oauth_resource.as_deref(),
+            oauth_config.oauth_authorization_params.clone(),
+            oauth_config.oauth_client_metadata_url.as_deref(),
             config.mcp_oauth_callback_port,
             config.mcp_oauth_callback_url.as_deref(),
         )
@@ -274,6 +276,8 @@ pub(crate) async fn maybe_install_mcp_dependencies(
                     oauth_config.env_http_headers,
                     &[],
                     server_config.oauth_resource.as_deref(),
+                    oauth_config.oauth_authorization_params,
+                    oauth_config.oauth_client_metadata_url.as_deref(),
                     config.mcp_oauth_callback_port,
                     config.mcp_oauth_callback_url.as_deref(),
                 )
@@ -428,6 +432,10 @@ fn mcp_dependency_to_server_config(
             disabled_tools: None,
             scopes: None,
             oauth_resource: None,
+            oauth_http_headers: None,
+            oauth_env_http_headers: None,
+            oauth_authorization_params: None,
+            oauth_client_metadata_url: None,
         });
     }
 
@@ -453,6 +461,10 @@ fn mcp_dependency_to_server_config(
             disabled_tools: None,
             scopes: None,
             oauth_resource: None,
+            oauth_http_headers: None,
+            oauth_env_http_headers: None,
+            oauth_authorization_params: None,
+            oauth_client_metadata_url: None,
         });
     }
 

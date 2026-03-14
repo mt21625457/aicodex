@@ -18,6 +18,8 @@ pub struct McpOAuthLoginConfig {
     pub http_headers: Option<HashMap<String, String>>,
     pub env_http_headers: Option<HashMap<String, String>>,
     pub discovered_scopes: Option<Vec<String>>,
+    pub oauth_authorization_params: Option<HashMap<String, String>>,
+    pub oauth_client_metadata_url: Option<String>,
 }
 
 #[derive(Debug)]
@@ -41,13 +43,42 @@ pub struct ResolvedMcpOAuthScopes {
     pub source: McpOAuthScopesSource,
 }
 
-pub async fn oauth_login_support(transport: &McpServerTransportConfig) -> McpOAuthLoginSupport {
+fn merge_string_maps(
+    base: Option<HashMap<String, String>>,
+    overrides: Option<HashMap<String, String>>,
+) -> Option<HashMap<String, String>> {
+    let mut merged = base.unwrap_or_default();
+    merged.extend(overrides.unwrap_or_default());
+    (!merged.is_empty()).then_some(merged)
+}
+
+fn resolved_oauth_headers(
+    config: &McpServerConfig,
+) -> (Option<HashMap<String, String>>, Option<HashMap<String, String>>) {
+    let McpServerTransportConfig::StreamableHttp {
+        http_headers,
+        env_http_headers,
+        ..
+    } = &config.transport
+    else {
+        return (None, None);
+    };
+
+    (
+        merge_string_maps(http_headers.clone(), config.oauth_http_headers.clone()),
+        merge_string_maps(
+            env_http_headers.clone(),
+            config.oauth_env_http_headers.clone(),
+        ),
+    )
+}
+
+pub async fn oauth_login_support(config: &McpServerConfig) -> McpOAuthLoginSupport {
     let McpServerTransportConfig::StreamableHttp {
         url,
         bearer_token_env_var,
-        http_headers,
-        env_http_headers,
-    } = transport
+        ..
+    } = &config.transport
     else {
         return McpOAuthLoginSupport::Unsupported;
     };
@@ -56,23 +87,24 @@ pub async fn oauth_login_support(transport: &McpServerTransportConfig) -> McpOAu
         return McpOAuthLoginSupport::Unsupported;
     }
 
-    match discover_streamable_http_oauth(url, http_headers.clone(), env_http_headers.clone()).await
-    {
+    let (http_headers, env_http_headers) = resolved_oauth_headers(config);
+
+    match discover_streamable_http_oauth(url, http_headers.clone(), env_http_headers.clone()).await {
         Ok(Some(discovery)) => McpOAuthLoginSupport::Supported(McpOAuthLoginConfig {
             url: url.clone(),
-            http_headers: http_headers.clone(),
-            env_http_headers: env_http_headers.clone(),
+            http_headers,
+            env_http_headers,
             discovered_scopes: discovery.scopes_supported,
+            oauth_authorization_params: config.oauth_authorization_params.clone(),
+            oauth_client_metadata_url: config.oauth_client_metadata_url.clone(),
         }),
         Ok(None) => McpOAuthLoginSupport::Unsupported,
         Err(err) => McpOAuthLoginSupport::Unknown(err),
     }
 }
 
-pub async fn discover_supported_scopes(
-    transport: &McpServerTransportConfig,
-) -> Option<Vec<String>> {
-    match oauth_login_support(transport).await {
+pub async fn discover_supported_scopes(config: &McpServerConfig) -> Option<Vec<String>> {
+    match oauth_login_support(config).await {
         McpOAuthLoginSupport::Supported(config) => config.discovered_scopes,
         McpOAuthLoginSupport::Unsupported | McpOAuthLoginSupport::Unknown(_) => None,
     }
@@ -165,12 +197,15 @@ async fn compute_auth_status(
             http_headers,
             env_http_headers,
         } => {
+            let (oauth_http_headers, oauth_env_http_headers) = resolved_oauth_headers(config);
             determine_streamable_http_auth_status(
                 server_name,
                 url,
                 bearer_token_env_var.as_deref(),
                 http_headers.clone(),
                 env_http_headers.clone(),
+                oauth_http_headers,
+                oauth_env_http_headers,
                 store_mode,
             )
             .await

@@ -225,6 +225,26 @@ mod document_helpers {
         {
             entry["oauth_resource"] = value(resource.clone());
         }
+        if let Some(headers) = &config.oauth_http_headers
+            && !headers.is_empty()
+        {
+            entry["oauth_http_headers"] = table_from_pairs(headers.iter());
+        }
+        if let Some(headers) = &config.oauth_env_http_headers
+            && !headers.is_empty()
+        {
+            entry["oauth_env_http_headers"] = table_from_pairs(headers.iter());
+        }
+        if let Some(params) = &config.oauth_authorization_params
+            && !params.is_empty()
+        {
+            entry["oauth_authorization_params"] = table_from_pairs(params.iter());
+        }
+        if let Some(client_metadata_url) = &config.oauth_client_metadata_url
+            && !client_metadata_url.is_empty()
+        {
+            entry["oauth_client_metadata_url"] = value(client_metadata_url.clone());
+        }
 
         entry
     }

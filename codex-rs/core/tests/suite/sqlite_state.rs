@@ -372,6 +372,10 @@ async fn mcp_call_marks_thread_memory_mode_polluted_when_configured() -> Result<
                 disabled_tools: None,
                 scopes: None,
                 oauth_resource: None,
+            oauth_http_headers: None,
+            oauth_env_http_headers: None,
+            oauth_authorization_params: None,
+            oauth_client_metadata_url: None,
             },
         );
         config

@@ -47,6 +47,10 @@ fn collect_missing_respects_canonical_installed_key() {
             disabled_tools: None,
             scopes: None,
             oauth_resource: None,
+            oauth_http_headers: None,
+            oauth_env_http_headers: None,
+            oauth_authorization_params: None,
+            oauth_client_metadata_url: None,
         },
     )]);
 
@@ -96,6 +100,10 @@ fn collect_missing_dedupes_by_canonical_key_but_preserves_original_name() {
             disabled_tools: None,
             scopes: None,
             oauth_resource: None,
+            oauth_http_headers: None,
+            oauth_env_http_headers: None,
+            oauth_authorization_params: None,
+            oauth_client_metadata_url: None,
         },
     )]);
 

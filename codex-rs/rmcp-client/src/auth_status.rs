@@ -33,13 +33,15 @@ pub async fn determine_streamable_http_auth_status(
     bearer_token_env_var: Option<&str>,
     http_headers: Option<HashMap<String, String>>,
     env_http_headers: Option<HashMap<String, String>>,
+    oauth_http_headers: Option<HashMap<String, String>>,
+    oauth_env_http_headers: Option<HashMap<String, String>>,
     store_mode: OAuthCredentialsStoreMode,
 ) -> Result<McpAuthStatus> {
     if bearer_token_env_var.is_some() {
         return Ok(McpAuthStatus::BearerToken);
     }
 
-    let default_headers = build_default_headers(http_headers, env_http_headers)?;
+    let default_headers = build_default_headers(http_headers.clone(), env_http_headers.clone())?;
     if default_headers.contains_key(AUTHORIZATION) {
         return Ok(McpAuthStatus::BearerToken);
     }
@@ -48,7 +50,12 @@ pub async fn determine_streamable_http_auth_status(
         return Ok(McpAuthStatus::OAuth);
     }
 
-    match discover_streamable_http_oauth_with_headers(url, &default_headers).await {
+    let oauth_discovery_headers = build_default_headers(
+        merge_string_maps(http_headers, oauth_http_headers),
+        merge_string_maps(env_http_headers, oauth_env_http_headers),
+    )?;
+
+    match discover_streamable_http_oauth_with_headers(url, &oauth_discovery_headers).await {
         Ok(Some(_)) => Ok(McpAuthStatus::NotLoggedIn),
         Ok(None) => Ok(McpAuthStatus::Unsupported),
         Err(error) => {
@@ -58,6 +65,15 @@ pub async fn determine_streamable_http_auth_status(
             Ok(McpAuthStatus::Unsupported)
         }
     }
+}
+
+fn merge_string_maps(
+    base: Option<HashMap<String, String>>,
+    overrides: Option<HashMap<String, String>>,
+) -> Option<HashMap<String, String>> {
+    let mut merged = base.unwrap_or_default();
+    merged.extend(overrides.unwrap_or_default());
+    (!merged.is_empty()).then_some(merged)
 }
 
 /// Attempt to determine whether a streamable HTTP MCP server advertises OAuth login.
@@ -280,6 +296,8 @@ mod tests {
                 "Bearer token".to_string(),
             )])),
             None,
+            None,
+            None,
             OAuthCredentialsStoreMode::Keyring,
         )
         .await
@@ -301,6 +319,8 @@ mod tests {
                 "Authorization".to_string(),
                 "CODEX_RMCP_CLIENT_AUTH_STATUS_TEST_TOKEN".to_string(),
             )])),
+            None,
+            None,
             OAuthCredentialsStoreMode::Keyring,
         )
         .await

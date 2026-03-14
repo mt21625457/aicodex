@@ -2816,6 +2816,10 @@ mod tests {
             disabled_tools: None,
             scopes: None,
             oauth_resource: None,
+            oauth_http_headers: None,
+            oauth_env_http_headers: None,
+            oauth_authorization_params: None,
+            oauth_client_metadata_url: None,
         };
         let mut servers = config.mcp_servers.get().clone();
         servers.insert("docs".to_string(), stdio_config);
@@ -2840,6 +2844,10 @@ mod tests {
             disabled_tools: None,
             scopes: None,
             oauth_resource: None,
+            oauth_http_headers: None,
+            oauth_env_http_headers: None,
+            oauth_authorization_params: None,
+            oauth_client_metadata_url: None,
         };
         servers.insert("http".to_string(), http_config);
         config
