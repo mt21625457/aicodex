@@ -1065,6 +1065,12 @@ impl SessionConfiguration {
                 self.sandbox_policy.get(),
                 &self.cwd,
             );
+        if let Some(model) = updates.model.clone() {
+            next_configuration.collaboration_mode =
+                next_configuration
+                    .collaboration_mode
+                    .with_updates(Some(model), None, None);
+        }
         if let Some(collaboration_mode) = updates.collaboration_mode.clone() {
             next_configuration.collaboration_mode = collaboration_mode;
         }
@@ -1114,6 +1120,7 @@ impl SessionConfiguration {
 #[derive(Default, Clone)]
 pub(crate) struct SessionSettingsUpdate {
     pub(crate) cwd: Option<PathBuf>,
+    pub(crate) model: Option<String>,
     pub(crate) approval_policy: Option<AskForApproval>,
     pub(crate) sandbox_policy: Option<SandboxPolicy>,
     pub(crate) windows_sandbox_level: Option<WindowsSandboxLevel>,
@@ -4395,6 +4402,7 @@ mod handlers {
                     items,
                     SessionSettingsUpdate {
                         cwd: Some(cwd),
+                        model: None,
                         approval_policy: Some(approval_policy),
                         sandbox_policy: Some(sandbox_policy),
                         windows_sandbox_level: None,
@@ -4413,6 +4421,7 @@ mod handlers {
             } => (
                 items,
                 SessionSettingsUpdate {
+                    model: None,
                     final_output_json_schema: Some(final_output_json_schema),
                     ..Default::default()
                 },

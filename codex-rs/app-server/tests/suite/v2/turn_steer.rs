@@ -57,6 +57,7 @@ async fn turn_steer_requires_active_turn() -> Result<()> {
                 text: "steer".to_string(),
                 text_elements: Vec::new(),
             }],
+            model: None,
             expected_turn_id: "turn-does-not-exist".to_string(),
         })
         .await?;
@@ -145,6 +146,7 @@ async fn turn_steer_rejects_oversized_text_input() -> Result<()> {
                 text: oversized_input.clone(),
                 text_elements: Vec::new(),
             }],
+            model: None,
             expected_turn_id: turn.id.clone(),
         })
         .await?;
@@ -247,6 +249,7 @@ async fn turn_steer_returns_active_turn_id() -> Result<()> {
                 text: "steer".to_string(),
                 text_elements: Vec::new(),
             }],
+            model: None,
             expected_turn_id: turn.id.clone(),
         })
         .await?;
@@ -260,6 +263,94 @@ async fn turn_steer_returns_active_turn_id() -> Result<()> {
 
     mcp.interrupt_turn_and_wait_for_aborted(thread.id, steer.turn_id, DEFAULT_READ_TIMEOUT)
         .await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn turn_steer_accepts_model_override() -> Result<()> {
+    #[cfg(target_os = "windows")]
+    let shell_command = vec![
+        "powershell".to_string(),
+        "-Command".to_string(),
+        "Start-Sleep -Seconds 10".to_string(),
+    ];
+    #[cfg(not(target_os = "windows"))]
+    let shell_command = vec!["sleep".to_string(), "10".to_string()];
+
+    let tmp = TempDir::new()?;
+    let codex_home = tmp.path().join("codex_home");
+    std::fs::create_dir(&codex_home)?;
+    let working_directory = tmp.path().join("workdir");
+    std::fs::create_dir(&working_directory)?;
+
+    let _server = create_mock_responses_server_sequence_unchecked(vec![create_shell_command_sse_response(
+        shell_command.clone(),
+        Some(&working_directory),
+        Some(10_000),
+        "call_sleep",
+    )?])
+    .await;
+    create_config_toml(&codex_home, &_server.uri())?;
+
+    let mut mcp = McpProcess::new(&codex_home).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let thread_req = mcp
+        .send_thread_start_request(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let thread_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
+
+    let turn_req = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id.clone(),
+            input: vec![V2UserInput::Text {
+                text: "run sleep".to_string(),
+                text_elements: Vec::new(),
+            }],
+            cwd: Some(working_directory.clone()),
+            ..Default::default()
+        })
+        .await?;
+    let turn_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turn_req)),
+    )
+    .await??;
+    let TurnStartResponse { turn } = to_response::<TurnStartResponse>(turn_resp)?;
+
+    let _task_started: JSONRPCNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/started"),
+    )
+    .await??;
+
+    let steer_req = mcp
+        .send_turn_steer_request(TurnSteerParams {
+            thread_id: thread.id.clone(),
+            input: vec![V2UserInput::Text {
+                text: "steer".to_string(),
+                text_elements: Vec::new(),
+            }],
+            model: Some("mock-model-2".to_string()),
+            expected_turn_id: turn.id.clone(),
+        })
+        .await?;
+    let steer_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(steer_req)),
+    )
+    .await??;
+    let steer: TurnSteerResponse = to_response::<TurnSteerResponse>(steer_resp)?;
+    assert_eq!(steer.turn_id, turn.id);
 
     Ok(())
 }

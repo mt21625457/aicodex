@@ -114,6 +114,19 @@ impl CodexThread {
         self.codex.agent_status.clone()
     }
 
+    pub async fn set_model_override(
+        &self,
+        model: String,
+    ) -> ConstraintResult<()> {
+        self.codex
+            .session
+            .update_settings(crate::codex::SessionSettingsUpdate {
+                model: Some(model),
+                ..Default::default()
+            })
+            .await
+    }
+
     pub(crate) async fn total_token_usage(&self) -> Option<TokenUsage> {
         self.codex.session.total_token_usage().await
     }
