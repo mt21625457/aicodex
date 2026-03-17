@@ -4,6 +4,14 @@ use anyhow::Result;
 use codex_core::config::types::McpServerConfig;
 use codex_core::config::types::McpServerTransportConfig;
 use codex_core::features::Feature;
+use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem;
+use codex_protocol::dynamic_tools::DynamicToolResponse;
+use codex_protocol::dynamic_tools::DynamicToolSpec;
+use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::Op;
+use codex_protocol::protocol::SandboxPolicy;
+use codex_protocol::user_input::UserInput;
 use core_test_support::assert_regex_match;
 use core_test_support::responses;
 use core_test_support::responses::ResponseMock;
@@ -17,6 +25,8 @@ use core_test_support::skip_if_no_network;
 use core_test_support::stdio_server_bin;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
+use core_test_support::wait_for_event;
+use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -28,11 +38,30 @@ use std::time::Instant;
 use wiremock::MockServer;
 
 fn custom_tool_output_items(req: &ResponsesRequest, call_id: &str) -> Vec<Value> {
-    req.custom_tool_call_output(call_id)
-        .get("output")
+    match req.custom_tool_call_output(call_id).get("output") {
+        Some(Value::Array(items)) => items.clone(),
+        Some(Value::String(text)) => {
+            vec![serde_json::json!({ "type": "input_text", "text": text })]
+        }
+        _ => panic!("custom tool output should be serialized as text or content items"),
+    }
+}
+
+fn tool_names(body: &Value) -> Vec<String> {
+    body.get("tools")
         .and_then(Value::as_array)
-        .expect("custom tool output should be serialized as content items")
-        .clone()
+        .map(|tools| {
+            tools
+                .iter()
+                .filter_map(|tool| {
+                    tool.get("name")
+                        .or_else(|| tool.get("type"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn function_tool_output_items(req: &ResponsesRequest, call_id: &str) -> Vec<Value> {
@@ -72,16 +101,37 @@ fn custom_tool_output_body_and_success(
     req: &ResponsesRequest,
     call_id: &str,
 ) -> (String, Option<bool>) {
-    let (_, success) = req
+    let (content, success) = req
         .custom_tool_call_output_content_and_success(call_id)
         .expect("custom tool output should be present");
     let items = custom_tool_output_items(req, call_id);
-    let output = items
+    let text_items = items
         .iter()
-        .skip(1)
         .filter_map(|item| item.get("text").and_then(Value::as_str))
-        .collect();
+        .collect::<Vec<_>>();
+    let output = match text_items.as_slice() {
+        [] => content.unwrap_or_default(),
+        [only] => (*only).to_string(),
+        [_, rest @ ..] => rest.concat(),
+    };
     (output, success)
+}
+
+fn custom_tool_output_last_non_empty_text(req: &ResponsesRequest, call_id: &str) -> Option<String> {
+    match req.custom_tool_call_output(call_id).get("output") {
+        Some(Value::String(text)) if !text.trim().is_empty() => Some(text.clone()),
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(|item| item.get("text").and_then(Value::as_str))
+            .rfind(|text| !text.trim().is_empty())
+            .map(str::to_string),
+        Some(Value::String(_))
+        | Some(Value::Object(_))
+        | Some(Value::Number(_))
+        | Some(Value::Bool(_))
+        | Some(Value::Null)
+        | None => None,
+    }
 }
 
 async fn run_code_mode_turn(
@@ -235,6 +285,86 @@ text(JSON.stringify(await tools.exec_command({ cmd: "printf code_mode_exec_marke
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_only_restricts_prompt_tools() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let resp_mock = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_assistant_message("msg-1", "done"),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+
+    let mut builder = test_codex().with_config(|config| {
+        let _ = config.features.enable(Feature::CodeModeOnly);
+    });
+    let test = builder.build(&server).await?;
+    test.submit_turn("list tools in code mode only").await?;
+
+    let first_body = resp_mock.single_request().body_json();
+    assert_eq!(
+        tool_names(&first_body),
+        vec!["exec".to_string(), "exec_wait".to_string()]
+    );
+
+    Ok(())
+}
+
+#[cfg_attr(windows, ignore = "no exec_command on Windows")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_only_can_call_nested_tools() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_custom_tool_call(
+                "call-1",
+                "exec",
+                r#"
+const output = await tools.exec_command({ cmd: "printf code_mode_only_nested_tool_marker" });
+text(output.output);
+"#,
+            ),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    let follow_up_mock = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-1", "done"),
+            ev_completed("resp-2"),
+        ]),
+    )
+    .await;
+
+    let mut builder = test_codex().with_config(|config| {
+        let _ = config.features.enable(Feature::CodeModeOnly);
+    });
+    let test = builder.build(&server).await?;
+    test.submit_turn("use exec to run nested tool in code mode only")
+        .await?;
+
+    let request = follow_up_mock.single_request();
+    let (output, success) = custom_tool_output_body_and_success(&request, "call-1");
+    assert_ne!(
+        success,
+        Some(false),
+        "code_mode_only nested tool call failed unexpectedly: {output}"
+    );
+    assert_eq!(output, "code_mode_only_nested_tool_marker");
+
+    Ok(())
+}
+
 #[cfg_attr(windows, ignore = "flaky on windows")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_mode_nested_tool_calls_can_run_in_parallel() -> Result<()> {
@@ -336,9 +466,7 @@ async fn code_mode_can_truncate_final_result_with_configured_budget() -> Result<
     let (_test, second_mock) = run_code_mode_turn(
         &server,
         "use exec to truncate the final result",
-        r#"
-set_max_output_tokens_per_exec_call(6);
-
+        r#"// @exec: {"max_output_tokens": 6}
 text(JSON.stringify(await tools.exec_command({
   cmd: "printf 'token one token two token three token four token five token six token seven'",
   max_output_tokens: 100
@@ -431,7 +559,7 @@ async fn code_mode_can_yield_and_resume_with_exec_wait() -> Result<()> {
     let code = format!(
         r#"
 text("phase 1");
-set_yield_time(10);
+yield_control();
 {phase_2_wait}
 text("phase 2");
 {phase_3_wait}
@@ -570,9 +698,8 @@ async fn code_mode_yield_timeout_works_for_busy_loop() -> Result<()> {
     });
     let test = builder.build(&server).await?;
 
-    let code = r#"
+    let code = r#"// @exec: {"yield_time_ms": 100}
 text("phase 1");
-set_yield_time(10);
 while (true) {}
 "#;
 
@@ -672,7 +799,7 @@ async fn code_mode_can_run_multiple_yielded_sessions() -> Result<()> {
     let session_a_code = format!(
         r#"
 text("session a start");
-set_yield_time(10);
+yield_control();
 {session_a_wait}
 text("session a done");
 "#
@@ -680,7 +807,7 @@ text("session a done");
     let session_b_code = format!(
         r#"
 text("session b start");
-set_yield_time(10);
+yield_control();
 {session_b_wait}
 text("session b done");
 "#
@@ -838,7 +965,7 @@ async fn code_mode_exec_wait_can_terminate_and_continue() -> Result<()> {
     let code = format!(
         r#"
 text("phase 1");
-set_yield_time(10);
+yield_control();
 {termination_wait}
 text("phase 2");
 "#
@@ -1032,7 +1159,7 @@ async fn code_mode_exec_wait_terminate_returns_completed_session_if_it_finished_
     let session_a_code = format!(
         r#"
 text("session a start");
-set_yield_time(10);
+yield_control();
 {session_a_wait}
 text("session a done");
 await tools.exec_command({{ cmd: {session_a_done_command:?} }});
@@ -1041,7 +1168,7 @@ await tools.exec_command({{ cmd: {session_a_done_command:?} }});
     let session_b_code = format!(
         r#"
 text("session b start");
-set_yield_time(10);
+yield_control();
 {session_b_wait}
 text("session b done");
 "#
@@ -1312,10 +1439,9 @@ async fn code_mode_exec_wait_uses_its_own_max_tokens_budget() -> Result<()> {
     let completion_wait = wait_for_file_source(&completion_gate)?;
 
     let code = format!(
-        r#"
+        r#"// @exec: {{"max_output_tokens": 100}}
 text("phase 1");
-set_max_output_tokens_per_exec_call(100);
-set_yield_time(10);
+yield_control();
 {completion_wait}
 text("token one token two token three token four token five token six token seven");
 "#
@@ -1415,12 +1541,57 @@ text({ json: true });
 
     let req = second_mock.single_request();
     let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
+    eprintln!(
+        "hidden dynamic tool raw output: {}",
+        req.custom_tool_call_output("call-1")
+    );
     assert_ne!(
         success,
         Some(false),
         "exec call failed unexpectedly: {output}"
     );
     assert_eq!(output, r#"{"json":true}"#);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_exit_stops_script_immediately() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let (_test, second_mock) = run_code_mode_turn(
+        &server,
+        "use exec to stop script early with exit helper",
+        r#"
+import { exit, text } from "@openai/code_mode";
+
+text("before");
+exit();
+text("after");
+"#,
+        false,
+    )
+    .await?;
+
+    let req = second_mock.single_request();
+    let items = custom_tool_output_items(&req, "call-1");
+    let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
+    assert_ne!(
+        success,
+        Some(false),
+        "exec exit helper call failed unexpectedly: {output}"
+    );
+    assert_eq!(items.len(), 2);
+    assert_regex_match(
+        concat!(
+            r"(?s)\A",
+            r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
+        ),
+        text_item(&items, 0),
+    );
+    assert_eq!(text_item(&items, 1), "before");
+    assert_eq!(output, "before");
 
     Ok(())
 }
@@ -1635,6 +1806,42 @@ contentLength=0"
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_exposes_namespaced_mcp_tools_on_global_tools_object() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let code = r#"
+text(JSON.stringify({
+  hasExecCommand: typeof tools.exec_command === "function",
+  hasNamespacedEcho: typeof tools.mcp__rmcp__echo === "function",
+}));
+"#;
+
+    let (_test, second_mock) =
+        run_code_mode_turn_with_rmcp(&server, "use exec to inspect the global tools object", code)
+            .await?;
+
+    let req = second_mock.single_request();
+    let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
+    assert_ne!(
+        success,
+        Some(false),
+        "exec global tools inspection failed unexpectedly: {output}"
+    );
+
+    let parsed: Value = serde_json::from_str(&output)?;
+    assert_eq!(
+        parsed,
+        serde_json::json!({
+            "hasExecCommand": !cfg!(windows),
+            "hasNamespacedEcho": true,
+        })
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_mode_exposes_normalized_illegal_mcp_tool_names() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -1740,12 +1947,14 @@ text(JSON.stringify(Object.getOwnPropertyNames(globalThis).sort()));
         "WeakSet",
         "WebAssembly",
         "__codexContentItems",
+        "add_content",
         "console",
         "decodeURI",
         "decodeURIComponent",
         "encodeURI",
         "encodeURIComponent",
         "escape",
+        "exit",
         "eval",
         "globalThis",
         "image",
@@ -1754,8 +1963,6 @@ text(JSON.stringify(Object.getOwnPropertyNames(globalThis).sort()));
         "load",
         "parseFloat",
         "parseInt",
-        "set_max_output_tokens_per_exec_call",
-        "set_yield_time",
         "store",
         "text",
         "tools",
@@ -1794,12 +2001,15 @@ text(JSON.stringify(tool));
         "exec ALL_TOOLS lookup failed unexpectedly: {output}"
     );
 
-    let parsed: Value = serde_json::from_str(&output)?;
+    let parsed: Value = serde_json::from_str(
+        &custom_tool_output_last_non_empty_text(&req, "call-1")
+            .expect("exec ALL_TOOLS lookup should emit JSON"),
+    )?;
     assert_eq!(
         parsed,
         serde_json::json!({
             "name": "view_image",
-            "description": "View a local image from the filesystem (only use if given a full filepath by the user, and the image isn't already attached to the thread context within <image ...> tags).\n\nCode mode declaration:\n```ts\ndeclare const tools: {\n  view_image(args: {\n    path: string;\n  }): Promise<unknown>;\n};\n```",
+            "description": "View a local image from the filesystem (only use if given a full filepath by the user, and the image isn't already attached to the thread context within <image ...> tags).\n\nexec tool declaration:\n```ts\ndeclare const tools: { view_image(args: { path: string; }): Promise<unknown>; };\n```",
         })
     );
 
@@ -1829,13 +2039,169 @@ text(JSON.stringify(tool));
         "exec ALL_TOOLS MCP lookup failed unexpectedly: {output}"
     );
 
-    let parsed: Value = serde_json::from_str(&output)?;
+    let parsed: Value = serde_json::from_str(
+        &custom_tool_output_last_non_empty_text(&req, "call-1")
+            .expect("exec ALL_TOOLS MCP lookup should emit JSON"),
+    )?;
     assert_eq!(
         parsed,
         serde_json::json!({
             "name": "mcp__rmcp__echo",
-            "description": "Echo back the provided message and include environment data.\n\nCode mode declaration:\n```ts\ndeclare const tools: {\n  mcp__rmcp__echo(args: {\n    env_var?: string;\n    message: string;\n  }): Promise<{\n    _meta?: unknown;\n    content: Array<unknown>;\n    isError?: boolean;\n    structuredContent?: unknown;\n  }>;\n};\n```",
+            "description": "Echo back the provided message and include environment data.\n\nexec tool declaration:\n```ts\ndeclare const tools: { mcp__rmcp__echo(args: { env_var?: string; message: string; }): Promise<{ _meta?: unknown; content: Array<unknown>; isError?: boolean; structuredContent?: unknown; }>; };\n```",
         })
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_can_call_hidden_dynamic_tools() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex().with_config(move |config| {
+        let _ = config.features.enable(Feature::CodeMode);
+    });
+    let base_test = builder.build(&server).await?;
+    let new_thread = base_test
+        .thread_manager
+        .start_thread_with_tools(
+            base_test.config.clone(),
+            vec![DynamicToolSpec {
+                name: "hidden_dynamic_tool".to_string(),
+                description: "A hidden dynamic tool.".to_string(),
+                input_schema: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "city": { "type": "string" }
+                        },
+                    "required": ["city"],
+                    "additionalProperties": false,
+                }),
+                defer_loading: true,
+            }],
+            false,
+        )
+        .await?;
+    let test = TestCodex {
+        home: base_test.home,
+        cwd: base_test.cwd,
+        codex: new_thread.thread,
+        session_configured: new_thread.session_configured,
+        config: base_test.config,
+        thread_manager: base_test.thread_manager,
+    };
+
+    let code = r#"
+import { ALL_TOOLS, hidden_dynamic_tool } from "tools.js";
+
+const tool = ALL_TOOLS.find(({ name }) => name === "hidden_dynamic_tool");
+const out = await hidden_dynamic_tool({ city: "Paris" });
+text(
+  JSON.stringify({
+    name: tool?.name ?? null,
+    description: tool?.description ?? null,
+    out,
+  })
+);
+"#;
+
+    responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_custom_tool_call("call-1", "exec", code),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+
+    let second_mock = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-1", "done"),
+            ev_completed("resp-2"),
+        ]),
+    )
+    .await;
+
+    test.codex
+        .submit(Op::UserTurn {
+            items: vec![UserInput::Text {
+                text: "use exec to inspect and call hidden tools".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            cwd: test.cwd.path().to_path_buf(),
+            approval_policy: AskForApproval::Never,
+            sandbox_policy: SandboxPolicy::DangerFullAccess,
+            model: test.session_configured.model.clone(),
+            effort: None,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
+        })
+        .await?;
+
+    let turn_id = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::TurnStarted(event) => Some(event.turn_id.clone()),
+        _ => None,
+    })
+    .await;
+    let request = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::DynamicToolCallRequest(request) => Some(request.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(request.tool, "hidden_dynamic_tool");
+    assert_eq!(request.arguments, serde_json::json!({ "city": "Paris" }));
+    test.codex
+        .submit(Op::DynamicToolResponse {
+            id: request.call_id,
+            response: DynamicToolResponse {
+                content_items: vec![DynamicToolCallOutputContentItem::InputText {
+                    text: "hidden-ok".to_string(),
+                }],
+                success: true,
+            },
+        })
+        .await?;
+    wait_for_event(&test.codex, |event| match event {
+        EventMsg::TurnComplete(event) => event.turn_id == turn_id,
+        _ => false,
+    })
+    .await;
+
+    let req = second_mock.single_request();
+    let (output, success) = custom_tool_output_body_and_success(&req, "call-1");
+    assert_ne!(
+        success,
+        Some(false),
+        "exec hidden dynamic tool call failed unexpectedly: {output}"
+    );
+
+    let parsed: Value = serde_json::from_str(
+        &custom_tool_output_last_non_empty_text(&req, "call-1")
+            .expect("exec hidden dynamic tool lookup should emit JSON"),
+    )?;
+    assert_eq!(
+        parsed.get("name"),
+        Some(&Value::String("hidden_dynamic_tool".to_string()))
+    );
+    assert_eq!(
+        parsed.get("out"),
+        Some(&Value::String("hidden-ok".to_string()))
+    );
+    assert!(
+        parsed
+            .get("description")
+            .and_then(Value::as_str)
+            .is_some_and(|description| {
+                description.contains("A hidden dynamic tool.")
+                    && description.contains("declare const tools:")
+                    && description.contains("hidden_dynamic_tool(args:")
+            })
     );
 
     Ok(())
@@ -1922,6 +2288,7 @@ structuredContent=null"
 
     Ok(())
 }
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_mode_can_store_and_load_values_across_turns() -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -2003,7 +2370,10 @@ text(JSON.stringify(load("nb")));
         Some(false),
         "exec load call failed unexpectedly: {second_output}"
     );
-    let loaded: Value = serde_json::from_str(&second_output)?;
+    let loaded: Value = serde_json::from_str(
+        &custom_tool_output_last_non_empty_text(&second_request, "call-2")
+            .expect("exec load call should emit JSON"),
+    )?;
     assert_eq!(
         loaded,
         serde_json::json!({ "title": "Notebook", "items": [1, true, null] })

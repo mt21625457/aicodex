@@ -65,6 +65,7 @@ mod dynamic_tools;
 mod error_code;
 mod external_agent_config_api;
 mod filters;
+mod fs_api;
 mod fuzzy_file_search;
 pub mod in_process;
 mod message_processor;
@@ -265,10 +266,10 @@ fn app_text_range(range: &CoreTextRange) -> AppTextRange {
 fn project_config_warning(config: &Config) -> Option<ConfigWarningNotification> {
     let mut disabled_folders = Vec::new();
 
-    for layer in config
-        .config_layer_stack
-        .get_layers(ConfigLayerStackOrdering::LowestPrecedenceFirst, true)
-    {
+    for layer in config.config_layer_stack.get_layers(
+        ConfigLayerStackOrdering::LowestPrecedenceFirst,
+        /*include_disabled*/ true,
+    ) {
         if !matches!(layer.name, ConfigLayerSource::Project { .. })
             || layer.disabled_reason.is_none()
         {
@@ -417,7 +418,7 @@ pub async fn run_main_with_transport(
 
             let auth_manager = AuthManager::shared(
                 config.codex_home.clone(),
-                false,
+                /*enable_codex_api_key_env*/ false,
                 config.cli_auth_credentials_store_mode,
             );
             cloud_requirements_loader(
@@ -607,6 +608,8 @@ pub async fn run_main_with_transport(
             cli_overrides,
             loader_overrides,
             cloud_requirements: cloud_requirements.clone(),
+            auth_manager: None,
+            thread_manager: None,
             feedback: feedback.clone(),
             log_db,
             config_warnings,

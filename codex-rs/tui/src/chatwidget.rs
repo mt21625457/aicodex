@@ -56,6 +56,7 @@ use codex_chatgpt::connectors;
 use codex_core::config::Config;
 use codex_core::config::Constrained;
 use codex_core::config::ConstraintResult;
+use codex_core::config::types::ApprovalsReviewer;
 use codex_core::config::types::Notifications;
 use codex_core::config::types::WindowsSandboxModeToml;
 use codex_core::config_loader::ConfigLayerStackOrdering;
@@ -113,6 +114,8 @@ use codex_protocol::protocol::ExecCommandEndEvent;
 use codex_protocol::protocol::ExecCommandOutputDeltaEvent;
 use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::ExitedReviewModeEvent;
+use codex_protocol::protocol::GuardianAssessmentEvent;
+use codex_protocol::protocol::GuardianAssessmentStatus;
 use codex_protocol::protocol::ImageGenerationBeginEvent;
 use codex_protocol::protocol::ImageGenerationEndEvent;
 use codex_protocol::protocol::ListCustomPromptsResponseEvent;
@@ -172,10 +175,10 @@ const PLAN_IMPLEMENTATION_TITLE: &str = "Implement this plan?";
 const PLAN_IMPLEMENTATION_YES: &str = "Yes, implement this plan";
 const PLAN_IMPLEMENTATION_NO: &str = "No, stay in Plan mode";
 const PLAN_IMPLEMENTATION_CODING_MESSAGE: &str = "Implement the plan.";
-const MULTI_AGENT_ENABLE_TITLE: &str = "Enable multi-agent?";
+const MULTI_AGENT_ENABLE_TITLE: &str = "Enable subagents?";
 const MULTI_AGENT_ENABLE_YES: &str = "Yes, enable";
 const MULTI_AGENT_ENABLE_NO: &str = "Not now";
-const MULTI_AGENT_ENABLE_NOTICE: &str = "Multi-agent will be enabled in the next session.";
+const MULTI_AGENT_ENABLE_NOTICE: &str = "Subagents will be enabled in the next session.";
 const PLAN_MODE_REASONING_SCOPE_TITLE: &str = "Apply reasoning change";
 const PLAN_MODE_REASONING_SCOPE_PLAN_ONLY: &str = "Apply to Plan mode override";
 const PLAN_MODE_REASONING_SCOPE_ALL_MODES: &str = "Apply to global default and Plan mode override";
@@ -527,6 +530,95 @@ pub(crate) enum ExternalEditorState {
     Active,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StatusIndicatorState {
+    header: String,
+    details: Option<String>,
+    details_max_lines: usize,
+}
+
+impl StatusIndicatorState {
+    fn working() -> Self {
+        Self {
+            header: String::from("Working"),
+            details: None,
+            details_max_lines: STATUS_DETAILS_DEFAULT_MAX_LINES,
+        }
+    }
+
+    fn is_guardian_review(&self) -> bool {
+        self.header == "Reviewing approval request" || self.header.starts_with("Reviewing ")
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct PendingGuardianReviewStatus {
+    entries: Vec<PendingGuardianReviewStatusEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingGuardianReviewStatusEntry {
+    id: String,
+    detail: String,
+}
+
+impl PendingGuardianReviewStatus {
+    fn start_or_update(&mut self, id: String, detail: String) {
+        if let Some(existing) = self.entries.iter_mut().find(|entry| entry.id == id) {
+            existing.detail = detail;
+        } else {
+            self.entries
+                .push(PendingGuardianReviewStatusEntry { id, detail });
+        }
+    }
+
+    fn finish(&mut self, id: &str) -> bool {
+        let original_len = self.entries.len();
+        self.entries.retain(|entry| entry.id != id);
+        self.entries.len() != original_len
+    }
+
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    // Guardian review status is derived from the full set of currently pending
+    // review entries. The generic status cache on `ChatWidget` stores whichever
+    // footer is currently rendered; this helper computes the guardian-specific
+    // footer snapshot that should replace it while reviews remain in flight.
+    fn status_indicator_state(&self) -> Option<StatusIndicatorState> {
+        let details = if self.entries.len() == 1 {
+            self.entries.first().map(|entry| entry.detail.clone())
+        } else if self.entries.is_empty() {
+            None
+        } else {
+            let mut lines = self
+                .entries
+                .iter()
+                .take(3)
+                .map(|entry| format!("• {}", entry.detail))
+                .collect::<Vec<_>>();
+            let remaining = self.entries.len().saturating_sub(3);
+            if remaining > 0 {
+                lines.push(format!("+{remaining} more"));
+            }
+            Some(lines.join("\n"))
+        };
+        let details = details?;
+        let header = if self.entries.len() == 1 {
+            String::from("Reviewing approval request")
+        } else {
+            format!("Reviewing {} approval requests", self.entries.len())
+        };
+        let details_max_lines = if self.entries.len() == 1 { 1 } else { 4 };
+        Some(StatusIndicatorState {
+            header,
+            details: Some(details),
+            details_max_lines,
+        })
+    }
+}
+
 /// Maintains the per-session UI state and interaction state machines for the chat screen.
 ///
 /// `ChatWidget` owns the state derived from the protocol event stream (history cells, streaming
@@ -610,8 +702,13 @@ pub(crate) struct ChatWidget {
     reasoning_buffer: String,
     // Accumulates full reasoning content for transcript-only recording
     full_reasoning_buffer: String,
-    // Current status header shown in the status indicator.
-    current_status_header: String,
+    // The currently rendered footer state. We keep the already-formatted
+    // details here so transient stream interruptions can restore the footer
+    // exactly as it was shown.
+    current_status: StatusIndicatorState,
+    // Guardian review keeps its own pending set so it can derive a single
+    // footer summary from one or more in-flight review events.
+    pending_guardian_review_status: PendingGuardianReviewStatus,
     // Previous status header to restore after a transient stream retry.
     retry_status_header: Option<String>,
     // Set when commentary output completes; once stream queues go idle we restore the status row.
@@ -1049,7 +1146,12 @@ impl ChatWidget {
         }
 
         self.bottom_pane.ensure_status_indicator();
-        self.set_status_header(self.current_status_header.clone());
+        self.set_status(
+            self.current_status.header.clone(),
+            self.current_status.details.clone(),
+            StatusDetailsCapitalization::Preserve,
+            self.current_status.details_max_lines,
+        );
         self.pending_status_indicator_restore = false;
     }
 
@@ -1063,9 +1165,28 @@ impl ChatWidget {
         details_capitalization: StatusDetailsCapitalization,
         details_max_lines: usize,
     ) {
-        self.current_status_header = header.clone();
-        self.bottom_pane
-            .update_status(header, details, details_capitalization, details_max_lines);
+        let details = details
+            .filter(|details| !details.is_empty())
+            .map(|details| {
+                let trimmed = details.trim_start();
+                match details_capitalization {
+                    StatusDetailsCapitalization::CapitalizeFirst => {
+                        crate::text_formatting::capitalize_first(trimmed)
+                    }
+                    StatusDetailsCapitalization::Preserve => trimmed.to_string(),
+                }
+            });
+        self.current_status = StatusIndicatorState {
+            header: header.clone(),
+            details: details.clone(),
+            details_max_lines,
+        };
+        self.bottom_pane.update_status(
+            header,
+            details,
+            StatusDetailsCapitalization::Preserve,
+            details_max_lines,
+        );
     }
 
     /// Convenience wrapper around [`Self::set_status`];
@@ -1073,7 +1194,7 @@ impl ChatWidget {
     fn set_status_header(&mut self, header: String) {
         self.set_status(
             header,
-            None,
+            /*details*/ None,
             StatusDetailsCapitalization::CapitalizeFirst,
             STATUS_DETAILS_DEFAULT_MAX_LINES,
         );
@@ -1130,7 +1251,7 @@ impl ChatWidget {
         let enabled = !items.is_empty();
         self.bottom_pane.set_status_line_enabled(enabled);
         if !enabled {
-            self.set_status_line(None);
+            self.set_status_line(/*status_line*/ None);
             return;
         }
 
@@ -1235,7 +1356,7 @@ impl ChatWidget {
     fn on_session_configured(&mut self, event: codex_protocol::protocol::SessionConfiguredEvent) {
         self.bottom_pane
             .set_history_metadata(event.history_log_id, event.history_entry_count);
-        self.set_skills(None);
+        self.set_skills(/*skills*/ None);
         self.session_network_proxy = event.network_proxy.clone();
         self.thread_id = Some(event.session_id);
         self.thread_name = event.thread_name.clone();
@@ -1263,6 +1384,7 @@ impl ChatWidget {
             self.config.permissions.sandbox_policy =
                 Constrained::allow_only(event.sandbox_policy.clone());
         }
+        self.config.approvals_reviewer = event.approvals_reviewer;
         let initial_messages = event.initial_messages.clone();
         self.last_copyable_output = None;
         let forked_from_id = event.forked_from_id;
@@ -1271,7 +1393,7 @@ impl ChatWidget {
         self.current_collaboration_mode = self.current_collaboration_mode.with_updates(
             Some(model_for_header.clone()),
             Some(event.reasoning_effort),
-            None,
+            /*developer_instructions*/ None,
         );
         if let Some(mask) = self.active_collaboration_mask.as_mut() {
             mask.model = Some(model_for_header.clone());
@@ -1570,7 +1692,8 @@ impl ChatWidget {
 
     fn on_task_started(&mut self) {
         self.agent_turn_running = true;
-        self.turn_sleep_inhibitor.set_turn_running(true);
+        self.turn_sleep_inhibitor
+            .set_turn_running(/*turn_running*/ true);
         self.saw_plan_update_this_turn = false;
         self.saw_plan_item_this_turn = false;
         self.plan_delta_buffer.clear();
@@ -1585,7 +1708,8 @@ impl ChatWidget {
         self.update_task_running_state();
         self.retry_status_header = None;
         self.pending_status_indicator_restore = false;
-        self.bottom_pane.set_interrupt_hint_visible(true);
+        self.bottom_pane
+            .set_interrupt_hint_visible(/*visible*/ true);
         self.set_status_header(String::from("Working"));
         self.full_reasoning_buffer.clear();
         self.reasoning_buffer.clear();
@@ -1634,7 +1758,8 @@ impl ChatWidget {
         // Mark task stopped and request redraw now that all content is in history.
         self.pending_status_indicator_restore = false;
         self.agent_turn_running = false;
-        self.turn_sleep_inhibitor.set_turn_running(false);
+        self.turn_sleep_inhibitor
+            .set_turn_running(/*turn_running*/ false);
         self.update_task_running_state();
         self.running_commands.clear();
         self.suppressed_exec_calls.clear();
@@ -1759,7 +1884,7 @@ impl ChatWidget {
             },
             SelectionItem {
                 name: MULTI_AGENT_ENABLE_NO.to_string(),
-                description: Some("Keep multi-agent disabled.".to_string()),
+                description: Some("Keep subagents disabled.".to_string()),
                 dismiss_on_select: true,
                 ..Default::default()
             },
@@ -1767,7 +1892,7 @@ impl ChatWidget {
 
         self.bottom_pane.show_selection_view(SelectionViewParams {
             title: Some(MULTI_AGENT_ENABLE_TITLE.to_string()),
-            subtitle: Some("Multi-agent is currently disabled in your config.".to_string()),
+            subtitle: Some("Subagents are currently disabled in your config.".to_string()),
             footer_hint: Some(standard_popup_hint_line()),
             items,
             ..Default::default()
@@ -1778,7 +1903,8 @@ impl ChatWidget {
         match info {
             Some(info) => self.apply_token_info(info),
             None => {
-                self.bottom_pane.set_context_window(None, None);
+                self.bottom_pane
+                    .set_context_window(/*percent*/ None, /*used_tokens*/ None);
                 self.token_info = None;
             }
         }
@@ -1832,7 +1958,8 @@ impl ChatWidget {
             match saved {
                 Some(info) => self.apply_token_info(info),
                 None => {
-                    self.bottom_pane.set_context_window(None, None);
+                    self.bottom_pane
+                        .set_context_window(/*percent*/ None, /*used_tokens*/ None);
                     self.token_info = None;
                 }
             }
@@ -1932,7 +2059,8 @@ impl ChatWidget {
         self.finalize_active_cell_as_failed();
         // Reset running state and clear streaming buffers.
         self.agent_turn_running = false;
-        self.turn_sleep_inhibitor.set_turn_running(false);
+        self.turn_sleep_inhibitor
+            .set_turn_running(/*turn_running*/ false);
         self.update_task_running_state();
         self.running_commands.clear();
         self.suppressed_exec_calls.clear();
@@ -2050,16 +2178,13 @@ impl ChatWidget {
     fn on_interrupted_turn(&mut self, reason: TurnAbortReason) {
         // Finalize, log a gentle prompt, and clear running state.
         self.finalize_turn();
-        if reason == TurnAbortReason::Interrupted {
-            self.clear_unified_exec_processes();
-        }
         let send_pending_steers_immediately = self.submit_pending_steers_after_interrupt;
         self.submit_pending_steers_after_interrupt = false;
         if reason != TurnAbortReason::ReviewEnded {
             if send_pending_steers_immediately {
                 self.add_to_history(history_cell::new_info_event(
                     "Model interrupted to submit steer instructions.".to_owned(),
-                    None,
+                    /*hint*/ None,
                 ));
             } else {
                 self.add_to_history(history_cell::new_error_event(
@@ -2247,6 +2372,227 @@ impl ChatWidget {
         );
     }
 
+    /// Handle guardian review lifecycle events for the current thread.
+    ///
+    /// In-progress assessments temporarily own the live status footer so the
+    /// user can see what is being reviewed, including parallel review
+    /// aggregation. Terminal assessments clear or update that footer state and
+    /// render the final approved/denied history cell when guardian returns a
+    /// decision.
+    fn on_guardian_assessment(&mut self, ev: GuardianAssessmentEvent) {
+        // Guardian emits a compact JSON action payload; map the stable fields we
+        // care about into a short footer/history summary without depending on
+        // the full raw JSON shape in the rest of the widget.
+        let guardian_action_summary = |action: &serde_json::Value| {
+            let tool = action.get("tool").and_then(serde_json::Value::as_str)?;
+            match tool {
+                "shell" | "exec_command" => match action.get("command") {
+                    Some(serde_json::Value::String(command)) => Some(command.clone()),
+                    Some(serde_json::Value::Array(command)) => {
+                        let args = command
+                            .iter()
+                            .map(serde_json::Value::as_str)
+                            .collect::<Option<Vec<_>>>()?;
+                        shlex::try_join(args.iter().copied())
+                            .ok()
+                            .or_else(|| Some(args.join(" ")))
+                    }
+                    _ => None,
+                },
+                "apply_patch" => {
+                    let files = action
+                        .get("files")
+                        .and_then(serde_json::Value::as_array)
+                        .map(|files| {
+                            files
+                                .iter()
+                                .filter_map(serde_json::Value::as_str)
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    let change_count = action
+                        .get("change_count")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(files.len() as u64);
+                    Some(if files.len() == 1 {
+                        format!("apply_patch touching {}", files[0])
+                    } else {
+                        format!(
+                            "apply_patch touching {change_count} changes across {} files",
+                            files.len()
+                        )
+                    })
+                }
+                "network_access" => action
+                    .get("target")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|target| format!("network access to {target}")),
+                "mcp_tool_call" => {
+                    let tool_name = action
+                        .get("tool_name")
+                        .and_then(serde_json::Value::as_str)?;
+                    let label = action
+                        .get("connector_name")
+                        .and_then(serde_json::Value::as_str)
+                        .or_else(|| action.get("server").and_then(serde_json::Value::as_str))
+                        .unwrap_or("unknown server");
+                    Some(format!("MCP {tool_name} on {label}"))
+                }
+                _ => None,
+            }
+        };
+        let guardian_command = |action: &serde_json::Value| match action.get("command") {
+            Some(serde_json::Value::Array(command)) => Some(
+                command
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>(),
+            )
+            .filter(|command| !command.is_empty()),
+            Some(serde_json::Value::String(command)) => shlex::split(command)
+                .filter(|command| !command.is_empty())
+                .or_else(|| Some(vec![command.clone()])),
+            _ => None,
+        };
+
+        if ev.status == GuardianAssessmentStatus::InProgress
+            && let Some(action) = ev.action.as_ref()
+            && let Some(detail) = guardian_action_summary(action)
+        {
+            // In-progress assessments own the live footer state while the
+            // review is pending. Parallel reviews are aggregated into one
+            // footer summary by `PendingGuardianReviewStatus`.
+            self.bottom_pane.ensure_status_indicator();
+            self.bottom_pane
+                .set_interrupt_hint_visible(/*visible*/ true);
+            self.pending_guardian_review_status
+                .start_or_update(ev.id.clone(), detail);
+            if let Some(status) = self.pending_guardian_review_status.status_indicator_state() {
+                self.set_status(
+                    status.header,
+                    status.details,
+                    StatusDetailsCapitalization::Preserve,
+                    status.details_max_lines,
+                );
+            }
+            self.request_redraw();
+            return;
+        }
+
+        // Terminal assessments remove the matching pending footer entry first,
+        // then render the final approved/denied history cell below.
+        if self.pending_guardian_review_status.finish(&ev.id) {
+            if let Some(status) = self.pending_guardian_review_status.status_indicator_state() {
+                self.set_status(
+                    status.header,
+                    status.details,
+                    StatusDetailsCapitalization::Preserve,
+                    status.details_max_lines,
+                );
+            } else if self.current_status.is_guardian_review() {
+                self.set_status_header(String::from("Working"));
+            }
+        } else if self.pending_guardian_review_status.is_empty()
+            && self.current_status.is_guardian_review()
+        {
+            self.set_status_header(String::from("Working"));
+        }
+
+        if ev.status == GuardianAssessmentStatus::Approved {
+            let Some(action) = ev.action else {
+                return;
+            };
+
+            let cell = if let Some(command) = guardian_command(&action) {
+                history_cell::new_approval_decision_cell(
+                    command,
+                    codex_protocol::protocol::ReviewDecision::Approved,
+                    history_cell::ApprovalDecisionActor::Guardian,
+                )
+            } else if let Some(summary) = guardian_action_summary(&action) {
+                history_cell::new_guardian_approved_action_request(summary)
+            } else {
+                let summary = serde_json::to_string(&action)
+                    .unwrap_or_else(|_| "<unrenderable guardian action>".to_string());
+                history_cell::new_guardian_approved_action_request(summary)
+            };
+
+            self.add_boxed_history(cell);
+            self.request_redraw();
+            return;
+        }
+
+        if ev.status != GuardianAssessmentStatus::Denied {
+            return;
+        }
+        let Some(action) = ev.action else {
+            return;
+        };
+
+        let tool = action.get("tool").and_then(serde_json::Value::as_str);
+        let cell = if let Some(command) = guardian_command(&action) {
+            history_cell::new_approval_decision_cell(
+                command,
+                codex_protocol::protocol::ReviewDecision::Denied,
+                history_cell::ApprovalDecisionActor::Guardian,
+            )
+        } else {
+            match tool {
+                Some("apply_patch") => {
+                    let files = action
+                        .get("files")
+                        .and_then(serde_json::Value::as_array)
+                        .map(|files| {
+                            files
+                                .iter()
+                                .filter_map(serde_json::Value::as_str)
+                                .map(ToOwned::to_owned)
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    let change_count = action
+                        .get("change_count")
+                        .and_then(serde_json::Value::as_u64)
+                        .and_then(|count| usize::try_from(count).ok())
+                        .unwrap_or(files.len());
+                    history_cell::new_guardian_denied_patch_request(files, change_count)
+                }
+                Some("mcp_tool_call") => {
+                    let server = action
+                        .get("server")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("unknown server");
+                    let tool_name = action
+                        .get("tool_name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("unknown tool");
+                    history_cell::new_guardian_denied_action_request(format!(
+                        "codex to call MCP tool {server}.{tool_name}"
+                    ))
+                }
+                Some("network_access") => {
+                    let target = action
+                        .get("target")
+                        .and_then(serde_json::Value::as_str)
+                        .or_else(|| action.get("host").and_then(serde_json::Value::as_str))
+                        .unwrap_or("network target");
+                    history_cell::new_guardian_denied_action_request(format!(
+                        "codex to access {target}"
+                    ))
+                }
+                _ => {
+                    let summary = serde_json::to_string(&action)
+                        .unwrap_or_else(|_| "<unrenderable guardian action>".to_string());
+                    history_cell::new_guardian_denied_action_request(summary)
+                }
+            }
+        };
+
+        self.add_boxed_history(cell);
+        self.request_redraw();
+    }
+
     fn on_elicitation_request(&mut self, ev: ElicitationRequestEvent) {
         let ev2 = ev.clone();
         self.defer_or_handle(
@@ -2323,12 +2669,13 @@ impl ChatWidget {
             // Surface this in the status indicator (single "waiting" surface) instead of
             // the transcript. Keep the header short so the interrupt hint remains visible.
             self.bottom_pane.ensure_status_indicator();
-            self.bottom_pane.set_interrupt_hint_visible(true);
+            self.bottom_pane
+                .set_interrupt_hint_visible(/*visible*/ true);
             self.set_status(
                 "Waiting for background terminal".to_string(),
                 command_display.clone(),
                 StatusDetailsCapitalization::Preserve,
-                1,
+                /*details_max_lines*/ 1,
             );
             match &mut self.unified_exec_wait_streak {
                 Some(wait) if wait.process_id == ev.process_id => {
@@ -2492,14 +2839,6 @@ impl ChatWidget {
         }
     }
 
-    fn clear_unified_exec_processes(&mut self) {
-        if self.unified_exec_processes.is_empty() {
-            return;
-        }
-        self.unified_exec_processes.clear();
-        self.sync_unified_exec_footer();
-    }
-
     fn on_mcp_tool_call_begin(&mut self, ev: McpToolCallBeginEvent) {
         let ev2 = ev.clone();
         self.defer_or_handle(|q| q.push_mcp_begin(ev), |s| s.handle_mcp_begin_now(ev2));
@@ -2586,7 +2925,8 @@ impl ChatWidget {
     fn on_background_event(&mut self, message: String) {
         debug!("BackgroundEvent: {message}");
         self.bottom_pane.ensure_status_indicator();
-        self.bottom_pane.set_interrupt_hint_visible(true);
+        self.bottom_pane
+            .set_interrupt_hint_visible(/*visible*/ true);
         self.set_status_header(message);
     }
 
@@ -2599,7 +2939,7 @@ impl ChatWidget {
             message.push_str(": ");
             message.push_str(&status_message);
         }
-        self.add_to_history(history_cell::new_info_event(message, None));
+        self.add_to_history(history_cell::new_info_event(message, /*hint*/ None));
         self.request_redraw();
     }
 
@@ -2623,7 +2963,8 @@ impl ChatWidget {
 
     fn on_undo_started(&mut self, event: UndoStartedEvent) {
         self.bottom_pane.ensure_status_indicator();
-        self.bottom_pane.set_interrupt_hint_visible(false);
+        self.bottom_pane
+            .set_interrupt_hint_visible(/*visible*/ false);
         let message = event
             .message
             .unwrap_or_else(|| "Undo in progress...".to_string());
@@ -2641,7 +2982,7 @@ impl ChatWidget {
             }
         });
         if success {
-            self.add_info_message(message, None);
+            self.add_info_message(message, /*hint*/ None);
         } else {
             self.add_error_message(message);
         }
@@ -2649,7 +2990,7 @@ impl ChatWidget {
 
     fn on_stream_error(&mut self, message: String, additional_details: Option<String>) {
         if self.retry_status_header.is_none() {
-            self.retry_status_header = Some(self.current_status_header.clone());
+            self.retry_status_header = Some(self.current_status.header.clone());
         }
         self.bottom_pane.ensure_status_indicator();
         self.set_status(
@@ -2781,7 +3122,7 @@ impl ChatWidget {
                     .map(|current| self.worked_elapsed_from(current));
                 self.add_to_history(history_cell::FinalMessageSeparator::new(
                     elapsed_seconds,
-                    None,
+                    /*runtime_metrics*/ None,
                 ));
                 self.needs_final_message_separator = false;
                 self.had_work_activity = false;
@@ -3273,7 +3614,8 @@ impl ChatWidget {
             interrupts: InterruptManager::new(),
             reasoning_buffer: String::new(),
             full_reasoning_buffer: String::new(),
-            current_status_header: String::from("Working"),
+            current_status: StatusIndicatorState::working(),
+            pending_guardian_review_status: PendingGuardianReviewStatus::default(),
             retry_status_header: None,
             pending_status_indicator_restore: false,
             suppress_queue_autosend: false,
@@ -3329,7 +3671,9 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_status_line_enabled(!widget.configured_status_line_items().is_empty());
-        widget.bottom_pane.set_collaboration_modes_enabled(true);
+        widget
+            .bottom_pane
+            .set_collaboration_modes_enabled(/*enabled*/ true);
         widget.sync_fast_command_enabled();
         widget.sync_personality_command_enabled();
         widget
@@ -3458,7 +3802,8 @@ impl ChatWidget {
             interrupts: InterruptManager::new(),
             reasoning_buffer: String::new(),
             full_reasoning_buffer: String::new(),
-            current_status_header: String::from("Working"),
+            current_status: StatusIndicatorState::working(),
+            pending_guardian_review_status: PendingGuardianReviewStatus::default(),
             retry_status_header: None,
             pending_status_indicator_restore: false,
             suppress_queue_autosend: false,
@@ -3514,7 +3859,9 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_status_line_enabled(!widget.configured_status_line_items().is_empty());
-        widget.bottom_pane.set_collaboration_modes_enabled(true);
+        widget
+            .bottom_pane
+            .set_collaboration_modes_enabled(/*enabled*/ true);
         widget.sync_fast_command_enabled();
         widget.sync_personality_command_enabled();
         widget
@@ -3635,7 +3982,8 @@ impl ChatWidget {
             interrupts: InterruptManager::new(),
             reasoning_buffer: String::new(),
             full_reasoning_buffer: String::new(),
-            current_status_header: String::from("Working"),
+            current_status: StatusIndicatorState::working(),
+            pending_guardian_review_status: PendingGuardianReviewStatus::default(),
             retry_status_header: None,
             pending_status_indicator_restore: false,
             suppress_queue_autosend: false,
@@ -3691,7 +4039,9 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_status_line_enabled(!widget.configured_status_line_items().is_empty());
-        widget.bottom_pane.set_collaboration_modes_enabled(true);
+        widget
+            .bottom_pane
+            .set_collaboration_modes_enabled(/*enabled*/ true);
         widget.sync_fast_command_enabled();
         widget.sync_personality_command_enabled();
         widget
@@ -3937,7 +4287,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn can_run_ctrl_l_clear_now(&mut self) -> bool {
-        // Ctrl+L is not a slash command, but it follows /clear's current rule:
+        // Ctrl+L is not a slash command, but it follows /clear's rule:
         // block while a task is running.
         if !self.bottom_pane.is_task_running() {
             return true;
@@ -3992,7 +4342,7 @@ impl ChatWidget {
                     let message = format!(
                         "{DEFAULT_PROJECT_DOC_FILENAME} already exists here. Skipping /init to avoid overwriting it."
                     );
-                    self.add_info_message(message, None);
+                    self.add_info_message(message, /*hint*/ None);
                     return;
                 }
                 const INIT_PROMPT: &str = include_str!("../prompt_for_init_command.md");
@@ -4007,7 +4357,7 @@ impl ChatWidget {
             }
             SlashCommand::Rename => {
                 self.session_telemetry
-                    .counter("codex.thread.rename", 1, &[]);
+                    .counter("codex.thread.rename", /*inc*/ 1, &[]);
                 self.show_rename_prompt();
             }
             SlashCommand::Model => {
@@ -4026,7 +4376,7 @@ impl ChatWidget {
                     return;
                 }
                 if self.realtime_conversation.is_live() {
-                    self.request_realtime_conversation_close(None);
+                    self.request_realtime_conversation_close(/*info_message*/ None);
                 } else {
                     self.start_realtime_conversation();
                 }
@@ -4051,7 +4401,10 @@ impl ChatWidget {
                 if let Some(mask) = collaboration_modes::plan_mask(self.models_manager.as_ref()) {
                     self.set_collaboration_mask(mask);
                 } else {
-                    self.add_info_message("Plan mode unavailable right now.".to_string(), None);
+                    self.add_info_message(
+                        "Plan mode unavailable right now.".to_string(),
+                        /*hint*/ None,
+                    );
                 }
             }
             SlashCommand::Collab => {
@@ -4168,7 +4521,7 @@ impl ChatWidget {
                     self.add_info_message(
                         "`/copy` is unavailable before the first Codex output or right after a rollback."
                             .to_string(),
-                        None,
+                        /*hint*/ None,
                     );
                     return;
                 };
@@ -4212,7 +4565,7 @@ impl ChatWidget {
             SlashCommand::Ps => {
                 self.add_ps_output();
             }
-            SlashCommand::Clean => {
+            SlashCommand::Stop => {
                 self.clean_background_terminals();
             }
             SlashCommand::MemoryDrop => {
@@ -4231,10 +4584,13 @@ impl ChatWidget {
                 if let Some(path) = self.rollout_path() {
                     self.add_info_message(
                         format!("Current rollout path: {}", path.display()),
-                        None,
+                        /*hint*/ None,
                     );
                 } else {
-                    self.add_info_message("Rollout path is not available yet.".to_string(), None);
+                    self.add_info_message(
+                        "Rollout path is not available yet.".to_string(),
+                        /*hint*/ None,
+                    );
                 }
             }
             SlashCommand::TestApproval => {
@@ -4307,7 +4663,7 @@ impl ChatWidget {
                 }
                 match trimmed.to_ascii_lowercase().as_str() {
                     "on" => self.set_service_tier_selection(Some(ServiceTier::Fast)),
-                    "off" => self.set_service_tier_selection(None),
+                    "off" => self.set_service_tier_selection(/*service_tier*/ None),
                     "status" => {
                         let status = if matches!(self.config.service_tier, Some(ServiceTier::Fast))
                         {
@@ -4315,7 +4671,10 @@ impl ChatWidget {
                         } else {
                             "off"
                         };
-                        self.add_info_message(format!("Fast mode is {status}."), None);
+                        self.add_info_message(
+                            format!("Fast mode is {status}."),
+                            /*hint*/ None,
+                        );
                     }
                     _ => {
                         self.add_error_message("Usage: /fast [on|off|status]".to_string());
@@ -4324,9 +4683,10 @@ impl ChatWidget {
             }
             SlashCommand::Rename if !trimmed.is_empty() => {
                 self.session_telemetry
-                    .counter("codex.thread.rename", 1, &[]);
-                let Some((prepared_args, _prepared_elements)) =
-                    self.bottom_pane.prepare_inline_args_submission(false)
+                    .counter("codex.thread.rename", /*inc*/ 1, &[]);
+                let Some((prepared_args, _prepared_elements)) = self
+                    .bottom_pane
+                    .prepare_inline_args_submission(/*record_history*/ false)
                 else {
                     return;
                 };
@@ -4346,8 +4706,9 @@ impl ChatWidget {
                 if self.active_mode_kind() != ModeKind::Plan {
                     return;
                 }
-                let Some((prepared_args, prepared_elements)) =
-                    self.bottom_pane.prepare_inline_args_submission(true)
+                let Some((prepared_args, prepared_elements)) = self
+                    .bottom_pane
+                    .prepare_inline_args_submission(/*record_history*/ true)
                 else {
                     return;
                 };
@@ -4372,8 +4733,9 @@ impl ChatWidget {
                 }
             }
             SlashCommand::Review if !trimmed.is_empty() => {
-                let Some((prepared_args, _prepared_elements)) =
-                    self.bottom_pane.prepare_inline_args_submission(false)
+                let Some((prepared_args, _prepared_elements)) = self
+                    .bottom_pane
+                    .prepare_inline_args_submission(/*record_history*/ false)
                 else {
                     return;
                 };
@@ -4388,8 +4750,9 @@ impl ChatWidget {
                 self.bottom_pane.drain_pending_submission_state();
             }
             SlashCommand::SandboxReadRoot if !trimmed.is_empty() => {
-                let Some((prepared_args, _prepared_elements)) =
-                    self.bottom_pane.prepare_inline_args_submission(false)
+                let Some((prepared_args, _prepared_elements)) = self
+                    .bottom_pane
+                    .prepare_inline_args_submission(/*record_history*/ false)
                 else {
                     return;
                 };
@@ -4418,7 +4781,7 @@ impl ChatWidget {
         let view = CustomPromptView::new(
             title.to_string(),
             "Type a name and press Enter".to_string(),
-            None,
+            /*context_label*/ None,
             Box::new(move |name: String| {
                 let Some(name) = codex_core::util::normalize_thread_name(&name) else {
                     tx.send(AppEvent::InsertHistoryCell(Box::new(
@@ -4826,13 +5189,17 @@ impl ChatWidget {
                 continue;
             }
             // `id: None` indicates a synthetic/fake id coming from replay.
-            self.dispatch_event_msg(None, msg, Some(ReplayKind::ResumeInitialMessages));
+            self.dispatch_event_msg(
+                /*id*/ None,
+                msg,
+                Some(ReplayKind::ResumeInitialMessages),
+            );
         }
     }
 
     pub(crate) fn handle_codex_event(&mut self, event: Event) {
         let Event { id, msg } = event;
-        self.dispatch_event_msg(Some(id), msg, None);
+        self.dispatch_event_msg(Some(id), msg, /*replay_kind*/ None);
     }
 
     pub(crate) fn handle_codex_event_replay(&mut self, event: Event) {
@@ -4840,7 +5207,7 @@ impl ChatWidget {
         if matches!(msg, EventMsg::ShutdownComplete) {
             return;
         }
-        self.dispatch_event_msg(None, msg, Some(ReplayKind::ThreadSnapshot));
+        self.dispatch_event_msg(/*id*/ None, msg, Some(ReplayKind::ThreadSnapshot));
     }
 
     /// Dispatch a protocol `EventMsg` to the appropriate handler.
@@ -4916,6 +5283,7 @@ impl ChatWidget {
                 self.on_rate_limit_snapshot(ev.rate_limits);
             }
             EventMsg::Warning(WarningEvent { message }) => self.on_warning(message),
+            EventMsg::GuardianAssessment(ev) => self.on_guardian_assessment(ev),
             EventMsg::ModelReroute(_) => {}
             EventMsg::Error(ErrorEvent {
                 message,
@@ -5144,7 +5512,7 @@ impl ChatWidget {
         }
         // Avoid toggling running state for replayed history events on resume.
         if !from_replay && !self.bottom_pane.is_task_running() {
-            self.bottom_pane.set_task_running(true);
+            self.bottom_pane.set_task_running(/*running*/ true);
         }
         self.is_review_mode = true;
         let hint = review
@@ -5174,11 +5542,11 @@ impl ChatWidget {
                     let mut rendered: Vec<ratatui::text::Line<'static>> = vec!["".into()];
                     append_markdown(
                         &explanation,
-                        None,
+                        /*width*/ None,
                         Some(self.config.cwd.as_path()),
                         &mut rendered,
                     );
-                    let body_cell = AgentMessageCell::new(rendered, false);
+                    let body_cell = AgentMessageCell::new(rendered, /*is_first_line*/ false);
                     self.app_event_tx
                         .send(AppEvent::InsertHistoryCell(Box::new(body_cell)));
                 }
@@ -5422,7 +5790,10 @@ impl ChatWidget {
 
         self.config
             .config_layer_stack
-            .get_layers(ConfigLayerStackOrdering::LowestPrecedenceFirst, true)
+            .get_layers(
+                ConfigLayerStackOrdering::LowestPrecedenceFirst,
+                /*include_disabled*/ true,
+            )
             .iter()
             .find_map(|layer| match &layer.name {
                 ConfigLayerSource::Project { dot_codex_folder } => {
@@ -5436,7 +5807,7 @@ impl ChatWidget {
         self.status_line_project_root().map(|root| {
             root.file_name()
                 .map(|name| name.to_string_lossy().to_string())
-                .unwrap_or_else(|| format_directory_display(&root, None))
+                .unwrap_or_else(|| format_directory_display(&root, /*max_width*/ None))
         })
     }
 
@@ -5495,7 +5866,10 @@ impl ChatWidget {
                 Some(format!("{} {label}{fast_label}", self.model_display_name()))
             }
             StatusLineItem::CurrentDir => {
-                Some(format_directory_display(self.status_line_cwd(), None))
+                Some(format_directory_display(
+                    self.status_line_cwd(),
+                    /*max_width*/ None,
+                ))
             }
             StatusLineItem::ProjectRoot => self.status_line_project_root_name(),
             StatusLineItem::GitBranch => self.status_line_branch.clone(),
@@ -5630,7 +6004,10 @@ impl ChatWidget {
 
     fn clean_background_terminals(&mut self) {
         self.submit_op(Op::CleanBackgroundTerminals);
-        self.add_info_message("Stopping all background terminals.".to_string(), None);
+        self.add_info_message(
+            "Stopping all background terminals.".to_string(),
+            /*hint*/ None,
+        );
     }
 
     fn stop_rate_limit_poller(&mut self) {
@@ -5644,7 +6021,7 @@ impl ChatWidget {
     }
 
     fn prefetch_connectors(&mut self) {
-        self.prefetch_connectors_with_options(false);
+        self.prefetch_connectors_with_options(/*force_refetch*/ false);
     }
 
     fn prefetch_connectors_with_options(&mut self, force_refetch: bool) {
@@ -5699,7 +6076,7 @@ impl ChatWidget {
                 let connectors = connectors::merge_connectors_with_accessible(
                     all_connectors,
                     accessible_connectors,
-                    true,
+                    /*all_connectors_loaded*/ true,
                 );
                 Ok(ConnectorsSnapshot { connectors })
             }
@@ -5802,6 +6179,7 @@ impl ChatWidget {
             tx.send(AppEvent::CodexOp(Op::OverrideTurnContext {
                 cwd: None,
                 approval_policy: None,
+                approvals_reviewer: None,
                 sandbox_policy: None,
                 windows_sandbox_level: None,
                 model: Some(switch_model_for_events.clone()),
@@ -5873,7 +6251,7 @@ impl ChatWidget {
         if !self.is_session_configured() {
             self.add_info_message(
                 "Model selection is disabled until startup completes.".to_string(),
-                None,
+                /*hint*/ None,
             );
             return;
         }
@@ -5883,7 +6261,7 @@ impl ChatWidget {
             Err(_) => {
                 self.add_info_message(
                     "Models are being updated; please try /model again in a moment.".to_string(),
-                    None,
+                    /*hint*/ None,
                 );
                 return;
             }
@@ -5895,7 +6273,7 @@ impl ChatWidget {
         if !self.is_session_configured() {
             self.add_info_message(
                 "Personality selection is disabled until startup completes.".to_string(),
-                None,
+                /*hint*/ None,
             );
             return;
         }
@@ -5923,6 +6301,7 @@ impl ChatWidget {
                     tx.send(AppEvent::CodexOp(Op::OverrideTurnContext {
                         cwd: None,
                         approval_policy: None,
+                        approvals_reviewer: None,
                         sandbox_policy: None,
                         model: None,
                         effort: None,
@@ -6129,7 +6508,7 @@ impl ChatWidget {
     fn model_menu_warning_line(&self) -> Option<Line<'static>> {
         let base_url = self.custom_openai_base_url()?;
         let warning = format!(
-            "Warning: OPENAI_BASE_URL is set to {base_url}. Selecting models may not be supported or work properly."
+            "Warning: OpenAI base URL is overridden to {base_url}. Selecting models may not be supported or work properly."
         );
         Some(Line::from(warning.red()))
     }
@@ -6255,7 +6634,7 @@ impl ChatWidget {
         if presets.is_empty() {
             self.add_info_message(
                 "No additional models are available right now.".to_string(),
-                None,
+                /*hint*/ None,
             );
             return;
         }
@@ -6301,7 +6680,7 @@ impl ChatWidget {
         if presets.is_empty() {
             self.add_info_message(
                 "No collaboration modes are available right now.".to_string(),
-                None,
+                /*hint*/ None,
             );
             return;
         }
@@ -6674,6 +7053,8 @@ impl ChatWidget {
         let include_read_only = cfg!(target_os = "windows");
         let current_approval = self.config.permissions.approval_policy.value();
         let current_sandbox = self.config.permissions.sandbox_policy.get();
+        let guardian_approval_enabled = self.config.features.enabled(Feature::GuardianApproval);
+        let current_review_policy = self.config.approvals_reviewer;
         let mut items: Vec<SelectionItem> = Vec::new();
         let presets: Vec<ApprovalPreset> = builtin_approval_presets();
 
@@ -6689,19 +7070,28 @@ impl ChatWidget {
             && windows_degraded_sandbox_enabled
             && presets.iter().any(|preset| preset.id == "auto");
 
+        let guardian_disabled_reason = |enabled: bool| {
+            let mut next_features = self.config.features.get().clone();
+            next_features.set_enabled(Feature::GuardianApproval, enabled);
+            self.config
+                .features
+                .can_set(&next_features)
+                .err()
+                .map(|err| err.to_string())
+        };
+
         for preset in presets.into_iter() {
             if !include_read_only && preset.id == "read-only" {
                 continue;
             }
-            let is_current =
-                Self::preset_matches_current(current_approval, current_sandbox, &preset);
-            let name = if preset.id == "auto" && windows_degraded_sandbox_enabled {
+            let base_name = if preset.id == "auto" && windows_degraded_sandbox_enabled {
                 "Default (non-admin sandbox)".to_string()
             } else {
                 preset.label.to_string()
             };
-            let description = Some(preset.description.replace(" (Identical to Agent mode)", ""));
-            let disabled_reason = match self
+            let base_description =
+                Some(preset.description.replace(" (Identical to Agent mode)", ""));
+            let approval_disabled_reason = match self
                 .config
                 .permissions
                 .approval_policy
@@ -6710,13 +7100,16 @@ impl ChatWidget {
                 Ok(()) => None,
                 Err(err) => Some(err.to_string()),
             };
+            let default_disabled_reason = approval_disabled_reason
+                .clone()
+                .or_else(|| guardian_disabled_reason(false));
             let requires_confirmation = preset.id == "full-access"
                 && !self
                     .config
                     .notices
                     .hide_full_access_warning
                     .unwrap_or(false);
-            let actions: Vec<SelectionAction> = if requires_confirmation {
+            let default_actions: Vec<SelectionAction> = if requires_confirmation {
                 let preset_clone = preset.clone();
                 vec![Box::new(move |tx| {
                     tx.send(AppEvent::OpenFullAccessConfirmation {
@@ -6765,7 +7158,8 @@ impl ChatWidget {
                         Self::approval_preset_actions(
                             preset.approval,
                             preset.sandbox.clone(),
-                            name.clone(),
+                            base_name.clone(),
+                            ApprovalsReviewer::User,
                         )
                     }
                 }
@@ -6774,21 +7168,70 @@ impl ChatWidget {
                     Self::approval_preset_actions(
                         preset.approval,
                         preset.sandbox.clone(),
-                        name.clone(),
+                        base_name.clone(),
+                        ApprovalsReviewer::User,
                     )
                 }
             } else {
-                Self::approval_preset_actions(preset.approval, preset.sandbox.clone(), name.clone())
+                Self::approval_preset_actions(
+                    preset.approval,
+                    preset.sandbox.clone(),
+                    base_name.clone(),
+                    ApprovalsReviewer::User,
+                )
             };
-            items.push(SelectionItem {
-                name,
-                description,
-                is_current,
-                actions,
-                dismiss_on_select: true,
-                disabled_reason,
-                ..Default::default()
-            });
+            if preset.id == "auto" {
+                items.push(SelectionItem {
+                    name: base_name.clone(),
+                    description: base_description.clone(),
+                    is_current: current_review_policy == ApprovalsReviewer::User
+                        && Self::preset_matches_current(current_approval, current_sandbox, &preset),
+                    actions: default_actions,
+                    dismiss_on_select: true,
+                    disabled_reason: default_disabled_reason,
+                    ..Default::default()
+                });
+
+                if guardian_approval_enabled {
+                    items.push(SelectionItem {
+                        name: "Guardian Approvals".to_string(),
+                        description: Some(
+                            "Same workspace-write permissions as Default, but eligible `on-request` approvals are routed through the guardian reviewer subagent."
+                                .to_string(),
+                        ),
+                        is_current: current_review_policy == ApprovalsReviewer::GuardianSubagent
+                            && Self::preset_matches_current(
+                                current_approval,
+                                current_sandbox,
+                                &preset,
+                            ),
+                        actions: Self::approval_preset_actions(
+                            preset.approval,
+                            preset.sandbox.clone(),
+                            "Guardian Approvals".to_string(),
+                            ApprovalsReviewer::GuardianSubagent,
+                        ),
+                        dismiss_on_select: true,
+                        disabled_reason: approval_disabled_reason
+                            .or_else(|| guardian_disabled_reason(true)),
+                        ..Default::default()
+                    });
+                }
+            } else {
+                items.push(SelectionItem {
+                    name: base_name,
+                    description: base_description,
+                    is_current: Self::preset_matches_current(
+                        current_approval,
+                        current_sandbox,
+                        &preset,
+                    ),
+                    actions: default_actions,
+                    dismiss_on_select: true,
+                    disabled_reason: default_disabled_reason,
+                    ..Default::default()
+                });
+            }
         }
 
         let footer_note = show_elevate_sandbox_hint.then(|| {
@@ -6833,12 +7276,14 @@ impl ChatWidget {
         approval: AskForApproval,
         sandbox: SandboxPolicy,
         label: String,
+        approvals_reviewer: ApprovalsReviewer,
     ) -> Vec<SelectionAction> {
         vec![Box::new(move |tx| {
             let sandbox_clone = sandbox.clone();
             tx.send(AppEvent::CodexOp(Op::OverrideTurnContext {
                 cwd: None,
                 approval_policy: Some(approval),
+                approvals_reviewer: Some(approvals_reviewer),
                 sandbox_policy: Some(sandbox_clone.clone()),
                 windows_sandbox_level: None,
                 model: None,
@@ -6850,8 +7295,12 @@ impl ChatWidget {
             }));
             tx.send(AppEvent::UpdateAskForApprovalPolicy(approval));
             tx.send(AppEvent::UpdateSandboxPolicy(sandbox_clone));
+            tx.send(AppEvent::UpdateApprovalsReviewer(approvals_reviewer));
             tx.send(AppEvent::InsertHistoryCell(Box::new(
-                history_cell::new_info_event(format!("Permissions updated to {label}"), None),
+                history_cell::new_info_event(
+                    format!("Permissions updated to {label}"),
+                    /*hint*/ None,
+                ),
             )));
         })]
     }
@@ -6861,7 +7310,34 @@ impl ChatWidget {
         current_sandbox: &SandboxPolicy,
         preset: &ApprovalPreset,
     ) -> bool {
-        current_approval == preset.approval && *current_sandbox == preset.sandbox
+        if current_approval != preset.approval {
+            return false;
+        }
+
+        match (current_sandbox, &preset.sandbox) {
+            (SandboxPolicy::DangerFullAccess, SandboxPolicy::DangerFullAccess) => true,
+            (
+                SandboxPolicy::ReadOnly {
+                    network_access: current_network_access,
+                    ..
+                },
+                SandboxPolicy::ReadOnly {
+                    network_access: preset_network_access,
+                    ..
+                },
+            ) => current_network_access == preset_network_access,
+            (
+                SandboxPolicy::WorkspaceWrite {
+                    network_access: current_network_access,
+                    ..
+                },
+                SandboxPolicy::WorkspaceWrite {
+                    network_access: preset_network_access,
+                    ..
+                },
+            ) => current_network_access == preset_network_access,
+            _ => false,
+        }
     }
 
     #[cfg(target_os = "windows")]
@@ -6916,14 +7392,22 @@ impl ChatWidget {
         ));
         let header = ColumnRenderable::with(header_children);
 
-        let mut accept_actions =
-            Self::approval_preset_actions(approval, sandbox.clone(), selected_name.clone());
+        let mut accept_actions = Self::approval_preset_actions(
+            approval,
+            sandbox.clone(),
+            selected_name.clone(),
+            ApprovalsReviewer::User,
+        );
         accept_actions.push(Box::new(|tx| {
             tx.send(AppEvent::UpdateFullAccessWarningAcknowledged(true));
         }));
 
-        let mut accept_and_remember_actions =
-            Self::approval_preset_actions(approval, sandbox, selected_name);
+        let mut accept_and_remember_actions = Self::approval_preset_actions(
+            approval,
+            sandbox,
+            selected_name,
+            ApprovalsReviewer::User,
+        );
         accept_and_remember_actions.push(Box::new(|tx| {
             tx.send(AppEvent::UpdateFullAccessWarningAcknowledged(true));
             tx.send(AppEvent::PersistFullAccessWarningAcknowledged);
@@ -7037,6 +7521,7 @@ impl ChatWidget {
                 approval,
                 sandbox,
                 mode_label.to_string(),
+                ApprovalsReviewer::User,
             ));
         }
 
@@ -7050,6 +7535,7 @@ impl ChatWidget {
                 approval,
                 sandbox,
                 mode_label.to_string(),
+                ApprovalsReviewer::User,
             ));
         }
 
@@ -7413,6 +7899,10 @@ impl ChatWidget {
         enabled
     }
 
+    pub(crate) fn set_approvals_reviewer(&mut self, policy: ApprovalsReviewer) {
+        self.config.approvals_reviewer = policy;
+    }
+
     pub(crate) fn set_full_access_warning_acknowledged(&mut self, acknowledged: bool) {
         self.config.notices.hide_full_access_warning = Some(acknowledged);
     }
@@ -7454,9 +7944,11 @@ impl ChatWidget {
 
     /// Set the reasoning effort in the stored collaboration mode.
     pub(crate) fn set_reasoning_effort(&mut self, effort: Option<ReasoningEffortConfig>) {
-        self.current_collaboration_mode =
-            self.current_collaboration_mode
-                .with_updates(None, Some(effort), None);
+        self.current_collaboration_mode = self.current_collaboration_mode.with_updates(
+            /*model*/ None,
+            Some(effort),
+            /*developer_instructions*/ None,
+        );
         if self.collaboration_modes_enabled()
             && let Some(mask) = self.active_collaboration_mask.as_mut()
             && mask.mode != Some(ModeKind::Plan)
@@ -7517,9 +8009,11 @@ impl ChatWidget {
 
     /// Set the model in the widget's config copy and stored collaboration mode.
     pub(crate) fn set_model(&mut self, model: &str) {
-        self.current_collaboration_mode =
-            self.current_collaboration_mode
-                .with_updates(Some(model.to_string()), None, None);
+        self.current_collaboration_mode = self.current_collaboration_mode.with_updates(
+            Some(model.to_string()),
+            /*effort*/ None,
+            /*developer_instructions*/ None,
+        );
         if self.collaboration_modes_enabled()
             && let Some(mask) = self.active_collaboration_mask.as_mut()
         {
@@ -7534,6 +8028,7 @@ impl ChatWidget {
             .send(AppEvent::CodexOp(Op::OverrideTurnContext {
                 cwd: None,
                 approval_policy: None,
+                approvals_reviewer: None,
                 sandbox_policy: None,
                 windows_sandbox_level: None,
                 model: None,
@@ -7802,7 +8297,7 @@ impl ChatWidget {
             message.push_str(" for ");
             message.push_str(next_mode.display_name());
             message.push_str(" mode.");
-            self.add_info_message(message, None);
+            self.add_info_message(message, /*hint*/ None);
         }
         self.request_redraw();
     }
@@ -7842,8 +8337,8 @@ impl ChatWidget {
         Box::new(history_cell::SessionHeaderHistoryCell::new_with_style(
             DEFAULT_MODEL_DISPLAY_NAME.to_string(),
             placeholder_style,
-            None,
-            false,
+            /*reasoning_effort*/ None,
+            /*show_fast_status*/ false,
             config.cwd.clone(),
             CODEX_CLI_VERSION,
         ))
@@ -7910,7 +8405,10 @@ impl ChatWidget {
         let mcp_manager = McpManager::new(Arc::new(PluginsManager::new(
             self.config.codex_home.clone(),
         )));
-        if mcp_manager.effective_servers(&self.config, None).is_empty() {
+        if mcp_manager
+            .effective_servers(&self.config, /*auth*/ None)
+            .is_empty()
+        {
             self.add_to_history(history_cell::empty_mcp_output());
         } else {
             self.submit_op(Op::ListMcpTools);
@@ -7934,7 +8432,7 @@ impl ChatWidget {
         match connectors_cache {
             ConnectorsCacheState::Ready(snapshot) => {
                 if snapshot.connectors.is_empty() {
-                    self.add_info_message("No apps available.".to_string(), None);
+                    self.add_info_message("No apps available.".to_string(), /*hint*/ None);
                 } else {
                     self.open_connectors_popup(&snapshot.connectors);
                 }
@@ -7960,8 +8458,9 @@ impl ChatWidget {
     }
 
     fn open_connectors_popup(&mut self, connectors: &[connectors::AppInfo]) {
-        self.bottom_pane
-            .show_selection_view(self.connectors_popup_params(connectors, None));
+        self.bottom_pane.show_selection_view(
+            self.connectors_popup_params(connectors, /*selected_connector_id*/ None),
+        );
     }
 
     fn connectors_loading_popup_params(&self) -> SelectionViewParams {
@@ -8056,7 +8555,10 @@ impl ChatWidget {
                 let missing_label_for_action = missing_label.clone();
                 item.actions = vec![Box::new(move |tx| {
                     tx.send(AppEvent::InsertHistoryCell(Box::new(
-                        history_cell::new_info_event(missing_label_for_action.clone(), None),
+                        history_cell::new_info_event(
+                            missing_label_for_action.clone(),
+                            /*hint*/ None,
+                        ),
                     )));
                 })];
                 item.dismiss_on_select = true;
@@ -8144,7 +8646,7 @@ impl ChatWidget {
     ///
     /// The first press arms a time-bounded quit shortcut and shows a footer hint via the bottom
     /// pane. If cancellable work is active, Ctrl+C also submits `Op::Interrupt` after the shortcut
-    /// is armed.
+    /// is armed; this interrupts the turn but intentionally preserves background terminals.
     ///
     /// If the same quit shortcut is pressed again before expiry, this requests a shutdown-first
     /// quit.
@@ -8351,7 +8853,7 @@ impl ChatWidget {
         // Record outbound operation for session replay fidelity.
         crate::session_log::log_outbound_op(&op);
         if matches!(&op, Op::Review { .. }) && !self.bottom_pane.is_task_running() {
-            self.bottom_pane.set_task_running(true);
+            self.bottom_pane.set_task_running(/*running*/ true);
         }
         if let Err(e) = self.codex_op_tx.send(op) {
             tracing::error!("failed to submit op: {e}");
@@ -8402,7 +8904,7 @@ impl ChatWidget {
                     snapshot.connectors = connectors::merge_connectors_with_accessible(
                         Vec::new(),
                         snapshot.connectors,
-                        false,
+                        /*all_connectors_loaded*/ false,
                     );
                 }
                 snapshot.connectors =
@@ -8443,13 +8945,13 @@ impl ChatWidget {
                     self.bottom_pane.set_connectors_snapshot(Some(snapshot));
                 } else {
                     self.connectors_cache = ConnectorsCacheState::Failed(err);
-                    self.bottom_pane.set_connectors_snapshot(None);
+                    self.bottom_pane.set_connectors_snapshot(/*snapshot*/ None);
                 }
             }
         }
 
         if trigger_pending_force_refetch {
-            self.prefetch_connectors_with_options(true);
+            self.prefetch_connectors_with_options(/*force_refetch*/ true);
         }
     }
 
@@ -8478,7 +8980,7 @@ impl ChatWidget {
 
     fn refresh_plugin_mentions(&mut self) {
         if !self.config.features.enabled(Feature::Plugins) {
-            self.bottom_pane.set_plugin_mentions(None);
+            self.bottom_pane.set_plugin_mentions(/*plugins*/ None);
             return;
         }
 
@@ -8587,7 +9089,7 @@ impl ChatWidget {
     }
 
     pub(crate) async fn show_review_commit_picker(&mut self, cwd: &Path) {
-        let commits = codex_core::git_info::recent_commits(cwd, 100).await;
+        let commits = codex_core::git_info::recent_commits(cwd, /*limit*/ 100).await;
 
         let mut items: Vec<SelectionItem> = Vec::with_capacity(commits.len());
         for entry in commits {
@@ -8629,7 +9131,7 @@ impl ChatWidget {
         let view = CustomPromptView::new(
             "Custom review instructions".to_string(),
             "Type instructions and press Enter".to_string(),
-            None,
+            /*context_label*/ None,
             Box::new(move |prompt: String| {
                 let trimmed = prompt.trim().to_string();
                 if trimmed.is_empty() {
@@ -8720,14 +9222,18 @@ impl ChatWidget {
 
     fn as_renderable(&self) -> RenderableItem<'_> {
         let active_cell_renderable = match &self.active_cell {
-            Some(cell) => RenderableItem::Borrowed(cell).inset(Insets::tlbr(1, 0, 0, 0)),
+            Some(cell) => RenderableItem::Borrowed(cell).inset(Insets::tlbr(
+                /*top*/ 1, /*left*/ 0, /*bottom*/ 0, /*right*/ 0,
+            )),
             None => RenderableItem::Owned(Box::new(())),
         };
         let mut flex = FlexRenderable::new();
-        flex.push(1, active_cell_renderable);
+        flex.push(/*flex*/ 1, active_cell_renderable);
         flex.push(
-            0,
-            RenderableItem::Borrowed(&self.bottom_pane).inset(Insets::tlbr(1, 0, 0, 0)),
+            /*flex*/ 0,
+            RenderableItem::Borrowed(&self.bottom_pane).inset(Insets::tlbr(
+                /*top*/ 1, /*left*/ 0, /*bottom*/ 0, /*right*/ 0,
+            )),
         );
         RenderableItem::Owned(Box::new(flex))
     }
@@ -8819,7 +9325,10 @@ impl Notification {
                     .unwrap_or_else(|| "Agent turn complete".to_string())
             }
             Notification::ExecApprovalRequested { command } => {
-                format!("Approval requested: {}", truncate_text(command, 30))
+                format!(
+                    "Approval requested: {}",
+                    truncate_text(command, /*max_graphemes*/ 30)
+                )
             }
             Notification::EditApprovalRequested { cwd, changes } => {
                 format!(
@@ -8906,7 +9415,7 @@ impl Notification {
         if summary.is_empty() {
             None
         } else {
-            Some(truncate_text(summary, 30))
+            Some(truncate_text(summary, /*max_graphemes*/ 30))
         }
     }
 }

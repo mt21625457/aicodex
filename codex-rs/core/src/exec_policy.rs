@@ -28,6 +28,7 @@ use codex_protocol::protocol::SandboxPolicy;
 use thiserror::Error;
 use tokio::fs;
 use tokio::task::spawn_blocking;
+use tracing::instrument;
 
 use crate::bash::parse_shell_lc_plain_commands;
 use crate::bash::parse_shell_lc_single_command_prefix;
@@ -187,6 +188,7 @@ impl ExecPolicyManager {
         }
     }
 
+    #[instrument(level = "info", skip_all)]
     pub(crate) async fn load(config_stack: &ConfigLayerStack) -> Result<Self, ExecPolicyError> {
         let (policy, warning) = load_exec_policy_with_warning(config_stack).await?;
         if let Some(err) = warning.as_ref() {
@@ -447,7 +449,10 @@ pub async fn load_exec_policy(config_stack: &ConfigLayerStack) -> Result<Policy,
     // from each layer, so that higher-precedence layers can override
     // rules defined in lower-precedence ones.
     let mut policy_paths = Vec::new();
-    for layer in config_stack.get_layers(ConfigLayerStackOrdering::LowestPrecedenceFirst, false) {
+    for layer in config_stack.get_layers(
+        ConfigLayerStackOrdering::LowestPrecedenceFirst,
+        /*include_disabled*/ false,
+    ) {
         if let Some(config_folder) = layer.config_folder() {
             #[expect(clippy::expect_used)]
             let policy_dir = config_folder.join(RULES_DIR_NAME).expect("safe join");

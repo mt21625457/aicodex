@@ -141,7 +141,7 @@ pub async fn perform_oauth_login(
         true,
         callback_port,
         callback_url,
-        None,
+        /*timeout_secs*/ None,
     )
     .await?
     .finish()

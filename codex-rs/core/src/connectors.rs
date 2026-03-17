@@ -28,6 +28,7 @@ use crate::SandboxState;
 use crate::config::Config;
 use crate::config::types::AppToolApproval;
 use crate::config::types::AppsConfigToml;
+use crate::config_loader::AppsRequirementsToml;
 use crate::default_client::create_client;
 use crate::default_client::is_first_party_chat_originator;
 use crate::default_client::originator;
@@ -103,9 +104,11 @@ pub async fn list_accessible_connectors_from_mcp_tools(
     config: &Config,
 ) -> anyhow::Result<Vec<AppInfo>> {
     Ok(
-        list_accessible_connectors_from_mcp_tools_with_options_and_status(config, false)
-            .await?
-            .connectors,
+        list_accessible_connectors_from_mcp_tools_with_options_and_status(
+            config, /*force_refetch*/ false,
+        )
+        .await?
+        .connectors,
     )
 }
 
@@ -185,7 +188,12 @@ pub async fn list_accessible_connectors_from_mcp_tools_with_options_and_status(
         });
     }
 
-    let mcp_servers = with_codex_apps_mcp(HashMap::new(), true, auth.as_ref(), config);
+    let mcp_servers = with_codex_apps_mcp(
+        HashMap::new(),
+        /*connectors_enabled*/ true,
+        auth.as_ref(),
+        config,
+    );
     if mcp_servers.is_empty() {
         return Ok(AccessibleConnectorsStatus {
             connectors: Vec::new(),
@@ -407,7 +415,7 @@ async fn list_directory_connectors_for_tool_suggest_with_auth(
     codex_connectors::list_all_connectors_with_options(
         cache_key,
         is_workspace_account,
-        false,
+        /*force_refetch*/ false,
         |path| {
             let access_token = access_token.clone();
             let account_id = account_id.clone();
@@ -458,7 +466,7 @@ async fn chatgpt_get_request_with_token<T: DeserializeOwned>(
 fn auth_manager_from_config(config: &Config) -> std::sync::Arc<AuthManager> {
     AuthManager::shared(
         config.codex_home.clone(),
-        false,
+        /*enable_codex_api_key_env*/ false,
         config.cli_auth_credentials_store_mode,
     )
 }
@@ -468,7 +476,7 @@ pub fn connector_display_label(connector: &AppInfo) -> String {
 }
 
 pub fn connector_mention_slug(connector: &AppInfo) -> String {
-    sanitize_name(&connector_display_label(connector))
+    sanitize_slug(&connector_display_label(connector))
 }
 
 pub(crate) fn accessible_connectors_from_mcp_tools(
@@ -592,12 +600,28 @@ pub fn merge_plugin_apps_with_accessible(
 }
 
 pub fn with_app_enabled_state(mut connectors: Vec<AppInfo>, config: &Config) -> Vec<AppInfo> {
-    let apps_config = read_apps_config(config);
-    if let Some(apps_config) = apps_config.as_ref() {
-        for connector in &mut connectors {
+    let user_apps_config = read_user_apps_config(config);
+    let requirements_apps_config = config.config_layer_stack.requirements_toml().apps.as_ref();
+    if user_apps_config.is_none() && requirements_apps_config.is_none() {
+        return connectors;
+    }
+
+    for connector in &mut connectors {
+        if let Some(apps_config) = user_apps_config.as_ref()
+            && (apps_config.default.is_some()
+                || apps_config.apps.contains_key(connector.id.as_str()))
+        {
             connector.is_enabled = app_is_enabled(apps_config, Some(connector.id.as_str()));
         }
+
+        if requirements_apps_config
+            .and_then(|apps| apps.apps.get(connector.id.as_str()))
+            .is_some_and(|app| app.enabled == Some(false))
+        {
+            connector.is_enabled = false;
+        }
     }
+
     connectors
 }
 
@@ -691,9 +715,45 @@ fn is_connector_id_allowed_for_originator(connector_id: &str, originator_value: 
 }
 
 fn read_apps_config(config: &Config) -> Option<AppsConfigToml> {
-    let effective_config = config.config_layer_stack.effective_config();
-    let apps_config = effective_config.as_table()?.get("apps")?.clone();
-    AppsConfigToml::deserialize(apps_config).ok()
+    let apps_config = read_user_apps_config(config);
+    let had_apps_config = apps_config.is_some();
+    let mut apps_config = apps_config.unwrap_or_default();
+    apply_requirements_apps_constraints(
+        &mut apps_config,
+        config.config_layer_stack.requirements_toml().apps.as_ref(),
+    );
+    if had_apps_config || apps_config.default.is_some() || !apps_config.apps.is_empty() {
+        Some(apps_config)
+    } else {
+        None
+    }
+}
+
+fn read_user_apps_config(config: &Config) -> Option<AppsConfigToml> {
+    config
+        .config_layer_stack
+        .effective_config()
+        .as_table()
+        .and_then(|table| table.get("apps"))
+        .cloned()
+        .and_then(|value| AppsConfigToml::deserialize(value).ok())
+}
+
+fn apply_requirements_apps_constraints(
+    apps_config: &mut AppsConfigToml,
+    requirements_apps_config: Option<&AppsRequirementsToml>,
+) {
+    let Some(requirements_apps_config) = requirements_apps_config else {
+        return;
+    };
+
+    for (app_id, requirement) in &requirements_apps_config.apps {
+        if requirement.enabled != Some(false) {
+            continue;
+        }
+        let app = apps_config.apps.entry(app_id.clone()).or_default();
+        app.enabled = false;
+    }
 }
 
 fn app_is_enabled(apps_config: &AppsConfigToml, connector_id: Option<&str>) -> bool {
@@ -865,11 +925,15 @@ fn normalize_connector_value(value: Option<&str>) -> Option<String> {
 }
 
 pub fn connector_install_url(name: &str, connector_id: &str) -> String {
-    let slug = sanitize_name(name);
+    let slug = sanitize_slug(name);
     format!("https://chatgpt.com/apps/{slug}/{connector_id}")
 }
 
 pub fn sanitize_name(name: &str) -> String {
+    sanitize_slug(name).replace("-", "_")
+}
+
+fn sanitize_slug(name: &str) -> String {
     let mut normalized = String::with_capacity(name.len());
     for character in name.chars() {
         if character.is_ascii_alphanumeric() {

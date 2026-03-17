@@ -157,6 +157,7 @@ impl Approvable<ShellRequest> for ShellRuntime {
                     session,
                     turn,
                     GuardianApprovalRequest::Shell {
+                        id: call_id,
                         command,
                         cwd,
                         sandbox_permissions: req.sandbox_permissions,
@@ -173,7 +174,7 @@ impl Approvable<ShellRequest> for ShellRuntime {
                     .request_command_approval(
                         turn,
                         call_id,
-                        None,
+                        /*approval_id*/ None,
                         command,
                         cwd,
                         reason,
@@ -182,7 +183,7 @@ impl Approvable<ShellRequest> for ShellRuntime {
                             .proposed_execpolicy_amendment()
                             .cloned(),
                         req.additional_permissions.clone(),
-                        None,
+                        /*skill_metadata*/ None,
                         available_decisions,
                     )
                     .await

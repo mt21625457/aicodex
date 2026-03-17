@@ -792,7 +792,11 @@ impl JsReplManager {
     }
 
     fn summarize_tool_call_error(error: &str) -> JsReplToolCallResponseSummary {
-        Self::summarize_text_payload(None, JsReplToolCallPayloadKind::Error, error)
+        Self::summarize_text_payload(
+            /*response_type*/ None,
+            JsReplToolCallPayloadKind::Error,
+            error,
+        )
     }
 
     pub async fn reset(&self) -> Result<(), FunctionCallError> {
@@ -962,7 +966,7 @@ impl JsReplManager {
                     with_model_kernel_failure_message(
                         "js_repl kernel closed unexpectedly",
                         "response_channel_closed",
-                        None,
+                        /*stream_error*/ None,
                         &snapshot,
                     )
                 } else {
@@ -1067,6 +1071,10 @@ impl JsReplManager {
                 codex_linux_sandbox_exe: turn.codex_linux_sandbox_exe.as_ref(),
                 use_legacy_landlock: turn.features.use_legacy_landlock(),
                 windows_sandbox_level: turn.windows_sandbox_level,
+                windows_sandbox_private_desktop: turn
+                    .config
+                    .permissions
+                    .windows_sandbox_private_desktop,
             })
             .map_err(|err| format!("failed to configure sandbox for js_repl: {err}"))?;
 
@@ -1527,7 +1535,13 @@ impl JsReplManager {
         if is_js_repl_internal_tool(&req.tool_name) {
             let error = "js_repl cannot invoke itself".to_string();
             let summary = Self::summarize_tool_call_error(&error);
-            Self::log_tool_call_response(&req, false, &summary, None, Some(&error));
+            Self::log_tool_call_response(
+                &req,
+                /*ok*/ false,
+                &summary,
+                /*response*/ None,
+                Some(&error),
+            );
             return RunToolResult {
                 id: req.id,
                 ok: false,
@@ -1606,7 +1620,13 @@ impl JsReplManager {
                 let summary = Self::summarize_tool_call_response(&response);
                 match serde_json::to_value(response) {
                     Ok(value) => {
-                        Self::log_tool_call_response(&req, true, &summary, Some(&value), None);
+                        Self::log_tool_call_response(
+                            &req,
+                            /*ok*/ true,
+                            &summary,
+                            Some(&value),
+                            /*error*/ None,
+                        );
                         RunToolResult {
                             id: req.id,
                             ok: true,
@@ -1617,7 +1637,13 @@ impl JsReplManager {
                     Err(err) => {
                         let error = format!("failed to serialize tool output: {err}");
                         let summary = Self::summarize_tool_call_error(&error);
-                        Self::log_tool_call_response(&req, false, &summary, None, Some(&error));
+                        Self::log_tool_call_response(
+                            &req,
+                            /*ok*/ false,
+                            &summary,
+                            /*response*/ None,
+                            Some(&error),
+                        );
                         RunToolResult {
                             id: req.id,
                             ok: false,
@@ -1630,7 +1656,13 @@ impl JsReplManager {
             Err(err) => {
                 let error = err.to_string();
                 let summary = Self::summarize_tool_call_error(&error);
-                Self::log_tool_call_response(&req, false, &summary, None, Some(&error));
+                Self::log_tool_call_response(
+                    &req,
+                    /*ok*/ false,
+                    &summary,
+                    /*response*/ None,
+                    Some(&error),
+                );
                 RunToolResult {
                     id: req.id,
                     ok: false,

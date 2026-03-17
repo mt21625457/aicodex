@@ -47,28 +47,23 @@ function codeModeWorkerMain() {
   const vm = require('node:vm');
   const { SourceTextModule, SyntheticModule } = vm;
 
-  const DEFAULT_MAX_OUTPUT_TOKENS_PER_EXEC_CALL = 10000;
-
-  function normalizeMaxOutputTokensPerExecCall(value) {
-    if (!Number.isSafeInteger(value) || value < 0) {
-      throw new TypeError('max_output_tokens_per_exec_call must be a non-negative safe integer');
-    }
-    return value;
-  }
-
-  function normalizeYieldTime(value) {
-    if (!Number.isSafeInteger(value) || value < 0) {
-      throw new TypeError('yield_time must be a non-negative safe integer');
-    }
-    return value;
-  }
-
   function formatErrorText(error) {
     return String(error && error.stack ? error.stack : error);
   }
 
   function cloneJsonValue(value) {
     return JSON.parse(JSON.stringify(value));
+  }
+
+  class CodeModeExitSignal extends Error {
+    constructor() {
+      super('code mode exit');
+      this.name = 'CodeModeExitSignal';
+    }
+  }
+
+  function isCodeModeExitSignal(error) {
+    return error instanceof CodeModeExitSignal;
   }
 
   function createToolCaller() {
@@ -270,34 +265,19 @@ function codeModeWorkerMain() {
       ensureContentItems(context).push(item);
       return item;
     };
-    const setMaxOutputTokensPerExecCall = (value) => {
-      const normalized = normalizeMaxOutputTokensPerExecCall(value);
-      state.maxOutputTokensPerExecCall = normalized;
-      parentPort.postMessage({
-        type: 'set_max_output_tokens_per_exec_call',
-        value: normalized,
-      });
-      return normalized;
-    };
-    const setYieldTime = (value) => {
-      const normalized = normalizeYieldTime(value);
-      parentPort.postMessage({
-        type: 'set_yield_time',
-        value: normalized,
-      });
-      return normalized;
-    };
     const yieldControl = () => {
       parentPort.postMessage({ type: 'yield' });
     };
+    const exit = () => {
+      throw new CodeModeExitSignal();
+    };
 
     return Object.freeze({
+      exit,
       image,
       load,
       output_image: image,
       output_text: text,
-      set_max_output_tokens_per_exec_call: setMaxOutputTokensPerExecCall,
-      set_yield_time: setYieldTime,
       store,
       text,
       yield_control: yieldControl,
@@ -307,26 +287,21 @@ function codeModeWorkerMain() {
   function createCodeModeModule(context, helpers) {
     return new SyntheticModule(
       [
+        'exit',
         'image',
         'load',
         'output_text',
         'output_image',
-        'set_max_output_tokens_per_exec_call',
-        'set_yield_time',
         'store',
         'text',
         'yield_control',
       ],
       function initCodeModeModule() {
+        this.setExport('exit', helpers.exit);
         this.setExport('image', helpers.image);
         this.setExport('load', helpers.load);
         this.setExport('output_text', helpers.output_text);
         this.setExport('output_image', helpers.output_image);
-        this.setExport(
-          'set_max_output_tokens_per_exec_call',
-          helpers.set_max_output_tokens_per_exec_call
-        );
-        this.setExport('set_yield_time', helpers.set_yield_time);
         this.setExport('store', helpers.store);
         this.setExport('text', helpers.text);
         this.setExport('yield_control', helpers.yield_control);
@@ -338,10 +313,9 @@ function codeModeWorkerMain() {
   function createBridgeRuntime(callTool, enabledTools, helpers) {
     return Object.freeze({
       ALL_TOOLS: createAllToolsMetadata(enabledTools),
+      exit: helpers.exit,
       image: helpers.image,
       load: helpers.load,
-      set_max_output_tokens_per_exec_call: helpers.set_max_output_tokens_per_exec_call,
-      set_yield_time: helpers.set_yield_time,
       store: helpers.store,
       text: helpers.text,
       tools: createGlobalToolsNamespace(callTool, enabledTools),
@@ -475,7 +449,6 @@ function codeModeWorkerMain() {
   async function main() {
     const start = workerData ?? {};
     const state = {
-      maxOutputTokensPerExecCall: DEFAULT_MAX_OUTPUT_TOKENS_PER_EXEC_CALL,
       storedValues: cloneJsonValue(start.stored_values ?? {}),
     };
     const callTool = createToolCaller();
@@ -499,6 +472,13 @@ function codeModeWorkerMain() {
         stored_values: state.storedValues,
       });
     } catch (error) {
+      if (isCodeModeExitSignal(error)) {
+        parentPort.postMessage({
+          type: 'result',
+          stored_values: state.storedValues,
+        });
+        return;
+      }
       parentPort.postMessage({
         type: 'result',
         stored_values: state.storedValues,
@@ -650,6 +630,10 @@ function sessionWorkerSource() {
 }
 
 function startSession(protocol, sessions, start) {
+  const maxOutputTokensPerExecCall =
+    start.max_output_tokens == null
+      ? DEFAULT_MAX_OUTPUT_TOKENS_PER_EXEC_CALL
+      : normalizeMaxOutputTokensPerExecCall(start.max_output_tokens);
   const session = {
     completed: false,
     content_items: [],
@@ -657,7 +641,7 @@ function startSession(protocol, sessions, start) {
     id: start.cell_id,
     initial_yield_timer: null,
     initial_yield_triggered: false,
-    max_output_tokens_per_exec_call: DEFAULT_MAX_OUTPUT_TOKENS_PER_EXEC_CALL,
+    max_output_tokens_per_exec_call: maxOutputTokensPerExecCall,
     pending_result: null,
     poll_yield_timer: null,
     request_id: String(start.request_id),
@@ -667,7 +651,11 @@ function startSession(protocol, sessions, start) {
     }),
   };
   sessions.set(session.id, session);
-  scheduleInitialYield(protocol, session, session.default_yield_time_ms);
+  const initialYieldTime =
+    start.yield_time_ms == null
+      ? session.default_yield_time_ms
+      : normalizeYieldTime(start.yield_time_ms);
+  scheduleInitialYield(protocol, session, initialYieldTime);
 
   session.worker.on('message', (message) => {
     void handleWorkerMessage(protocol, sessions, session, message).catch((error) => {
@@ -703,16 +691,6 @@ async function handleWorkerMessage(protocol, sessions, session, message) {
 
   if (message.type === 'content_item') {
     session.content_items.push(cloneJsonValue(message.item));
-    return;
-  }
-
-  if (message.type === 'set_yield_time') {
-    scheduleInitialYield(protocol, session, normalizeYieldTime(message.value ?? 0));
-    return;
-  }
-
-  if (message.type === 'set_max_output_tokens_per_exec_call') {
-    session.max_output_tokens_per_exec_call = normalizeMaxOutputTokensPerExecCall(message.value);
     return;
   }
 

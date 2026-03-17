@@ -50,7 +50,7 @@ WHERE id = ?
     ) -> anyhow::Result<Option<Vec<DynamicToolSpec>>> {
         let rows = sqlx::query(
             r#"
-SELECT name, description, input_schema
+SELECT name, description, input_schema, defer_loading
 FROM thread_dynamic_tools
 WHERE thread_id = ?
 ORDER BY position ASC
@@ -70,6 +70,7 @@ ORDER BY position ASC
                 name: row.try_get("name")?,
                 description: row.try_get("description")?,
                 input_schema,
+                defer_loading: row.try_get("defer_loading")?,
             });
         }
         Ok(Some(tools))
@@ -188,7 +189,7 @@ FROM threads
             model_providers,
             anchor,
             sort_key,
-            None,
+            /*search_term*/ None,
         );
         push_thread_order_and_limit(&mut builder, sort_key, limit);
 
@@ -203,7 +204,7 @@ FROM threads
 
     /// Insert or replace thread metadata directly.
     pub async fn upsert_thread(&self, metadata: &crate::ThreadMetadata) -> anyhow::Result<()> {
-        self.upsert_thread_with_creation_memory_mode(metadata, None)
+        self.upsert_thread_with_creation_memory_mode(metadata, /*creation_memory_mode*/ None)
             .await
     }
 
@@ -425,8 +426,9 @@ INSERT INTO thread_dynamic_tools (
     position,
     name,
     description,
-    input_schema
-) VALUES (?, ?, ?, ?, ?)
+    input_schema,
+    defer_loading
+) VALUES (?, ?, ?, ?, ?, ?)
 ON CONFLICT(thread_id, position) DO NOTHING
                 "#,
             )
@@ -435,6 +437,7 @@ ON CONFLICT(thread_id, position) DO NOTHING
             .bind(tool.name.as_str())
             .bind(tool.description.as_str())
             .bind(input_schema)
+            .bind(tool.defer_loading)
             .execute(&mut *tx)
             .await?;
         }

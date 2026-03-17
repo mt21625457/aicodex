@@ -23,12 +23,12 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use crate::custom_ca::build_login_http_client;
 use crate::pkce::PkceCodes;
 use crate::pkce::generate_pkce;
 use base64::Engine;
 use chrono::Utc;
 use codex_app_server_protocol::AuthMode;
+use codex_client::build_reqwest_client_with_custom_ca;
 use codex_core::auth::AuthCredentialsStoreMode;
 use codex_core::auth::AuthDotJson;
 use codex_core::auth::save_auth;
@@ -317,7 +317,7 @@ async fn process_request(
                         "Missing authorization code. Sign-in could not be completed.",
                         io::ErrorKind::InvalidData,
                         Some("missing_authorization_code"),
-                        None,
+                        /*error_description*/ None,
                     );
                 }
             };
@@ -335,7 +335,7 @@ async fn process_request(
                             &message,
                             io::ErrorKind::PermissionDenied,
                             Some("workspace_restriction"),
-                            None,
+                            /*error_description*/ None,
                         );
                     }
                     // Obtain API key via token-exchange and persist
@@ -373,7 +373,7 @@ async fn process_request(
                             "Sign-in completed but redirecting back to Codex failed.",
                             io::ErrorKind::Other,
                             Some("redirect_failed"),
-                            None,
+                            /*error_description*/ None,
                         ),
                     }
                 }
@@ -384,7 +384,7 @@ async fn process_request(
                         &format!("Token exchange failed: {err}"),
                         io::ErrorKind::Other,
                         Some("token_exchange_failed"),
-                        None,
+                        /*error_description*/ None,
                     )
                 }
             }
@@ -692,7 +692,7 @@ pub(crate) async fn exchange_code_for_tokens(
         refresh_token: String,
     }
 
-    let client = build_login_http_client()?;
+    let client = build_reqwest_client_with_custom_ca(reqwest::Client::builder())?;
     info!(
         issuer = %sanitize_url_for_logging(issuer),
         redirect_uri = %redirect_uri,
@@ -1061,7 +1061,7 @@ pub(crate) async fn obtain_api_key(
     struct ExchangeResp {
         access_token: String,
     }
-    let client = build_login_http_client()?;
+    let client = build_reqwest_client_with_custom_ca(reqwest::Client::builder())?;
     let resp = client
         .post(format!("{issuer}/oauth/token"))
         .header("Content-Type", "application/x-www-form-urlencoded")

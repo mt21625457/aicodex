@@ -75,6 +75,19 @@ pub fn resolve_windows_sandbox_mode(
         .or_else(|| legacy_windows_sandbox_mode(cfg.features.as_ref()))
 }
 
+pub fn resolve_windows_sandbox_private_desktop(cfg: &ConfigToml, profile: &ConfigProfile) -> bool {
+    profile
+        .windows
+        .as_ref()
+        .and_then(|windows| windows.sandbox_private_desktop)
+        .or_else(|| {
+            cfg.windows
+                .as_ref()
+                .and_then(|windows| windows.sandbox_private_desktop)
+        })
+        .unwrap_or(true)
+}
+
 fn legacy_windows_sandbox_keys_present(features: Option<&FeaturesToml>) -> bool {
     let Some(entries) = features.map(|features| &features.entries) else {
         return false;
@@ -362,7 +375,7 @@ fn emit_windows_sandbox_setup_success_metrics(
     );
     let _ = metrics.counter(
         "codex.windows_sandbox.setup_success",
-        1,
+        /*inc*/ 1,
         &[("originator", originator_tag), ("mode", mode_tag)],
     );
 }
@@ -388,7 +401,7 @@ fn emit_windows_sandbox_setup_failure_metrics(
     );
     let _ = metrics.counter(
         "codex.windows_sandbox.setup_failure",
-        1,
+        /*inc*/ 1,
         &[("originator", originator_tag), ("mode", mode_tag)],
     );
 
@@ -413,7 +426,7 @@ fn emit_windows_sandbox_setup_failure_metrics(
     } else {
         let _ = metrics.counter(
             "codex.windows_sandbox.legacy_setup_preflight_failed",
-            1,
+            /*inc*/ 1,
             &[("originator", originator_tag)],
         );
     }
