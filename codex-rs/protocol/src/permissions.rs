@@ -347,6 +347,48 @@ impl FileSystemSandboxPolicy {
         self.resolve_access_with_cwd(path, cwd).can_write()
     }
 
+    pub fn with_additional_readable_roots(
+        mut self,
+        cwd: &Path,
+        additional_readable_roots: &[AbsolutePathBuf],
+    ) -> Self {
+        if self.has_full_disk_read_access() {
+            return self;
+        }
+
+        for path in additional_readable_roots {
+            if self.can_read_path_with_cwd(path.as_path(), cwd) {
+                continue;
+            }
+
+            self.entries.push(FileSystemSandboxEntry {
+                path: FileSystemPath::Path { path: path.clone() },
+                access: FileSystemAccessMode::Read,
+            });
+        }
+
+        self
+    }
+
+    pub fn with_additional_writable_roots(
+        mut self,
+        cwd: &Path,
+        additional_writable_roots: &[AbsolutePathBuf],
+    ) -> Self {
+        for path in additional_writable_roots {
+            if self.can_write_path_with_cwd(path.as_path(), cwd) {
+                continue;
+            }
+
+            self.entries.push(FileSystemSandboxEntry {
+                path: FileSystemPath::Path { path: path.clone() },
+                access: FileSystemAccessMode::Write,
+            });
+        }
+
+        self
+    }
+
     pub fn needs_direct_runtime_enforcement(
         &self,
         network_policy: NetworkSandboxPolicy,
@@ -1231,6 +1273,88 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn current_working_directory_special_path_canonicalizes_symlinked_cwd() {
+        let cwd = TempDir::new().expect("tempdir");
+        let real_root = cwd.path().join("real");
+        let link_root = cwd.path().join("link");
+        let blocked = real_root.join("blocked");
+        let agents_dir = real_root.join(".agents");
+        let codex_dir = real_root.join(".codex");
+
+        fs::create_dir_all(&blocked).expect("create blocked");
+        fs::create_dir_all(&agents_dir).expect("create .agents");
+        fs::create_dir_all(&codex_dir).expect("create .codex");
+        symlink_dir(&real_root, &link_root).expect("create symlinked cwd");
+
+        let link_blocked =
+            AbsolutePathBuf::from_absolute_path(link_root.join("blocked")).expect("link blocked");
+        let expected_root = AbsolutePathBuf::from_absolute_path(
+            real_root.canonicalize().expect("canonicalize real root"),
+        )
+        .expect("absolute canonical root");
+        let expected_blocked = AbsolutePathBuf::from_absolute_path(
+            blocked.canonicalize().expect("canonicalize blocked"),
+        )
+        .expect("absolute canonical blocked");
+        let expected_agents = AbsolutePathBuf::from_absolute_path(
+            agents_dir.canonicalize().expect("canonicalize .agents"),
+        )
+        .expect("absolute canonical .agents");
+        let expected_codex = AbsolutePathBuf::from_absolute_path(
+            codex_dir.canonicalize().expect("canonicalize .codex"),
+        )
+        .expect("absolute canonical .codex");
+
+        let policy = FileSystemSandboxPolicy::restricted(vec![
+            FileSystemSandboxEntry {
+                path: FileSystemPath::Special {
+                    value: FileSystemSpecialPath::Minimal,
+                },
+                access: FileSystemAccessMode::Read,
+            },
+            FileSystemSandboxEntry {
+                path: FileSystemPath::Special {
+                    value: FileSystemSpecialPath::CurrentWorkingDirectory,
+                },
+                access: FileSystemAccessMode::Write,
+            },
+            FileSystemSandboxEntry {
+                path: FileSystemPath::Path { path: link_blocked },
+                access: FileSystemAccessMode::None,
+            },
+        ]);
+
+        assert_eq!(
+            policy.get_readable_roots_with_cwd(&link_root),
+            vec![expected_root.clone()]
+        );
+        assert_eq!(
+            policy.get_unreadable_roots_with_cwd(&link_root),
+            vec![expected_blocked.clone()]
+        );
+
+        let writable_roots = policy.get_writable_roots_with_cwd(&link_root);
+        assert_eq!(writable_roots.len(), 1);
+        assert_eq!(writable_roots[0].root, expected_root);
+        assert!(
+            writable_roots[0]
+                .read_only_subpaths
+                .contains(&expected_blocked)
+        );
+        assert!(
+            writable_roots[0]
+                .read_only_subpaths
+                .contains(&expected_agents)
+        );
+        assert!(
+            writable_roots[0]
+                .read_only_subpaths
+                .contains(&expected_codex)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn writable_roots_preserve_symlinked_protected_subpaths() {
         let cwd = TempDir::new().expect("tempdir");
         let root = cwd.path().join("root");
@@ -1697,6 +1821,74 @@ mod tests {
         assert_eq!(
             policy.resolve_access_with_cwd(docs.as_path(), cwd.path()),
             FileSystemAccessMode::Write
+        );
+    }
+
+    #[test]
+    fn with_additional_readable_roots_skips_existing_effective_access() {
+        let cwd = TempDir::new().expect("tempdir");
+        let cwd_root = AbsolutePathBuf::from_absolute_path(cwd.path()).expect("absolute cwd");
+        let policy = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
+            path: FileSystemPath::Special {
+                value: FileSystemSpecialPath::CurrentWorkingDirectory,
+            },
+            access: FileSystemAccessMode::Read,
+        }]);
+
+        let actual = policy
+            .clone()
+            .with_additional_readable_roots(cwd.path(), std::slice::from_ref(&cwd_root));
+
+        assert_eq!(actual, policy);
+    }
+
+    #[test]
+    fn with_additional_writable_roots_skips_existing_effective_access() {
+        let cwd = TempDir::new().expect("tempdir");
+        let cwd_root = AbsolutePathBuf::from_absolute_path(cwd.path()).expect("absolute cwd");
+        let policy = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
+            path: FileSystemPath::Special {
+                value: FileSystemSpecialPath::CurrentWorkingDirectory,
+            },
+            access: FileSystemAccessMode::Write,
+        }]);
+
+        let actual = policy
+            .clone()
+            .with_additional_writable_roots(cwd.path(), std::slice::from_ref(&cwd_root));
+
+        assert_eq!(actual, policy);
+    }
+
+    #[test]
+    fn with_additional_writable_roots_adds_new_root() {
+        let temp_dir = TempDir::new().expect("tempdir");
+        let cwd = temp_dir.path().join("workspace");
+        let extra = AbsolutePathBuf::from_absolute_path(temp_dir.path().join("extra"))
+            .expect("resolve extra root");
+        let policy = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
+            path: FileSystemPath::Special {
+                value: FileSystemSpecialPath::CurrentWorkingDirectory,
+            },
+            access: FileSystemAccessMode::Write,
+        }]);
+
+        let actual = policy.with_additional_writable_roots(&cwd, std::slice::from_ref(&extra));
+
+        assert_eq!(
+            actual,
+            FileSystemSandboxPolicy::restricted(vec![
+                FileSystemSandboxEntry {
+                    path: FileSystemPath::Special {
+                        value: FileSystemSpecialPath::CurrentWorkingDirectory,
+                    },
+                    access: FileSystemAccessMode::Write,
+                },
+                FileSystemSandboxEntry {
+                    path: FileSystemPath::Path { path: extra },
+                    access: FileSystemAccessMode::Write,
+                },
+            ])
         );
     }
 

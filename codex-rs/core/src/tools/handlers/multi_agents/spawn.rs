@@ -77,37 +77,64 @@ impl ToolHandler for Handler {
         let result = session
             .services
             .agent_control
-            .spawn_agent_with_options(
+            .spawn_agent_with_metadata(
                 config,
                 input_items,
                 Some(thread_spawn_source(
                     session.conversation_id,
+                    &turn.session_source,
                     child_depth,
                     role_name,
-                )),
+                    args.task_name.clone(),
+                )?),
                 SpawnAgentOptions {
                     fork_parent_spawn_call_id: args.fork_context.then(|| call_id.clone()),
                 },
             )
             .await
             .map_err(collab_spawn_error);
-        let (new_thread_id, status) = match &result {
-            Ok(thread_id) => (
-                Some(*thread_id),
-                session.services.agent_control.get_status(*thread_id).await,
+        let (new_thread_id, new_agent_metadata, status) = match &result {
+            Ok(spawned_agent) => (
+                Some(spawned_agent.thread_id),
+                Some(spawned_agent.metadata.clone()),
+                spawned_agent.status.clone(),
             ),
-            Err(_) => (None, AgentStatus::NotFound),
+            Err(_) => (None, None, AgentStatus::NotFound),
         };
-        let (new_agent_nickname, new_agent_role) = match new_thread_id {
-            Some(thread_id) => session
-                .services
-                .agent_control
-                .get_agent_nickname_and_role(thread_id)
-                .await
-                .unwrap_or((None, None)),
-            None => (None, None),
+        let agent_snapshot = match new_thread_id {
+            Some(thread_id) => {
+                session
+                    .services
+                    .agent_control
+                    .get_agent_config_snapshot(thread_id)
+                    .await
+            }
+            None => None,
         };
+        let (new_agent_path, new_agent_nickname, new_agent_role) =
+            match (&agent_snapshot, new_agent_metadata) {
+                (Some(snapshot), _) => (
+                    snapshot.session_source.get_agent_path().map(String::from),
+                    snapshot.session_source.get_nickname(),
+                    snapshot.session_source.get_agent_role(),
+                ),
+                (None, Some(metadata)) => (
+                    metadata.agent_path.map(String::from),
+                    metadata.agent_nickname,
+                    metadata.agent_role,
+                ),
+                (None, None) => (None, None, None),
+            };
+        let effective_model = agent_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.model.clone())
+            .unwrap_or_else(|| args.model.clone().unwrap_or_default());
+        let effective_reasoning_effort = agent_snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.reasoning_effort)
+            .unwrap_or(args.reasoning_effort.unwrap_or_default());
         let nickname = new_agent_nickname.clone();
+        let task_name = new_agent_path.clone();
         session
             .send_event(
                 &turn,
@@ -118,14 +145,14 @@ impl ToolHandler for Handler {
                     new_agent_nickname,
                     new_agent_role,
                     prompt,
-                    model: args.model.clone().unwrap_or_default(),
-                    reasoning_effort: args.reasoning_effort.unwrap_or_default(),
+                    model: effective_model,
+                    reasoning_effort: effective_reasoning_effort,
                     status,
                 }
                 .into(),
             )
             .await;
-        let new_thread_id = result?;
+        let new_thread_id = result?.thread_id;
         let role_tag = role_name.unwrap_or(DEFAULT_ROLE_NAME);
         turn.session_telemetry.counter(
             "codex.multi_agent.spawn",
@@ -134,7 +161,8 @@ impl ToolHandler for Handler {
         );
 
         Ok(SpawnAgentResult {
-            agent_id: new_thread_id.to_string(),
+            agent_id: task_name.is_none().then(|| new_thread_id.to_string()),
+            task_name,
             nickname,
         })
     }
@@ -144,6 +172,7 @@ impl ToolHandler for Handler {
 struct SpawnAgentArgs {
     message: Option<String>,
     items: Option<Vec<UserInput>>,
+    task_name: Option<String>,
     agent_type: Option<String>,
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
@@ -153,7 +182,8 @@ struct SpawnAgentArgs {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct SpawnAgentResult {
-    agent_id: String,
+    agent_id: Option<String>,
+    task_name: Option<String>,
     nickname: Option<String>,
 }
 

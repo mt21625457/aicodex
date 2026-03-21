@@ -267,6 +267,10 @@ client_request_definitions! {
         params: v2::ThreadCompactStartParams,
         response: v2::ThreadCompactStartResponse,
     },
+    ThreadShellCommand => "thread/shellCommand" {
+        params: v2::ThreadShellCommandParams,
+        response: v2::ThreadShellCommandResponse,
+    },
     #[experimental("thread/backgroundTerminals/clean")]
     ThreadBackgroundTerminalsClean => "thread/backgroundTerminals/clean" {
         params: v2::ThreadBackgroundTerminalsCleanParams,
@@ -299,14 +303,6 @@ client_request_definitions! {
     PluginRead => "plugin/read" {
         params: v2::PluginReadParams,
         response: v2::PluginReadResponse,
-    },
-    SkillsRemoteList => "skills/remote/list" {
-        params: v2::SkillsRemoteReadParams,
-        response: v2::SkillsRemoteReadResponse,
-    },
-    SkillsRemoteExport => "skills/remote/export" {
-        params: v2::SkillsRemoteWriteParams,
-        response: v2::SkillsRemoteWriteResponse,
     },
     AppsList => "app/list" {
         params: v2::AppsListParams,
@@ -813,9 +809,18 @@ pub struct FuzzyFileSearchParams {
 pub struct FuzzyFileSearchResult {
     pub root: String,
     pub path: String,
+    pub match_type: FuzzyFileSearchMatchType,
     pub file_name: String,
     pub score: u32,
     pub indices: Option<Vec<u32>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub enum FuzzyFileSearchMatchType {
+    File,
+    Directory,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -905,6 +910,7 @@ server_notification_definitions! {
     ServerRequestResolved => "serverRequest/resolved" (v2::ServerRequestResolvedNotification),
     McpToolCallProgress => "item/mcpToolCall/progress" (v2::McpToolCallProgressNotification),
     McpServerOauthLoginCompleted => "mcpServer/oauthLogin/completed" (v2::McpServerOauthLoginCompletedNotification),
+    McpServerStatusUpdated => "mcpServer/startupStatus/updated" (v2::McpServerStatusUpdatedNotification),
     AccountUpdated => "account/updated" (v2::AccountUpdatedNotification),
     AccountRateLimitsUpdated => "account/rateLimits/updated" (v2::AccountRateLimitsUpdatedNotification),
     AppListUpdated => "app/list/updated" (v2::AppListUpdatedNotification),
@@ -922,6 +928,8 @@ server_notification_definitions! {
     ThreadRealtimeStarted => "thread/realtime/started" (v2::ThreadRealtimeStartedNotification),
     #[experimental("thread/realtime/itemAdded")]
     ThreadRealtimeItemAdded => "thread/realtime/itemAdded" (v2::ThreadRealtimeItemAddedNotification),
+    #[experimental("thread/realtime/transcriptUpdated")]
+    ThreadRealtimeTranscriptUpdated => "thread/realtime/transcriptUpdated" (v2::ThreadRealtimeTranscriptUpdatedNotification),
     #[experimental("thread/realtime/outputAudio/delta")]
     ThreadRealtimeOutputAudioDelta => "thread/realtime/outputAudio/delta" (v2::ThreadRealtimeOutputAudioDeltaNotification),
     #[experimental("thread/realtime/error")]
@@ -951,6 +959,7 @@ mod tests {
     use codex_protocol::ThreadId;
     use codex_protocol::account::PlanType;
     use codex_protocol::parse_command::ParsedCommand;
+    use codex_protocol::protocol::RealtimeConversationVersion;
     use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
     use serde_json::json;
@@ -1582,6 +1591,7 @@ mod tests {
                     sample_rate: 24_000,
                     num_channels: 1,
                     samples_per_channel: Some(512),
+                    item_id: None,
                 },
             },
         );
@@ -1594,7 +1604,8 @@ mod tests {
                         "data": "AQID",
                         "sampleRate": 24000,
                         "numChannels": 1,
-                        "samplesPerChannel": 512
+                        "samplesPerChannel": 512,
+                        "itemId": null
                     }
                 }
             }),
@@ -1631,6 +1642,7 @@ mod tests {
             ServerNotification::ThreadRealtimeStarted(v2::ThreadRealtimeStartedNotification {
                 thread_id: "thr_123".to_string(),
                 session_id: Some("sess_456".to_string()),
+                version: RealtimeConversationVersion::V1,
             });
         let reason = crate::experimental_api::ExperimentalApi::experimental_reason(&notification);
         assert_eq!(reason, Some("thread/realtime/started"));
@@ -1646,6 +1658,7 @@ mod tests {
                     sample_rate: 24_000,
                     num_channels: 1,
                     samples_per_channel: Some(512),
+                    item_id: None,
                 },
             },
         );

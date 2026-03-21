@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use codex_app_server_protocol::McpElicitationEnumSchema;
 use codex_app_server_protocol::McpElicitationPrimitiveSchema;
 use codex_app_server_protocol::McpElicitationSingleSelectEnumSchema;
+use codex_app_server_protocol::McpServerElicitationRequest;
+use codex_app_server_protocol::McpServerElicitationRequestParams;
 use codex_protocol::ThreadId;
 use codex_protocol::approvals::ElicitationAction;
 use codex_protocol::approvals::ElicitationRequest;
@@ -149,7 +151,7 @@ pub(crate) struct ToolSuggestionRequest {
     pub(crate) suggest_reason: String,
     pub(crate) tool_id: String,
     pub(crate) tool_name: String,
-    pub(crate) install_url: String,
+    pub(crate) install_url: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -201,6 +203,36 @@ impl FooterTip {
 }
 
 impl McpServerElicitationFormRequest {
+    pub(crate) fn from_app_server_request(
+        thread_id: ThreadId,
+        request_id: McpRequestId,
+        request: McpServerElicitationRequestParams,
+    ) -> Option<Self> {
+        let McpServerElicitationRequestParams {
+            server_name,
+            request,
+            ..
+        } = request;
+        let McpServerElicitationRequest::Form {
+            meta,
+            message,
+            requested_schema,
+        } = request
+        else {
+            return None;
+        };
+
+        let requested_schema = serde_json::to_value(requested_schema).ok()?;
+        Self::from_parts(
+            thread_id,
+            server_name,
+            request_id,
+            meta,
+            message,
+            requested_schema,
+        )
+    }
+
     pub(crate) fn from_event(
         thread_id: ThreadId,
         request: ElicitationRequestEvent,
@@ -214,6 +246,24 @@ impl McpServerElicitationFormRequest {
             return None;
         };
 
+        Self::from_parts(
+            thread_id,
+            request.server_name,
+            request.id,
+            meta,
+            message,
+            requested_schema,
+        )
+    }
+
+    fn from_parts(
+        thread_id: ThreadId,
+        server_name: String,
+        request_id: McpRequestId,
+        meta: Option<Value>,
+        message: String,
+        requested_schema: Value,
+    ) -> Option<Self> {
         let tool_suggestion = parse_tool_suggestion_request(meta.as_ref());
         let is_tool_approval = meta
             .as_ref()
@@ -313,8 +363,8 @@ impl McpServerElicitationFormRequest {
 
         Some(Self {
             thread_id,
-            server_name: request.server_name,
-            request_id: request.id,
+            server_name,
+            request_id,
             message,
             approval_display_params,
             response_mode,
@@ -373,8 +423,8 @@ fn parse_tool_suggestion_request(meta: Option<&Value>) -> Option<ToolSuggestionR
         tool_name: meta.get(TOOL_NAME_KEY).and_then(Value::as_str)?.to_string(),
         install_url: meta
             .get(TOOL_SUGGEST_INSTALL_URL_KEY)
-            .and_then(Value::as_str)?
-            .to_string(),
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
     })
 }
 
@@ -1939,7 +1989,39 @@ mod tests {
                 suggest_reason: "Plan and reference events from your calendar".to_string(),
                 tool_id: "connector_2128aebfecb84f64a069897515042a44".to_string(),
                 tool_name: "Google Calendar".to_string(),
-                install_url: "https://example.test/google-calendar".to_string(),
+                install_url: Some("https://example.test/google-calendar".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn plugin_tool_suggestion_meta_without_install_url_is_parsed_into_request_payload() {
+        let request = McpServerElicitationFormRequest::from_event(
+            ThreadId::default(),
+            form_request(
+                "Suggest Slack",
+                empty_object_schema(),
+                Some(serde_json::json!({
+                    "codex_approval_kind": "tool_suggestion",
+                    "tool_type": "plugin",
+                    "suggest_type": "install",
+                    "suggest_reason": "Install the Slack plugin to search messages",
+                    "tool_id": "slack@openai-curated",
+                    "tool_name": "Slack",
+                })),
+            ),
+        )
+        .expect("expected tool suggestion form");
+
+        assert_eq!(
+            request.tool_suggestion(),
+            Some(&ToolSuggestionRequest {
+                tool_type: ToolSuggestionToolType::Plugin,
+                suggest_type: ToolSuggestionType::Install,
+                suggest_reason: "Install the Slack plugin to search messages".to_string(),
+                tool_id: "slack@openai-curated".to_string(),
+                tool_name: "Slack".to_string(),
+                install_url: None,
             })
         );
     }

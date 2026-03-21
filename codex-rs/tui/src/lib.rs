@@ -7,16 +7,13 @@ use additional_dirs::add_dir_warning_message;
 use app::App;
 pub use app::AppExitInfo;
 pub use app::ExitReason;
-use codex_app_server_client::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY;
-use codex_app_server_client::InProcessAppServerClient;
-use codex_app_server_client::InProcessClientStartArgs;
-use codex_app_server_protocol::ConfigWarningNotification;
 use codex_cloud_requirements::cloud_requirements_loader;
 use codex_core::AuthManager;
 use codex_core::CodexAuth;
 use codex_core::INTERACTIVE_SESSION_SOURCES;
 use codex_core::RolloutRecorder;
 use codex_core::ThreadSortKey;
+use codex_core::auth::AuthConfig;
 use codex_core::auth::AuthMode;
 use codex_core::auth::enforce_login_restrictions;
 use codex_core::check_execpolicy_for_warnings;
@@ -37,7 +34,6 @@ use codex_core::format_exec_policy_error_with_source;
 use codex_core::path_utils;
 use codex_core::read_session_meta_line;
 use codex_core::state_db::get_state_db;
-use codex_core::terminal::Multiplexer;
 use codex_core::windows_sandbox::WindowsSandboxLevelExt;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::AltScreenMode;
@@ -47,18 +43,17 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
 use codex_state::log_db;
+use codex_terminal_detection::Multiplexer;
+use codex_terminal_detection::terminal_info;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_oss::ensure_oss_provider_ready;
 use codex_utils_oss::get_default_model_for_oss_provider;
-use color_eyre::eyre::WrapErr;
 use cwd_prompt::CwdPromptAction;
 use cwd_prompt::CwdPromptOutcome;
 use cwd_prompt::CwdSelection;
 use std::fs::OpenOptions;
-use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
 use tracing::error;
 use tracing_appender::non_blocking;
 use tracing_subscriber::EnvFilter;
@@ -74,6 +69,19 @@ mod app_server_tui_dispatch;
 mod ascii_animation;
 #[cfg(all(not(target_os = "linux"), feature = "voice-input"))]
 mod audio_device;
+#[cfg(all(not(target_os = "linux"), not(feature = "voice-input")))]
+mod audio_device {
+    use crate::app_event::RealtimeAudioDeviceKind;
+
+    pub(crate) fn list_realtime_audio_device_names(
+        kind: RealtimeAudioDeviceKind,
+    ) -> Result<Vec<String>, String> {
+        Err(format!(
+            "Failed to load realtime {} devices: voice input is unavailable in this build",
+            kind.noun()
+        ))
+    }
+}
 mod bottom_pane;
 mod chatwidget;
 mod cli;
@@ -119,6 +127,7 @@ mod status_indicator_widget;
 mod streaming;
 mod style;
 mod terminal_palette;
+mod terminal_title;
 mod text_formatting;
 mod theme_picker;
 mod tooltips;
@@ -140,6 +149,7 @@ mod voice {
     use std::sync::Mutex;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::AtomicU16;
+    use std::sync::atomic::AtomicUsize;
 
     pub struct RecordedAudio {
         pub data: Vec<i16>,
@@ -153,12 +163,24 @@ mod voice {
 
     pub(crate) struct RealtimeAudioPlayer;
 
+    #[derive(Clone)]
+    pub(crate) enum RealtimeInputBehavior {
+        Ungated,
+        PlaybackAware {
+            playback_queued_samples: Arc<AtomicUsize>,
+        },
+    }
+
     impl VoiceCapture {
         pub fn start() -> Result<Self, String> {
             Err("voice input is unavailable in this build".to_string())
         }
 
-        pub fn start_realtime(_config: &Config, _tx: AppEventSender) -> Result<Self, String> {
+        pub fn start_realtime(
+            _config: &Config,
+            _tx: AppEventSender,
+            _input_behavior: RealtimeInputBehavior,
+        ) -> Result<Self, String> {
             Err("voice input is unavailable in this build".to_string())
         }
 
@@ -198,7 +220,10 @@ mod voice {
     }
 
     impl RealtimeAudioPlayer {
-        pub(crate) fn start(_config: &Config) -> Result<Self, String> {
+        pub(crate) fn start(
+            _config: &Config,
+            _queued_samples: Arc<AtomicUsize>,
+        ) -> Result<Self, String> {
             Err("voice output is unavailable in this build".to_string())
         }
 
@@ -237,70 +262,6 @@ pub use markdown_render::render_markdown_text;
 pub use public_widgets::composer_input::ComposerAction;
 pub use public_widgets::composer_input::ComposerInput;
 // (tests access modules directly within the crate)
-
-async fn start_embedded_app_server(
-    arg0_paths: Arg0DispatchPaths,
-    config: Config,
-    cli_kv_overrides: Vec<(String, toml::Value)>,
-    loader_overrides: LoaderOverrides,
-    cloud_requirements: CloudRequirementsLoader,
-    feedback: codex_feedback::CodexFeedback,
-) -> color_eyre::Result<InProcessAppServerClient> {
-    start_embedded_app_server_with(
-        arg0_paths,
-        config,
-        cli_kv_overrides,
-        loader_overrides,
-        cloud_requirements,
-        feedback,
-        InProcessAppServerClient::start,
-    )
-    .await
-}
-
-async fn start_embedded_app_server_with<F, Fut>(
-    arg0_paths: Arg0DispatchPaths,
-    config: Config,
-    cli_kv_overrides: Vec<(String, toml::Value)>,
-    loader_overrides: LoaderOverrides,
-    cloud_requirements: CloudRequirementsLoader,
-    feedback: codex_feedback::CodexFeedback,
-    start_client: F,
-) -> color_eyre::Result<InProcessAppServerClient>
-where
-    F: FnOnce(InProcessClientStartArgs) -> Fut,
-    Fut: Future<Output = std::io::Result<InProcessAppServerClient>>,
-{
-    let config_warnings = config
-        .startup_warnings
-        .iter()
-        .map(|warning| ConfigWarningNotification {
-            summary: warning.clone(),
-            details: None,
-            path: None,
-            range: None,
-        })
-        .collect();
-    let client = start_client(InProcessClientStartArgs {
-        arg0_paths,
-        config: Arc::new(config),
-        cli_overrides: cli_kv_overrides,
-        loader_overrides,
-        cloud_requirements,
-        feedback,
-        config_warnings,
-        session_source: codex_protocol::protocol::SessionSource::Cli,
-        enable_codex_api_key_env: false,
-        client_name: "codex-tui".to_string(),
-        client_version: env!("CARGO_PKG_VERSION").to_string(),
-        experimental_api: true,
-        opt_out_notification_methods: Vec::new(),
-        channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
-    })
-    .await
-    .wrap_err("failed to start embedded app server")?;
-    Ok(client)
-}
 
 pub async fn run_main(
     mut cli: Cli,
@@ -494,7 +455,12 @@ pub async fn run_main(
     }
 
     #[allow(clippy::print_stderr)]
-    if let Err(err) = enforce_login_restrictions(&config) {
+    if let Err(err) = enforce_login_restrictions(&AuthConfig {
+        codex_home: config.codex_home.clone(),
+        auth_credentials_store_mode: config.cli_auth_credentials_store_mode,
+        forced_login_method: config.forced_login_method,
+        forced_chatgpt_workspace_id: config.forced_chatgpt_workspace_id.clone(),
+    }) {
         eprintln!("{err}");
         std::process::exit(1);
     }
@@ -604,10 +570,10 @@ pub async fn run_main(
     run_ratatui_app(
         cli,
         arg0_paths,
-        loader_overrides,
         config,
         overrides,
         cli_kv_overrides,
+        loader_overrides,
         cloud_requirements,
         feedback,
     )
@@ -619,10 +585,10 @@ pub async fn run_main(
 async fn run_ratatui_app(
     cli: Cli,
     arg0_paths: Arg0DispatchPaths,
-    loader_overrides: LoaderOverrides,
     initial_config: Config,
     overrides: ConfigOverrides,
     cli_kv_overrides: Vec<(String, toml::Value)>,
+    loader_overrides: LoaderOverrides,
     mut cloud_requirements: CloudRequirementsLoader,
     feedback: codex_feedback::CodexFeedback,
 ) -> color_eyre::Result<AppExitInfo> {
@@ -781,7 +747,7 @@ async fn run_ratatui_app(
                 /*page_size*/ 1,
                 /*cursor*/ None,
                 ThreadSortKey::UpdatedAt,
-                INTERACTIVE_SESSION_SOURCES,
+                INTERACTIVE_SESSION_SOURCES.as_slice(),
                 Some(provider_filter.as_slice()),
                 &config.model_provider_id,
                 /*search_term*/ None,
@@ -881,7 +847,7 @@ async fn run_ratatui_app(
             /*page_size*/ 1,
             /*cursor*/ None,
             ThreadSortKey::UpdatedAt,
-            INTERACTIVE_SESSION_SOURCES,
+            INTERACTIVE_SESSION_SOURCES.as_slice(),
             Some(provider_filter.as_slice()),
             &config.model_provider_id,
             filter_cwd,
@@ -1017,29 +983,15 @@ async fn run_ratatui_app(
 
     let use_alt_screen = determine_alt_screen_mode(no_alt_screen, config.tui_alternate_screen);
     tui.set_alt_screen_enabled(use_alt_screen);
-    let app_server = match start_embedded_app_server(
-        arg0_paths,
-        config.clone(),
-        cli_kv_overrides.clone(),
-        loader_overrides,
-        cloud_requirements.clone(),
-        feedback.clone(),
-    )
-    .await
-    {
-        Ok(app_server) => app_server,
-        Err(err) => {
-            restore();
-            session_log::log_session_end();
-            return Err(err);
-        }
-    };
 
     let app_result = App::run(
         &mut tui,
-        app_server,
+        auth_manager,
         config,
         cli_kv_overrides.clone(),
+        arg0_paths,
+        loader_overrides,
+        cloud_requirements,
         overrides.clone(),
         active_profile,
         prompt,
@@ -1200,7 +1152,7 @@ fn determine_alt_screen_mode(no_alt_screen: bool, tui_alternate_screen: AltScree
             AltScreenMode::Always => true,
             AltScreenMode::Never => false,
             AltScreenMode::Auto => {
-                let terminal_info = codex_core::terminal::terminal_info();
+                let terminal_info = terminal_info();
                 !matches!(terminal_info.multiplexer, Some(Multiplexer::Zellij { .. }))
             }
         }
@@ -1301,7 +1253,7 @@ mod tests {
     use codex_core::config::ConfigBuilder;
     use codex_core::config::ConfigOverrides;
     use codex_core::config::ProjectConfig;
-    use codex_core::features::Feature;
+    use codex_features::Feature;
     use codex_protocol::protocol::AskForApproval;
     use codex_protocol::protocol::RolloutItem;
     use codex_protocol::protocol::RolloutLine;
@@ -1320,27 +1272,13 @@ mod tests {
             .await
     }
 
-    async fn start_test_embedded_app_server(
-        config: Config,
-    ) -> color_eyre::Result<InProcessAppServerClient> {
-        start_embedded_app_server(
-            Arg0DispatchPaths::default(),
-            config,
-            Vec::new(),
-            LoaderOverrides::default(),
-            CloudRequirementsLoader::default(),
-            codex_feedback::CodexFeedback::new(),
-        )
-        .await
-    }
-
     #[tokio::test]
     #[serial]
     async fn windows_shows_trust_prompt_without_sandbox() -> std::io::Result<()> {
         let temp_dir = TempDir::new()?;
         let mut config = build_config(&temp_dir).await?;
         config.active_project = ProjectConfig { trust_level: None };
-        config.set_windows_sandbox_enabled(false);
+        config.set_windows_sandbox_enabled(/*value*/ false);
 
         let should_show = should_show_trust_screen(&config);
         assert!(
@@ -1351,57 +1289,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn embedded_app_server_exposes_client_manager_accessors() -> color_eyre::Result<()> {
-        let temp_dir = TempDir::new()?;
-        let config = build_config(&temp_dir).await?;
-        let app_server = start_test_embedded_app_server(config).await?;
-
-        assert!(Arc::ptr_eq(
-            &app_server.auth_manager(),
-            &app_server.auth_manager()
-        ));
-        assert!(Arc::ptr_eq(
-            &app_server.thread_manager(),
-            &app_server.thread_manager()
-        ));
-
-        app_server.shutdown().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn embedded_app_server_start_failure_is_returned() -> color_eyre::Result<()> {
-        let temp_dir = TempDir::new()?;
-        let config = build_config(&temp_dir).await?;
-        let result = start_embedded_app_server_with(
-            Arg0DispatchPaths::default(),
-            config,
-            Vec::new(),
-            LoaderOverrides::default(),
-            CloudRequirementsLoader::default(),
-            codex_feedback::CodexFeedback::new(),
-            |_args| async { Err(std::io::Error::other("boom")) },
-        )
-        .await;
-        let err = match result {
-            Ok(_) => panic!("startup failure should be returned"),
-            Err(err) => err,
-        };
-
-        assert!(
-            err.to_string()
-                .contains("failed to start embedded app server"),
-            "error should preserve the embedded app server startup context"
-        );
-        Ok(())
-    }
-    #[tokio::test]
     #[serial]
     async fn windows_shows_trust_prompt_with_sandbox() -> std::io::Result<()> {
         let temp_dir = TempDir::new()?;
         let mut config = build_config(&temp_dir).await?;
         config.active_project = ProjectConfig { trust_level: None };
-        config.set_windows_sandbox_enabled(true);
+        config.set_windows_sandbox_enabled(/*value*/ true);
 
         let should_show = should_show_trust_screen(&config);
         if cfg!(target_os = "windows") {
