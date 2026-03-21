@@ -21,7 +21,7 @@ impl CodexMessageProcessor {
         plugin_mcp_servers: HashMap<String, McpServerConfig>,
     ) {
         for (name, server) in plugin_mcp_servers {
-            let oauth_config = match oauth_login_support(&server.transport).await {
+            let oauth_config = match oauth_login_support(&server).await {
                 McpOAuthLoginSupport::Supported(config) => config,
                 McpOAuthLoginSupport::Unsupported => continue,
                 McpOAuthLoginSupport::Unknown(err) => {
@@ -53,6 +53,8 @@ impl CodexMessageProcessor {
                     oauth_config.env_http_headers.clone(),
                     &resolved_scopes.scopes,
                     server.oauth_resource.as_deref(),
+                    oauth_config.oauth_authorization_params.clone(),
+                    oauth_config.oauth_client_metadata_url.as_deref(),
                     callback_port,
                     callback_url.as_deref(),
                 )
@@ -68,6 +70,8 @@ impl CodexMessageProcessor {
                             oauth_config.env_http_headers,
                             &[],
                             server.oauth_resource.as_deref(),
+                            oauth_config.oauth_authorization_params,
+                            oauth_config.oauth_client_metadata_url.as_deref(),
                             callback_port,
                             callback_url.as_deref(),
                         )
