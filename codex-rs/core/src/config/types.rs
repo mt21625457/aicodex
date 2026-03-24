@@ -230,7 +230,11 @@ impl<'de> Deserialize<'de> for McpServerConfig {
             throw_if_set("stdio", "http_headers", raw.http_headers.as_ref())?;
             throw_if_set("stdio", "env_http_headers", raw.env_http_headers.as_ref())?;
             throw_if_set("stdio", "oauth_resource", raw.oauth_resource.as_ref())?;
-            throw_if_set("stdio", "oauth_http_headers", raw.oauth_http_headers.as_ref())?;
+            throw_if_set(
+                "stdio",
+                "oauth_http_headers",
+                raw.oauth_http_headers.as_ref(),
+            )?;
             throw_if_set(
                 "stdio",
                 "oauth_env_http_headers",

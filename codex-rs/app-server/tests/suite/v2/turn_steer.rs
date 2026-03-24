@@ -284,13 +284,14 @@ async fn turn_steer_accepts_model_override() -> Result<()> {
     let working_directory = tmp.path().join("workdir");
     std::fs::create_dir(&working_directory)?;
 
-    let _server = create_mock_responses_server_sequence_unchecked(vec![create_shell_command_sse_response(
-        shell_command.clone(),
-        Some(&working_directory),
-        Some(10_000),
-        "call_sleep",
-    )?])
-    .await;
+    let _server =
+        create_mock_responses_server_sequence_unchecked(vec![create_shell_command_sse_response(
+            shell_command.clone(),
+            Some(&working_directory),
+            Some(10_000),
+            "call_sleep",
+        )?])
+        .await;
     create_config_toml(&codex_home, &_server.uri())?;
 
     let mut mcp = McpProcess::new(&codex_home).await?;

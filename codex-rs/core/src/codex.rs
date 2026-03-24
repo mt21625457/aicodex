@@ -1088,10 +1088,9 @@ impl SessionConfiguration {
                 &self.cwd,
             );
         if let Some(model) = updates.model.clone() {
-            next_configuration.collaboration_mode =
-                next_configuration
-                    .collaboration_mode
-                    .with_updates(Some(model), None, None);
+            next_configuration.collaboration_mode = next_configuration
+                .collaboration_mode
+                .with_updates(Some(model), None, None);
         }
         if let Some(collaboration_mode) = updates.collaboration_mode.clone() {
             next_configuration.collaboration_mode = collaboration_mode;

@@ -6231,11 +6231,13 @@ impl CodexMessageProcessor {
             .map(V2UserInput::into_core)
             .collect();
 
-        if let Some(model) = params.model.clone().map(|value| value.trim().to_string()).filter(|value| !value.is_empty()) {
-            if let Err(err) = thread
-                .set_model_override(model)
-                .await
-            {
+        if let Some(model) = params
+            .model
+            .clone()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        {
+            if let Err(err) = thread.set_model_override(model).await {
                 self.outgoing
                     .send_error(
                         request_id,

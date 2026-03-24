@@ -116,10 +116,7 @@ impl CodexThread {
         self.codex.agent_status.clone()
     }
 
-    pub async fn set_model_override(
-        &self,
-        model: String,
-    ) -> ConstraintResult<()> {
+    pub async fn set_model_override(&self, model: String) -> ConstraintResult<()> {
         self.codex
             .session
             .update_settings(crate::codex::SessionSettingsUpdate {

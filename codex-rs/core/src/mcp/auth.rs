@@ -54,7 +54,10 @@ fn merge_string_maps(
 
 fn resolved_oauth_headers(
     config: &McpServerConfig,
-) -> (Option<HashMap<String, String>>, Option<HashMap<String, String>>) {
+) -> (
+    Option<HashMap<String, String>>,
+    Option<HashMap<String, String>>,
+) {
     let McpServerTransportConfig::StreamableHttp {
         http_headers,
         env_http_headers,
@@ -89,7 +92,8 @@ pub async fn oauth_login_support(config: &McpServerConfig) -> McpOAuthLoginSuppo
 
     let (http_headers, env_http_headers) = resolved_oauth_headers(config);
 
-    match discover_streamable_http_oauth(url, http_headers.clone(), env_http_headers.clone()).await {
+    match discover_streamable_http_oauth(url, http_headers.clone(), env_http_headers.clone()).await
+    {
         Ok(Some(discovery)) => McpOAuthLoginSupport::Supported(McpOAuthLoginConfig {
             url: url.clone(),
             http_headers,

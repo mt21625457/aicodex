@@ -54,10 +54,10 @@ fn stdio_mcp(command: &str) -> McpServerConfig {
         disabled_tools: None,
         scopes: None,
         oauth_resource: None,
-            oauth_http_headers: None,
-            oauth_env_http_headers: None,
-            oauth_authorization_params: None,
-            oauth_client_metadata_url: None,
+        oauth_http_headers: None,
+        oauth_env_http_headers: None,
+        oauth_authorization_params: None,
+        oauth_client_metadata_url: None,
     }
 }
 
@@ -78,10 +78,10 @@ fn http_mcp(url: &str) -> McpServerConfig {
         disabled_tools: None,
         scopes: None,
         oauth_resource: None,
-            oauth_http_headers: None,
-            oauth_env_http_headers: None,
-            oauth_authorization_params: None,
-            oauth_client_metadata_url: None,
+        oauth_http_headers: None,
+        oauth_env_http_headers: None,
+        oauth_authorization_params: None,
+        oauth_client_metadata_url: None,
     }
 }
 
@@ -2446,10 +2446,10 @@ async fn replace_mcp_servers_streamable_http_isolates_headers_between_servers() 
                 disabled_tools: None,
                 scopes: None,
                 oauth_resource: None,
-            oauth_http_headers: None,
-            oauth_env_http_headers: None,
-            oauth_authorization_params: None,
-            oauth_client_metadata_url: None,
+                oauth_http_headers: None,
+                oauth_env_http_headers: None,
+                oauth_authorization_params: None,
+                oauth_client_metadata_url: None,
             },
         ),
         (
@@ -2471,10 +2471,10 @@ async fn replace_mcp_servers_streamable_http_isolates_headers_between_servers() 
                 disabled_tools: None,
                 scopes: None,
                 oauth_resource: None,
-            oauth_http_headers: None,
-            oauth_env_http_headers: None,
-            oauth_authorization_params: None,
-            oauth_client_metadata_url: None,
+                oauth_http_headers: None,
+                oauth_env_http_headers: None,
+                oauth_authorization_params: None,
+                oauth_client_metadata_url: None,
             },
         ),
     ]);
