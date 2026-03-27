@@ -2,6 +2,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -262,9 +263,17 @@ pub(crate) async fn handle_output_item_done(
         // Guardrail: the model issued a LocalShellCall without an id; surface the error back into history.
         Err(FunctionCallError::MissingLocalShellCallId) => {
             let msg = "LocalShellCall without call_id or id";
-            ctx.turn_context
-                .session_telemetry
-                .log_tool_failed("local_shell", msg);
+            ctx.turn_context.session_telemetry.tool_result_with_tags(
+                "local_shell",
+                "",
+                "",
+                Duration::ZERO,
+                /*success*/ false,
+                msg,
+                &[],
+                None,
+                None,
+            );
             tracing::error!(msg);
 
             let response = ResponseInputItem::FunctionCallOutput {

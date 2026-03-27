@@ -26,8 +26,12 @@ use core_test_support::responses::start_mock_server;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
+use serial_test::serial;
+use std::panic::AssertUnwindSafe;
 use std::sync::Mutex;
+use std::time::Duration;
 use tracing::Level;
+use tracing_test::internal::logs_assert;
 use tracing_test::traced_test;
 
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -71,6 +75,23 @@ fn assert_empty_mcp_tool_fields(line: &str) -> Result<(), String> {
     Ok(())
 }
 
+async fn logs_assert_eventually(scope: &str, assertion: impl Fn(&[&str]) -> Result<(), String>) {
+    let mut last_panic = None;
+    for _ in 0..20 {
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| logs_assert(scope, &assertion)));
+        if result.is_ok() {
+            return;
+        }
+        last_panic = Some(result.err());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    if let Some(Some(panic)) = last_panic {
+        std::panic::resume_unwind(panic);
+    }
+    panic!("logs_assert_eventually exhausted retries without a captured panic");
+}
+
 #[test]
 fn extract_log_field_handles_empty_bare_values() {
     let line = "event.name=\"codex.tool_result\" mcp_server= mcp_server_origin=";
@@ -93,6 +114,7 @@ fn extract_log_field_does_not_confuse_similar_keys() {
 
 #[tokio::test]
 #[traced_test]
+#[serial]
 async fn responses_api_emits_api_request_event() {
     let server = start_mock_server().await;
 
@@ -132,6 +154,7 @@ async fn responses_api_emits_api_request_event() {
 
 #[tokio::test]
 #[traced_test]
+#[serial]
 async fn process_sse_emits_tracing_for_output_item() {
     let server = start_mock_server().await;
 
@@ -170,6 +193,7 @@ async fn process_sse_emits_tracing_for_output_item() {
 
 #[tokio::test]
 #[traced_test]
+#[serial]
 async fn process_sse_emits_failed_event_on_parse_error() {
     let server = start_mock_server().await;
 
@@ -214,6 +238,7 @@ async fn process_sse_emits_failed_event_on_parse_error() {
 
 #[tokio::test]
 #[traced_test]
+#[serial]
 async fn process_sse_records_failed_event_when_stream_closes_without_completed() {
     let server = start_mock_server().await;
 
@@ -258,6 +283,7 @@ async fn process_sse_records_failed_event_when_stream_closes_without_completed()
 
 #[tokio::test]
 #[traced_test]
+#[serial]
 async fn process_sse_failed_event_records_response_error_message() {
     let server = start_mock_server().await;
 
@@ -323,6 +349,7 @@ async fn process_sse_failed_event_records_response_error_message() {
 
 #[tokio::test]
 #[traced_test]
+#[serial]
 async fn process_sse_failed_event_logs_parse_error() {
     let server = start_mock_server().await;
 
@@ -382,6 +409,7 @@ async fn process_sse_failed_event_logs_parse_error() {
 
 #[tokio::test]
 #[traced_test]
+#[serial]
 async fn process_sse_failed_event_logs_missing_error() {
     let server = start_mock_server().await;
 
@@ -431,6 +459,7 @@ async fn process_sse_failed_event_logs_missing_error() {
 
 #[tokio::test]
 #[traced_test]
+#[serial]
 async fn process_sse_failed_event_logs_response_completed_parse_error() {
     let server = start_mock_server().await;
 
@@ -492,6 +521,7 @@ async fn process_sse_failed_event_logs_response_completed_parse_error() {
 
 #[tokio::test]
 #[traced_test]
+#[serial]
 async fn process_sse_emits_completed_telemetry() {
     let server = start_mock_server().await;
 
@@ -720,6 +750,7 @@ async fn record_responses_sets_span_fields_for_response_events() {
 
 #[tokio::test]
 #[traced_test]
+#[serial]
 async fn handle_response_item_records_tool_result_for_custom_tool_call() {
     let server = start_mock_server().await;
 
@@ -768,34 +799,39 @@ async fn handle_response_item_records_tool_result_for_custom_tool_call() {
 
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TokenCount(_))).await;
 
-    logs_assert(|lines: &[&str]| {
-        let line = lines
-            .iter()
-            .find(|line| {
-                line.contains("codex.tool_result") && line.contains("call_id=custom-tool-call")
-            })
-            .ok_or_else(|| "missing codex.tool_result event".to_string())?;
+    logs_assert_eventually(
+        "handle_response_item_records_tool_result_for_custom_tool_call",
+        |lines: &[&str]| {
+            let line = lines
+                .iter()
+                .find(|line| {
+                    line.contains("codex.tool_result") && line.contains("call_id=custom-tool-call")
+                })
+                .ok_or_else(|| "missing codex.tool_result event".to_string())?;
 
-        if !line.contains("tool_name=unsupported_tool") {
-            return Err("missing tool_name field".to_string());
-        }
-        if !line.contains("arguments={\"key\":\"value\"}") {
-            return Err("missing arguments field".to_string());
-        }
-        if !line.contains("output=unsupported custom tool call: unsupported_tool") {
-            return Err("missing output field".to_string());
-        }
-        if !line.contains("success=false") {
-            return Err("missing success field".to_string());
-        }
-        assert_empty_mcp_tool_fields(line)?;
+            if !line.contains("tool_name=unsupported_tool") {
+                return Err("missing tool_name field".to_string());
+            }
+            if !line.contains("arguments={\"key\":\"value\"}") {
+                return Err("missing arguments field".to_string());
+            }
+            if !line.contains("output=unsupported custom tool call: unsupported_tool") {
+                return Err("missing output field".to_string());
+            }
+            if !line.contains("success=false") {
+                return Err("missing success field".to_string());
+            }
+            assert_empty_mcp_tool_fields(line)?;
 
-        Ok(())
-    });
+            Ok(())
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
 #[traced_test]
+#[serial]
 async fn handle_response_item_records_tool_result_for_function_call() {
     let server = start_mock_server().await;
 
@@ -841,34 +877,39 @@ async fn handle_response_item_records_tool_result_for_function_call() {
 
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TokenCount(_))).await;
 
-    logs_assert(|lines: &[&str]| {
-        let line = lines
-            .iter()
-            .find(|line| {
-                line.contains("codex.tool_result") && line.contains("call_id=function-call")
-            })
-            .ok_or_else(|| "missing codex.tool_result event".to_string())?;
+    logs_assert_eventually(
+        "handle_response_item_records_tool_result_for_function_call",
+        |lines: &[&str]| {
+            let line = lines
+                .iter()
+                .find(|line| {
+                    line.contains("codex.tool_result") && line.contains("call_id=function-call")
+                })
+                .ok_or_else(|| "missing codex.tool_result event".to_string())?;
 
-        if !line.contains("tool_name=nonexistent") {
-            return Err("missing tool_name field".to_string());
-        }
-        if !line.contains("arguments={\"value\":1}") {
-            return Err("missing arguments field".to_string());
-        }
-        if !line.contains("output=unsupported call: nonexistent") {
-            return Err("missing output field".to_string());
-        }
-        if !line.contains("success=false") {
-            return Err("missing success field".to_string());
-        }
-        assert_empty_mcp_tool_fields(line)?;
+            if !line.contains("tool_name=nonexistent") {
+                return Err("missing tool_name field".to_string());
+            }
+            if !line.contains("arguments={\"value\":1}") {
+                return Err("missing arguments field".to_string());
+            }
+            if !line.contains("output=unsupported call: nonexistent") {
+                return Err("missing output field".to_string());
+            }
+            if !line.contains("success=false") {
+                return Err("missing success field".to_string());
+            }
+            assert_empty_mcp_tool_fields(line)?;
 
-        Ok(())
-    });
+            Ok(())
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
 #[traced_test]
+#[serial]
 async fn handle_response_item_records_tool_result_for_local_shell_missing_ids() {
     let server = start_mock_server().await;
 
@@ -924,28 +965,33 @@ async fn handle_response_item_records_tool_result_for_local_shell_missing_ids() 
 
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TokenCount(_))).await;
 
-    logs_assert(|lines: &[&str]| {
-        let line = lines
-            .iter()
-            .find(|line| {
-                line.contains("codex.tool_result")
-                    && line.contains(&"tool_name=local_shell".to_string())
-                    && line.contains("output=LocalShellCall without call_id or id")
-            })
-            .ok_or_else(|| "missing codex.tool_result event".to_string())?;
+    logs_assert_eventually(
+        "handle_response_item_records_tool_result_for_local_shell_missing_ids",
+        |lines: &[&str]| {
+            let line = lines
+                .iter()
+                .find(|line| {
+                    line.contains("codex.tool_result")
+                        && line.contains(&"tool_name=local_shell".to_string())
+                        && line.contains("output=LocalShellCall without call_id or id")
+                })
+                .ok_or_else(|| "missing codex.tool_result event".to_string())?;
 
-        if !line.contains("success=false") {
-            return Err("missing success field".to_string());
-        }
-        assert_empty_mcp_tool_fields(line)?;
+            if !line.contains("success=false") {
+                return Err("missing success field".to_string());
+            }
+            assert_empty_mcp_tool_fields(line)?;
 
-        Ok(())
-    });
+            Ok(())
+        },
+    )
+    .await;
 }
 
 #[cfg(target_os = "macos")]
 #[tokio::test]
 #[traced_test]
+#[serial]
 async fn handle_response_item_records_tool_result_for_local_shell_call() {
     let server = start_mock_server().await;
 
@@ -973,6 +1019,7 @@ async fn handle_response_item_records_tool_result_for_local_shell_call() {
                 .features
                 .disable(Feature::GhostCommit)
                 .expect("test config should allow feature update");
+            config.permissions.approval_policy = Constrained::allow_any(AskForApproval::Never);
         })
         .build(&server)
         .await
@@ -989,7 +1036,7 @@ async fn handle_response_item_records_tool_result_for_local_shell_call() {
         .await
         .unwrap();
 
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TokenCount(_))).await;
+    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     logs_assert(|lines: &[&str]| {
         let line = lines
@@ -1052,6 +1099,7 @@ fn tool_decision_assertion<'a>(
 
 #[tokio::test]
 #[traced_test]
+#[serial]
 async fn handle_container_exec_autoapprove_from_config_records_tool_decision() {
     let server = start_mock_server().await;
     mount_sse_once(
@@ -1108,6 +1156,7 @@ async fn handle_container_exec_autoapprove_from_config_records_tool_decision() {
 
 #[tokio::test]
 #[traced_test]
+#[serial]
 async fn handle_container_exec_user_approved_records_tool_decision() {
     let server = start_mock_server().await;
     mount_sse_once(
@@ -1174,6 +1223,7 @@ async fn handle_container_exec_user_approved_records_tool_decision() {
 
 #[tokio::test]
 #[traced_test]
+#[serial]
 async fn handle_container_exec_user_approved_for_session_records_tool_decision() {
     let server = start_mock_server().await;
 
@@ -1240,6 +1290,7 @@ async fn handle_container_exec_user_approved_for_session_records_tool_decision()
 
 #[tokio::test]
 #[traced_test]
+#[serial]
 async fn handle_sandbox_error_user_approves_retry_records_tool_decision() {
     let server = start_mock_server().await;
 
@@ -1306,6 +1357,7 @@ async fn handle_sandbox_error_user_approves_retry_records_tool_decision() {
 
 #[tokio::test]
 #[traced_test]
+#[serial]
 async fn handle_container_exec_user_denies_records_tool_decision() {
     let server = start_mock_server().await;
 
@@ -1372,6 +1424,7 @@ async fn handle_container_exec_user_denies_records_tool_decision() {
 
 #[tokio::test]
 #[traced_test]
+#[serial]
 async fn handle_sandbox_error_user_approves_for_session_records_tool_decision() {
     let server = start_mock_server().await;
 
@@ -1438,6 +1491,7 @@ async fn handle_sandbox_error_user_approves_for_session_records_tool_decision() 
 
 #[tokio::test]
 #[traced_test]
+#[serial]
 async fn handle_sandbox_error_user_denies_records_tool_decision() {
     let server = start_mock_server().await;
 

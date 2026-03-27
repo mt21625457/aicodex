@@ -14,16 +14,6 @@ use serde::Serialize;
 use strum_macros::Display;
 use ts_rs::TS;
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema, TS)]
-#[ts(type = "string")]
-pub struct GitSha(pub String);
-
-impl GitSha {
-    pub fn new(sha: &str) -> Self {
-        Self(sha.to_string())
-    }
-}
-
 /// Authentication mode for OpenAI-backed providers.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Display, JsonSchema, TS)]
 #[serde(rename_all = "lowercase")]
@@ -336,6 +326,14 @@ client_request_definitions! {
         params: v2::FsCopyParams,
         response: v2::FsCopyResponse,
     },
+    FsWatch => "fs/watch" {
+        params: v2::FsWatchParams,
+        response: v2::FsWatchResponse,
+    },
+    FsUnwatch => "fs/unwatch" {
+        params: v2::FsUnwatchParams,
+        response: v2::FsUnwatchResponse,
+    },
     SkillsConfigWrite => "skills/config/write" {
         params: v2::SkillsConfigWriteParams,
         response: v2::SkillsConfigWriteResponse,
@@ -393,6 +391,10 @@ client_request_definitions! {
     ExperimentalFeatureList => "experimentalFeature/list" {
         params: v2::ExperimentalFeatureListParams,
         response: v2::ExperimentalFeatureListResponse,
+    },
+    ExperimentalFeatureEnablementSet => "experimentalFeature/enablement/set" {
+        params: v2::ExperimentalFeatureEnablementSetParams,
+        response: v2::ExperimentalFeatureEnablementSetResponse,
     },
     #[experimental("collaborationMode/list")]
     /// Lists collaboration mode presets.
@@ -914,6 +916,7 @@ server_notification_definitions! {
     AccountUpdated => "account/updated" (v2::AccountUpdatedNotification),
     AccountRateLimitsUpdated => "account/rateLimits/updated" (v2::AccountRateLimitsUpdatedNotification),
     AppListUpdated => "app/list/updated" (v2::AppListUpdatedNotification),
+    FsChanged => "fs/changed" (v2::FsChangedNotification),
     ReasoningSummaryTextDelta => "item/reasoning/summaryTextDelta" (v2::ReasoningSummaryTextDeltaNotification),
     ReasoningSummaryPartAdded => "item/reasoning/summaryPartAdded" (v2::ReasoningSummaryPartAddedNotification),
     ReasoningTextDelta => "item/reasoning/textDelta" (v2::ReasoningTextDeltaNotification),
@@ -1494,6 +1497,27 @@ mod tests {
     }
 
     #[test]
+    fn serialize_fs_watch() -> Result<()> {
+        let request = ClientRequest::FsWatch {
+            request_id: RequestId::Integer(10),
+            params: v2::FsWatchParams {
+                path: absolute_path("tmp/repo/.git"),
+            },
+        };
+        assert_eq!(
+            json!({
+                "method": "fs/watch",
+                "id": 10,
+                "params": {
+                    "path": absolute_path_string("tmp/repo/.git")
+                }
+            }),
+            serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
     fn serialize_list_experimental_features() -> Result<()> {
         let request = ClientRequest::ExperimentalFeatureList {
             request_id: RequestId::Integer(8),
@@ -1684,9 +1708,7 @@ mod tests {
                     read: Some(vec![absolute_path("/tmp/allowed")]),
                     write: None,
                 }),
-                macos: None,
             }),
-            skill_metadata: None,
             proposed_execpolicy_amendment: None,
             proposed_network_policy_amendments: None,
             available_decisions: None,
@@ -1695,33 +1717,6 @@ mod tests {
         assert_eq!(
             reason,
             Some("item/commandExecution/requestApproval.additionalPermissions")
-        );
-    }
-
-    #[test]
-    fn command_execution_request_approval_skill_metadata_is_marked_experimental() {
-        let params = v2::CommandExecutionRequestApprovalParams {
-            thread_id: "thr_123".to_string(),
-            turn_id: "turn_123".to_string(),
-            item_id: "call_123".to_string(),
-            approval_id: None,
-            reason: None,
-            network_approval_context: None,
-            command: Some("cat file".to_string()),
-            cwd: None,
-            command_actions: None,
-            additional_permissions: None,
-            skill_metadata: Some(v2::CommandExecutionRequestApprovalSkillMetadata {
-                path_to_skills_md: PathBuf::from("/tmp/SKILLS.md"),
-            }),
-            proposed_execpolicy_amendment: None,
-            proposed_network_policy_amendments: None,
-            available_decisions: None,
-        };
-        let reason = crate::experimental_api::ExperimentalApi::experimental_reason(&params);
-        assert_eq!(
-            reason,
-            Some("item/commandExecution/requestApproval.skillMetadata")
         );
     }
 }

@@ -239,6 +239,7 @@ async fn effective_mcp_servers_include_plugins_without_overriding_user_config() 
             oauth_env_http_headers: None,
             oauth_authorization_params: None,
             oauth_client_metadata_url: None,
+            tools: HashMap::new(),
         },
     );
     config

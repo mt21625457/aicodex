@@ -15,6 +15,7 @@ use super::auth::McpOAuthLoginSupport;
 use super::auth::oauth_login_support;
 use super::auth::resolve_oauth_scopes;
 use super::auth::should_retry_without_scopes;
+use crate::SkillMetadata;
 use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::config::Config;
@@ -24,8 +25,7 @@ use crate::config::types::McpServerConfig;
 use crate::config::types::McpServerTransportConfig;
 use crate::default_client::is_first_party_originator;
 use crate::default_client::originator;
-use crate::skills::SkillMetadata;
-use crate::skills::model::SkillToolDependency;
+use crate::model::SkillToolDependency;
 use codex_features::Feature;
 
 const SKILL_MCP_DEPENDENCY_PROMPT_ID: &str = "skill_mcp_dependency_install";
@@ -436,6 +436,7 @@ fn mcp_dependency_to_server_config(
             oauth_env_http_headers: None,
             oauth_authorization_params: None,
             oauth_client_metadata_url: None,
+            tools: HashMap::new(),
         });
     }
 
@@ -465,6 +466,7 @@ fn mcp_dependency_to_server_config(
             oauth_env_http_headers: None,
             oauth_authorization_params: None,
             oauth_client_metadata_url: None,
+            tools: HashMap::new(),
         });
     }
 

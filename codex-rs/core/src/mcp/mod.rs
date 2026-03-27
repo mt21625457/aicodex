@@ -180,6 +180,7 @@ fn codex_apps_mcp_server_config(config: &Config, auth: Option<&CodexAuth>) -> Mc
         oauth_env_http_headers: None,
         oauth_authorization_params: None,
         oauth_client_metadata_url: None,
+        tools: HashMap::new(),
     }
 }
 

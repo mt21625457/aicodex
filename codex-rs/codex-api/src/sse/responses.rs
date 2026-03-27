@@ -683,6 +683,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn parses_local_shell_call_without_ids() {
+        let events = run_sse(vec![
+            json!({
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "local_shell_call",
+                    "status": "completed",
+                    "action": {
+                        "type": "exec",
+                        "command": ["/bin/echo", "hello"],
+                    }
+                }
+            }),
+            json!({
+                "type": "response.completed",
+                "response": { "id": "resp1" }
+            }),
+        ])
+        .await;
+
+        assert_eq!(events.len(), 2);
+        assert_matches!(
+            &events[0],
+            ResponseEvent::OutputItemDone(ResponseItem::LocalShellCall {
+                id,
+                call_id,
+                status,
+                action,
+            }) if id.is_none()
+                && call_id.is_none()
+                && matches!(status, codex_protocol::models::LocalShellStatus::Completed)
+                && matches!(action, codex_protocol::models::LocalShellAction::Exec(exec) if exec.command == vec!["/bin/echo".to_string(), "hello".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn parses_custom_tool_call_items() {
+        let events = run_sse(vec![
+            json!({
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "custom_tool_call",
+                    "call_id": "custom-tool-call",
+                    "name": "unsupported_tool",
+                    "input": "{\"key\":\"value\"}"
+                }
+            }),
+            json!({
+                "type": "response.completed",
+                "response": { "id": "resp1" }
+            }),
+        ])
+        .await;
+
+        assert_eq!(events.len(), 2);
+        assert_matches!(
+            &events[0],
+            ResponseEvent::OutputItemDone(ResponseItem::CustomToolCall {
+                call_id,
+                name,
+                input,
+                ..
+            }) if call_id == "custom-tool-call"
+                && name == "unsupported_tool"
+                && input == "{\"key\":\"value\"}"
+        );
+    }
+
+    #[tokio::test]
     async fn emits_completed_without_stream_end() {
         let completed = json!({
             "type": "response.completed",

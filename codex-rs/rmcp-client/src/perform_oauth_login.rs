@@ -125,6 +125,69 @@ pub async fn perform_oauth_login(
     callback_port: Option<u16>,
     callback_url: Option<&str>,
 ) -> Result<()> {
+    perform_oauth_login_with_browser_output(
+        server_name,
+        server_url,
+        store_mode,
+        http_headers,
+        env_http_headers,
+        scopes,
+        oauth_resource,
+        oauth_authorization_params,
+        oauth_client_metadata_url,
+        callback_port,
+        callback_url,
+        /*emit_browser_url*/ true,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn perform_oauth_login_silent(
+    server_name: &str,
+    server_url: &str,
+    store_mode: OAuthCredentialsStoreMode,
+    http_headers: Option<HashMap<String, String>>,
+    env_http_headers: Option<HashMap<String, String>>,
+    scopes: &[String],
+    oauth_resource: Option<&str>,
+    oauth_authorization_params: Option<HashMap<String, String>>,
+    oauth_client_metadata_url: Option<&str>,
+    callback_port: Option<u16>,
+    callback_url: Option<&str>,
+) -> Result<()> {
+    perform_oauth_login_with_browser_output(
+        server_name,
+        server_url,
+        store_mode,
+        http_headers,
+        env_http_headers,
+        scopes,
+        oauth_resource,
+        oauth_authorization_params,
+        oauth_client_metadata_url,
+        callback_port,
+        callback_url,
+        /*emit_browser_url*/ false,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn perform_oauth_login_with_browser_output(
+    server_name: &str,
+    server_url: &str,
+    store_mode: OAuthCredentialsStoreMode,
+    http_headers: Option<HashMap<String, String>>,
+    env_http_headers: Option<HashMap<String, String>>,
+    scopes: &[String],
+    oauth_resource: Option<&str>,
+    oauth_authorization_params: Option<HashMap<String, String>>,
+    oauth_client_metadata_url: Option<&str>,
+    callback_port: Option<u16>,
+    callback_url: Option<&str>,
+    emit_browser_url: bool,
+) -> Result<()> {
     let headers = OauthHeaders {
         http_headers,
         env_http_headers,
@@ -144,7 +207,7 @@ pub async fn perform_oauth_login(
         /*timeout_secs*/ None,
     )
     .await?
-    .finish()
+    .finish(emit_browser_url)
     .await
 }
 
@@ -599,16 +662,23 @@ impl OauthLoginFlow {
         self.auth_url.clone()
     }
 
-    async fn finish(mut self) -> Result<()> {
+    async fn finish(mut self, emit_browser_url: bool) -> Result<()> {
         if self.launch_browser {
             let server_name = &self.server_name;
             let auth_url = &self.auth_url;
-            println!(
-                "Authorize `{server_name}` by opening this URL in your browser:\n{auth_url}\n"
-            );
+            if emit_browser_url {
+                println!(
+                    "Authorize `{server_name}` by opening this URL in your browser:\n{auth_url}\n"
+                );
+            }
 
             if webbrowser::open(auth_url).is_err() {
-                println!("(Browser launch failed; please copy the URL above manually.)");
+                if !emit_browser_url {
+                    eprintln!(
+                        "Authorize `{server_name}` by opening this URL in your browser:\n{auth_url}\n"
+                    );
+                }
+                eprintln!("(Browser launch failed; please copy the URL above manually.)");
             }
         }
 
@@ -661,7 +731,7 @@ impl OauthLoginFlow {
         let (tx, rx) = oneshot::channel();
 
         tokio::spawn(async move {
-            let result = self.finish().await;
+            let result = self.finish(/*emit_browser_url*/ false).await;
 
             if let Err(err) = &result {
                 eprintln!(

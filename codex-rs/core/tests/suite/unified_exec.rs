@@ -159,7 +159,9 @@ async fn unified_exec_intercepts_apply_patch_exec_command() -> Result<()> {
     let call_id = "uexec-apply-patch";
     let args = json!({
         "cmd": command,
-        "yield_time_ms": 250,
+        // The intercepted apply_patch path spawns a helper process, which can
+        // take longer than a tiny unified-exec yield deadline on CI.
+        "yield_time_ms": 5_000,
     });
 
     let responses = vec![
@@ -190,6 +192,7 @@ async fn unified_exec_intercepts_apply_patch_exec_command() -> Result<()> {
             final_output_json_schema: None,
             cwd,
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -323,6 +326,7 @@ async fn unified_exec_emits_exec_command_begin_event() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -405,6 +409,7 @@ async fn unified_exec_resolves_relative_workdir() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -490,6 +495,7 @@ async fn unified_exec_respects_workdir_override() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -587,6 +593,7 @@ async fn unified_exec_emits_exec_command_end_event() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -666,6 +673,7 @@ async fn unified_exec_emits_output_delta_for_exec_command() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -746,6 +754,7 @@ async fn unified_exec_full_lifecycle_with_background_end_event() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -880,6 +889,7 @@ async fn unified_exec_emits_terminal_interaction_for_write_stdin() -> Result<()>
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -1021,6 +1031,7 @@ async fn unified_exec_terminal_interaction_captures_delayed_output() -> Result<(
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -1185,6 +1196,7 @@ async fn unified_exec_emits_one_begin_and_one_end_event() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -1197,13 +1209,23 @@ async fn unified_exec_emits_one_begin_and_one_end_event() -> Result<()> {
 
     let mut begin_events = Vec::new();
     let mut end_events = Vec::new();
+    let mut task_completed = false;
     loop {
         let event_msg = wait_for_event(&codex, |_| true).await;
         match event_msg {
-            EventMsg::ExecCommandBegin(event) => begin_events.push(event),
-            EventMsg::ExecCommandEnd(event) => end_events.push(event),
-            EventMsg::TurnComplete(_) => break,
+            EventMsg::ExecCommandBegin(event) if event.call_id == open_call_id => {
+                begin_events.push(event);
+            }
+            EventMsg::ExecCommandEnd(event) if event.call_id == open_call_id => {
+                end_events.push(event);
+            }
+            EventMsg::TurnComplete(_) => {
+                task_completed = true;
+            }
             _ => {}
+        }
+        if task_completed && !end_events.is_empty() {
+            break;
         }
     }
 
@@ -1287,6 +1309,7 @@ async fn exec_command_reports_chunk_and_exit_metadata() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -1409,6 +1432,7 @@ async fn unified_exec_defaults_to_pipe() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -1503,6 +1527,7 @@ async fn unified_exec_can_enable_tty() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -1588,6 +1613,7 @@ async fn unified_exec_respects_early_exit_notifications() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -1723,6 +1749,7 @@ async fn write_stdin_returns_exit_metadata_and_clears_session() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -1895,6 +1922,7 @@ async fn unified_exec_emits_end_event_when_session_dies_via_stdin() -> Result<()
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -1976,6 +2004,7 @@ async fn unified_exec_keeps_long_running_session_after_turn_end() -> Result<()> 
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -2068,6 +2097,7 @@ async fn unified_exec_interrupt_preserves_long_running_session() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -2176,6 +2206,7 @@ async fn unified_exec_reuses_session_via_stdin() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -2315,6 +2346,7 @@ PY
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -2433,6 +2465,7 @@ async fn unified_exec_timeout_and_followup_poll() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -2533,6 +2566,7 @@ PY
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -2632,6 +2666,7 @@ async fn unified_exec_runs_under_sandbox() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             // Important!
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: session_model,
@@ -2741,6 +2776,7 @@ async fn unified_exec_python_prompt_under_seatbelt() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: session_model,
             effort: None,
@@ -2840,6 +2876,7 @@ async fn unified_exec_runs_on_all_platforms() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,
@@ -2979,6 +3016,7 @@ async fn unified_exec_prunes_exited_sessions_first() -> Result<()> {
             final_output_json_schema: None,
             cwd: cwd.path().to_path_buf(),
             approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             model: session_model,
             effort: None,

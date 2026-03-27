@@ -7,7 +7,6 @@ use crate::protocol::common::AuthMode;
 use codex_experimental_api_macros::ExperimentalApi;
 use codex_protocol::account::PlanType;
 use codex_protocol::approvals::ElicitationRequest as CoreElicitationRequest;
-use codex_protocol::approvals::ExecApprovalRequestSkillMetadata as CoreExecApprovalRequestSkillMetadata;
 use codex_protocol::approvals::ExecPolicyAmendment as CoreExecPolicyAmendment;
 use codex_protocol::approvals::NetworkApprovalContext as CoreNetworkApprovalContext;
 use codex_protocol::approvals::NetworkApprovalProtocol as CoreNetworkApprovalProtocol;
@@ -33,10 +32,6 @@ use codex_protocol::mcp::Tool as McpTool;
 use codex_protocol::memory_citation::MemoryCitation as CoreMemoryCitation;
 use codex_protocol::memory_citation::MemoryCitationEntry as CoreMemoryCitationEntry;
 use codex_protocol::models::FileSystemPermissions as CoreFileSystemPermissions;
-use codex_protocol::models::MacOsAutomationPermission as CoreMacOsAutomationPermission;
-use codex_protocol::models::MacOsContactsPermission as CoreMacOsContactsPermission;
-use codex_protocol::models::MacOsPreferencesPermission as CoreMacOsPreferencesPermission;
-use codex_protocol::models::MacOsSeatbeltProfileExtensions as CoreMacOsSeatbeltProfileExtensions;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::NetworkPermissions as CoreNetworkPermissions;
 use codex_protocol::models::PermissionProfile as CorePermissionProfile;
@@ -66,6 +61,7 @@ use codex_protocol::protocol::HookRunSummary as CoreHookRunSummary;
 use codex_protocol::protocol::HookScope as CoreHookScope;
 use codex_protocol::protocol::ModelRerouteReason as CoreModelRerouteReason;
 use codex_protocol::protocol::NetworkAccess as CoreNetworkAccess;
+use codex_protocol::protocol::NonSteerableTurnKind as CoreNonSteerableTurnKind;
 use codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
 use codex_protocol::protocol::RateLimitSnapshot as CoreRateLimitSnapshot;
 use codex_protocol::protocol::RateLimitWindow as CoreRateLimitWindow;
@@ -128,6 +124,14 @@ macro_rules! v2_enum_from_core {
     };
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum NonSteerableTurnKind {
+    Review,
+    Compact,
+}
+
 /// This translation layer make sure that we expose codex error code in camel case.
 ///
 /// When an upstream HTTP status is available (for example, from the Responses API or a provider),
@@ -167,6 +171,13 @@ pub enum CodexErrorInfo {
         #[ts(rename = "httpStatusCode")]
         http_status_code: Option<u16>,
     },
+    /// Returned when `turn/start` or `turn/steer` is submitted while the current active turn
+    /// cannot accept same-turn steering, for example `/review` or manual `/compact`.
+    ActiveTurnNotSteerable {
+        #[serde(rename = "turnKind")]
+        #[ts(rename = "turnKind")]
+        turn_kind: NonSteerableTurnKind,
+    },
     Other,
 }
 
@@ -193,7 +204,21 @@ impl From<CoreCodexErrorInfo> for CodexErrorInfo {
             CoreCodexErrorInfo::ResponseTooManyFailedAttempts { http_status_code } => {
                 CodexErrorInfo::ResponseTooManyFailedAttempts { http_status_code }
             }
+            CoreCodexErrorInfo::ActiveTurnNotSteerable { turn_kind } => {
+                CodexErrorInfo::ActiveTurnNotSteerable {
+                    turn_kind: turn_kind.into(),
+                }
+            }
             CoreCodexErrorInfo::Other => CodexErrorInfo::Other,
+        }
+    }
+}
+
+impl From<CoreNonSteerableTurnKind> for NonSteerableTurnKind {
+    fn from(value: CoreNonSteerableTurnKind) -> Self {
+        match value {
+            CoreNonSteerableTurnKind::Review => Self::Review,
+            CoreNonSteerableTurnKind::Compact => Self::Compact,
         }
     }
 }
@@ -347,7 +372,7 @@ v2_enum_from_core!(
 
 v2_enum_from_core!(
     pub enum HookEventName from CoreHookEventName {
-        SessionStart, UserPromptSubmit, Stop
+        PreToolUse, PostToolUse, SessionStart, UserPromptSubmit, Stop
     }
 );
 
@@ -1059,47 +1084,6 @@ impl From<AdditionalFileSystemPermissions> for CoreFileSystemPermissions {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
-pub struct AdditionalMacOsPermissions {
-    pub preferences: CoreMacOsPreferencesPermission,
-    pub automations: CoreMacOsAutomationPermission,
-    pub launch_services: bool,
-    pub accessibility: bool,
-    pub calendar: bool,
-    pub reminders: bool,
-    pub contacts: CoreMacOsContactsPermission,
-}
-
-impl From<CoreMacOsSeatbeltProfileExtensions> for AdditionalMacOsPermissions {
-    fn from(value: CoreMacOsSeatbeltProfileExtensions) -> Self {
-        Self {
-            preferences: value.macos_preferences,
-            automations: value.macos_automation,
-            launch_services: value.macos_launch_services,
-            accessibility: value.macos_accessibility,
-            calendar: value.macos_calendar,
-            reminders: value.macos_reminders,
-            contacts: value.macos_contacts,
-        }
-    }
-}
-
-impl From<AdditionalMacOsPermissions> for CoreMacOsSeatbeltProfileExtensions {
-    fn from(value: AdditionalMacOsPermissions) -> Self {
-        Self {
-            macos_preferences: value.preferences,
-            macos_automation: value.automations,
-            macos_launch_services: value.launch_services,
-            macos_accessibility: value.accessibility,
-            macos_calendar: value.calendar,
-            macos_reminders: value.reminders,
-            macos_contacts: value.contacts,
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
 pub struct AdditionalNetworkPermissions {
     pub enabled: Option<bool>,
 }
@@ -1153,7 +1137,6 @@ impl From<RequestPermissionProfile> for CoreRequestPermissionProfile {
 pub struct AdditionalPermissionProfile {
     pub network: Option<AdditionalNetworkPermissions>,
     pub file_system: Option<AdditionalFileSystemPermissions>,
-    pub macos: Option<AdditionalMacOsPermissions>,
 }
 
 impl From<CorePermissionProfile> for AdditionalPermissionProfile {
@@ -1161,7 +1144,6 @@ impl From<CorePermissionProfile> for AdditionalPermissionProfile {
         Self {
             network: value.network.map(AdditionalNetworkPermissions::from),
             file_system: value.file_system.map(AdditionalFileSystemPermissions::from),
-            macos: value.macos.map(AdditionalMacOsPermissions::from),
         }
     }
 }
@@ -1171,7 +1153,6 @@ impl From<AdditionalPermissionProfile> for CorePermissionProfile {
         Self {
             network: value.network.map(CoreNetworkPermissions::from),
             file_system: value.file_system.map(CoreFileSystemPermissions::from),
-            macos: value.macos.map(CoreMacOsSeatbeltProfileExtensions::from),
         }
     }
 }
@@ -1193,7 +1174,6 @@ impl From<GrantedPermissionProfile> for CorePermissionProfile {
         Self {
             network: value.network.map(CoreNetworkPermissions::from),
             file_system: value.file_system.map(CoreFileSystemPermissions::from),
-            macos: None,
         }
     }
 }
@@ -1896,6 +1876,25 @@ pub struct ExperimentalFeatureListResponse {
     pub next_cursor: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ExperimentalFeatureEnablementSetParams {
+    /// Process-wide runtime feature enablement keyed by canonical feature name.
+    ///
+    /// Only named features are updated. Omitted features are left unchanged.
+    /// Send an empty map for a no-op.
+    pub enablement: std::collections::BTreeMap<String, bool>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ExperimentalFeatureEnablementSetResponse {
+    /// Feature enablement entries updated by this request.
+    pub enablement: std::collections::BTreeMap<String, bool>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -2284,6 +2283,52 @@ pub struct FsCopyParams {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct FsCopyResponse {}
+
+/// Start filesystem watch notifications for an absolute path.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FsWatchParams {
+    /// Absolute file or directory path to watch.
+    pub path: AbsolutePathBuf,
+}
+
+/// Created watch handle returned by `fs/watch`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FsWatchResponse {
+    /// Connection-scoped watch identifier used for `fs/unwatch` and `fs/changed`.
+    pub watch_id: String,
+    /// Canonicalized path associated with the watch.
+    pub path: AbsolutePathBuf,
+}
+
+/// Stop filesystem watch notifications for a prior `fs/watch`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FsUnwatchParams {
+    /// Watch identifier returned by `fs/watch`.
+    pub watch_id: String,
+}
+
+/// Successful response for `fs/unwatch`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FsUnwatchResponse {}
+
+/// Filesystem watch notification emitted for `fs/watch` subscribers.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct FsChangedNotification {
+    /// Watch identifier returned by `fs/watch`.
+    pub watch_id: String,
+    /// File or directory paths associated with this event.
+    pub changed_paths: Vec<AbsolutePathBuf>,
+}
 
 /// PTY size in character cells for `command/exec` PTY sessions.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
@@ -3130,9 +3175,19 @@ pub struct PluginListParams {
 #[ts(export_to = "v2/")]
 pub struct PluginListResponse {
     pub marketplaces: Vec<PluginMarketplaceEntry>,
+    #[serde(default)]
+    pub marketplace_load_errors: Vec<MarketplaceLoadErrorInfo>,
     pub remote_sync_error: Option<String>,
     #[serde(default)]
     pub featured_plugin_ids: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct MarketplaceLoadErrorInfo {
+    pub marketplace_path: AbsolutePathBuf,
+    pub message: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -3324,6 +3379,7 @@ pub struct SkillSummary {
     pub short_description: Option<String>,
     pub interface: Option<SkillInterface>,
     pub path: PathBuf,
+    pub enabled: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -3362,7 +3418,12 @@ pub enum PluginSource {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct SkillsConfigWriteParams {
-    pub path: PathBuf,
+    /// Path-based selector.
+    #[ts(optional = nullable)]
+    pub path: Option<AbsolutePathBuf>,
+    /// Name-based selector.
+    #[ts(optional = nullable)]
+    pub name: Option<String>,
     pub enabled: bool,
 }
 
@@ -3418,14 +3479,6 @@ impl From<CoreSkillMetadata> for SkillMetadata {
             path: value.path,
             scope: value.scope.into(),
             enabled: true,
-        }
-    }
-}
-
-impl From<CoreExecApprovalRequestSkillMetadata> for CommandExecutionRequestApprovalSkillMetadata {
-    fn from(value: CoreExecApprovalRequestSkillMetadata) -> Self {
-        Self {
-            path_to_skills_md: value.path_to_skills_md,
         }
     }
 }
@@ -5144,11 +5197,6 @@ pub struct CommandExecutionRequestApprovalParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
     pub additional_permissions: Option<AdditionalPermissionProfile>,
-    /// Optional skill metadata when the approval was triggered by a skill script.
-    #[experimental("item/commandExecution/requestApproval.skillMetadata")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional = nullable)]
-    pub skill_metadata: Option<CommandExecutionRequestApprovalSkillMetadata>,
     /// Optional proposed execpolicy amendment to allow similar commands without prompting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
@@ -5170,15 +5218,7 @@ impl CommandExecutionRequestApprovalParams {
         // We need a generic outbound compatibility design for stripping or
         // otherwise handling experimental server->client payloads.
         self.additional_permissions = None;
-        self.skill_metadata = None;
     }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct CommandExecutionRequestApprovalSkillMetadata {
-    pub path_to_skills_md: PathBuf,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -6001,10 +6041,8 @@ mod tests {
                 "fileSystem": {
                     "read": ["relative/path"],
                     "write": null
-                },
-                "macos": null
+                }
             },
-            "skillMetadata": null,
             "proposedExecpolicyAmendment": null,
             "proposedNetworkPolicyAmendments": null,
             "availableDecisions": null
@@ -6014,121 +6052,6 @@ mod tests {
             err.to_string()
                 .contains("AbsolutePathBuf deserialized without a base path"),
             "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn command_execution_request_approval_accepts_macos_automation_bundle_ids_object() {
-        let params = serde_json::from_value::<CommandExecutionRequestApprovalParams>(json!({
-            "threadId": "thr_123",
-            "turnId": "turn_123",
-            "itemId": "call_123",
-            "command": "cat file",
-            "cwd": "/tmp",
-            "commandActions": null,
-            "reason": null,
-            "networkApprovalContext": null,
-            "additionalPermissions": {
-                "network": null,
-                "fileSystem": null,
-                "macos": {
-                    "preferences": "read_only",
-                    "automations": {
-                        "bundle_ids": ["com.apple.Notes"]
-                    },
-                    "launchServices": false,
-                    "accessibility": false,
-                    "calendar": false,
-                    "reminders": false,
-                    "contacts": "read_only"
-                }
-            },
-            "skillMetadata": null,
-            "proposedExecpolicyAmendment": null,
-            "proposedNetworkPolicyAmendments": null,
-            "availableDecisions": null
-        }))
-        .expect("bundle_ids object should deserialize");
-
-        assert_eq!(
-            params
-                .additional_permissions
-                .and_then(|permissions| permissions.macos)
-                .map(|macos| (macos.automations, macos.launch_services, macos.contacts)),
-            Some((
-                CoreMacOsAutomationPermission::BundleIds(vec!["com.apple.Notes".to_string(),]),
-                false,
-                CoreMacOsContactsPermission::ReadOnly,
-            ))
-        );
-    }
-
-    #[test]
-    fn command_execution_request_approval_accepts_macos_reminders_permission() {
-        let params = serde_json::from_value::<CommandExecutionRequestApprovalParams>(json!({
-            "threadId": "thr_123",
-            "turnId": "turn_123",
-            "itemId": "call_123",
-            "command": "cat file",
-            "cwd": "/tmp",
-            "commandActions": null,
-            "reason": null,
-            "networkApprovalContext": null,
-            "additionalPermissions": {
-                "network": null,
-                "fileSystem": null,
-                "macos": {
-                    "preferences": "read_only",
-                    "automations": "none",
-                    "launchServices": false,
-                    "accessibility": false,
-                    "calendar": false,
-                    "reminders": true,
-                    "contacts": "none"
-                }
-            },
-            "skillMetadata": null,
-            "proposedExecpolicyAmendment": null,
-            "proposedNetworkPolicyAmendments": null,
-            "availableDecisions": null
-        }))
-        .expect("reminders permission should deserialize");
-
-        assert_eq!(
-            params
-                .additional_permissions
-                .and_then(|permissions| permissions.macos)
-                .map(|macos| macos.reminders),
-            Some(true)
-        );
-    }
-
-    #[test]
-    fn command_execution_request_approval_accepts_skill_metadata() {
-        let params = serde_json::from_value::<CommandExecutionRequestApprovalParams>(json!({
-            "threadId": "thr_123",
-            "turnId": "turn_123",
-            "itemId": "call_123",
-            "command": "cat file",
-            "cwd": "/tmp",
-            "commandActions": null,
-            "reason": null,
-            "networkApprovalContext": null,
-            "additionalPermissions": null,
-            "skillMetadata": {
-                "pathToSkillsMd": "/tmp/SKILLS.md"
-            },
-            "proposedExecpolicyAmendment": null,
-            "proposedNetworkPolicyAmendments": null,
-            "availableDecisions": null
-        }))
-        .expect("skill metadata should deserialize");
-
-        assert_eq!(
-            params.skill_metadata,
-            Some(CommandExecutionRequestApprovalSkillMetadata {
-                path_to_skills_md: PathBuf::from("/tmp/SKILLS.md"),
-            })
         );
     }
 
@@ -6289,7 +6212,6 @@ mod tests {
                             .expect("path must be absolute"),
                     ]),
                 }),
-                macos: None,
             }
         );
     }
@@ -6464,6 +6386,33 @@ mod tests {
         let decoded = serde_json::from_value::<ThreadShellCommandResponse>(value)
             .expect("deserialize thread/shellCommand response");
         assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn fs_changed_notification_round_trips() {
+        let notification = FsChangedNotification {
+            watch_id: "0195ec6b-1d6f-7c2e-8c7a-56f2c4a8b9d1".to_string(),
+            changed_paths: vec![
+                absolute_path("tmp/repo/.git/HEAD"),
+                absolute_path("tmp/repo/.git/FETCH_HEAD"),
+            ],
+        };
+
+        let value = serde_json::to_value(&notification).expect("serialize fs/changed notification");
+        assert_eq!(
+            value,
+            json!({
+                "watchId": "0195ec6b-1d6f-7c2e-8c7a-56f2c4a8b9d1",
+                "changedPaths": [
+                    absolute_path_string("tmp/repo/.git/HEAD"),
+                    absolute_path_string("tmp/repo/.git/FETCH_HEAD"),
+                ],
+            })
+        );
+
+        let decoded = serde_json::from_value::<FsChangedNotification>(value)
+            .expect("deserialize fs/changed notification");
+        assert_eq!(decoded, notification);
     }
 
     #[test]
@@ -7842,6 +7791,22 @@ mod tests {
             json!({
                 "responseTooManyFailedAttempts": {
                     "httpStatusCode": 401
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn codex_error_info_serializes_active_turn_not_steerable_turn_kind_in_camel_case() {
+        let value = CodexErrorInfo::ActiveTurnNotSteerable {
+            turn_kind: NonSteerableTurnKind::Review,
+        };
+
+        assert_eq!(
+            serde_json::to_value(value).unwrap(),
+            json!({
+                "activeTurnNotSteerable": {
+                    "turnKind": "review"
                 }
             })
         );

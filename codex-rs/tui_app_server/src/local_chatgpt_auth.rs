@@ -1,7 +1,6 @@
 use std::path::Path;
 
 use codex_app_server_protocol::AuthMode;
-use codex_app_server_protocol::ChatgptAuthTokensRefreshResponse;
 use codex_core::auth::AuthCredentialsStoreMode;
 use codex_core::auth::load_auth_dot_json;
 
@@ -10,16 +9,6 @@ pub(crate) struct LocalChatgptAuth {
     pub(crate) access_token: String,
     pub(crate) chatgpt_account_id: String,
     pub(crate) chatgpt_plan_type: Option<String>,
-}
-
-impl LocalChatgptAuth {
-    pub(crate) fn to_refresh_response(&self) -> ChatgptAuthTokensRefreshResponse {
-        ChatgptAuthTokensRefreshResponse {
-            access_token: self.access_token.clone(),
-            chatgpt_account_id: self.chatgpt_account_id.clone(),
-            chatgpt_plan_type: self.chatgpt_plan_type.clone(),
-        }
-    }
 }
 
 pub(crate) fn load_local_chatgpt_auth(
@@ -71,8 +60,8 @@ mod tests {
     use codex_app_server_protocol::AuthMode;
     use codex_core::auth::AuthDotJson;
     use codex_core::auth::save_auth;
-    use codex_core::token_data::TokenData;
     use codex_login::auth::login_with_chatgpt_auth_tokens;
+    use codex_login::token_data::TokenData;
     use pretty_assertions::assert_eq;
     use serde::Serialize;
     use serde_json::json;
@@ -110,7 +99,7 @@ mod tests {
             auth_mode: Some(AuthMode::Chatgpt),
             openai_api_key: None,
             tokens: Some(TokenData {
-                id_token: codex_core::token_data::parse_chatgpt_jwt_claims(&id_token)
+                id_token: codex_login::token_data::parse_chatgpt_jwt_claims(&id_token)
                     .expect("id token should parse"),
                 access_token,
                 refresh_token: "refresh-token".to_string(),

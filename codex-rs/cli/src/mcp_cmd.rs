@@ -316,6 +316,7 @@ async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Re
         oauth_env_http_headers: None,
         oauth_authorization_params: None,
         oauth_client_metadata_url: None,
+        tools: HashMap::new(),
     };
 
     servers.insert(name.clone(), new_entry.clone());

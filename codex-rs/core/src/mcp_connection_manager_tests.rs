@@ -546,6 +546,7 @@ fn mcp_init_error_display_prompts_for_github_pat() {
             oauth_env_http_headers: None,
             oauth_authorization_params: None,
             oauth_client_metadata_url: None,
+            tools: HashMap::new(),
         },
         auth_status: McpAuthStatus::Unsupported,
     };
@@ -598,6 +599,7 @@ fn mcp_init_error_display_reports_generic_errors() {
             oauth_env_http_headers: None,
             oauth_authorization_params: None,
             oauth_client_metadata_url: None,
+            tools: HashMap::new(),
         },
         auth_status: McpAuthStatus::Unsupported,
     };
