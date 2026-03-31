@@ -1,0 +1,17 @@
+[package]
+name = "codex-slash-dispatch"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "codex_slash_dispatch"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+codex-utils-fuzzy-match = { workspace = true }
+strum = { workspace = true }
+strum_macros = { workspace = true }

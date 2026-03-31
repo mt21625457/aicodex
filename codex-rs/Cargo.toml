@@ -22,6 +22,7 @@ members = [
     "connectors",
     "config",
     "shell-command",
+    "slash-dispatch",
     "shell-escalation",
     "skills",
     "core",
@@ -146,6 +147,7 @@ codex-rmcp-client = { path = "rmcp-client" }
 codex-sandboxing = { path = "sandboxing" }
 codex-secrets = { path = "secrets" }
 codex-shell-command = { path = "shell-command" }
+codex-slash-dispatch = { path = "slash-dispatch" }
 codex-shell-escalation = { path = "shell-escalation" }
 codex-skills = { path = "skills" }
 codex-state = { path = "state" }

@@ -2587,6 +2587,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-slash-dispatch"
+version = "0.0.0"
+dependencies = [
+ "codex-utils-fuzzy-match",
+ "strum 0.27.2",
+ "strum_macros 0.28.0",
+]
+
+[[package]]
 name = "codex-state"
 version = "0.0.0"
 dependencies = [
@@ -2666,6 +2675,7 @@ dependencies = [
  "codex-otel",
  "codex-protocol",
  "codex-shell-command",
+ "codex-slash-dispatch",
  "codex-state",
  "codex-terminal-detection",
  "codex-tui-app-server",
