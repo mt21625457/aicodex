@@ -393,11 +393,9 @@ pub fn dispatch_for_web(
             reject_inline_args(command, rest, ClientActionKind::OpenPersonalityPanel)
         }
         SlashCommand::Plan => reject_inline_args(command, rest, ClientActionKind::SwitchToPlanMode),
-        SlashCommand::Collab => reject_inline_args(
-            command,
-            rest,
-            ClientActionKind::OpenCollaborationModePicker,
-        ),
+        SlashCommand::Collab => {
+            reject_inline_args(command, rest, ClientActionKind::OpenCollaborationModePicker)
+        }
         SlashCommand::Mcp => reject_inline_args(command, rest, ClientActionKind::OpenMcpOverview),
         SlashCommand::Apps => {
             reject_inline_args(command, rest, ClientActionKind::OpenConnectorsOverview)
@@ -405,9 +403,7 @@ pub fn dispatch_for_web(
         SlashCommand::Plugins => {
             reject_inline_args(command, rest, ClientActionKind::OpenPluginsOverview)
         }
-        SlashCommand::Status => {
-            reject_inline_args(command, rest, ClientActionKind::OpenStatusView)
-        }
+        SlashCommand::Status => reject_inline_args(command, rest, ClientActionKind::OpenStatusView),
         SlashCommand::Diff => reject_inline_args(command, rest, ClientActionKind::OpenDiffView),
         SlashCommand::Compact => reject_inline_gateway_action(command, rest),
         SlashCommand::Rename => {
@@ -516,9 +512,9 @@ fn unsupported_message_for_hidden_command(
         SlashCommand::Settings if !flags.audio_device_selection_enabled => {
             Some("The current runtime does not expose `/settings`.".to_string())
         }
-        SlashCommand::ElevateSandbox if !flags.allow_elevate_sandbox => Some(
-            "The current runtime does not expose `/setup-default-sandbox`.".to_string(),
-        ),
+        SlashCommand::ElevateSandbox if !flags.allow_elevate_sandbox => {
+            Some("The current runtime does not expose `/setup-default-sandbox`.".to_string())
+        }
         _ => None,
     }
 }
