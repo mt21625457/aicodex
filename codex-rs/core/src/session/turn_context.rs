@@ -7,7 +7,7 @@ use codex_sandboxing::policy_transforms::merge_permission_profiles;
 pub(super) fn image_generation_tool_auth_allowed(auth_manager: Option<&AuthManager>) -> bool {
     matches!(
         auth_manager.and_then(AuthManager::auth_mode),
-        Some(AuthMode::Chatgpt)
+        Some(AuthMode::Chatgpt | AuthMode::ApiKey)
     )
 }
 
@@ -710,5 +710,28 @@ impl Session {
             /*turn_environments*/ None,
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::image_generation_tool_auth_allowed;
+    use codex_login::AuthManager;
+    use codex_login::CodexAuth;
+
+    #[test]
+    fn image_generation_tool_auth_is_allowed_for_chatgpt_and_api_key() {
+        let chatgpt_auth_manager =
+            AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+        let api_key_auth_manager =
+            AuthManager::from_auth_for_testing(CodexAuth::from_api_key("test-api-key"));
+
+        assert!(image_generation_tool_auth_allowed(Some(
+            &chatgpt_auth_manager
+        )));
+        assert!(image_generation_tool_auth_allowed(Some(
+            &api_key_auth_manager
+        )));
+        assert!(!image_generation_tool_auth_allowed(None));
     }
 }
