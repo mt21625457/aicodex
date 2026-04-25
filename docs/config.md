@@ -6,6 +6,47 @@ For advanced configuration instructions, see [this documentation](https://develo
 
 For a full configuration reference, see [this documentation](https://developers.openai.com/codex/config-reference).
 
+## Custom model providers
+
+You can define custom providers in `~/.codex/config.toml` and select them via
+`model_provider`.
+
+Example Anthropic provider:
+
+```toml
+[model_providers.anthropic]
+name = "Anthropic"
+base_url = "https://api.anthropic.com"
+env_key = "ANTHROPIC_API_KEY"
+wire_api = "anthropic"
+
+model_provider = "anthropic"
+model = "claude-sonnet-4-5"
+```
+
+Before running Codex, set your key in the environment:
+
+```bash
+export ANTHROPIC_API_KEY="..."
+```
+
+Current Anthropic support status:
+
+- Text responses are supported.
+- Text + image user inputs are supported.
+- Reasoning/thinking stream deltas are supported.
+- Function-tool round trips are supported.
+- Provider-side `WebSearch` round trips are supported.
+- Provider-side `ToolSearch` round trips are supported.
+- Provider-side `ImageGeneration` round trips + history replay are supported.
+- Local-shell round trips are supported.
+- Freeform `apply_patch` round trips are supported.
+
+Current Anthropic limitations:
+
+- Anthropic-specific output-schema auto-repair is not implemented.
+- Command-backed provider auth is not documented as an official Anthropic path in this phase.
+
 ## Connecting to MCP servers
 
 Codex can connect to MCP servers configured in `~/.codex/config.toml`. See the configuration reference for the latest MCP server options:

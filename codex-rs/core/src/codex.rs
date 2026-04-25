@@ -6705,6 +6705,13 @@ pub(crate) fn build_prompt(
             .filter(|spec| !deferred_dynamic_tools.contains(spec.name()))
             .collect()
     };
+    let tools = match turn_context.provider.wire_api {
+        codex_model_provider_info::WireApi::Anthropic => tools
+            .into_iter()
+            .filter(codex_anthropic::supports_tool_spec)
+            .collect(),
+        codex_model_provider_info::WireApi::Responses => tools,
+    };
 
     Prompt {
         input,

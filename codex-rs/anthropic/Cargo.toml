@@ -1,0 +1,29 @@
+[package]
+edition.workspace = true
+license.workspace = true
+name = "codex-anthropic"
+version.workspace = true
+
+[lib]
+doctest = false
+name = "codex_anthropic"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anthropic-sdk-rs = { workspace = true }
+codex-api = { workspace = true }
+codex-model-provider-info = { workspace = true }
+codex-protocol = { workspace = true }
+codex-tools = { workspace = true }
+futures = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+wiremock = { workspace = true }

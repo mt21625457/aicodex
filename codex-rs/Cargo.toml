@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "anthropic",
     "analytics",
     "backend-client",
     "ansi-escape",
@@ -105,6 +106,7 @@ license = "Apache-2.0"
 app_test_support = { path = "app-server/tests/common" }
 codex-analytics = { path = "analytics" }
 codex-ansi-escape = { path = "ansi-escape" }
+codex-anthropic = { path = "anthropic" }
 codex-api = { path = "codex-api" }
 codex-app-server = { path = "app-server" }
 codex-app-server-client = { path = "app-server-client" }
@@ -196,6 +198,7 @@ mcp_test_support = { path = "mcp-server/tests/common" }
 age = "0.11.1"
 allocative = "0.3.3"
 ansi-to-tui = "7.0.0"
+anthropic-sdk-rs = "0.1.2"
 anyhow = "1"
 arboard = { version = "3", features = ["wayland-data-control"] }
 arc-swap = "1.9.0"

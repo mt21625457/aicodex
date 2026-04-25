@@ -101,6 +101,7 @@ use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
 use crate::flags::CODEX_RS_SSE_FIXTURE;
 use crate::util::emit_feedback_auth_recovery_tags;
+use codex_anthropic::AnthropicTurnRequest;
 use codex_api::CoreAuthProvider;
 use codex_api::map_api_error;
 use codex_feedback::FeedbackRequestTags;
@@ -1477,6 +1478,24 @@ impl ModelClientSession {
                     turn_metadata_header,
                 )
                 .await
+            }
+            WireApi::Anthropic => {
+                let rx_event = codex_anthropic::stream_anthropic(AnthropicTurnRequest {
+                    provider: self.client.state.provider.clone(),
+                    model: model_info.slug.clone(),
+                    input: prompt.get_formatted_input(),
+                    tools: prompt.tools.clone(),
+                    parallel_tool_calls: prompt.parallel_tool_calls,
+                    base_instructions: prompt.base_instructions.clone(),
+                    effort,
+                    summary,
+                    service_tier,
+                    turn_metadata_header: turn_metadata_header.map(ToString::to_string),
+                    output_schema: prompt.output_schema.clone(),
+                })
+                .await?;
+
+                Ok(ResponseStream { rx_event })
             }
         }
     }

@@ -13,11 +13,20 @@ use codex_model_provider_info::WireApi;
 use codex_model_provider_info::create_oss_provider_with_base_url;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
+use codex_protocol::models::BaseInstructions;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use futures::StreamExt;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use wiremock::Mock;
+use wiremock::MockServer;
+use wiremock::ResponseTemplate;
+use wiremock::matchers::method;
+use wiremock::matchers::path;
+
+use crate::client_common::Prompt;
 
 fn test_model_client(session_source: SessionSource) -> ModelClient {
     let provider = create_oss_provider_with_base_url("https://example.com/v1", WireApi::Responses);
@@ -77,6 +86,101 @@ fn test_session_telemetry() -> SessionTelemetry {
         "test-terminal".to_string(),
         SessionSource::Cli,
     )
+}
+
+#[tokio::test]
+async fn anthropic_wire_api_stream_hits_anthropic_adapter_branch() {
+    let server = MockServer::start().await;
+    let sse = [
+        "event: message_start",
+        r#"data: {"type":"message_start","message":{"id":"resp-1","content":[],"model":"claude-test","role":"assistant","type":"message","usage":{}}}"#,
+        "",
+        "event: content_block_delta",
+        r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}"#,
+        "",
+        "event: message_delta",
+        r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":4,"output_tokens":1}}"#,
+        "",
+        "event: message_stop",
+        r#"data: {"type":"message_stop"}"#,
+        "",
+    ]
+    .join("\n");
+
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(sse, "text/event-stream"),
+        )
+        .mount(&server)
+        .await;
+
+    let mut provider = create_oss_provider_with_base_url(server.uri().as_str(), WireApi::Anthropic);
+    provider.experimental_bearer_token = Some("test-token".to_string());
+    let client = ModelClient::new(
+        /*auth_manager*/ None,
+        ThreadId::new(),
+        /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
+        provider,
+        SessionSource::Cli,
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+    );
+    let mut session = client.new_session();
+    let mut stream = session
+        .stream(
+            &Prompt {
+                input: Vec::new(),
+                tools: Vec::new(),
+                parallel_tool_calls: false,
+                base_instructions: BaseInstructions {
+                    text: "base instructions".to_string(),
+                },
+                personality: None,
+                output_schema: None,
+            },
+            &test_model_info(),
+            &test_session_telemetry(),
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::None,
+            /*service_tier*/ None,
+            /*turn_metadata_header*/ None,
+        )
+        .await
+        .expect("stream should be constructed");
+
+    let first = stream
+        .next()
+        .await
+        .expect("stream should yield a first event");
+    match first {
+        Ok(codex_api::ResponseEvent::Created) => {}
+        other => panic!("unexpected anthropic stream event: {other:?}"),
+    }
+
+    let second = stream
+        .next()
+        .await
+        .expect("stream should yield a second event");
+    match second {
+        Ok(codex_api::ResponseEvent::OutputItemAdded(_)) => {}
+        other => panic!("unexpected anthropic stream event: {other:?}"),
+    }
+
+    let third = stream
+        .next()
+        .await
+        .expect("stream should yield a third event");
+    match third {
+        Ok(codex_api::ResponseEvent::OutputTextDelta(message)) => {
+            assert_eq!(message, "hello");
+        }
+        other => panic!("unexpected anthropic stream event: {other:?}"),
+    }
 }
 
 #[test]
