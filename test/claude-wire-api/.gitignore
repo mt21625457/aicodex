@@ -3,6 +3,7 @@ anthropic_api_key
 auth.json
 .credentials.json
 .tmp/
+tmp/
 skills/
 log/
 sessions/
@@ -10,3 +11,6 @@ state/
 installation_id
 logs_2.sqlite*
 state_5.sqlite*
+history.jsonl
+.personality_migration
+shell_snapshots/

@@ -10,3 +10,9 @@ name = "Anthropic"
 base_url = "https://api.kimi.com/coding/v1"
 env_key = "ANTHROPIC_API_KEY"
 wire_api = "claude"
+
+[projects."/Users/mt/code/mt-ai/aicodex/aicodex"]
+trust_level = "trusted"
+
+[tui.model_availability_nux]
+"gpt-5.5" = 3

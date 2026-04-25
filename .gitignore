@@ -14,6 +14,7 @@ user.bazelrc
 build/
 out/
 storybook-static/
+/aicodex
 
 # ignore README for publishing
 codex-cli/README.md
@@ -42,6 +43,7 @@ AGENTS.override.md
 .nyc_output/
 .jest/
 *.tsbuildinfo
+/models/
 
 # logs
 *.log

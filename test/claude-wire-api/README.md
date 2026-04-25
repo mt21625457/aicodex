@@ -25,3 +25,17 @@ bash test/claude-wire-api/run-smoke.sh
 The script sets `CODEX_HOME` to this directory and runs `codex exec` with the
 Claude provider from `config.toml`.
 
+## Run the TUI
+
+From the repository root:
+
+```bash
+bash test/claude-wire-api/run-tui.sh
+```
+
+The script launches the interactive `codex` TUI with `CODEX_HOME` set to this
+directory. To use a different binary path, pass `AICODEX_BIN`:
+
+```bash
+AICODEX_BIN=/path/to/aicodex bash test/claude-wire-api/run-tui.sh
+```
