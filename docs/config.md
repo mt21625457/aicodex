@@ -26,6 +26,35 @@ Only enable parallel calls for MCP servers whose tools are safe to run at the
 same time. If tools read and write shared state, files, databases, or external
 resources, review those read/write race conditions before enabling this setting.
 
+## Anthropic Claude
+
+Codex can use Anthropic's native Claude Messages API through the `claude` wire
+protocol:
+
+```toml
+model_provider = "anthropic"
+model = "claude-sonnet-4-5"
+
+[model_providers.anthropic]
+name = "Anthropic"
+base_url = "https://api.anthropic.com/v1"
+env_key = "ANTHROPIC_API_KEY"
+wire_api = "claude"
+```
+
+The `claude` protocol posts to `/v1/messages` and uses `x-api-key` plus
+`anthropic-version: 2023-06-01`. The `anthropic` wire_api value is accepted as a
+backward-compatible alias for `claude`.
+
+Claude requests preserve base64 data URL images and HTTP(S) image URLs as
+native Anthropic image blocks. Structured tool outputs that contain text and
+images are sent back as Claude `tool_result` content blocks when possible.
+
+When `model_reasoning_effort` is set for a Claude provider, Codex sends
+Anthropic extended thinking using a budget mapped from the selected effort.
+`service_tier = "fast"` maps to Anthropic `service_tier = "auto"`, while
+`service_tier = "flex"` maps to `service_tier = "standard_only"`.
+
 ## MCP tool approvals
 
 Codex stores approval defaults and per-tool overrides for custom MCP servers

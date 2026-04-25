@@ -1,0 +1,21 @@
+schema: spec-driven
+
+context: |
+  Project: Codex Rust workspace.
+  Scope: provider protocol support, model-provider routing, codex-api transport,
+  codex-tools tool serialization, and codex-core turn orchestration.
+  OpenSpec is used here as the change record for cross-crate protocol work.
+
+rules:
+  proposal:
+    - Explain why the protocol boundary changes and which crates own each side.
+    - Identify compatibility, tool-loop, streaming, and authentication risks.
+    - Include concrete verification commands and mock end-to-end scenarios.
+  design:
+    - Keep provider-specific wire logic inside codex-api/codex-tools adapters.
+    - Do not move Claude protocol behavior into the OpenAI Responses path.
+    - Compare any external reference implementation by behavior, not by copying dependencies.
+  tasks:
+    - Keep tasks executable and tied to crate-level tests.
+    - Include schema/docs regeneration tasks when config or public docs change.
+    - Include end-to-end mock tests for every protocol boundary that changes.

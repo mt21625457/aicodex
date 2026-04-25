@@ -1,3 +1,4 @@
+pub(crate) mod claude_messages;
 pub(crate) mod compact;
 pub(crate) mod memories;
 pub(crate) mod models;
@@ -7,6 +8,8 @@ pub(crate) mod responses;
 pub(crate) mod responses_websocket;
 mod session;
 
+pub use claude_messages::ClaudeMessagesClient;
+pub use claude_messages::ClaudeMessagesOptions;
 pub use compact::CompactClient;
 pub use memories::MemoriesClient;
 pub use models::ModelsClient;

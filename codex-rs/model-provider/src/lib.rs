@@ -1,9 +1,11 @@
 mod amazon_bedrock;
+mod anthropic_auth_provider;
 mod auth;
 mod bearer_auth_provider;
 mod models_endpoint;
 mod provider;
 
+pub use anthropic_auth_provider::AnthropicAuthProvider;
 pub use auth::auth_provider_from_auth;
 pub use auth::unauthenticated_auth_provider;
 pub use bearer_auth_provider::BearerAuthProvider;

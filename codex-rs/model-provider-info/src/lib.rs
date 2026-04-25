@@ -48,12 +48,15 @@ pub enum WireApi {
     /// The Responses API exposed by OpenAI at `/v1/responses`.
     #[default]
     Responses,
+    /// The Claude Messages API exposed by Anthropic at `/v1/messages`.
+    Claude,
 }
 
 impl fmt::Display for WireApi {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
             Self::Responses => "responses",
+            Self::Claude => "claude",
         };
         f.write_str(value)
     }
@@ -67,8 +70,12 @@ impl<'de> Deserialize<'de> for WireApi {
         let value = String::deserialize(deserializer)?;
         match value.as_str() {
             "responses" => Ok(Self::Responses),
+            "claude" | "anthropic" => Ok(Self::Claude),
             "chat" => Err(serde::de::Error::custom(CHAT_WIRE_API_REMOVED_ERROR)),
-            _ => Err(serde::de::Error::unknown_variant(&value, &["responses"])),
+            _ => Err(serde::de::Error::unknown_variant(
+                &value,
+                &["responses", "claude"],
+            )),
         }
     }
 }
@@ -229,7 +236,9 @@ impl ModelProviderInfo {
     }
 
     pub fn to_api_provider(&self, auth_mode: Option<AuthMode>) -> CodexResult<ApiProvider> {
-        let default_base_url = if matches!(
+        let default_base_url = if self.wire_api == WireApi::Claude {
+            "https://api.anthropic.com/v1"
+        } else if matches!(
             auth_mode,
             Some(AuthMode::Chatgpt | AuthMode::ChatgptAuthTokens | AuthMode::AgentIdentity)
         ) {

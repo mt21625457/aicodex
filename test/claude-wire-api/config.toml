@@ -1,0 +1,12 @@
+model = "claude-sonnet-4-5"
+model_provider = "anthropic"
+
+# Keep the manual smoke test non-destructive.
+approval_policy = "never"
+sandbox_mode = "read-only"
+
+[model_providers.anthropic]
+name = "Anthropic"
+base_url = "https://api.kimi.com/coding/v1"
+env_key = "ANTHROPIC_API_KEY"
+wire_api = "claude"

@@ -182,6 +182,134 @@ pub struct ResponsesApiRequest {
     pub client_metadata: Option<HashMap<String, String>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaudeToolCallKind {
+    Function,
+    Custom,
+    ToolSearch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaudeToolCallInfo {
+    pub name: String,
+    pub namespace: Option<String>,
+    pub kind: ClaudeToolCallKind,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ClaudeMessagesApiRequest {
+    pub model: String,
+    pub max_tokens: u64,
+    pub messages: Vec<ClaudeMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ClaudeTool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<ClaudeToolChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<ClaudeThinkingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<ClaudeServiceTier>,
+    pub stream: bool,
+    #[serde(skip)]
+    pub tool_call_info: HashMap<String, ClaudeToolCallInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ClaudeMessage {
+    pub role: ClaudeMessageRole,
+    pub content: Vec<ClaudeContentBlock>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ClaudeMessageRole {
+    User,
+    Assistant,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ClaudeContentBlock {
+    Text {
+        text: String,
+    },
+    Image {
+        source: ClaudeImageSource,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
+    ToolResult {
+        tool_use_id: String,
+        content: ClaudeToolResultContent,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        is_error: bool,
+    },
+    Thinking {
+        thinking: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ClaudeImageSource {
+    Base64 { media_type: String, data: String },
+    Url { url: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum ClaudeToolResultContent {
+    Text(String),
+    Blocks(Vec<ClaudeContentBlock>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ClaudeTool {
+    pub name: String,
+    pub description: String,
+    pub input_schema: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ClaudeToolChoice {
+    Auto {
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        disable_parallel_tool_use: bool,
+    },
+    Any {
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        disable_parallel_tool_use: bool,
+    },
+    Tool {
+        name: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        disable_parallel_tool_use: bool,
+    },
+    None,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ClaudeThinkingConfig {
+    Enabled { budget_tokens: u32 },
+    Disabled,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaudeServiceTier {
+    Auto,
+    StandardOnly,
+}
+
 impl From<&ResponsesApiRequest> for ResponseCreateWsRequest {
     fn from(request: &ResponsesApiRequest) -> Self {
         Self {
@@ -291,5 +419,202 @@ impl Stream for ResponseStream {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.rx_event.poll_recv(cx)
+    }
+}
+
+#[cfg(test)]
+mod claude_wire_tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    use serde::de::DeserializeOwned;
+    use serde_json::json;
+
+    fn roundtrip<T>(value: &T, expected: Value)
+    where
+        T: Serialize + DeserializeOwned + PartialEq + std::fmt::Debug,
+    {
+        assert_eq!(serde_json::to_value(value).expect("serialize"), expected);
+        assert_eq!(
+            serde_json::from_value::<T>(expected).expect("deserialize"),
+            *value
+        );
+    }
+
+    #[test]
+    fn claude_content_blocks_roundtrip_messages_api_shapes() {
+        roundtrip(
+            &ClaudeContentBlock::Text {
+                text: "hello".to_string(),
+            },
+            json!({"type": "text", "text": "hello"}),
+        );
+        roundtrip(
+            &ClaudeContentBlock::Image {
+                source: ClaudeImageSource::Base64 {
+                    media_type: "image/png".to_string(),
+                    data: "YmFzZTY0".to_string(),
+                },
+            },
+            json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "YmFzZTY0"
+                }
+            }),
+        );
+        roundtrip(
+            &ClaudeContentBlock::Image {
+                source: ClaudeImageSource::Url {
+                    url: "https://example.com/a.png".to_string(),
+                },
+            },
+            json!({
+                "type": "image",
+                "source": {
+                    "type": "url",
+                    "url": "https://example.com/a.png"
+                }
+            }),
+        );
+        roundtrip(
+            &ClaudeContentBlock::ToolUse {
+                id: "toolu_1".to_string(),
+                name: "get_weather".to_string(),
+                input: json!({"city": "Paris"}),
+            },
+            json!({
+                "type": "tool_use",
+                "id": "toolu_1",
+                "name": "get_weather",
+                "input": {"city": "Paris"}
+            }),
+        );
+        roundtrip(
+            &ClaudeContentBlock::ToolResult {
+                tool_use_id: "toolu_1".to_string(),
+                content: ClaudeToolResultContent::Text("sunny".to_string()),
+                is_error: false,
+            },
+            json!({
+                "type": "tool_result",
+                "tool_use_id": "toolu_1",
+                "content": "sunny"
+            }),
+        );
+        roundtrip(
+            &ClaudeContentBlock::ToolResult {
+                tool_use_id: "toolu_1".to_string(),
+                content: ClaudeToolResultContent::Text("boom".to_string()),
+                is_error: true,
+            },
+            json!({
+                "type": "tool_result",
+                "tool_use_id": "toolu_1",
+                "is_error": true,
+                "content": "boom"
+            }),
+        );
+        roundtrip(
+            &ClaudeContentBlock::ToolResult {
+                tool_use_id: "toolu_1".to_string(),
+                content: ClaudeToolResultContent::Blocks(vec![ClaudeContentBlock::Text {
+                    text: "inner".to_string(),
+                }]),
+                is_error: false,
+            },
+            json!({
+                "type": "tool_result",
+                "tool_use_id": "toolu_1",
+                "content": [{"type": "text", "text": "inner"}]
+            }),
+        );
+        roundtrip(
+            &ClaudeContentBlock::Thinking {
+                thinking: "musing".to_string(),
+                signature: Some("sig".to_string()),
+            },
+            json!({
+                "type": "thinking",
+                "thinking": "musing",
+                "signature": "sig"
+            }),
+        );
+    }
+
+    #[test]
+    fn claude_tool_choice_thinking_and_service_tier_roundtrip() {
+        roundtrip(
+            &ClaudeToolChoice::Auto {
+                disable_parallel_tool_use: false,
+            },
+            json!({"type": "auto"}),
+        );
+        roundtrip(
+            &ClaudeToolChoice::Any {
+                disable_parallel_tool_use: true,
+            },
+            json!({"type": "any", "disable_parallel_tool_use": true}),
+        );
+        roundtrip(
+            &ClaudeToolChoice::Tool {
+                name: "get_weather".to_string(),
+                disable_parallel_tool_use: false,
+            },
+            json!({"type": "tool", "name": "get_weather"}),
+        );
+        roundtrip(&ClaudeToolChoice::None, json!({"type": "none"}));
+        roundtrip(
+            &ClaudeThinkingConfig::Enabled {
+                budget_tokens: 1024,
+            },
+            json!({"type": "enabled", "budget_tokens": 1024}),
+        );
+        roundtrip(&ClaudeThinkingConfig::Disabled, json!({"type": "disabled"}));
+        roundtrip(&ClaudeServiceTier::StandardOnly, json!("standard_only"));
+    }
+
+    #[test]
+    fn claude_messages_request_skips_none_and_side_table_fields() {
+        let mut tool_call_info = HashMap::new();
+        tool_call_info.insert(
+            "get_weather".to_string(),
+            ClaudeToolCallInfo {
+                name: "get_weather".to_string(),
+                namespace: None,
+                kind: ClaudeToolCallKind::Function,
+            },
+        );
+        let request = ClaudeMessagesApiRequest {
+            model: "claude-sonnet-4-5".to_string(),
+            max_tokens: 128,
+            messages: vec![ClaudeMessage {
+                role: ClaudeMessageRole::User,
+                content: vec![ClaudeContentBlock::Text {
+                    text: "hi".to_string(),
+                }],
+            }],
+            system: None,
+            tools: Vec::new(),
+            tool_choice: None,
+            thinking: None,
+            service_tier: None,
+            stream: true,
+            tool_call_info,
+        };
+
+        assert_eq!(
+            serde_json::to_value(&request).expect("serialize request"),
+            json!({
+                "model": "claude-sonnet-4-5",
+                "max_tokens": 128,
+                "messages": [{
+                    "role": "user",
+                    "content": [{"type": "text", "text": "hi"}]
+                }],
+                "stream": true
+            })
+        );
     }
 }

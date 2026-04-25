@@ -1010,6 +1010,14 @@ fn base_mock() -> (MockBuilder, ResponseMock) {
     (mock, response_mock)
 }
 
+fn claude_messages_mock() -> (MockBuilder, ResponseMock) {
+    let response_mock = ResponseMock::new();
+    let mock = Mock::given(method("POST"))
+        .and(path_regex(".*/messages$"))
+        .and(response_mock.clone());
+    (mock, response_mock)
+}
+
 fn compact_mock() -> (MockBuilder, ResponseMock) {
     let response_mock = ResponseMock::new();
     let mock = Mock::given(method("POST"))
@@ -1482,6 +1490,24 @@ pub async fn mount_function_call_agent_response(
 /// POST to `/v1/responses`. Panics if more requests are received than bodies
 /// provided. Also asserts the exact number of expected calls.
 pub async fn mount_sse_sequence(server: &MockServer, bodies: Vec<String>) -> ResponseMock {
+    mount_sse_sequence_with_mock(server, bodies, base_mock()).await
+}
+
+/// Mounts a sequence of responses for each POST to `/v1/messages`.
+///
+/// This is the Claude Messages conformance helper parallel to
+/// [`mount_sse_sequence`]. Future wire APIs should add equivalent helpers for
+/// their request path, headers, stream events, tool loop, usage, and error
+/// behavior instead of reusing the OpenAI Responses mock path.
+pub async fn mount_claude_sse_sequence(server: &MockServer, bodies: Vec<String>) -> ResponseMock {
+    mount_sse_sequence_with_mock(server, bodies, claude_messages_mock()).await
+}
+
+async fn mount_sse_sequence_with_mock(
+    server: &MockServer,
+    bodies: Vec<String>,
+    mock_and_capture: (MockBuilder, ResponseMock),
+) -> ResponseMock {
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
 
@@ -1508,7 +1534,7 @@ pub async fn mount_sse_sequence(server: &MockServer, bodies: Vec<String>) -> Res
         responses: bodies,
     };
 
-    let (mock, response_mock) = base_mock();
+    let (mock, response_mock) = mock_and_capture;
     mock.respond_with(responder)
         .up_to_n_times(num_calls as u64)
         .expect(num_calls as u64)

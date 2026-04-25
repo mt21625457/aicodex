@@ -1,0 +1,12 @@
+.env
+anthropic_api_key
+auth.json
+.credentials.json
+.tmp/
+skills/
+log/
+sessions/
+state/
+installation_id
+logs_2.sqlite*
+state_5.sqlite*

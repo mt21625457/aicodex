@@ -9,6 +9,8 @@ use crate::FreeformToolFormat;
 use crate::JsonSchema;
 use crate::ResponsesApiNamespaceTool;
 use crate::ResponsesApiTool;
+use crate::claude_tool_name;
+use crate::create_tools_json_for_claude_messages;
 use crate::create_tools_json_for_responses_api;
 use codex_protocol::config_types::WebSearchContextSize;
 use codex_protocol::config_types::WebSearchFilters as ConfigWebSearchFilters;
@@ -290,4 +292,209 @@ fn tool_search_tool_spec_serializes_expected_wire_shape() {
             },
         })
     );
+}
+
+#[test]
+fn create_tools_json_for_claude_messages_flattens_supported_tools() {
+    let result = create_tools_json_for_claude_messages(&[
+        ToolSpec::Function(ResponsesApiTool {
+            name: "lookup_order".to_string(),
+            description: "Look up an order".to_string(),
+            strict: false,
+            defer_loading: None,
+            parameters: JsonSchema::object(
+                BTreeMap::from([(
+                    "order_id".to_string(),
+                    JsonSchema::string(/*description*/ None),
+                )]),
+                Some(vec!["order_id".to_string()]),
+                Some(AdditionalProperties::Boolean(false)),
+            ),
+            output_schema: None,
+        }),
+        ToolSpec::Namespace(ResponsesApiNamespace {
+            name: "mcp__demo__".to_string(),
+            description: "Demo tools".to_string(),
+            tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
+                name: "search".to_string(),
+                description: "Search demo".to_string(),
+                strict: false,
+                defer_loading: None,
+                parameters: JsonSchema::object(
+                    BTreeMap::new(),
+                    /*required*/ None,
+                    /*additional_properties*/ None,
+                ),
+                output_schema: None,
+            })],
+        }),
+        ToolSpec::ToolSearch {
+            execution: "client".to_string(),
+            description: "Search available tools".to_string(),
+            parameters: JsonSchema::object(
+                BTreeMap::from([(
+                    "query".to_string(),
+                    JsonSchema::string(/*description*/ None),
+                )]),
+                Some(vec!["query".to_string()]),
+                Some(AdditionalProperties::Boolean(false)),
+            ),
+        },
+        ToolSpec::LocalShell {},
+        ToolSpec::Freeform(FreeformTool {
+            name: "apply_patch".to_string(),
+            description: "Apply a patch".to_string(),
+            format: FreeformToolFormat {
+                r#type: "grammar".to_string(),
+                syntax: "lark".to_string(),
+                definition: "start: \"patch\"".to_string(),
+            },
+        }),
+    ])
+    .expect("serialize claude tools");
+
+    assert_eq!(
+        result.tools,
+        vec![
+            json!({
+                "name": "lookup_order",
+                "description": "Look up an order",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "order_id": { "type": "string" },
+                    },
+                    "required": ["order_id"],
+                    "additionalProperties": false,
+                },
+            }),
+            json!({
+                "name": "mcp__demo__search",
+                "description": "Demo tools\n\nSearch demo",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {},
+                },
+            }),
+            json!({
+                "name": "tool_search",
+                "description": "Search available tools",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string" },
+                    },
+                    "required": ["query"],
+                    "additionalProperties": false,
+                },
+            }),
+            json!({
+                "name": "local_shell",
+                "description": "Runs a local shell command and returns its output.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                        },
+                        "workdir": { "type": "string" },
+                        "timeout_ms": { "type": "number" },
+                        "sandbox_permissions": { "type": "string" },
+                        "justification": { "type": "string" },
+                        "prefix_rule": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                        },
+                    },
+                    "required": ["command"],
+                    "additionalProperties": false,
+                },
+            }),
+            json!({
+                "name": "apply_patch",
+                "description": "Apply a patch",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "input": {
+                            "type": "string",
+                            "description": "Raw freeform tool input.",
+                        },
+                    },
+                    "required": ["input"],
+                    "additionalProperties": false,
+                },
+            }),
+        ]
+    );
+    assert_eq!(
+        result.tool_call_info[1].namespace,
+        Some("mcp__demo__".to_string())
+    );
+    assert_eq!(
+        result.tool_call_info[2].kind,
+        crate::ClaudeToolCallKind::ToolSearch
+    );
+    assert_eq!(
+        result.tool_call_info[4].kind,
+        crate::ClaudeToolCallKind::Custom
+    );
+}
+
+#[test]
+fn claude_tool_name_sanitizes_and_bounds_names() {
+    assert_eq!(
+        claude_tool_name(Some("test/server/"), "do.something"),
+        "test_server_do_something"
+    );
+
+    let long = claude_tool_name(
+        Some("mcp__very_long_server_name_that_will_exceed_the_anthropic_limit__"),
+        "very_long_tool_name_that_will_also_exceed_the_limit",
+    );
+    assert!(long.len() <= 64);
+}
+
+#[test]
+fn create_tools_json_for_claude_messages_deduplicates_colliding_names() {
+    let result = create_tools_json_for_claude_messages(&[
+        ToolSpec::Function(ResponsesApiTool {
+            name: "a.b".to_string(),
+            description: "Dot".to_string(),
+            strict: false,
+            defer_loading: None,
+            parameters: JsonSchema::object(
+                BTreeMap::new(),
+                /*required*/ None,
+                /*additional_properties*/ None,
+            ),
+            output_schema: None,
+        }),
+        ToolSpec::Function(ResponsesApiTool {
+            name: "a/b".to_string(),
+            description: "Slash".to_string(),
+            strict: false,
+            defer_loading: None,
+            parameters: JsonSchema::object(
+                BTreeMap::new(),
+                /*required*/ None,
+                /*additional_properties*/ None,
+            ),
+            output_schema: None,
+        }),
+    ])
+    .expect("serialize claude tools");
+
+    let names = result
+        .tools
+        .iter()
+        .map(|tool| tool["name"].as_str().expect("tool name"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(names[0], "a_b");
+    assert_ne!(names[1], "a_b");
+    assert!(names[1].starts_with("a_b_"));
+    assert!(names[1].len() <= 64);
+    assert_eq!(result.tool_call_info[1].claude_name, names[1]);
 }

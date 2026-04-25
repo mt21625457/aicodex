@@ -8,6 +8,7 @@
 mod apply_patch;
 mod apps;
 mod arc_monitor;
+mod claude;
 mod client;
 mod client_common;
 mod realtime_context;
