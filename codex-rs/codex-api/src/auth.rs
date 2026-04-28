@@ -73,7 +73,8 @@ pub fn auth_header_telemetry(auth: &dyn AuthProvider) -> AuthHeaderTelemetry {
     auth.add_auth_headers(&mut headers);
     let name = headers
         .contains_key(http::header::AUTHORIZATION)
-        .then_some("authorization");
+        .then_some("authorization")
+        .or_else(|| headers.contains_key("x-api-key").then_some("x-api-key"));
     AuthHeaderTelemetry {
         attached: name.is_some(),
         name,

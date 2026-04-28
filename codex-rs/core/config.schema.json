@@ -3102,6 +3102,13 @@
             "responses"
           ],
           "type": "string"
+        },
+        {
+          "description": "The Claude Messages API exposed by Anthropic at `/v1/messages`.",
+          "enum": [
+            "claude"
+          ],
+          "type": "string"
         }
       ]
     }

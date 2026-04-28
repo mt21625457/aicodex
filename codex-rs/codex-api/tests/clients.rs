@@ -8,6 +8,12 @@ use bytes::Bytes;
 use codex_api::ApiError;
 use codex_api::AuthError;
 use codex_api::AuthProvider;
+use codex_api::ClaudeContentBlock;
+use codex_api::ClaudeMessage;
+use codex_api::ClaudeMessageRole;
+use codex_api::ClaudeMessagesApiRequest;
+use codex_api::ClaudeMessagesClient;
+use codex_api::ClaudeMessagesOptions;
 use codex_api::Compression;
 use codex_api::Provider;
 use codex_api::ResponsesApiRequest;
@@ -94,6 +100,27 @@ struct NoAuth;
 
 impl AuthProvider for NoAuth {
     fn add_auth_headers(&self, _headers: &mut HeaderMap) {}
+}
+
+#[derive(Clone)]
+struct StaticApiKeyAuth {
+    api_key: String,
+}
+
+impl StaticApiKeyAuth {
+    fn new(api_key: &str) -> Self {
+        Self {
+            api_key: api_key.to_string(),
+        }
+    }
+}
+
+impl AuthProvider for StaticApiKeyAuth {
+    fn add_auth_headers(&self, headers: &mut HeaderMap) {
+        if let Ok(header) = HeaderValue::from_str(&self.api_key) {
+            headers.insert("x-api-key", header);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -251,6 +278,54 @@ data: {"id":"resp-1","output":[{"type":"message","role":"assistant","content":[{
     }
 }
 
+#[derive(Clone)]
+struct HttpErrorTransport {
+    status: StatusCode,
+    body: &'static str,
+}
+
+impl HttpErrorTransport {
+    fn new(status: StatusCode, body: &'static str) -> Self {
+        Self { status, body }
+    }
+}
+
+#[async_trait]
+impl HttpTransport for HttpErrorTransport {
+    async fn execute(&self, _req: Request) -> Result<Response, TransportError> {
+        Err(TransportError::Build("execute should not run".to_string()))
+    }
+
+    async fn stream(&self, req: Request) -> Result<StreamResponse, TransportError> {
+        Err(TransportError::Http {
+            status: self.status,
+            url: Some(req.url),
+            headers: None,
+            body: Some(self.body.to_string()),
+        })
+    }
+}
+
+fn claude_request() -> ClaudeMessagesApiRequest {
+    ClaudeMessagesApiRequest {
+        model: "claude-sonnet-4-5".to_string(),
+        max_tokens: 1024,
+        messages: vec![ClaudeMessage {
+            role: ClaudeMessageRole::User,
+            content: vec![ClaudeContentBlock::Text {
+                text: "hi".to_string(),
+            }],
+        }],
+        system: None,
+        tools: Vec::new(),
+        tool_choice: None,
+        thinking: None,
+        service_tier: None,
+        stream: true,
+        tool_call_info: Default::default(),
+    }
+}
+
 #[tokio::test]
 async fn responses_client_uses_responses_path() -> Result<()> {
     let state = RecordingState::default();
@@ -269,6 +344,79 @@ async fn responses_client_uses_responses_path() -> Result<()> {
 
     let requests = state.take_stream_requests();
     assert_path_ends_with(&requests, "/responses");
+    Ok(())
+}
+
+#[tokio::test]
+async fn claude_messages_client_uses_messages_path_and_version_header() -> Result<()> {
+    let state = RecordingState::default();
+    let transport = RecordingTransport::new(state.clone());
+    let client = ClaudeMessagesClient::new(
+        transport,
+        provider("anthropic"),
+        Arc::new(StaticApiKeyAuth::new("test-key")),
+    );
+    let _stream = client
+        .stream_request(claude_request(), ClaudeMessagesOptions::default())
+        .await?;
+
+    let requests = state.take_stream_requests();
+    assert_path_ends_with(&requests, "/messages");
+    let req = &requests[0];
+    assert_eq!(
+        req.headers
+            .get("anthropic-version")
+            .and_then(|value| value.to_str().ok()),
+        Some("2023-06-01")
+    );
+    assert_eq!(
+        req.headers
+            .get(http::header::ACCEPT)
+            .and_then(|value| value.to_str().ok()),
+        Some("text/event-stream")
+    );
+    assert_eq!(
+        req.headers
+            .get("x-api-key")
+            .and_then(|value| value.to_str().ok()),
+        Some("test-key")
+    );
+    assert_eq!(req.headers.get(http::header::AUTHORIZATION), None);
+    assert_eq!(
+        req.body.as_ref().and_then(RequestBody::json),
+        Some(&serde_json::json!({
+            "model": "claude-sonnet-4-5",
+            "max_tokens": 1024,
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "text", "text": "hi"}]
+            }],
+            "stream": true
+        }))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn claude_messages_client_surfaces_anthropic_api_error() -> Result<()> {
+    let transport = HttpErrorTransport::new(
+        StatusCode::BAD_REQUEST,
+        r#"{"type":"error","error":{"type":"invalid_request_error","message":"messages.0.content.0: missing field"}}"#,
+    );
+    let client = ClaudeMessagesClient::new(transport, provider("anthropic"), Arc::new(NoAuth));
+
+    let result = client
+        .stream_request(claude_request(), ClaudeMessagesOptions::default())
+        .await;
+    let Err(ApiError::Api { status, message }) = result else {
+        panic!("expected Claude API error");
+    };
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        message,
+        "invalid_request_error: messages.0.content.0: missing field"
+    );
     Ok(())
 }
 
