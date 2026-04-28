@@ -55,7 +55,7 @@ Codex implements a **pragmatic workaround** with three modes, controlled by `tui
 The `--no-alt-screen` CLI flag can override the config setting at runtime:
 
 ```bash
-codex --no-alt-screen
+aicodex --no-alt-screen
 ```
 
 This runs the TUI in inline mode regardless of the configuration, useful for:

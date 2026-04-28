@@ -26,7 +26,9 @@ pub fn find_codex_home() -> std::io::Result<AbsolutePathBuf> {
     find_codex_home_from_env(home_env)
 }
 
-fn find_codex_home_from_env(codex_home_env: Option<(&str, &str)>) -> std::io::Result<AbsolutePathBuf> {
+fn find_codex_home_from_env(
+    codex_home_env: Option<(&str, &str)>,
+) -> std::io::Result<AbsolutePathBuf> {
     // Honor the configured home environment variable when it is set to allow
     // users (and tests) to override the default location.
     match codex_home_env {
@@ -107,8 +109,8 @@ mod tests {
             .to_str()
             .expect("file codex home path should be valid utf-8");
 
-        let err =
-            find_codex_home_from_env(Some(("AICODEX_HOME", file_str))).expect_err("file AICODEX_HOME");
+        let err = find_codex_home_from_env(Some(("AICODEX_HOME", file_str)))
+            .expect_err("file AICODEX_HOME");
         assert_eq!(err.kind(), ErrorKind::InvalidInput);
         assert!(
             err.to_string().contains("not a directory"),

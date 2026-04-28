@@ -1,17 +1,17 @@
 # App Server Test Client
-Quickstart for running and hitting `codex app-server`.
+Quickstart for running and hitting `aicodex app-server`.
 
 ## Quickstart
 
 Run from `<reporoot>/codex-rs`.
 
 ```bash
-# 1) Build debug codex binary
-cargo build -p codex-cli --bin codex
+# 1) Build debug aicodex binary
+cargo build -p codex-cli --bin aicodex
 
 # 2) Start websocket app-server in background
 cargo run -p codex-app-server-test-client -- \
-  --codex-bin ./target/debug/codex \
+  --codex-bin ./target/debug/aicodex \
   serve --listen ws://127.0.0.1:4222 --kill
 
 # 3) Call app-server (defaults to ws://127.0.0.1:4222)

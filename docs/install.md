@@ -33,7 +33,7 @@ cargo install --locked cargo-nextest
 cargo build
 
 # Launch the TUI with a sample prompt.
-cargo run --bin codex -- "explain this codebase to me"
+cargo run --bin aicodex -- "explain this codebase to me"
 
 # After making changes, use the root justfile helpers (they default to codex-rs):
 just fmt
@@ -59,6 +59,6 @@ The TUI defaults to `RUST_LOG=codex_core=info,codex_tui=info,codex_rmcp_client=i
 tail -F ~/.aicodex/log/codex-tui.log
 ```
 
-By comparison, the non-interactive mode (`codex exec`) defaults to `RUST_LOG=error`, but messages are printed inline, so there is no need to monitor a separate file.
+By comparison, the non-interactive mode (`aicodex exec`) defaults to `RUST_LOG=error`, but messages are printed inline, so there is no need to monitor a separate file.
 
 See the Rust documentation on [`RUST_LOG`](https://docs.rs/env_logger/latest/env_logger/#enabling-logging) for more information on the configuration options.

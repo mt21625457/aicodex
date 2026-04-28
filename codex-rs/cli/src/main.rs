@@ -77,11 +77,11 @@ use codex_terminal_detection::TerminalName;
     version,
     // If a sub‑command is given, ignore requirements of the default args.
     subcommand_negates_reqs = true,
-    // The executable is sometimes invoked via a platform‑specific name like
-    // `codex-x86_64-unknown-linux-musl`, but the help output should always use
-    // the generic `codex` command name that users run.
-    bin_name = "codex",
-    override_usage = "codex [OPTIONS] [PROMPT]\n       codex [OPTIONS] <COMMAND> [ARGS]"
+    // The executable is sometimes invoked via a platform-specific name like
+    // `aicodex-x86_64-unknown-linux-musl`, but the help output should always use
+    // the generic `aicodex` command name that users run.
+    bin_name = "aicodex",
+    override_usage = "aicodex [OPTIONS] [PROMPT]\n       aicodex [OPTIONS] <COMMAND> [ARGS]"
 )]
 struct MultitoolCli {
     #[clap(flatten)]
@@ -177,7 +177,7 @@ enum Subcommand {
 }
 
 #[derive(Debug, Parser)]
-#[command(bin_name = "codex plugin")]
+#[command(bin_name = "aicodex plugin")]
 struct PluginCli {
     #[clap(flatten)]
     pub config_overrides: CliConfigOverrides,
@@ -360,13 +360,13 @@ struct LoginCommand {
 
     #[arg(
         long = "with-api-key",
-        help = "Read the API key from stdin (e.g. `printenv OPENAI_API_KEY | codex login --with-api-key`)"
+        help = "Read the API key from stdin (e.g. `printenv OPENAI_API_KEY | aicodex login --with-api-key`)"
     )]
     with_api_key: bool,
 
     #[arg(
         long = "with-agent-identity",
-        help = "Read the experimental Agent Identity token from stdin (e.g. `printenv CODEX_AGENT_IDENTITY | codex login --with-agent-identity`)"
+        help = "Read the experimental Agent Identity token from stdin (e.g. `printenv CODEX_AGENT_IDENTITY | aicodex login --with-agent-identity`)"
     )]
     with_agent_identity: bool,
 
@@ -984,7 +984,7 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
                         .await;
                     } else if login_cli.api_key.is_some() {
                         eprintln!(
-                            "The --api-key flag is no longer supported. Pipe the key instead, e.g. `printenv OPENAI_API_KEY | codex login --with-api-key`."
+                            "The --api-key flag is no longer supported. Pipe the key instead, e.g. `printenv OPENAI_API_KEY | aicodex login --with-api-key`."
                         );
                         std::process::exit(1);
                     } else if login_cli.with_api_key {
@@ -1597,7 +1597,7 @@ fn confirm(prompt: &str) -> std::io::Result<bool> {
     Ok(answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes"))
 }
 
-/// Build the final `TuiCli` for a `codex resume` invocation.
+/// Build the final `TuiCli` for an `aicodex resume` invocation.
 fn finalize_resume_interactive(
     mut interactive: TuiCli,
     root_config_overrides: CliConfigOverrides,
@@ -1625,7 +1625,7 @@ fn finalize_resume_interactive(
     interactive
 }
 
-/// Build the final `TuiCli` for a `codex fork` invocation.
+/// Build the final `TuiCli` for an `aicodex fork` invocation.
 fn finalize_fork_interactive(
     mut interactive: TuiCli,
     root_config_overrides: CliConfigOverrides,
@@ -1651,7 +1651,7 @@ fn finalize_fork_interactive(
     interactive
 }
 
-/// Merge flags provided to `codex resume`/`codex fork` so they take precedence over any
+/// Merge flags provided to `aicodex resume`/`aicodex fork` so they take precedence over any
 /// root-level flags. Only overrides fields explicitly set on the subcommand-scoped
 /// CLI. Also appends `-c key=value` overrides with highest precedence.
 fn merge_interactive_cli_flags(interactive: &mut TuiCli, subcommand_cli: TuiCli) {
@@ -1888,14 +1888,14 @@ mod tests {
     fn plugin_marketplace_help_uses_plugin_namespace() {
         let help = help_from_args(&["codex", "plugin", "marketplace", "--help"]);
         assert!(
-            help.contains("Usage: codex plugin marketplace [OPTIONS] <COMMAND>"),
+            help.contains("Usage: aicodex plugin marketplace [OPTIONS] <COMMAND>"),
             "{help}"
         );
 
         for (subcommand, usage) in [
-            ("add", "Usage: codex plugin marketplace add"),
-            ("upgrade", "Usage: codex plugin marketplace upgrade"),
-            ("remove", "Usage: codex plugin marketplace remove"),
+            ("add", "Usage: aicodex plugin marketplace add"),
+            ("upgrade", "Usage: aicodex plugin marketplace upgrade"),
+            ("remove", "Usage: aicodex plugin marketplace remove"),
         ] {
             let help = help_from_args(&["codex", "plugin", "marketplace", subcommand, "--help"]);
             assert!(help.contains(usage), "{help}");
@@ -1991,7 +1991,7 @@ mod tests {
             lines,
             vec![
                 "Token usage: total=2 input=0 output=2".to_string(),
-                "To continue this session, run codex resume 123e4567-e89b-12d3-a456-426614174000"
+                "To continue this session, run aicodex resume 123e4567-e89b-12d3-a456-426614174000"
                     .to_string(),
             ]
         );
@@ -2019,7 +2019,7 @@ mod tests {
             lines,
             vec![
                 "Token usage: total=2 input=0 output=2".to_string(),
-                "To continue this session, run codex resume 123e4567-e89b-12d3-a456-426614174000"
+                "To continue this session, run aicodex resume 123e4567-e89b-12d3-a456-426614174000"
                     .to_string(),
             ]
         );

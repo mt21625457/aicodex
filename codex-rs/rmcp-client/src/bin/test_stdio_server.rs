@@ -235,7 +235,7 @@ impl TestToolServer {
     /// Manual testing approach (Codex TUI):
     /// - Build this binary: `cargo build -p codex-rmcp-client --bin test_stdio_server`
     /// - Register it:
-    ///   - `codex mcp add mcpimg -- /abs/path/to/test_stdio_server`
+    ///   - `aicodex mcp add mcpimg -- /abs/path/to/test_stdio_server`
     /// - Then in Codex TUI, ask it to call:
     ///   - `mcpimg.image_scenario({"scenario":"image_only"})`
     ///   - `mcpimg.image_scenario({"scenario":"image_only_original_detail"})`

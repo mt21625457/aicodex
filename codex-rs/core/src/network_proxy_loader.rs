@@ -43,7 +43,7 @@ pub async fn build_network_proxy_state_and_reloader() -> Result<(ConfigState, Mt
 }
 
 async fn build_config_state_with_mtimes() -> Result<(ConfigState, Vec<LayerMtime>)> {
-    let codex_home = find_codex_home().context("failed to resolve CODEX_HOME")?;
+    let codex_home = find_codex_home().context("failed to resolve AICODEX_HOME")?;
     let cli_overrides = Vec::new();
     let overrides = LoaderOverrides::default();
     let config_layer_stack = load_config_layers_state(

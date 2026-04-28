@@ -28,7 +28,7 @@ use codex_keyring_store::KeyringStore;
 use codex_protocol::account::PlanType as AccountPlanType;
 use once_cell::sync::Lazy;
 
-/// Expected structure for $CODEX_HOME/auth.json.
+/// Expected structure for $AICODEX_HOME/auth.json.
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 pub struct AuthDotJson {
     #[serde(default, skip_serializing_if = "Option::is_none")]

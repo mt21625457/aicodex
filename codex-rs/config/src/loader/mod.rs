@@ -68,7 +68,7 @@ async fn first_layer_config_error_from_entries(layers: &[ConfigLayerEntry]) -> O
 /// - admin:    managed preferences (*)
 /// - system    `/etc/codex/config.toml` (Unix) or
 ///   `%ProgramData%\OpenAI\Codex\config.toml` (Windows)
-/// - user      `${CODEX_HOME}/config.toml`
+/// - user      `${AICODEX_HOME}/config.toml` (or `${CODEX_HOME}/config.toml` compatibility fallback)
 /// - cwd       `${PWD}/config.toml` (loaded but disabled when the directory is untrusted)
 /// - tree      parent directories up to root looking for `./.codex/config.toml` (loaded but disabled when untrusted)
 /// - repo      `$(git rev-parse --show-toplevel)/.codex/config.toml` (loaded but disabled when untrusted)
@@ -168,7 +168,7 @@ pub async fn load_config_layers_state(
         .await?;
     layers.push(system_layer);
 
-    // Add a layer for $CODEX_HOME/config.toml so folder-derived resources such
+    // Add a layer for $AICODEX_HOME/config.toml so folder-derived resources such
     // as rules/ can still be discovered. When user config is ignored, preserve
     // the layer metadata without reading config.toml.
     let user_file = AbsolutePathBuf::resolve_path_against_base(CONFIG_TOML_FILE, codex_home);

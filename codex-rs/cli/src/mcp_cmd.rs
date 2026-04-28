@@ -72,7 +72,7 @@ pub struct GetArgs {
 }
 
 #[derive(Debug, clap::Parser)]
-#[command(override_usage = "codex mcp add [OPTIONS] <NAME> (--url <URL> | -- <COMMAND>...)")]
+#[command(override_usage = "aicodex mcp add [OPTIONS] <NAME> (--url <URL> | -- <COMMAND>...)")]
 pub struct AddArgs {
     /// Name for the MCP server configuration.
     pub name: String,
@@ -252,7 +252,7 @@ async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Re
 
     validate_server_name(&name)?;
 
-    let codex_home = find_codex_home().context("failed to resolve CODEX_HOME")?;
+    let codex_home = find_codex_home().context("failed to resolve AICODEX_HOME")?;
     let mut servers = load_global_mcp_servers(&codex_home)
         .await
         .with_context(|| format!("failed to load MCP servers from {}", codex_home.display()))?;
@@ -347,7 +347,7 @@ async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Re
         }
         McpOAuthLoginSupport::Unsupported => {}
         McpOAuthLoginSupport::Unknown(_) => println!(
-            "MCP server may or may not require login. Run `codex mcp login {name}` to login."
+            "MCP server may or may not require login. Run `aicodex mcp login {name}` to login."
         ),
     }
 
@@ -363,7 +363,7 @@ async fn run_remove(config_overrides: &CliConfigOverrides, remove_args: RemoveAr
 
     validate_server_name(&name)?;
 
-    let codex_home = find_codex_home().context("failed to resolve CODEX_HOME")?;
+    let codex_home = find_codex_home().context("failed to resolve AICODEX_HOME")?;
     let mut servers = load_global_mcp_servers(&codex_home)
         .await
         .with_context(|| format!("failed to load MCP servers from {}", codex_home.display()))?;
@@ -553,7 +553,7 @@ async fn run_list(config_overrides: &CliConfigOverrides, list_args: ListArgs) ->
     }
 
     if entries.is_empty() {
-        println!("No MCP servers configured yet. Try `codex mcp add my-tool -- my-command`.");
+        println!("No MCP servers configured yet. Try `aicodex mcp add my-tool -- my-command`.");
         return Ok(());
     }
 
@@ -893,7 +893,7 @@ async fn run_get(config_overrides: &CliConfigOverrides, get_args: GetArgs) -> Re
         };
         println!("  default_tools_approval_mode: {approval_mode}");
     }
-    println!("  remove: codex mcp remove {}", get_args.name);
+    println!("  remove: aicodex mcp remove {}", get_args.name);
 
     Ok(())
 }

@@ -127,7 +127,7 @@ pub struct McpServerConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
 
-    /// When `true`, `codex exec` exits with an error if this MCP server fails to initialize.
+    /// When `true`, `aicodex exec` exits with an error if this MCP server fails to initialize.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub required: bool,
 

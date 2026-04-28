@@ -581,7 +581,7 @@ pub enum ConfigLayerSource {
         file: AbsolutePathBuf,
     },
 
-    /// User config layer from $CODEX_HOME/config.toml. This layer is special
+    /// User config layer from $AICODEX_HOME/config.toml. This layer is special
     /// in that it is expected to be:
     /// - writable by the user
     /// - generally outside the workspace directory
@@ -4756,7 +4756,7 @@ pub struct Thread {
     pub cwd: AbsolutePathBuf,
     /// Version of the CLI that created the thread.
     pub cli_version: String,
-    /// Origin of the thread (CLI, VSCode, codex exec, codex app-server, etc.).
+    /// Origin of the thread (CLI, VSCode, aicodex exec, aicodex app-server, etc.).
     pub source: SessionSource,
     /// Optional random unique nickname assigned to an AgentControl-spawned sub-agent.
     pub agent_nickname: Option<String>,

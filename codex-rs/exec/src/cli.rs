@@ -9,7 +9,7 @@ use std::path::PathBuf;
 #[derive(Parser, Debug)]
 #[command(
     version,
-    override_usage = "codex exec [OPTIONS] [PROMPT]\n       codex exec [OPTIONS] <COMMAND> [ARGS]"
+    override_usage = "aicodex exec [OPTIONS] [PROMPT]\n       aicodex exec [OPTIONS] <COMMAND> [ARGS]"
 )]
 pub struct Cli {
     /// Action to perform. If omitted, runs a new non-interactive session.
@@ -27,7 +27,7 @@ pub struct Cli {
     #[arg(long = "ephemeral", global = true, default_value_t = false)]
     pub ephemeral: bool,
 
-    /// Do not load `$CODEX_HOME/config.toml`; auth still uses `CODEX_HOME`.
+    /// Do not load `$AICODEX_HOME/config.toml`; auth still uses the AICodex home.
     #[arg(long = "ignore-user-config", global = true, default_value_t = false)]
     pub ignore_user_config: bool,
 
@@ -148,7 +148,7 @@ pub enum Command {
 #[derive(Args, Debug)]
 struct ResumeArgsRaw {
     // Note: This is the direct clap shape. We reinterpret the positional when --last is set
-    // so "codex resume --last <prompt>" treats the positional as a prompt, not a session id.
+    // so "aicodex resume --last <prompt>" treats the positional as a prompt, not a session id.
     /// Conversation/session id (UUID) or thread name. UUIDs take precedence if it parses.
     /// If omitted, use --last to pick the most recent recorded session.
     #[arg(value_name = "SESSION_ID")]

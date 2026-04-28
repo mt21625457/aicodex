@@ -1,12 +1,12 @@
 # codex-exec-server
 
-`codex-exec-server` is the library backing `codex exec-server`, a small
+`codex-exec-server` is the library backing `aicodex exec-server`, a small
 JSON-RPC server for spawning and controlling subprocesses through
 `codex-utils-pty`.
 
 It provides:
 
-- a CLI entrypoint: `codex exec-server`
+- a CLI entrypoint: `aicodex exec-server`
 - a Rust client: `ExecServerClient`
 - a small protocol module with shared request/response types
 
@@ -310,7 +310,7 @@ The crate exports:
 - `run_main()` for embedding the websocket server
 
 Callers must pass `ExecServerRuntimePaths` to `run_main()`. The top-level
-`codex exec-server` command builds these paths from the `codex` arg0 dispatch
+`aicodex exec-server` command builds these paths from the `aicodex` arg0 dispatch
 state.
 
 ## Example session

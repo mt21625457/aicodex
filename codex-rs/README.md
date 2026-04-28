@@ -34,24 +34,24 @@ Codex CLI functions as an MCP client that allows the Codex CLI and IDE extension
 
 #### MCP server (experimental)
 
-Codex can be launched as an MCP _server_ by running `codex mcp-server`. This allows _other_ MCP clients to use Codex as a tool for another agent.
+AICodex can be launched as an MCP _server_ by running `aicodex mcp-server`. This allows _other_ MCP clients to use AICodex as a tool for another agent.
 
 Use the [`@modelcontextprotocol/inspector`](https://github.com/modelcontextprotocol/inspector) to try it out:
 
 ```shell
-npx @modelcontextprotocol/inspector codex mcp-server
+npx @modelcontextprotocol/inspector aicodex mcp-server
 ```
 
-Use `codex mcp` to add/list/get/remove MCP server launchers defined in `config.toml`, and `codex mcp-server` to run the MCP server directly.
+Use `aicodex mcp` to add/list/get/remove MCP server launchers defined in `config.toml`, and `aicodex mcp-server` to run the MCP server directly.
 
 ### Notifications
 
 You can enable notifications by configuring a script that is run whenever the agent finishes a turn. The [notify documentation](../docs/config.md#notify) includes a detailed example that explains how to get desktop notifications via [terminal-notifier](https://github.com/julienXX/terminal-notifier) on macOS. When Codex detects that it is running under WSL 2 inside Windows Terminal (`WT_SESSION` is set), the TUI automatically falls back to native Windows toast notifications so approval prompts and completed turns surface even though Windows Terminal does not implement OSC 9.
 
-### `codex exec` to run Codex programmatically/non-interactively
+### `aicodex exec` to run AICodex programmatically/non-interactively
 
-To run Codex non-interactively, run `codex exec PROMPT` (you can also pass the prompt via `stdin`) and Codex will work on your task until it decides that it is done and exits. If you provide both a prompt argument and piped stdin, Codex appends stdin as a `<stdin>` block after the prompt so patterns like `echo "my output" | codex exec "Summarize this concisely"` work naturally. Output is printed to the terminal directly. You can set the `RUST_LOG` environment variable to see more about what's going on.
-Use `codex exec --ephemeral ...` to run without persisting session rollout files to disk.
+To run AICodex non-interactively, run `aicodex exec PROMPT` (you can also pass the prompt via `stdin`) and AICodex will work on your task until it decides that it is done and exits. If you provide both a prompt argument and piped stdin, AICodex appends stdin as a `<stdin>` block after the prompt so patterns like `echo "my output" | aicodex exec "Summarize this concisely"` work naturally. Output is printed to the terminal directly. You can set the `RUST_LOG` environment variable to see more about what's going on.
+Use `aicodex exec --ephemeral ...` to run without persisting session rollout files to disk.
 
 ### Experimenting with the Codex Sandbox
 
@@ -68,8 +68,8 @@ codex sandbox linux [--full-auto] [COMMAND]...
 codex sandbox windows [--full-auto] [COMMAND]...
 
 # Legacy aliases
-codex debug seatbelt [--full-auto] [--log-denials] [COMMAND]...
-codex debug landlock [--full-auto] [COMMAND]...
+aicodex debug seatbelt [--full-auto] [--log-denials] [COMMAND]...
+aicodex debug landlock [--full-auto] [COMMAND]...
 ```
 
 ### Selecting a sandbox policy via `--sandbox`
@@ -78,13 +78,13 @@ The Rust CLI exposes a dedicated `--sandbox` (`-s`) flag that lets you pick the 
 
 ```shell
 # Run Codex with the default, read-only sandbox
-codex --sandbox read-only
+aicodex --sandbox read-only
 
 # Allow the agent to write within the current workspace while still blocking network access
-codex --sandbox workspace-write
+aicodex --sandbox workspace-write
 
 # Danger! Disable sandboxing entirely (only do this if you are already running in a container or other isolated env)
-codex --sandbox danger-full-access
+aicodex --sandbox danger-full-access
 ```
 
 The same setting can be persisted in `~/.aicodex/config.toml` via the top-level `sandbox_mode = "MODE"` key, e.g. `sandbox_mode = "workspace-write"`.

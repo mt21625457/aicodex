@@ -1206,7 +1206,7 @@ async fn run_ratatui_app(
             thread_name: None,
             update_action: None,
             exit_reason: ExitReason::Fatal(format!(
-                "No saved session found with ID {id_str}. Run `codex {action}` without an ID to choose from existing sessions."
+                "No saved session found with ID {id_str}. Run `aicodex {action}` without an ID to choose from existing sessions."
             )),
         })
     };

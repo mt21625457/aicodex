@@ -530,7 +530,7 @@ pub struct Config {
     /// keyring: Use an OS-specific keyring service.
     ///          Credentials stored in the keyring will only be readable by Codex unless the user explicitly grants access via OS-level keyring access.
     ///          https://github.com/openai/codex/blob/main/codex-rs/rmcp-client/src/oauth.rs#L2
-    /// file: CODEX_HOME/.credentials.json
+    /// file: AICODEX_HOME/.credentials.json
     ///       This file will be readable to Codex and other applications running as the same user.
     /// auto (default): keyring if available, otherwise file.
     pub mcp_oauth_credentials_store_mode: OAuthCredentialsStoreMode,
@@ -1041,7 +1041,7 @@ impl Config {
 
     /// This is a secondary way of creating [Config], which is appropriate when
     /// the harness is meant to be used with a specific configuration that
-    /// ignores user settings. For example, the `codex exec` subcommand is
+    /// ignores user settings. For example, the `aicodex exec` subcommand is
     /// designed to use [AskForApproval::Never] exclusively.
     ///
     /// Further, [ConfigOverrides] contains some options that are not supported
@@ -1376,7 +1376,7 @@ pub(crate) fn set_project_trust_level_inner(
     Ok(())
 }
 
-/// Patch `CODEX_HOME/config.toml` project state to set trust level.
+/// Patch `AICODEX_HOME/config.toml` project state to set trust level.
 /// Use with caution.
 pub fn set_project_trust_level(
     codex_home: &Path,
