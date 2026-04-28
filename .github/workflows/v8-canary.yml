@@ -15,7 +15,7 @@ on:
       - "third_party/v8/**"
   push:
     branches:
-      - main
+      - release
     paths:
       - ".github/actions/setup-bazel-ci/**"
       - ".github/scripts/rusty_v8_bazel.py"
@@ -31,7 +31,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}::${{ github.event.pull_request.number > 0 && format('pr-{0}', github.event.pull_request.number) || github.ref_name }}
-  cancel-in-progress: ${{ github.ref_name != 'main' }}
+  cancel-in-progress: ${{ github.ref_name != 'release' }}
 
 jobs:
   metadata:

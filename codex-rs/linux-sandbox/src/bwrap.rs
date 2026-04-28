@@ -3,7 +3,7 @@
 //! This module mirrors the semantics used by the macOS Seatbelt sandbox:
 //! - the filesystem is read-only by default,
 //! - explicit writable roots are layered on top, and
-//! - sensitive subpaths such as `.git` and `.codex` remain read-only even when
+//! - sensitive subpaths such as `.git`, `.codex`, and `.aicodex` remain read-only even when
 //!   their parent root is writable.
 //!
 //! The overall Linux sandbox is composed of:
@@ -277,7 +277,7 @@ fn create_filesystem_args(
                 else {
                     return None;
                 };
-                // Missing `.codex` remains protected so first-time project config
+                // Missing `.codex` and `.aicodex` remain protected so first-time project config
                 // creation still goes through the protected-path approval flow.
                 // Only the automatic repo-metadata read masks are skipped here:
                 // user-authored `read` rules for other subpaths and `none` rules
@@ -1280,14 +1280,14 @@ mod tests {
     fn writable_roots_under_symlinked_ancestors_bind_real_target() {
         let temp_dir = TempDir::new().expect("temp dir");
         let logical_home = temp_dir.path().join("home");
-        let real_codex = temp_dir.path().join("real-codex");
-        let logical_codex = logical_home.join(".codex");
+        let real_codex = temp_dir.path().join("real-aicodex");
+        let logical_codex = logical_home.join(".aicodex");
         let real_memories = real_codex.join("memories");
         let logical_memories = logical_codex.join("memories");
         std::fs::create_dir_all(&logical_home).expect("create logical home");
         std::fs::create_dir_all(&real_memories).expect("create memories dir");
         std::os::unix::fs::symlink(&real_codex, &logical_codex)
-            .expect("create symlinked codex home");
+            .expect("create symlinked aicodex home");
 
         let logical_memories_root =
             AbsolutePathBuf::from_absolute_path(&logical_memories).expect("absolute memories");
@@ -1559,12 +1559,15 @@ mod tests {
                 "--bind".to_string(),
                 "/".to_string(),
                 "/".to_string(),
-                // Mask the default protected .codex subpath under that writable
-                // root. Because the root is `/` in this test, the carveout path
-                // appears at the filesystem root.
+                // Mask the default protected .codex and .aicodex subpaths under
+                // that writable root. Because the root is `/` in this test, the
+                // carveout paths appear at the filesystem root.
                 "--ro-bind".to_string(),
                 "/dev/null".to_string(),
                 "/.codex".to_string(),
+                "--ro-bind".to_string(),
+                "/dev/null".to_string(),
+                "/.aicodex".to_string(),
                 // Rebind /dev after the root bind so device nodes remain
                 // writable/usable inside the writable root.
                 "--bind".to_string(),

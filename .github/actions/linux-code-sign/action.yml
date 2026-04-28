@@ -9,7 +9,7 @@ inputs:
     required: true
   binaries:
     description: Space-delimited binary basenames to sign.
-    default: "codex codex-responses-api-proxy"
+    default: "aicodex codex-responses-api-proxy"
 
 runs:
   using: composite

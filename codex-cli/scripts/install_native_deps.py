@@ -35,7 +35,7 @@ BINARY_TARGETS = (
 
 @dataclass(frozen=True)
 class BinaryComponent:
-    artifact_prefix: str  # matches the artifact filename prefix (e.g. codex-<target>.zst)
+    artifact_prefix: str  # matches the artifact filename prefix (e.g. aicodex-<target>.zst)
     dest_dir: str  # directory under vendor/<target>/ where the binary is installed
     binary_basename: str  # executable name inside dest_dir (before optional .exe)
     targets: tuple[str, ...] | None = None  # limit installation to specific targets
@@ -44,10 +44,16 @@ class BinaryComponent:
 WINDOWS_TARGETS = tuple(target for target in BINARY_TARGETS if "windows" in target)
 
 BINARY_COMPONENTS = {
+    "aicodex": BinaryComponent(
+        artifact_prefix="aicodex",
+        dest_dir="aicodex",
+        binary_basename="aicodex",
+    ),
+    # Backward-compatible component name for local developer scripts.
     "codex": BinaryComponent(
-        artifact_prefix="codex",
-        dest_dir="codex",
-        binary_basename="codex",
+        artifact_prefix="aicodex",
+        dest_dir="aicodex",
+        binary_basename="aicodex",
     ),
     "codex-responses-api-proxy": BinaryComponent(
         artifact_prefix="codex-responses-api-proxy",
@@ -56,13 +62,13 @@ BINARY_COMPONENTS = {
     ),
     "codex-windows-sandbox-setup": BinaryComponent(
         artifact_prefix="codex-windows-sandbox-setup",
-        dest_dir="codex",
+        dest_dir="aicodex",
         binary_basename="codex-windows-sandbox-setup",
         targets=WINDOWS_TARGETS,
     ),
     "codex-command-runner": BinaryComponent(
         artifact_prefix="codex-command-runner",
-        dest_dir="codex",
+        dest_dir="aicodex",
         binary_basename="codex-command-runner",
         targets=WINDOWS_TARGETS,
     ),
@@ -135,7 +141,7 @@ def parse_args() -> argparse.Namespace:
         choices=tuple(list(BINARY_COMPONENTS) + ["rg"]),
         help=(
             "Limit installation to the specified components."
-            " May be repeated. Defaults to codex, codex-windows-sandbox-setup,"
+            " May be repeated. Defaults to aicodex, codex-windows-sandbox-setup,"
             " codex-command-runner, and rg."
         ),
     )
@@ -159,7 +165,7 @@ def main() -> int:
     vendor_dir.mkdir(parents=True, exist_ok=True)
 
     components = args.components or [
-        "codex",
+        "aicodex",
         "codex-windows-sandbox-setup",
         "codex-command-runner",
         "rg",
@@ -170,12 +176,16 @@ def main() -> int:
         workflow_url = DEFAULT_WORKFLOW_URL
 
     workflow_id = workflow_url.rstrip("/").split("/")[-1]
+    workflow_repo = _repo_from_workflow_url(workflow_url) or os.environ.get(
+        "GITHUB_REPOSITORY",
+        "leagsoft/aicodex",
+    )
     print(f"Downloading native artifacts from workflow {workflow_id}...")
 
     with _gha_group(f"Download native artifacts from workflow {workflow_id}"):
         with tempfile.TemporaryDirectory(prefix="codex-native-artifacts-") as artifacts_dir_str:
             artifacts_dir = Path(artifacts_dir_str)
-            _download_artifacts(workflow_id, artifacts_dir)
+            _download_artifacts(workflow_id, workflow_repo, artifacts_dir)
             install_binary_components(
                 artifacts_dir,
                 vendor_dir,
@@ -259,7 +269,17 @@ def fetch_rg(
     return [results[target] for target in targets]
 
 
-def _download_artifacts(workflow_id: str, dest_dir: Path) -> None:
+def _repo_from_workflow_url(workflow_url: str) -> str | None:
+    parsed = urlparse(workflow_url)
+    parts = [part for part in parsed.path.split("/") if part]
+    if parsed.netloc != "github.com" or len(parts) < 5:
+        return None
+    if parts[2:4] != ["actions", "runs"]:
+        return None
+    return f"{parts[0]}/{parts[1]}"
+
+
+def _download_artifacts(workflow_id: str, repo: str, dest_dir: Path) -> None:
     cmd = [
         "gh",
         "run",
@@ -267,7 +287,7 @@ def _download_artifacts(workflow_id: str, dest_dir: Path) -> None:
         "--dir",
         str(dest_dir),
         "--repo",
-        "openai/codex",
+        repo,
         workflow_id,
     ]
     subprocess.check_call(cmd)

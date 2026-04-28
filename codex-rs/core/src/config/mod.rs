@@ -449,7 +449,7 @@ pub struct Config {
     /// appends one extra argument containing a JSON payload describing the
     /// event.
     ///
-    /// Example `~/.codex/config.toml` snippet:
+    /// Example `~/.aicodex/config.toml` snippet:
     ///
     /// ```toml
     /// notify = ["notify-send", "Codex"]
@@ -576,17 +576,18 @@ pub struct Config {
     /// Memories subsystem settings.
     pub memories: MemoriesConfig,
 
-    /// Directory containing all Codex state (defaults to `~/.codex` but can be
-    /// overridden by the `CODEX_HOME` environment variable).
+    /// Directory containing all AICodex state (defaults to `~/.aicodex` but can be
+    /// overridden by the `AICODEX_HOME` or `CODEX_HOME` environment variable).
     pub codex_home: AbsolutePathBuf,
 
     /// Directory where Codex stores the SQLite state DB.
     pub sqlite_home: PathBuf,
 
-    /// Directory where Codex writes log files (defaults to `$CODEX_HOME/log`).
+    /// Directory where AICodex writes log files (defaults to `$AICODEX_HOME/log`
+    /// or `$CODEX_HOME/log`).
     pub log_dir: PathBuf,
 
-    /// Settings that govern if and what will be written to `~/.codex/history.jsonl`.
+    /// Settings that govern if and what will be written to `~/.aicodex/history.jsonl`.
     pub history: History,
 
     /// When true, session is not persisted on disk. Default to `false`
@@ -2872,14 +2873,16 @@ fn toml_uses_deprecated_instructions_file(value: &TomlValue) -> bool {
     })
 }
 
-/// Returns the path to the Codex configuration directory, which can be
-/// specified by the `CODEX_HOME` environment variable. If not set, defaults to
-/// `~/.codex`.
+/// Returns the path to the AICodex configuration directory, which can be
+/// specified by the `AICODEX_HOME` environment variable. `CODEX_HOME` is still
+/// honored as a compatibility fallback. If neither is set, defaults to
+/// `~/.aicodex`.
 ///
-/// - If `CODEX_HOME` is set, the value must exist and be a directory. The
-///   value will be canonicalized and this function will Err otherwise.
-/// - If `CODEX_HOME` is not set, this function does not verify that the
-///   directory exists.
+/// - If `AICODEX_HOME` or `CODEX_HOME` is set, the value must exist and be a
+///   directory. The value will be canonicalized and this function will Err
+///   otherwise.
+/// - If neither environment variable is set, this function does not verify
+///   that the directory exists.
 pub fn find_codex_home() -> std::io::Result<AbsolutePathBuf> {
     codex_utils_home_dir::find_codex_home()
 }

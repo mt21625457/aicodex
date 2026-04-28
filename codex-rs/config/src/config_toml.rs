@@ -65,7 +65,7 @@ const RESERVED_MODEL_PROVIDER_IDS: [&str; 4] = [
     LMSTUDIO_OSS_PROVIDER_ID,
 ];
 
-/// Base config deserialized from ~/.codex/config.toml.
+/// Base config deserialized from ~/.aicodex/config.toml.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct ConfigToml {
@@ -232,16 +232,17 @@ pub struct ConfigToml {
     #[serde(default)]
     pub profiles: HashMap<String, ConfigProfile>,
 
-    /// Settings that govern if and what will be written to `~/.codex/history.jsonl`.
+    /// Settings that govern if and what will be written to `~/.aicodex/history.jsonl`.
     #[serde(default)]
     pub history: Option<History>,
 
     /// Directory where Codex stores the SQLite state DB.
-    /// Defaults to `$CODEX_SQLITE_HOME` when set. Otherwise uses `$CODEX_HOME`.
+    /// Defaults to `$CODEX_SQLITE_HOME` when set. Otherwise uses `$AICODEX_HOME`
+    /// or `$CODEX_HOME`.
     pub sqlite_home: Option<AbsolutePathBuf>,
 
     /// Directory where Codex writes log files, for example `codex-tui.log`.
-    /// Defaults to `$CODEX_HOME/log`.
+    /// Defaults to `$AICODEX_HOME/log` or `$CODEX_HOME/log`.
     pub log_dir: Option<AbsolutePathBuf>,
 
     /// Optional URI-based file opener. If set, citations to files in the model

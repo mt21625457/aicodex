@@ -1,6 +1,6 @@
 #!/usr/bin/env -S NODE_NO_WARNINGS=1 pnpm ts-node-esm --files
 
-import { Codex } from "@openai/codex-sdk";
+import { Codex } from "@leagsoft/aicodex-sdk";
 
 import { codexPathOverride } from "./helpers.ts";
 

@@ -563,7 +563,7 @@ fn find_setup_exe() -> PathBuf {
         }
 
         // Standalone installs keep Windows helper binaries under
-        // `codex-resources/` next to `codex.exe`, so elevation needs to probe
+        // `codex-resources/` next to `aicodex.exe`, so elevation needs to probe
         // that sibling folder before falling back to PATH.
         let resource_candidate = dir
             .join("codex-resources")

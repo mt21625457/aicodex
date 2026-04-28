@@ -8,7 +8,7 @@ For a full configuration reference, see [this documentation](https://developers.
 
 ## Connecting to MCP servers
 
-Codex can connect to MCP servers configured in `~/.codex/config.toml`. See the configuration reference for the latest MCP server options:
+AICodex can connect to MCP servers configured in `~/.aicodex/config.toml`. See the configuration reference for the latest MCP server options:
 
 - https://developers.openai.com/codex/config-reference
 
@@ -58,7 +58,7 @@ Anthropic extended thinking using a budget mapped from the selected effort.
 ## MCP tool approvals
 
 Codex stores approval defaults and per-tool overrides for custom MCP servers
-under `mcp_servers` in `~/.codex/config.toml`. Set
+under `mcp_servers` in `~/.aicodex/config.toml`. Set
 `default_tools_approval_mode` on the server to apply a default to every tool,
 and use per-tool `approval_mode` entries for exceptions:
 

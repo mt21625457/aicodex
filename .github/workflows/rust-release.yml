@@ -1,8 +1,9 @@
 # Release workflow for codex-rs.
 # To release, follow a workflow like:
 # ```
-# git tag -a rust-v0.1.0 -m "Release 0.1.0"
-# git push origin rust-v0.1.0
+# version="$(tr -d '[:space:]' < AICODEX_VERSION)"
+# git tag -a "rust-v${version}" -m "Release ${version}"
+# git push origin "rust-v${version}"
 # ```
 
 name: rust-release
@@ -21,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: dtolnay/rust-toolchain@c2b55edffaf41a251c410bb32bed22afefa800f1 # 1.92
-      - name: Validate tag matches Cargo.toml version
+      - name: Validate tag matches AICODEX_VERSION
         shell: bash
         run: |
           set -euo pipefail
@@ -35,14 +36,15 @@ jobs:
 
           # 2. Extract versions
           tag_ver="${GITHUB_REF_NAME#rust-v}"
-          cargo_ver="$(grep -m1 '^version' codex-rs/Cargo.toml \
-                        | sed -E 's/version *= *"([^"]+)".*/\1/')"
+          aicodex_ver="$(tr -d '[:space:]' < AICODEX_VERSION)"
+          [[ "${aicodex_ver}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta)(\.[0-9]+)?)?$ ]] \
+            || { echo "❌  AICODEX_VERSION '${aicodex_ver}' doesn't match expected format"; exit 1; }
 
           # 3. Compare
-          [[ "${tag_ver}" == "${cargo_ver}" ]] \
-            || { echo "❌  Tag ${tag_ver} ≠ Cargo.toml ${cargo_ver}"; exit 1; }
+          [[ "${tag_ver}" == "${aicodex_ver}" ]] \
+            || { echo "❌  Tag ${tag_ver} ≠ AICODEX_VERSION ${aicodex_ver}"; exit 1; }
 
-          echo "✅  Tag and Cargo.toml agree (${tag_ver})"
+          echo "✅  Tag and AICODEX_VERSION agree (${tag_ver})"
           echo "::endgroup::"
 
   build:
@@ -69,7 +71,7 @@ jobs:
             target: aarch64-apple-darwin
             bundle: primary
             artifact_name: aarch64-apple-darwin
-            binaries: "codex codex-responses-api-proxy"
+            binaries: "aicodex codex-responses-api-proxy"
             build_dmg: "true"
           - runner: macos-15-xlarge
             target: aarch64-apple-darwin
@@ -81,7 +83,7 @@ jobs:
             target: x86_64-apple-darwin
             bundle: primary
             artifact_name: x86_64-apple-darwin
-            binaries: "codex codex-responses-api-proxy"
+            binaries: "aicodex codex-responses-api-proxy"
             build_dmg: "true"
           - runner: macos-15-xlarge
             target: x86_64-apple-darwin
@@ -94,7 +96,7 @@ jobs:
             target: x86_64-unknown-linux-musl
             bundle: primary
             artifact_name: x86_64-unknown-linux-musl
-            binaries: "codex codex-responses-api-proxy"
+            binaries: "aicodex codex-responses-api-proxy"
             build_dmg: "false"
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
@@ -106,7 +108,7 @@ jobs:
             target: aarch64-unknown-linux-musl
             bundle: primary
             artifact_name: aarch64-unknown-linux-musl
-            binaries: "codex codex-responses-api-proxy"
+            binaries: "aicodex codex-responses-api-proxy"
             build_dmg: "false"
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
@@ -300,9 +302,9 @@ jobs:
 
           target="${{ matrix.target }}"
           release_dir="target/${target}/release"
-          dmg_root="${RUNNER_TEMP}/codex-dmg-root"
-          volname="Codex (${target})"
-          dmg_path="${release_dir}/codex-${target}.dmg"
+          dmg_root="${RUNNER_TEMP}/aicodex-dmg-root"
+          volname="AICodex (${target})"
+          dmg_path="${release_dir}/aicodex-${target}.dmg"
 
           # The previous "MacOS code signing (binaries)" step signs + notarizes the
           # built artifacts in `${release_dir}`. This step packages *those same*
@@ -360,7 +362,7 @@ jobs:
           done
 
           if [[ "${{ matrix.build_dmg }}" == "true" ]]; then
-            cp target/${{ matrix.target }}/release/codex-${{ matrix.target }}.dmg "$dest/codex-${{ matrix.target }}.dmg"
+            cp target/${{ matrix.target }}/release/aicodex-${{ matrix.target }}.dmg "$dest/aicodex-${{ matrix.target }}.dmg"
           fi
 
       - name: Compress artifacts
@@ -373,8 +375,8 @@ jobs:
           # For compatibility with environments that lack the `zstd` tool we
           # additionally create a `.tar.gz` alongside every binary we publish.
           # The end result is:
-          #   codex-<target>.zst          (existing)
-          #   codex-<target>.tar.gz       (new)
+          #   aicodex-<target>.zst
+          #   aicodex-<target>.tar.gz
 
           # 1. Produce a .tar.gz for every file in the directory *before* we
           #    run `zstd --rm`, because that flag deletes the original files.
@@ -492,9 +494,8 @@ jobs:
       - name: Define release name
         id: release_name
         run: |
-          # Extract the version from the tag name, which is in the format
-          # "rust-v0.1.0".
-          version="${GITHUB_REF_NAME#rust-v}"
+          # AICODEX_VERSION is the source of truth for release and npm versions.
+          version="$(tr -d '[:space:]' < AICODEX_VERSION)"
           echo "name=${version}" >> $GITHUB_OUTPUT
 
       - name: Determine npm publish settings
@@ -538,9 +539,7 @@ jobs:
         run: |
           ./scripts/stage_npm_packages.py \
             --release-version "$RELEASE_VERSION" \
-            --package codex \
-            --package codex-responses-api-proxy \
-            --package codex-sdk
+            --package codex
 
       - name: Stage installer scripts
         run: |
@@ -612,7 +611,7 @@ jobs:
           # Node 24 bundles npm >= 11.5.1, which trusted publishing requires.
           node-version: 24
           registry-url: "https://registry.npmjs.org"
-          scope: "@openai"
+          scope: "@leagsoft"
 
       - name: Download npm tarballs from release
         env:
@@ -629,8 +628,6 @@ jobs:
             "codex-npm-linux-*-${version}.tgz"
             "codex-npm-darwin-*-${version}.tgz"
             "codex-npm-win32-*-${version}.tgz"
-            "codex-responses-api-proxy-npm-${version}.tgz"
-            "codex-sdk-npm-${version}.tgz"
           )
           for pattern in "${patterns[@]}"; do
             gh release download "$tag" \
@@ -655,7 +652,7 @@ jobs:
           sdk_tarball="dist/npm/codex-sdk-npm-${VERSION}.tgz"
           # Keep this list in sync with CODEX_PLATFORM_PACKAGES in
           # codex-cli/scripts/build_npm_package.py. The root wrapper advances
-          # @openai/codex@latest as soon as it publishes, so every platform
+          # @leagsoft/aicodex@latest as soon as it publishes, so every platform
           # package it aliases must already exist in the registry first.
           platform_tarballs=(
             "dist/npm/codex-npm-linux-x64-${VERSION}.tgz"
@@ -695,7 +692,7 @@ jobs:
           done
 
           # Publish the platform packages before the root CLI wrapper. The root
-          # wrapper advances @openai/codex@latest, so it should only publish
+          # wrapper advances @leagsoft/aicodex@latest, so it should only publish
           # after the optional dependency versions it references exist.
           tarballs=(
             "${platform_tarballs[@]}"
@@ -726,6 +723,7 @@ jobs:
             esac
 
             publish_cmd=(npm publish "${GITHUB_WORKSPACE}/${tarball}")
+            publish_cmd+=(--access public)
             if [[ -n "${tag}" ]]; then
               publish_cmd+=(--tag "${tag}")
             fi
@@ -769,7 +767,7 @@ jobs:
           version: ${{ needs.release.outputs.version }}
           release-tag: ${{ needs.release.outputs.tag }}
           fork-user: openai-oss-forks
-          installers-regex: '^codex-(?:x86_64|aarch64)-pc-windows-msvc\.exe\.zip$'
+          installers-regex: '^aicodex-(?:x86_64|aarch64)-pc-windows-msvc\.exe\.zip$'
           token: ${{ secrets.WINGET_PUBLISH_PAT }}
 
   update-branch:

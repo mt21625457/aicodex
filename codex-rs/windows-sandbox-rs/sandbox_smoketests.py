@@ -1,5 +1,5 @@
 # sandbox_smoketests.py
-# Run a suite of smoke tests against the Windows sandbox via the Codex CLI
+# Run a suite of smoke tests against the Windows sandbox via the AICodex CLI
 # Requires: Python 3.8+ on Windows. No pip requirements.
 
 import os
@@ -15,35 +15,35 @@ from typing import List, Optional, Tuple
 from urllib.parse import urlsplit
 
 def _resolve_codex_cmd() -> List[str]:
-    """Resolve the Codex CLI to invoke `codex sandbox windows`.
+    """Resolve the AICodex CLI to invoke `aicodex sandbox windows`.
 
     Prefer local builds (debug first), then fall back to PATH.
-    Returns the argv prefix to run Codex.
+    Returns the argv prefix to run AICodex.
     """
     root = Path(__file__).parent
     ws_root = root.parent
     cargo_target = os.environ.get("CARGO_TARGET_DIR")
 
     candidates = [
-        ws_root / "target" / "debug" / "codex.exe",
-        ws_root / "target" / "release" / "codex.exe",
+        ws_root / "target" / "debug" / "aicodex.exe",
+        ws_root / "target" / "release" / "aicodex.exe",
     ]
     if cargo_target:
         cargo_base = Path(cargo_target)
         candidates.extend([
-            cargo_base / "debug" / "codex.exe",
-            cargo_base / "release" / "codex.exe",
+            cargo_base / "debug" / "aicodex.exe",
+            cargo_base / "release" / "aicodex.exe",
         ])
 
     for candidate in candidates:
         if candidate.exists():
             return [str(candidate)]
 
-    if shutil.which("codex"):
-        return ["codex"]
+    if shutil.which("aicodex"):
+        return ["aicodex"]
 
     raise FileNotFoundError(
-        "Codex CLI not found. Build it first, e.g.\n"
+        "AICodex CLI not found. Build it first, e.g.\n"
         "  cargo build -p codex-cli --release\n"
         "or for debug:\n"
         "  cargo build -p codex-cli\n"
@@ -507,7 +507,7 @@ def main() -> int:
     add("WS: protected path case-variation denied", rc != 0 and assert_not_exists(git_variation), f"rc={rc}")
 
     # 34. WS: policy tamper (.codex artifacts) denied
-    codex_home = Path(os.environ["USERPROFILE"]) / ".codex"
+    codex_home = Path(os.environ["USERPROFILE"]) / ".aicodex"
     cap_sid_target = codex_home / "cap_sid"
     rc, out, err = run_sbx(
         "workspace-write",

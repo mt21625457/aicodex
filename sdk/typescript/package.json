@@ -1,10 +1,10 @@
 {
-  "name": "@openai/codex-sdk",
-  "version": "0.0.0-dev",
+  "name": "@leagsoft/aicodex-sdk",
+  "version": "0.1.1",
   "description": "TypeScript SDK for Codex APIs.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/openai/codex.git",
+    "url": "git+https://github.com/leagsoft/aicodex.git",
     "directory": "sdk/typescript"
   },
   "keywords": [

@@ -126,7 +126,7 @@ Default sequence:
 3. After generation, move or copy the selected source image from `$CODEX_HOME/generated_images/...` into the workspace or `tmp/imagegen/`.
 4. Run the installed helper path, not a project-relative script path:
    ```bash
-   python "${CODEX_HOME:-$HOME/.codex}/skills/.system/imagegen/scripts/remove_chroma_key.py" \
+   python "${AICODEX_HOME:-${CODEX_HOME:-$HOME/.aicodex}}/skills/.system/imagegen/scripts/remove_chroma_key.py" \
      --input <source> \
      --out <final.png> \
      --auto-key border \

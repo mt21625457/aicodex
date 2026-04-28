@@ -41,15 +41,15 @@ export type CodexExecArgs = {
 
 const INTERNAL_ORIGINATOR_ENV = "CODEX_INTERNAL_ORIGINATOR_OVERRIDE";
 const TYPESCRIPT_SDK_ORIGINATOR = "codex_sdk_ts";
-const CODEX_NPM_NAME = "@openai/codex";
+const CODEX_NPM_NAME = "@leagsoft/aicodex";
 
 const PLATFORM_PACKAGE_BY_TARGET: Record<string, string> = {
-  "x86_64-unknown-linux-musl": "@openai/codex-linux-x64",
-  "aarch64-unknown-linux-musl": "@openai/codex-linux-arm64",
-  "x86_64-apple-darwin": "@openai/codex-darwin-x64",
-  "aarch64-apple-darwin": "@openai/codex-darwin-arm64",
-  "x86_64-pc-windows-msvc": "@openai/codex-win32-x64",
-  "aarch64-pc-windows-msvc": "@openai/codex-win32-arm64",
+  "x86_64-unknown-linux-musl": "@leagsoft/aicodex-linux-x64",
+  "aarch64-unknown-linux-musl": "@leagsoft/aicodex-linux-arm64",
+  "x86_64-apple-darwin": "@leagsoft/aicodex-darwin-x64",
+  "aarch64-apple-darwin": "@leagsoft/aicodex-darwin-arm64",
+  "x86_64-pc-windows-msvc": "@leagsoft/aicodex-win32-x64",
+  "aarch64-pc-windows-msvc": "@leagsoft/aicodex-win32-arm64",
 };
 
 const moduleRequire = createRequire(import.meta.url);
@@ -377,13 +377,13 @@ function findCodexPath() {
     vendorRoot = path.join(path.dirname(platformPackageJsonPath), "vendor");
   } catch {
     throw new Error(
-      `Unable to locate Codex CLI binaries. Ensure ${CODEX_NPM_NAME} is installed with optional dependencies.`,
+      `Unable to locate AICodex CLI binaries. Ensure ${CODEX_NPM_NAME} is installed with optional dependencies.`,
     );
   }
 
   const archRoot = path.join(vendorRoot, targetTriple);
-  const codexBinaryName = process.platform === "win32" ? "codex.exe" : "codex";
-  const binaryPath = path.join(archRoot, "codex", codexBinaryName);
+  const aicodexBinaryName = process.platform === "win32" ? "aicodex.exe" : "aicodex";
+  const binaryPath = path.join(archRoot, "aicodex", aicodexBinaryName);
 
   return binaryPath;
 }

@@ -15,8 +15,8 @@ use owo_colors::OwoColorize;
 #[command(name = "codex-state-logs")]
 #[command(about = "Tail Codex logs from the dedicated logs SQLite DB with simple filters")]
 struct Args {
-    /// Path to CODEX_HOME. Defaults to $CODEX_HOME or ~/.codex.
-    #[arg(long, env = "CODEX_HOME")]
+    /// Path to AICODEX_HOME. Defaults to $AICODEX_HOME, $CODEX_HOME, or ~/.aicodex.
+    #[arg(long)]
     codex_home: Option<PathBuf>,
 
     /// Direct path to the logs SQLite database. Overrides --codex-home.
@@ -140,10 +140,20 @@ fn resolve_db_path(args: &Args) -> anyhow::Result<PathBuf> {
 }
 
 fn default_codex_home() -> PathBuf {
-    if let Some(home) = home_dir() {
-        return home.join(".codex");
+    if let Some(home) = std::env::var_os("AICODEX_HOME")
+        && !home.is_empty()
+    {
+        return PathBuf::from(home);
     }
-    PathBuf::from(".codex")
+    if let Some(home) = std::env::var_os("CODEX_HOME")
+        && !home.is_empty()
+    {
+        return PathBuf::from(home);
+    }
+    if let Some(home) = home_dir() {
+        return home.join(".aicodex");
+    }
+    PathBuf::from(".aicodex")
 }
 
 fn build_filter(args: &Args) -> anyhow::Result<LogFilter> {

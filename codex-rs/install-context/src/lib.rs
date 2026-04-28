@@ -17,7 +17,7 @@ pub enum StandalonePlatform {
 pub enum InstallContext {
     Standalone {
         /// The managed standalone release directory, for example
-        /// `~/.codex/packages/standalone/releases/0.111.0-x86_64-unknown-linux-musl`.
+        /// `~/.aicodex/packages/standalone/releases/0.111.0-x86_64-unknown-linux-musl`.
         release_dir: PathBuf,
         /// The bundled resource directory that sits next to the executable when
         /// this install ships managed dependencies.
@@ -25,16 +25,16 @@ pub enum InstallContext {
         /// The platform of the standalone release, either `Unix` or `Windows`.
         platform: StandalonePlatform,
     },
-    /// A Codex binary launched through the npm-managed `codex.js` shim.
+    /// An AICodex binary launched through the npm-managed `aicodex.js` shim.
     Npm,
-    /// A Codex binary launched through the bun-managed `codex.js` shim.
+    /// An AICodex binary launched through the bun-managed `aicodex.js` shim.
     Bun,
-    /// A Codex binary that appears to come from a Homebrew install prefix.
+    /// An AICodex binary that appears to come from a Homebrew install prefix.
     Brew,
     /// Any other execution environment.
     ///
     /// This commonly covers `cargo run`, app-bundled Codex binaries, custom
-    /// internal launchers, and tests that execute Codex from an arbitrary path.
+    /// internal launchers, and tests that execute AICodex from an arbitrary path.
     Other,
 }
 
@@ -178,7 +178,7 @@ mod tests {
             .join("packages/standalone/releases/1.2.3-x86_64-unknown-linux-musl");
         let resources_dir = release_dir.join(RESOURCES_DIRNAME);
         fs::create_dir_all(&resources_dir)?;
-        let exe_path = release_dir.join(if cfg!(windows) { "codex.exe" } else { "codex" });
+        let exe_path = release_dir.join(if cfg!(windows) { "aicodex.exe" } else { "aicodex" });
         fs::write(&exe_path, "")?;
         fs::write(resources_dir.join(default_rg_command()), "")?;
         let canonical_release_dir = release_dir.canonicalize()?;
@@ -209,7 +209,7 @@ mod tests {
             .path()
             .join("packages/standalone/releases/1.2.3-x86_64-unknown-linux-musl");
         fs::create_dir_all(&release_dir)?;
-        let exe_path = release_dir.join(if cfg!(windows) { "codex.exe" } else { "codex" });
+        let exe_path = release_dir.join(if cfg!(windows) { "aicodex.exe" } else { "aicodex" });
         fs::write(&exe_path, "")?;
 
         let context = InstallContext::from_exe_with_codex_home(

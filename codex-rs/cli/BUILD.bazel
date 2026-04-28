@@ -9,3 +9,7 @@ codex_rust_crate(
 multiplatform_binaries(
     name = "codex",
 )
+
+multiplatform_binaries(
+    name = "aicodex",
+)

@@ -4392,6 +4392,8 @@ mod tests {
             .expect("canonical .agents");
         let expected_codex = AbsolutePathBuf::from_absolute_path(canonical_cwd.join(".codex"))
             .expect("canonical .codex");
+        let expected_aicodex = AbsolutePathBuf::from_absolute_path(canonical_cwd.join(".aicodex"))
+            .expect("canonical .aicodex");
         let policy = FileSystemSandboxPolicy::restricted(vec![
             FileSystemSandboxEntry {
                 path: FileSystemPath::Special {
@@ -4444,6 +4446,12 @@ mod tests {
                 .iter()
                 .any(|path| path.as_path() == expected_codex.as_path())
         );
+        assert!(
+            writable_roots[0]
+                .read_only_subpaths
+                .iter()
+                .any(|path| path.as_path() == expected_aicodex.as_path())
+        );
     }
 
     #[test]
@@ -4460,6 +4468,9 @@ mod tests {
                 .expect("canonical docs/public");
         let expected_dot_codex = AbsolutePathBuf::from_absolute_path(canonical_cwd.join(".codex"))
             .expect("canonical .codex");
+        let expected_dot_aicodex =
+            AbsolutePathBuf::from_absolute_path(canonical_cwd.join(".aicodex"))
+                .expect("canonical .aicodex");
         let policy = FileSystemSandboxPolicy::restricted(vec![
             FileSystemSandboxEntry {
                 path: FileSystemPath::Special {
@@ -4484,6 +4495,7 @@ mod tests {
                 (
                     canonical_cwd,
                     vec![
+                        expected_dot_aicodex.to_path_buf(),
                         expected_dot_codex.to_path_buf(),
                         expected_docs.to_path_buf()
                     ],
