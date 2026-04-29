@@ -25,12 +25,19 @@ use tokio::time::timeout;
 use tracing::debug;
 use tracing::trace;
 
+const REQUEST_ID_HEADER: &str = "x-request-id";
+
 pub fn spawn_claude_response_stream(
     stream_response: StreamResponse,
     idle_timeout: Duration,
     telemetry: Option<Arc<dyn SseTelemetry>>,
     tool_call_info: HashMap<String, ClaudeToolCallInfo>,
 ) -> ResponseStream {
+    let upstream_request_id = stream_response
+        .headers
+        .get(REQUEST_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     let (tx_event, rx_event) = mpsc::channel::<Result<ResponseEvent, ApiError>>(1600);
     tokio::spawn(process_sse(
         stream_response.bytes,
@@ -39,7 +46,10 @@ pub fn spawn_claude_response_stream(
         telemetry,
         tool_call_info,
     ));
-    ResponseStream { rx_event }
+    ResponseStream {
+        rx_event,
+        upstream_request_id,
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,7 +109,7 @@ struct ClaudeMessageDelta {
     stop_sequence: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum ClaudeStopReason {
     EndTurn,
@@ -219,6 +229,7 @@ struct ClaudeStreamState {
     reasoning_signatures: BTreeMap<usize, String>,
     tool_blocks: BTreeMap<usize, ToolUseState>,
     usage: ClaudeUsage,
+    stop_reason: Option<ClaudeStopReason>,
     tool_call_info: HashMap<String, ClaudeToolCallInfo>,
 }
 
@@ -288,6 +299,9 @@ impl ClaudeStreamState {
                 }) = delta
                 {
                     trace!(?stop_reason, ?stop_sequence, "Claude message delta");
+                    if let Some(stop_reason) = stop_reason {
+                        self.stop_reason = Some(stop_reason);
+                    }
                 }
                 if let Some(usage) = usage {
                     self.usage.merge(usage);
@@ -475,7 +489,6 @@ impl ClaudeStreamState {
                 id: self.message_id.clone(),
                 role: "assistant".to_string(),
                 content: Vec::new(),
-                end_turn: None,
                 phase: None,
             })))
             .await
@@ -625,7 +638,6 @@ impl ClaudeStreamState {
                     content: vec![ContentItem::OutputText {
                         text: self.join_text(),
                     }],
-                    end_turn: Some(true),
                     phase: None,
                 })))
                 .await
@@ -643,6 +655,13 @@ impl ClaudeStreamState {
             .send(Ok(ResponseEvent::Completed {
                 response_id: self.response_id(),
                 token_usage: Some(self.usage.token_usage()),
+                end_turn: self.stop_reason.map(|stop_reason| match stop_reason {
+                    ClaudeStopReason::EndTurn
+                    | ClaudeStopReason::MaxTokens
+                    | ClaudeStopReason::StopSequence
+                    | ClaudeStopReason::Refusal => true,
+                    ClaudeStopReason::ToolUse | ClaudeStopReason::PauseTurn => false,
+                }),
             }))
             .await
             .map_err(|err| ApiError::Stream(err.to_string()))
@@ -939,6 +958,14 @@ mod tests {
                 && arguments == "{\"query\":\"rust\"}"
                 && call_id == "toolu_1"
         )));
+        let end_turn = events
+            .iter()
+            .find_map(|event| match event {
+                ResponseEvent::Completed { end_turn, .. } => Some(*end_turn),
+                _ => None,
+            })
+            .expect("completed event");
+        assert_eq!(end_turn, Some(false));
     }
 
     #[tokio::test]
@@ -1062,6 +1089,14 @@ mod tests {
                 total_tokens: 20,
             }
         );
+        let end_turn = events
+            .iter()
+            .find_map(|event| match event {
+                ResponseEvent::Completed { end_turn, .. } => Some(*end_turn),
+                _ => None,
+            })
+            .expect("completed event");
+        assert_eq!(end_turn, Some(true));
     }
 
     #[test]

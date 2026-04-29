@@ -227,7 +227,6 @@ pub(crate) fn build_claude_messages_request(
             | ResponseItem::ToolSearchOutput { .. }
             | ResponseItem::WebSearchCall { .. }
             | ResponseItem::ImageGenerationCall { .. }
-            | ResponseItem::GhostSnapshot { .. }
             | ResponseItem::Compaction { .. }
             | ResponseItem::Other => {}
         }
@@ -580,7 +579,6 @@ mod tests {
                         detail: Some(ImageDetail::High),
                     },
                 ],
-                end_turn: None,
                 phase: None,
             }],
             tools: vec![ToolSpec::Namespace(ResponsesApiNamespace {
@@ -773,7 +771,6 @@ mod tests {
                         image_url: "https://example.com/screenshot.png".to_string(),
                         detail: Some(ImageDetail::High),
                     }],
-                    end_turn: None,
                     phase: None,
                 },
                 ResponseItem::FunctionCall {
@@ -879,7 +876,6 @@ mod tests {
                     image_url: "file:///tmp/screenshot.png".to_string(),
                     detail: Some(ImageDetail::High),
                 }],
-                end_turn: None,
                 phase: None,
             }],
             base_instructions: BaseInstructions {
@@ -912,7 +908,6 @@ mod tests {
                 content: vec![ContentItem::InputText {
                     text: "think".to_string(),
                 }],
-                end_turn: None,
                 phase: None,
             }],
             base_instructions: BaseInstructions {
@@ -962,7 +957,6 @@ mod tests {
                 content: vec![ContentItem::InputText {
                     text: "standard".to_string(),
                 }],
-                end_turn: None,
                 phase: None,
             }],
             base_instructions: BaseInstructions {
