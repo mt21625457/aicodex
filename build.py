@@ -15,7 +15,8 @@ Usage:
     ./build.py ts                  # Build TypeScript packages
     ./build.py all                 # Build everything (release mode)
     ./build.py all --debug         # Build everything in debug mode
-    ./build.py codex-cli           # Build the codex CLI binary (release mode)
+    ./build.py codex-cli           # Build the aicodex CLI binary (release mode)
+    ./build.py codex-cli --all-targets
 """
 
 from __future__ import annotations
@@ -27,7 +28,6 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import NoReturn
 
 # Repository root (where this script lives)
 REPO_ROOT = Path(__file__).resolve().parent
@@ -36,6 +36,18 @@ TS_ROOT = REPO_ROOT / "codex-cli"
 
 # Output binary name
 OUTPUT_BINARY_NAME = "aicodex"
+CLI_PACKAGE_NAME = "codex-cli"
+CLI_BIN_NAME = "aicodex"
+CLI_VENDOR_DIR_NAME = "aicodex"
+
+CLI_TARGETS = (
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+)
 
 
 def run(
@@ -71,18 +83,14 @@ def node_available() -> bool:
     return shutil.which("node") is not None
 
 
-def rustup_available() -> bool:
-    return shutil.which("rustup") is not None
-
-
-def detect_rust_target() -> str:
-    """Detect the Rust target triple for the current platform."""
+def detect_cli_target() -> str:
+    """Detect the target triple used by the npm aicodex launcher."""
     system = platform.system().lower()
     machine = platform.machine().lower()
 
     mapping = {
-        ("linux", "x86_64"): "x86_64-unknown-linux-gnu",
-        ("linux", "aarch64"): "aarch64-unknown-linux-gnu",
+        ("linux", "x86_64"): "x86_64-unknown-linux-musl",
+        ("linux", "aarch64"): "aarch64-unknown-linux-musl",
         ("darwin", "x86_64"): "x86_64-apple-darwin",
         ("darwin", "arm64"): "aarch64-apple-darwin",
         ("windows", "amd64"): "x86_64-pc-windows-msvc",
@@ -94,14 +102,12 @@ def detect_rust_target() -> str:
     if key in mapping:
         return mapping[key]
 
-    # Fallback: ask rustc
-    result = run(["rustc", "-vV"], capture_output=True, check=False)
-    if result.returncode == 0:
-        for line in result.stdout.splitlines():
-            if line.startswith("host:"):
-                return line.split(":", 1)[1].strip()
+    raise RuntimeError(f"Unsupported platform for aicodex npm package: {system} ({machine})")
 
-    raise RuntimeError(f"Unsupported platform: {system} ({machine})")
+
+def executable_name(base_name: str, target: str) -> str:
+    """Return the executable filename for a Rust target triple."""
+    return f"{base_name}.exe" if "windows" in target else base_name
 
 
 # ---------------------------------------------------------------------------
@@ -150,42 +156,48 @@ def build_codex_cli(
     rename: str | None = None,
     verbose: bool = False,
 ) -> Path:
-    """Build the codex CLI binary and optionally stage / rename it."""
-    build_rust(release=release, target=target, bin="codex", verbose=verbose)
+    """Build the aicodex CLI binary and optionally stage / rename it."""
+    resolved_target = target or detect_cli_target()
+    build_rust(
+        release=release,
+        target=resolved_target,
+        package=CLI_PACKAGE_NAME,
+        bin=CLI_BIN_NAME,
+        verbose=verbose,
+    )
 
-    resolved_target = target or detect_rust_target()
     profile = "release" if release else "debug"
-
-    if target is None:
-        src = (
-            RUST_ROOT
-            / "target"
-            / profile
-            / ("codex.exe" if platform.system().lower() == "windows" else "codex")
-        )
-    else:
-        src = (
-            RUST_ROOT
-            / "target"
-            / resolved_target
-            / profile
-            / ("codex.exe" if platform.system().lower() == "windows" else "codex")
-        )
+    src = (
+        RUST_ROOT
+        / "target"
+        / resolved_target
+        / profile
+        / executable_name(CLI_BIN_NAME, resolved_target)
+    )
 
     if not src.exists():
         print(f"ERROR: expected binary not found at {src}", file=sys.stderr)
         sys.exit(1)
 
-    # Rename if requested
-    if rename:
-        dest_name = f"{rename}.exe" if platform.system().lower() == "windows" else rename
+    if install and rename and rename != CLI_BIN_NAME:
+        raise RuntimeError(f"--install requires the binary to be named {CLI_BIN_NAME!r}")
+
+    if install:
+        dest_name = executable_name(CLI_BIN_NAME, resolved_target)
+    elif rename:
+        dest_name = executable_name(rename, resolved_target)
     else:
         dest_name = src.name
 
     if install:
-        # Stage the binary into codex-cli/vendor/<target>/codex/ so the JS
+        # Stage the binary into codex-cli/vendor/<target>/aicodex/ so the JS
         # wrapper can find it when running from the local repo.
-        dest_dir = TS_ROOT / "vendor" / resolved_target / "codex"
+        legacy_dest_dir = TS_ROOT / "vendor" / resolved_target / "codex"
+        if legacy_dest_dir.exists():
+            print(f"  → Removing legacy vendor directory {legacy_dest_dir}", file=sys.stderr)
+            shutil.rmtree(legacy_dest_dir)
+
+        dest_dir = TS_ROOT / "vendor" / resolved_target / CLI_VENDOR_DIR_NAME
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest = dest_dir / dest_name
 
@@ -198,6 +210,34 @@ def build_codex_cli(
     print(f"  → Copying {src} → {dest}", file=sys.stderr)
     shutil.copy2(src, dest)
     return dest
+
+
+def build_codex_cli_targets(
+    *,
+    targets: tuple[str, ...],
+    release: bool = True,
+    install: bool = False,
+    rename: str | None = None,
+    verbose: bool = False,
+) -> list[Path]:
+    """Build the aicodex CLI binary for multiple target triples."""
+    outputs = []
+    for target in targets:
+        target_rename = None
+        if not install:
+            base_name = rename or CLI_BIN_NAME
+            target_rename = f"{base_name}-{target}"
+
+        outputs.append(
+            build_codex_cli(
+                release=release,
+                target=target,
+                install=install,
+                rename=target_rename,
+                verbose=verbose,
+            )
+        )
+    return outputs
 
 
 # ---------------------------------------------------------------------------
@@ -228,13 +268,29 @@ def build_all(
     *,
     release: bool = True,
     target: str | None = None,
+    all_targets: bool = False,
     install_cli: bool = False,
     rename: str | None = None,
     verbose: bool = False,
 ) -> None:
     """Build Rust + TypeScript components."""
     build_ts(install_deps=True, verbose=verbose)
-    build_codex_cli(release=release, target=target, install=install_cli, rename=rename, verbose=verbose)
+    if all_targets:
+        build_codex_cli_targets(
+            targets=CLI_TARGETS,
+            release=release,
+            install=install_cli,
+            rename=rename,
+            verbose=verbose,
+        )
+    else:
+        build_codex_cli(
+            release=release,
+            target=target,
+            install=install_cli,
+            rename=rename,
+            verbose=verbose,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -258,9 +314,15 @@ def main(argv: list[str] | None = None) -> None:
     rust_parser.add_argument("-j", "--jobs", type=int, default=None, help="Build jobs")
 
     # codex-cli
-    cli_parser = sub.add_parser("codex-cli", help="Build the codex CLI binary (release mode by default)")
+    cli_parser = sub.add_parser("codex-cli", help="Build the aicodex CLI binary (release mode by default)")
     cli_parser.add_argument("--debug", action="store_true", help="Build in debug mode instead of release")
-    cli_parser.add_argument("--target", default=None, help="Rust target triple")
+    cli_target_group = cli_parser.add_mutually_exclusive_group()
+    cli_target_group.add_argument("--target", default=None, help="Rust target triple")
+    cli_target_group.add_argument(
+        "--all-targets",
+        action="store_true",
+        help="Build all supported npm targets",
+    )
     cli_parser.add_argument(
         "--install",
         action="store_true",
@@ -283,7 +345,13 @@ def main(argv: list[str] | None = None) -> None:
     # all
     all_parser = sub.add_parser("all", help="Build everything (release mode by default)")
     all_parser.add_argument("--debug", action="store_true", help="Build in debug mode instead of release")
-    all_parser.add_argument("--target", default=None, help="Rust target triple")
+    all_target_group = all_parser.add_mutually_exclusive_group()
+    all_target_group.add_argument("--target", default=None, help="Rust target triple")
+    all_target_group.add_argument(
+        "--all-targets",
+        action="store_true",
+        help="Build all supported npm targets",
+    )
     all_parser.add_argument(
         "--install-cli",
         action="store_true",
@@ -318,19 +386,29 @@ def main(argv: list[str] | None = None) -> None:
             verbose=args.verbose,
         )
     elif args.command == "codex-cli":
-        build_codex_cli(
-            release=not args.debug,
-            target=args.target,
-            install=args.install,
-            rename=args.rename or OUTPUT_BINARY_NAME,
-            verbose=args.verbose,
-        )
+        if args.all_targets:
+            build_codex_cli_targets(
+                targets=CLI_TARGETS,
+                release=not args.debug,
+                install=args.install,
+                rename=args.rename or OUTPUT_BINARY_NAME,
+                verbose=args.verbose,
+            )
+        else:
+            build_codex_cli(
+                release=not args.debug,
+                target=args.target,
+                install=args.install,
+                rename=args.rename or OUTPUT_BINARY_NAME,
+                verbose=args.verbose,
+            )
     elif args.command == "ts":
         build_ts(install_deps=not args.no_install, verbose=args.verbose)
     elif args.command == "all":
         build_all(
             release=not args.debug,
             target=args.target,
+            all_targets=args.all_targets,
             install_cli=args.install_cli,
             rename=args.rename or OUTPUT_BINARY_NAME,
             verbose=args.verbose,
