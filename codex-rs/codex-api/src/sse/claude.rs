@@ -120,27 +120,95 @@ enum ClaudeStopReason {
     Refusal,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+impl ClaudeStopReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            ClaudeStopReason::EndTurn => "end_turn",
+            ClaudeStopReason::MaxTokens => "max_tokens",
+            ClaudeStopReason::StopSequence => "stop_sequence",
+            ClaudeStopReason::ToolUse => "tool_use",
+            ClaudeStopReason::PauseTurn => "pause_turn",
+            ClaudeStopReason::Refusal => "refusal",
+        }
+    }
+}
+
+#[derive(Debug)]
 enum ClaudeStreamContentBlock {
     Text {
-        #[serde(default)]
         text: String,
     },
     ToolUse {
         id: String,
         name: String,
-        #[serde(default = "empty_json_object")]
         input: Value,
     },
     Thinking {
-        #[serde(default)]
         thinking: String,
-        #[serde(default)]
         signature: Option<String>,
     },
-    #[serde(other)]
-    Unknown,
+    Unknown {
+        kind: String,
+        value: Value,
+    },
+}
+
+impl<'de> Deserialize<'de> for ClaudeStreamContentBlock {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        let Some(object) = value.as_object() else {
+            return Err(serde::de::Error::custom(
+                "Claude stream content block must be an object",
+            ));
+        };
+        let kind = object
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        match kind {
+            "text" => Ok(Self::Text {
+                text: object
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            }),
+            "tool_use" => Ok(Self::ToolUse {
+                id: object
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                name: object
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                input: object
+                    .get("input")
+                    .cloned()
+                    .unwrap_or_else(empty_json_object),
+            }),
+            "thinking" => Ok(Self::Thinking {
+                thinking: object
+                    .get("thinking")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                signature: object
+                    .get("signature")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            }),
+            _ => Ok(Self::Unknown {
+                kind: kind.to_string(),
+                value,
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -228,6 +296,7 @@ struct ClaudeStreamState {
     reasoning_blocks: BTreeMap<usize, String>,
     reasoning_signatures: BTreeMap<usize, String>,
     tool_blocks: BTreeMap<usize, ToolUseState>,
+    provider_state_blocks: BTreeMap<usize, Value>,
     usage: ClaudeUsage,
     stop_reason: Option<ClaudeStopReason>,
     tool_call_info: HashMap<String, ClaudeToolCallInfo>,
@@ -238,7 +307,7 @@ enum ClaudeStreamBlockKind {
     Text,
     ToolUse,
     Thinking,
-    Unknown,
+    ProviderState,
 }
 
 #[derive(Default)]
@@ -371,9 +440,17 @@ impl ClaudeStreamState {
                         .push_str(&signature);
                 }
             }
-            ClaudeStreamContentBlock::Unknown => {
-                self.block_kinds
-                    .insert(index, ClaudeStreamBlockKind::Unknown);
+            ClaudeStreamContentBlock::Unknown { kind, value } => {
+                if is_provider_state_block_type(&kind) {
+                    self.block_kinds
+                        .insert(index, ClaudeStreamBlockKind::ProviderState);
+                    self.provider_state_blocks.insert(index, value);
+                } else {
+                    self.block_kinds.insert(index, ClaudeStreamBlockKind::Text);
+                    self.ensure_message_item_started(tx_event).await?;
+                    let placeholder = format!("[unsupported Claude content block: {kind}]");
+                    self.push_text_delta(index, &placeholder, tx_event).await?;
+                }
             }
         }
         Ok(())
@@ -651,6 +728,17 @@ impl ClaudeStreamState {
                 .map_err(|err| ApiError::Stream(err.to_string()))?;
         }
 
+        for value in self.provider_state_blocks.values() {
+            tx_event
+                .send(Ok(ResponseEvent::OutputItemDone(
+                    ResponseItem::Compaction {
+                        encrypted_content: value.to_string(),
+                    },
+                )))
+                .await
+                .map_err(|err| ApiError::Stream(err.to_string()))?;
+        }
+
         tx_event
             .send(Ok(ResponseEvent::Completed {
                 response_id: self.response_id(),
@@ -662,6 +750,10 @@ impl ClaudeStreamState {
                     | ClaudeStopReason::Refusal => true,
                     ClaudeStopReason::ToolUse | ClaudeStopReason::PauseTurn => false,
                 }),
+                provider_stop_reason: self
+                    .stop_reason
+                    .map(ClaudeStopReason::as_str)
+                    .map(str::to_string),
             }))
             .await
             .map_err(|err| ApiError::Stream(err.to_string()))
@@ -768,6 +860,13 @@ fn custom_tool_input(input: &Value) -> String {
         .and_then(Value::as_str)
         .map(ToString::to_string)
         .unwrap_or_else(|| stringify_tool_input(input))
+}
+
+fn is_provider_state_block_type(kind: &str) -> bool {
+    kind == "compaction"
+        || kind == "server_tool_use"
+        || kind.ends_with("_tool_use")
+        || kind.ends_with("_tool_result")
 }
 
 fn parse_claude_stream_event(event_name: &str, data: &str) -> Result<ClaudeStreamEvent, ApiError> {
@@ -1097,6 +1196,17 @@ mod tests {
             })
             .expect("completed event");
         assert_eq!(end_turn, Some(true));
+        let provider_stop_reason = events
+            .iter()
+            .find_map(|event| match event {
+                ResponseEvent::Completed {
+                    provider_stop_reason,
+                    ..
+                } => provider_stop_reason.as_deref(),
+                _ => None,
+            })
+            .expect("provider stop reason");
+        assert_eq!(provider_stop_reason, "stop_sequence");
     }
 
     #[test]
@@ -1231,6 +1341,78 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, ResponseEvent::OutputTextDelta(_)))
         );
+    }
+
+    #[tokio::test]
+    async fn claude_stream_preserves_provider_state_block() {
+        let compaction = json!({
+            "type": "compaction",
+            "content": "provider summary"
+        });
+        let events = run_events(
+            vec![
+                json!({
+                    "type": "message_start",
+                    "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": []}
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": compaction.clone()
+                }),
+                json!({"type": "content_block_stop", "index": 0}),
+                json!({
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "pause_turn"}
+                }),
+                json!({"type": "message_stop"}),
+            ],
+            HashMap::new(),
+        )
+        .await;
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ResponseEvent::OutputItemDone(ResponseItem::Compaction { encrypted_content })
+                if encrypted_content == &compaction.to_string()
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ResponseEvent::Completed {
+                end_turn: Some(false),
+                provider_stop_reason: Some(reason),
+                ..
+            } if reason == "pause_turn"
+        )));
+    }
+
+    #[tokio::test]
+    async fn claude_stream_marks_unknown_user_visible_block() {
+        let events = run_events(
+            vec![
+                json!({
+                    "type": "message_start",
+                    "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": []}
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "chart", "data": [1, 2, 3]}
+                }),
+                json!({"type": "content_block_stop", "index": 0}),
+                json!({"type": "message_stop"}),
+            ],
+            HashMap::new(),
+        )
+        .await;
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ResponseEvent::OutputItemDone(ResponseItem::Message { content, .. })
+                if content == &vec![ContentItem::OutputText {
+                    text: "[unsupported Claude content block: chart]".to_string()
+                }]
+        )));
     }
 
     #[tokio::test]

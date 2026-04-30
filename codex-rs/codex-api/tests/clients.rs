@@ -9,6 +9,7 @@ use codex_api::ApiError;
 use codex_api::AuthError;
 use codex_api::AuthProvider;
 use codex_api::ClaudeContentBlock;
+use codex_api::ClaudeCountTokensRequest;
 use codex_api::ClaudeMessage;
 use codex_api::ClaudeMessageRole;
 use codex_api::ClaudeMessagesApiRequest;
@@ -46,12 +47,21 @@ fn assert_path_ends_with(requests: &[Request], suffix: &str) {
 #[derive(Debug, Default, Clone)]
 struct RecordingState {
     stream_requests: Arc<Mutex<Vec<Request>>>,
+    execute_requests: Arc<Mutex<Vec<Request>>>,
 }
 
 impl RecordingState {
-    fn record(&self, req: Request) {
+    fn record_stream(&self, req: Request) {
         let mut guard = self
             .stream_requests
+            .lock()
+            .unwrap_or_else(|err| panic!("mutex poisoned: {err}"));
+        guard.push(req);
+    }
+
+    fn record_execute(&self, req: Request) {
+        let mut guard = self
+            .execute_requests
             .lock()
             .unwrap_or_else(|err| panic!("mutex poisoned: {err}"));
         guard.push(req);
@@ -60,6 +70,14 @@ impl RecordingState {
     fn take_stream_requests(&self) -> Vec<Request> {
         let mut guard = self
             .stream_requests
+            .lock()
+            .unwrap_or_else(|err| panic!("mutex poisoned: {err}"));
+        std::mem::take(&mut *guard)
+    }
+
+    fn take_execute_requests(&self) -> Vec<Request> {
+        let mut guard = self
+            .execute_requests
             .lock()
             .unwrap_or_else(|err| panic!("mutex poisoned: {err}"));
         std::mem::take(&mut *guard)
@@ -79,12 +97,17 @@ impl RecordingTransport {
 
 #[async_trait]
 impl HttpTransport for RecordingTransport {
-    async fn execute(&self, _req: Request) -> Result<Response, TransportError> {
-        Err(TransportError::Build("execute should not run".to_string()))
+    async fn execute(&self, req: Request) -> Result<Response, TransportError> {
+        self.state.record_execute(req);
+        Ok(Response {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            body: Bytes::from_static(br#"{"input_tokens":42}"#),
+        })
     }
 
     async fn stream(&self, req: Request) -> Result<StreamResponse, TransportError> {
-        self.state.record(req);
+        self.state.record_stream(req);
 
         let stream = futures::stream::iter(Vec::<Result<Bytes, TransportError>>::new());
         Ok(StreamResponse {
@@ -292,8 +315,13 @@ impl HttpErrorTransport {
 
 #[async_trait]
 impl HttpTransport for HttpErrorTransport {
-    async fn execute(&self, _req: Request) -> Result<Response, TransportError> {
-        Err(TransportError::Build("execute should not run".to_string()))
+    async fn execute(&self, req: Request) -> Result<Response, TransportError> {
+        Err(TransportError::Http {
+            status: self.status,
+            url: Some(req.url),
+            headers: None,
+            body: Some(self.body.to_string()),
+        })
     }
 
     async fn stream(&self, req: Request) -> Result<StreamResponse, TransportError> {
@@ -314,6 +342,7 @@ fn claude_request() -> ClaudeMessagesApiRequest {
             role: ClaudeMessageRole::User,
             content: vec![ClaudeContentBlock::Text {
                 text: "hi".to_string(),
+                cache_control: None,
             }],
         }],
         system: None,
@@ -321,6 +350,7 @@ fn claude_request() -> ClaudeMessagesApiRequest {
         tool_choice: None,
         thinking: None,
         service_tier: None,
+        context_management: None,
         stream: true,
         tool_call_info: Default::default(),
     }
@@ -360,6 +390,7 @@ async fn claude_messages_client_uses_messages_path_and_version_header() -> Resul
         .stream_request(claude_request(), ClaudeMessagesOptions::default())
         .await?;
 
+    assert!(state.take_execute_requests().is_empty());
     let requests = state.take_stream_requests();
     assert_path_ends_with(&requests, "/messages");
     let req = &requests[0];
@@ -394,6 +425,74 @@ async fn claude_messages_client_uses_messages_path_and_version_header() -> Resul
             "stream": true
         }))
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn claude_messages_client_counts_tokens_on_count_tokens_path() -> Result<()> {
+    let state = RecordingState::default();
+    let transport = RecordingTransport::new(state.clone());
+    let client = ClaudeMessagesClient::new(
+        transport,
+        provider("anthropic"),
+        Arc::new(StaticApiKeyAuth::new("test-key")),
+    );
+
+    let response = client
+        .count_tokens_request(
+            ClaudeCountTokensRequest::from(&claude_request()),
+            ClaudeMessagesOptions::default(),
+        )
+        .await?;
+
+    assert_eq!(response.input_tokens, 42);
+    let requests = state.take_execute_requests();
+    assert_path_ends_with(&requests, "/messages/count_tokens");
+    let req = &requests[0];
+    assert_eq!(
+        req.headers
+            .get("anthropic-version")
+            .and_then(|value| value.to_str().ok()),
+        Some("2023-06-01")
+    );
+    assert_eq!(
+        req.headers
+            .get("x-api-key")
+            .and_then(|value| value.to_str().ok()),
+        Some("test-key")
+    );
+    assert_eq!(
+        req.body.as_ref().and_then(RequestBody::json),
+        Some(&serde_json::json!({
+            "model": "claude-sonnet-4-5",
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "text", "text": "hi"}]
+            }]
+        }))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn claude_messages_count_tokens_maps_anthropic_errors() -> Result<()> {
+    let transport = HttpErrorTransport::new(
+        StatusCode::TOO_MANY_REQUESTS,
+        r#"{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}"#,
+    );
+    let client = ClaudeMessagesClient::new(transport, provider("anthropic"), Arc::new(NoAuth));
+
+    let result = client
+        .count_tokens_request(
+            ClaudeCountTokensRequest::from(&claude_request()),
+            ClaudeMessagesOptions::default(),
+        )
+        .await;
+
+    assert!(matches!(
+        result,
+        Err(ApiError::RateLimit(message)) if message == "rate_limit_error: slow down"
+    ));
     Ok(())
 }
 

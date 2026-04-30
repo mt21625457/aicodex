@@ -115,6 +115,8 @@ use tracing::trace;
 use tracing::trace_span;
 use tracing::warn;
 
+const MAX_CLAUDE_PAUSE_TURN_CONTINUATIONS: usize = 3;
+
 /// Takes a user message as input and runs a loop where, at each sampling request, the model
 /// replies with either:
 ///
@@ -371,6 +373,7 @@ pub(crate) async fn run_turn(
     // 1. At the start of a turn, so the fresh user prompt in `input` gets sampled first.
     // 2. After auto-compact, when model/tool continuation needs to resume before any steer.
     let mut can_drain_pending_input = input.is_empty();
+    let mut claude_pause_turn_continuations = 0usize;
 
     loop {
         if run_pending_session_start_hooks(&sess, &turn_context).await {
@@ -458,11 +461,30 @@ pub(crate) async fn run_turn(
             Ok(sampling_request_output) => {
                 let SamplingRequestResult {
                     needs_follow_up: model_needs_follow_up,
+                    provider_stop_reason,
                     last_agent_message: sampling_request_last_agent_message,
                 } = sampling_request_output;
                 can_drain_pending_input = true;
                 let has_pending_input = sess.has_pending_input().await;
                 let needs_follow_up = model_needs_follow_up || has_pending_input;
+                if model_needs_follow_up && provider_stop_reason.as_deref() == Some("pause_turn") {
+                    claude_pause_turn_continuations += 1;
+                    if claude_pause_turn_continuations > MAX_CLAUDE_PAUSE_TURN_CONTINUATIONS {
+                        sess.send_event(
+                            &turn_context,
+                            EventMsg::Error(ErrorEvent {
+                                message: format!(
+                                    "Claude returned pause_turn more than {MAX_CLAUDE_PAUSE_TURN_CONTINUATIONS} times without completing; stopping automatic continuation."
+                                ),
+                                codex_error_info: None,
+                            }),
+                        )
+                        .await;
+                        return None;
+                    }
+                } else if provider_stop_reason.as_deref() != Some("pause_turn") {
+                    claude_pause_turn_continuations = 0;
+                }
                 let total_usage_tokens = sess.get_total_token_usage().await;
                 let token_limit_reached = total_usage_tokens >= auto_compact_limit;
 
@@ -1247,6 +1269,7 @@ pub(crate) async fn built_tools(
 #[derive(Debug)]
 struct SamplingRequestResult {
     needs_follow_up: bool,
+    provider_stop_reason: Option<String>,
     last_agent_message: Option<String>,
 }
 
@@ -1978,6 +2001,7 @@ async fn try_run_sampling_request(
                 if preempt_for_mailbox_mail && sess.mailbox_rx.lock().await.has_pending() {
                     break Ok(SamplingRequestResult {
                         needs_follow_up: true,
+                        provider_stop_reason: None,
                         last_agent_message,
                     });
                 }
@@ -2086,6 +2110,7 @@ async fn try_run_sampling_request(
                 response_id: _,
                 token_usage,
                 end_turn,
+                provider_stop_reason,
             } => {
                 flush_assistant_text_segments_all(
                     &sess,
@@ -2102,6 +2127,7 @@ async fn try_run_sampling_request(
                 }
                 break Ok(SamplingRequestResult {
                     needs_follow_up,
+                    provider_stop_reason,
                     last_agent_message,
                 });
             }

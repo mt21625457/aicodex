@@ -1,4 +1,6 @@
 use crate::auth::SharedAuthProvider;
+use crate::common::ClaudeCountTokensRequest;
+use crate::common::ClaudeCountTokensResponse;
 use crate::common::ClaudeMessagesApiRequest;
 use crate::common::ResponseStream;
 use crate::endpoint::session::EndpointSession;
@@ -83,6 +85,38 @@ impl<T: HttpTransport> ClaudeMessagesClient<T> {
         self.stream(body, headers, tool_call_info).await
     }
 
+    #[instrument(
+        name = "claude_messages.count_tokens_request",
+        level = "info",
+        skip_all,
+        fields(
+            transport = "claude_messages_http",
+            http.method = "POST",
+            api.path = "messages/count_tokens"
+        )
+    )]
+    pub async fn count_tokens_request(
+        &self,
+        request: ClaudeCountTokensRequest,
+        options: ClaudeMessagesOptions,
+    ) -> Result<ClaudeCountTokensResponse, ApiError> {
+        let mut headers = options.extra_headers;
+        if let Some(ref conv_id) = options.conversation_id {
+            insert_header(&mut headers, "x-client-request-id", conv_id);
+        }
+        if !headers.contains_key("anthropic-version") {
+            headers.insert(
+                "anthropic-version",
+                HeaderValue::from_static(ANTHROPIC_VERSION),
+            );
+        }
+
+        let body = serde_json::to_value(&request).map_err(|e| {
+            ApiError::Stream(format!("failed to encode claude count_tokens request: {e}"))
+        })?;
+        self.count_tokens(body, headers).await
+    }
+
     fn path() -> &'static str {
         "messages"
     }
@@ -126,6 +160,36 @@ impl<T: HttpTransport> ClaudeMessagesClient<T> {
             self.sse_telemetry.clone(),
             tool_call_info,
         ))
+    }
+
+    #[instrument(
+        name = "claude_messages.count_tokens",
+        level = "info",
+        skip_all,
+        fields(
+            transport = "claude_messages_http",
+            http.method = "POST",
+            api.path = "messages/count_tokens"
+        )
+    )]
+    pub async fn count_tokens(
+        &self,
+        body: Value,
+        extra_headers: HeaderMap,
+    ) -> Result<ClaudeCountTokensResponse, ApiError> {
+        let response = self
+            .session
+            .execute(
+                Method::POST,
+                "messages/count_tokens",
+                extra_headers,
+                Some(body),
+            )
+            .await
+            .map_err(map_claude_api_error)?;
+
+        serde_json::from_slice::<ClaudeCountTokensResponse>(&response.body)
+            .map_err(|e| ApiError::Stream(format!("failed to parse claude count_tokens: {e}")))
     }
 }
 

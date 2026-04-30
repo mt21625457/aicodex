@@ -55,6 +55,28 @@ Anthropic extended thinking using a budget mapped from the selected effort.
 `service_tier = "fast"` maps to Anthropic `service_tier = "auto"`, while
 `service_tier = "flex"` maps to `service_tier = "standard_only"`.
 
+The Claude adapter also has protocol support for Anthropic prompt-cache markers
+at supported stable-prefix locations, including tool definitions, system text
+blocks, and prior message content blocks. This is currently controlled by the
+Claude request policy inside Codex rather than a public `config.toml` setting,
+so normal Claude requests keep the same shape unless that policy is explicitly
+enabled by code or tests.
+
+Codex exposes a Claude endpoint client for `POST /v1/messages/count_tokens`.
+The count request reuses the typed Claude message, system, tool, thinking, and
+service-tier request model while omitting streaming-only fields. Ordinary
+Claude streaming turns do not call `count_tokens`; completion usage from the
+stream remains the source of final token accounting.
+
+For long-running Claude responses, Codex preserves Claude `pause_turn` stop
+reasons separately from client-side `tool_use`. A `pause_turn` response is
+continued by sending the assistant content already emitted by Claude in the next
+`/v1/messages` request, with an automatic continuation cap to avoid loops.
+Claude provider-state blocks such as `compaction` are stored as opaque
+provider-state history and re-emitted to Claude on the follow-up request.
+Unsupported user-visible Claude blocks are rendered as explicit placeholders
+instead of being silently dropped.
+
 ## MCP tool approvals
 
 Codex stores approval defaults and per-tool overrides for custom MCP servers

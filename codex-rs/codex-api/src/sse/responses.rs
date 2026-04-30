@@ -397,6 +397,7 @@ pub fn process_responses_event(
                             response_id: resp.id,
                             token_usage: resp.usage.map(Into::into),
                             end_turn: resp.end_turn,
+                            provider_stop_reason: None,
                         }));
                     }
                     Err(err) => {
@@ -720,6 +721,7 @@ mod tests {
                 response_id,
                 token_usage,
                 end_turn,
+                ..
             }) => {
                 assert_eq!(response_id, "resp1");
                 assert!(token_usage.is_none());
@@ -861,6 +863,7 @@ mod tests {
                 response_id,
                 token_usage,
                 end_turn,
+                ..
             }) => {
                 assert_eq!(response_id, "resp1");
                 assert!(token_usage.is_none());
@@ -1170,6 +1173,7 @@ mod tests {
                 response_id,
                 token_usage: None,
                 end_turn: None,
+                provider_stop_reason: None,
             } if response_id == "resp-1"
         );
     }
@@ -1207,6 +1211,7 @@ mod tests {
                 response_id,
                 token_usage: None,
                 end_turn: None,
+                provider_stop_reason: None,
             } if response_id == "resp-1"
         );
     }
@@ -1242,6 +1247,7 @@ mod tests {
                 response_id,
                 token_usage: None,
                 end_turn: None,
+                provider_stop_reason: None,
             } if response_id == "resp-1"
         );
     }

@@ -9,7 +9,10 @@ use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::W3cTraceContext;
 use futures::Stream;
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
+use serde::Serializer;
+use serde::ser::SerializeMap;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -84,6 +87,8 @@ pub enum ResponseEvent {
         /// Did the model affirmatively end its turn? Some providers do not set this,
         /// so we rely on fallback logic when this is `None`.
         end_turn: Option<bool>,
+        /// Provider-native stop reason when the wire API exposes one.
+        provider_stop_reason: Option<String>,
     },
     OutputTextDelta(String),
     ToolCallInputDelta {
@@ -205,7 +210,7 @@ pub struct ClaudeMessagesApiRequest {
     pub max_tokens: u64,
     pub messages: Vec<ClaudeMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub system: Option<String>,
+    pub system: Option<ClaudeSystemPrompt>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ClaudeTool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -214,29 +219,73 @@ pub struct ClaudeMessagesApiRequest {
     pub thinking: Option<ClaudeThinkingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<ClaudeServiceTier>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_management: Option<ClaudeContextManagement>,
     pub stream: bool,
     #[serde(skip)]
     pub tool_call_info: HashMap<String, ClaudeToolCallInfo>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ClaudeCountTokensRequest {
+    pub model: String,
+    pub messages: Vec<ClaudeMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system: Option<ClaudeSystemPrompt>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ClaudeTool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<ClaudeToolChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<ClaudeThinkingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<ClaudeServiceTier>,
+}
+
+impl From<&ClaudeMessagesApiRequest> for ClaudeCountTokensRequest {
+    fn from(request: &ClaudeMessagesApiRequest) -> Self {
+        Self {
+            model: request.model.clone(),
+            messages: request.messages.clone(),
+            system: request.system.clone(),
+            tools: request.tools.clone(),
+            tool_choice: request.tool_choice.clone(),
+            thinking: request.thinking.clone(),
+            service_tier: request.service_tier,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct ClaudeCountTokensResponse {
+    pub input_tokens: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum ClaudeSystemPrompt {
+    Text(String),
+    Blocks(Vec<ClaudeContentBlock>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ClaudeMessage {
     pub role: ClaudeMessageRole,
     pub content: Vec<ClaudeContentBlock>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ClaudeMessageRole {
     User,
     Assistant,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ClaudeContentBlock {
     Text {
         text: String,
+        cache_control: Option<ClaudeCacheControl>,
     },
     Image {
         source: ClaudeImageSource,
@@ -249,14 +298,166 @@ pub enum ClaudeContentBlock {
     ToolResult {
         tool_use_id: String,
         content: ClaudeToolResultContent,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         is_error: bool,
     },
     Thinking {
         thinking: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
         signature: Option<String>,
     },
+    ProviderState {
+        value: Value,
+    },
+}
+
+impl Serialize for ClaudeContentBlock {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            ClaudeContentBlock::Text {
+                text,
+                cache_control,
+            } => {
+                let mut map = serializer.serialize_map(None)?;
+                map.serialize_entry("type", "text")?;
+                map.serialize_entry("text", text)?;
+                if let Some(cache_control) = cache_control {
+                    map.serialize_entry("cache_control", cache_control)?;
+                }
+                map.end()
+            }
+            ClaudeContentBlock::Image { source } => {
+                let mut map = serializer.serialize_map(Some(2))?;
+                map.serialize_entry("type", "image")?;
+                map.serialize_entry("source", source)?;
+                map.end()
+            }
+            ClaudeContentBlock::ToolUse { id, name, input } => {
+                let mut map = serializer.serialize_map(Some(4))?;
+                map.serialize_entry("type", "tool_use")?;
+                map.serialize_entry("id", id)?;
+                map.serialize_entry("name", name)?;
+                map.serialize_entry("input", input)?;
+                map.end()
+            }
+            ClaudeContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                let mut map = serializer.serialize_map(None)?;
+                map.serialize_entry("type", "tool_result")?;
+                map.serialize_entry("tool_use_id", tool_use_id)?;
+                map.serialize_entry("content", content)?;
+                if *is_error {
+                    map.serialize_entry("is_error", is_error)?;
+                }
+                map.end()
+            }
+            ClaudeContentBlock::Thinking {
+                thinking,
+                signature,
+            } => {
+                let mut map = serializer.serialize_map(None)?;
+                map.serialize_entry("type", "thinking")?;
+                map.serialize_entry("thinking", thinking)?;
+                if let Some(signature) = signature {
+                    map.serialize_entry("signature", signature)?;
+                }
+                map.end()
+            }
+            ClaudeContentBlock::ProviderState { value } => value.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ClaudeContentBlock {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        deserialize_claude_content_block(value).map_err(serde::de::Error::custom)
+    }
+}
+
+fn deserialize_claude_content_block(value: Value) -> Result<ClaudeContentBlock, String> {
+    let Some(object) = value.as_object() else {
+        return Err("Claude content block must be a JSON object".to_string());
+    };
+    let Some(block_type) = object.get("type").and_then(Value::as_str) else {
+        return Err("Claude content block is missing type".to_string());
+    };
+
+    match block_type {
+        "text" => Ok(ClaudeContentBlock::Text {
+            text: object
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            cache_control: object
+                .get("cache_control")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|err| err.to_string())?,
+        }),
+        "image" => Ok(ClaudeContentBlock::Image {
+            source: object
+                .get("source")
+                .cloned()
+                .ok_or_else(|| "Claude image block is missing source".to_string())
+                .and_then(|source| serde_json::from_value(source).map_err(|err| err.to_string()))?,
+        }),
+        "tool_use" => Ok(ClaudeContentBlock::ToolUse {
+            id: object
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            name: object
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            input: object
+                .get("input")
+                .cloned()
+                .unwrap_or_else(|| Value::Object(Default::default())),
+        }),
+        "tool_result" => Ok(ClaudeContentBlock::ToolResult {
+            tool_use_id: object
+                .get("tool_use_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            content: object
+                .get("content")
+                .cloned()
+                .ok_or_else(|| "Claude tool_result block is missing content".to_string())
+                .and_then(|content| {
+                    serde_json::from_value(content).map_err(|err| err.to_string())
+                })?,
+            is_error: object
+                .get("is_error")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        }),
+        "thinking" => Ok(ClaudeContentBlock::Thinking {
+            thinking: object
+                .get("thinking")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            signature: object
+                .get("signature")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        }),
+        _ => Ok(ClaudeContentBlock::ProviderState { value }),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -278,6 +479,50 @@ pub struct ClaudeTool {
     pub name: String,
     pub description: String,
     pub input_schema: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<ClaudeCacheControl>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClaudeCacheControl {
+    #[serde(rename = "type")]
+    pub kind: ClaudeCacheControlType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ttl: Option<ClaudeCacheTtl>,
+}
+
+impl ClaudeCacheControl {
+    pub fn ephemeral(ttl: Option<ClaudeCacheTtl>) -> Self {
+        Self {
+            kind: ClaudeCacheControlType::Ephemeral,
+            ttl,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaudeCacheControlType {
+    Ephemeral,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ClaudeCacheTtl {
+    #[serde(rename = "5m")]
+    FiveMinutes,
+    #[serde(rename = "1h")]
+    OneHour,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClaudeContextManagement {
+    pub edits: Vec<ClaudeContextManagementEdit>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClaudeContextManagementEdit {
+    #[serde(rename = "type")]
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -450,6 +695,7 @@ mod claude_wire_tests {
         roundtrip(
             &ClaudeContentBlock::Text {
                 text: "hello".to_string(),
+                cache_control: None,
             },
             json!({"type": "text", "text": "hello"}),
         );
@@ -526,6 +772,7 @@ mod claude_wire_tests {
                 tool_use_id: "toolu_1".to_string(),
                 content: ClaudeToolResultContent::Blocks(vec![ClaudeContentBlock::Text {
                     text: "inner".to_string(),
+                    cache_control: None,
                 }]),
                 is_error: false,
             },
@@ -598,6 +845,7 @@ mod claude_wire_tests {
                 role: ClaudeMessageRole::User,
                 content: vec![ClaudeContentBlock::Text {
                     text: "hi".to_string(),
+                    cache_control: None,
                 }],
             }],
             system: None,
@@ -605,6 +853,7 @@ mod claude_wire_tests {
             tool_choice: None,
             thinking: None,
             service_tier: None,
+            context_management: None,
             stream: true,
             tool_call_info,
         };

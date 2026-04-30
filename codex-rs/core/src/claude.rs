@@ -1,10 +1,14 @@
 use crate::client_common::Prompt;
+use codex_api::ClaudeCacheControl;
+use codex_api::ClaudeCacheTtl;
 use codex_api::ClaudeContentBlock;
+use codex_api::ClaudeContextManagement;
 use codex_api::ClaudeImageSource;
 use codex_api::ClaudeMessage;
 use codex_api::ClaudeMessageRole;
 use codex_api::ClaudeMessagesApiRequest;
 use codex_api::ClaudeServiceTier;
+use codex_api::ClaudeSystemPrompt;
 use codex_api::ClaudeThinkingConfig;
 use codex_api::ClaudeTool;
 use codex_api::ClaudeToolCallInfo as ApiClaudeToolCallInfo;
@@ -37,10 +41,26 @@ const TOOL_INPUT_FIELD: &str = "input";
 const OUTPUT_SCHEMA_INSTRUCTIONS: &str =
     "Respond with JSON only. It must strictly match this schema:";
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct ClaudeRequestOptions {
     pub(crate) reasoning_effort: Option<ReasoningEffortConfig>,
     pub(crate) service_tier: Option<ServiceTier>,
+    pub(crate) prompt_cache: ClaudePromptCacheOptions,
+    pub(crate) context_management: Option<ClaudeContextManagement>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ClaudePromptCacheOptions {
+    pub(crate) mode: ClaudePromptCacheMode,
+    pub(crate) ttl: Option<ClaudeCacheTtl>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum ClaudePromptCacheMode {
+    #[default]
+    Off,
+    System,
+    Conversation,
 }
 
 pub(crate) fn build_claude_messages_request(
@@ -58,7 +78,7 @@ pub(crate) fn build_claude_messages_request(
         tools,
         tool_call_info: tool_call_metadata,
     } = tools_json;
-    let tools = tools
+    let mut tools = tools
         .into_iter()
         .map(serde_json::from_value::<ClaudeTool>)
         .collect::<Result<Vec<_>, _>>()?;
@@ -223,11 +243,15 @@ pub(crate) fn build_claude_messages_request(
                     push_message(&mut messages, ClaudeMessageRole::Assistant, vec![block]);
                 }
             }
+            ResponseItem::Compaction { encrypted_content } => {
+                if let Some(block) = provider_state_block(&encrypted_content) {
+                    push_message(&mut messages, ClaudeMessageRole::Assistant, vec![block]);
+                }
+            }
             ResponseItem::ToolSearchCall { .. }
             | ResponseItem::ToolSearchOutput { .. }
             | ResponseItem::WebSearchCall { .. }
             | ResponseItem::ImageGenerationCall { .. }
-            | ResponseItem::Compaction { .. }
             | ResponseItem::Other => {}
         }
     }
@@ -236,9 +260,7 @@ pub(crate) fn build_claude_messages_request(
         push_message(
             &mut messages,
             ClaudeMessageRole::User,
-            vec![ClaudeContentBlock::Text {
-                text: " ".to_string(),
-            }],
+            vec![text_block(" ")],
         );
     }
 
@@ -268,19 +290,82 @@ pub(crate) fn build_claude_messages_request(
         .filter(|segment| !segment.is_empty())
         .collect::<Vec<_>>()
         .join("\n\n");
+    apply_prompt_cache_policy(options.prompt_cache, &mut tools, &system, &mut messages);
 
     Ok(ClaudeMessagesApiRequest {
         model: model_info.slug.clone(),
         max_tokens: DEFAULT_MAX_TOKENS,
         messages,
-        system: (!system.is_empty()).then_some(system),
+        system: system_prompt(system, options.prompt_cache),
         tools,
         tool_choice,
         thinking: claude_thinking_config(options.reasoning_effort),
         service_tier: claude_service_tier(options.service_tier),
+        context_management: options.context_management,
         stream: true,
         tool_call_info,
     })
+}
+
+fn apply_prompt_cache_policy(
+    options: ClaudePromptCacheOptions,
+    tools: &mut [ClaudeTool],
+    system: &str,
+    messages: &mut [ClaudeMessage],
+) {
+    if options.mode == ClaudePromptCacheMode::Off {
+        return;
+    }
+    let cache_control = Some(ClaudeCacheControl::ephemeral(options.ttl));
+    if !tools.is_empty()
+        && let Some(last_tool) = tools.last_mut() {
+            last_tool.cache_control = cache_control.clone();
+        }
+    if !system.trim().is_empty() && options.mode == ClaudePromptCacheMode::System {
+        return;
+    }
+    if options.mode == ClaudePromptCacheMode::Conversation {
+        mark_latest_stable_prior_text_block(messages, cache_control);
+    }
+}
+
+fn mark_latest_stable_prior_text_block(
+    messages: &mut [ClaudeMessage],
+    cache_control: Option<ClaudeCacheControl>,
+) {
+    if messages.len() < 2 {
+        return;
+    }
+    for message in messages.iter_mut().rev().skip(1) {
+        if message.role != ClaudeMessageRole::User {
+            continue;
+        }
+        for block in message.content.iter_mut().rev() {
+            if let ClaudeContentBlock::Text {
+                text,
+                cache_control: block_cache_control,
+            } = block
+                && !text.trim().is_empty()
+            {
+                *block_cache_control = cache_control;
+                return;
+            }
+        }
+    }
+}
+
+fn system_prompt(system: String, options: ClaudePromptCacheOptions) -> Option<ClaudeSystemPrompt> {
+    if system.is_empty() {
+        return None;
+    }
+    if options.mode == ClaudePromptCacheMode::System {
+        Some(ClaudeSystemPrompt::Blocks(vec![ClaudeContentBlock::Text {
+            text: system,
+            cache_control: Some(ClaudeCacheControl::ephemeral(options.ttl)),
+        }]))
+    } else {
+        Some(ClaudeSystemPrompt::Text(system))
+    }
 }
 
 fn claude_thinking_config(
@@ -377,7 +462,7 @@ fn content_blocks(content: &[ContentItem]) -> Vec<ClaudeContentBlock> {
             ContentItem::InputText { text } | ContentItem::OutputText { text }
                 if !text.is_empty() =>
             {
-                Some(ClaudeContentBlock::Text { text: text.clone() })
+                Some(text_block(text))
             }
             ContentItem::InputImage { image_url, .. } => Some(image_content_block(image_url)),
             ContentItem::InputText { .. } | ContentItem::OutputText { .. } => None,
@@ -399,6 +484,13 @@ fn parse_base64_data_url(image_url: &str) -> Option<(&str, &str)> {
     }
     let is_base64 = parts.any(|part| part.trim().eq_ignore_ascii_case("base64"));
     is_base64.then_some((media_type, data))
+}
+
+fn text_block(text: &str) -> ClaudeContentBlock {
+    ClaudeContentBlock::Text {
+        text: text.to_string(),
+        cache_control: None,
+    }
 }
 
 fn tool_use_block(call_id: &str, name: &str, input: Value) -> ClaudeContentBlock {
@@ -444,6 +536,15 @@ fn thinking_block(
     })
 }
 
+fn provider_state_block(encrypted_content: &str) -> Option<ClaudeContentBlock> {
+    let value = serde_json::from_str::<Value>(encrypted_content).ok()?;
+    value
+        .as_object()
+        .and_then(|object| object.get("type"))
+        .and_then(Value::as_str)?;
+    Some(ClaudeContentBlock::ProviderState { value })
+}
+
 fn function_output_content(output: &FunctionCallOutputPayload) -> ClaudeToolResultContent {
     match &output.body {
         FunctionCallOutputBody::Text(text) => ClaudeToolResultContent::Text(text.clone()),
@@ -465,7 +566,7 @@ fn function_output_content_blocks(
         .iter()
         .filter_map(|item| match item {
             FunctionCallOutputContentItem::InputText { text } if !text.is_empty() => {
-                Some(ClaudeContentBlock::Text { text: text.clone() })
+                Some(text_block(text))
             }
             FunctionCallOutputContentItem::InputImage { image_url, .. } => {
                 Some(image_content_block(image_url))
@@ -490,9 +591,7 @@ fn image_content_block(image_url: &str) -> ClaudeContentBlock {
             },
         }
     } else {
-        ClaudeContentBlock::Text {
-            text: format!("[image: {image_url}]"),
-        }
+        text_block(&format!("[image: {image_url}]"))
     }
 }
 
@@ -894,6 +993,7 @@ mod tests {
                 role: ClaudeMessageRole::User,
                 content: vec![ClaudeContentBlock::Text {
                     text: "[image: file:///tmp/screenshot.png]".to_string(),
+                    cache_control: None,
                 }],
             }]
         );
@@ -922,6 +1022,7 @@ mod tests {
             ClaudeRequestOptions {
                 reasoning_effort: Some(ReasoningEffortConfig::High),
                 service_tier: Some(ServiceTier::Fast),
+                ..Default::default()
             },
         )
         .expect("request");
@@ -971,6 +1072,7 @@ mod tests {
             ClaudeRequestOptions {
                 reasoning_effort: None,
                 service_tier: Some(ServiceTier::Flex),
+                ..Default::default()
             },
         )
         .expect("request");
@@ -1058,6 +1160,149 @@ mod tests {
                     },
                 ],
             }]
+        );
+    }
+
+    #[test]
+    fn builds_claude_request_with_system_prompt_cache_control() {
+        let prompt = Prompt {
+            input: vec![ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "hello".to_string(),
+                }],
+                phase: None,
+            }],
+            base_instructions: BaseInstructions {
+                text: "stable system".to_string(),
+            },
+            ..Default::default()
+        };
+
+        let request = build_claude_messages_request(
+            &prompt,
+            &model_info(),
+            ClaudeRequestOptions {
+                prompt_cache: ClaudePromptCacheOptions {
+                    mode: ClaudePromptCacheMode::System,
+                    ttl: Some(ClaudeCacheTtl::OneHour),
+                },
+                ..Default::default()
+            },
+        )
+        .expect("request");
+
+        assert_eq!(
+            serde_json::to_value(&request).expect("serialize request")["system"],
+            json!([{
+                "type": "text",
+                "text": "stable system",
+                "cache_control": {
+                    "type": "ephemeral",
+                    "ttl": "1h"
+                }
+            }])
+        );
+    }
+
+    #[test]
+    fn builds_claude_request_with_conversation_cache_on_prior_user_message() {
+        let prompt = Prompt {
+            input: vec![
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "stable prior context".to_string(),
+                    }],
+                    phase: None,
+                },
+                ResponseItem::Message {
+                    id: None,
+                    role: "assistant".to_string(),
+                    content: vec![ContentItem::OutputText {
+                        text: "prior answer".to_string(),
+                    }],
+                    phase: None,
+                },
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "volatile current question".to_string(),
+                    }],
+                    phase: None,
+                },
+            ],
+            base_instructions: BaseInstructions {
+                text: String::new(),
+            },
+            ..Default::default()
+        };
+
+        let request = build_claude_messages_request(
+            &prompt,
+            &model_info(),
+            ClaudeRequestOptions {
+                prompt_cache: ClaudePromptCacheOptions {
+                    mode: ClaudePromptCacheMode::Conversation,
+                    ttl: None,
+                },
+                ..Default::default()
+            },
+        )
+        .expect("request");
+
+        assert_eq!(
+            serde_json::to_value(&request).expect("serialize request")["messages"],
+            json!([
+                {
+                    "role": "user",
+                    "content": [{
+                        "type": "text",
+                        "text": "stable prior context",
+                        "cache_control": {"type": "ephemeral"}
+                    }]
+                },
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "prior answer"}]
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "volatile current question"}]
+                }
+            ])
+        );
+    }
+
+    #[test]
+    fn builds_claude_request_with_preserved_provider_state_block() {
+        let raw_compaction = json!({
+            "type": "compaction",
+            "content": "summarized provider state"
+        });
+        let prompt = Prompt {
+            input: vec![ResponseItem::Compaction {
+                encrypted_content: raw_compaction.to_string(),
+            }],
+            base_instructions: BaseInstructions {
+                text: String::new(),
+            },
+            ..Default::default()
+        };
+
+        let request =
+            build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
+                .expect("request");
+
+        assert_eq!(
+            serde_json::to_value(&request.messages).expect("serialize messages"),
+            json!([{
+                "role": "assistant",
+                "content": [raw_compaction]
+            }])
         );
     }
 }

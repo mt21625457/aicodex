@@ -1319,6 +1319,7 @@ impl ModelClientSession {
                 crate::claude::ClaudeRequestOptions {
                     reasoning_effort: effort,
                     service_tier,
+                    ..Default::default()
                 },
             )?;
             let inference_trace_attempt = inference_trace.start_attempt();
@@ -1862,6 +1863,7 @@ where
                     response_id,
                     token_usage,
                     end_turn,
+                    provider_stop_reason,
                 }) => {
                     if let Some(usage) = &token_usage {
                         session_telemetry.sse_event_completed(
@@ -1889,6 +1891,7 @@ where
                             response_id,
                             token_usage,
                             end_turn,
+                            provider_stop_reason,
                         }))
                         .await
                         .is_err()

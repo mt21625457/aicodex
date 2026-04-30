@@ -25,6 +25,25 @@ bash test/claude-wire-api/run-smoke.sh
 The script sets `CODEX_HOME` to this directory and runs `codex exec` with the
 Claude provider from `config.toml`.
 
+This smoke path exercises the normal `/v1/messages` stream. It should not call
+`/v1/messages/count_tokens`; token counting is available through the Claude
+endpoint client for preflight callers, not as an unconditional extra request on
+ordinary turns.
+
+When debugging with an HTTP proxy or a local Anthropic-compatible mock, inspect
+these Claude-specific boundaries:
+
+- requests include `anthropic-version: 2023-06-01` and `x-api-key`;
+- prompt-cache markers, when enabled by Codex's internal Claude request policy,
+  appear only on supported stable-prefix blocks such as tools, system text
+  blocks, or prior message content;
+- `pause_turn` responses are followed by another `/v1/messages` request that
+  includes the assistant content from the paused response;
+- provider-state blocks such as `compaction` are preserved and re-emitted on the
+  follow-up Claude request;
+- unsupported user-visible Claude blocks should produce explicit placeholder
+  text rather than disappearing from the assistant response.
+
 ## Run the TUI
 
 From the repository root:
