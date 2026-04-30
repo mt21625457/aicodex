@@ -33,6 +33,7 @@ use crate::mcp::ResourceTemplate as McpResourceTemplate;
 use crate::mcp::Tool as McpTool;
 use crate::memory_citation::MemoryCitation;
 use crate::message_history::HistoryEntry;
+use crate::models::ActivePermissionProfile;
 use crate::models::BaseInstructions;
 use crate::models::ContentItem;
 use crate::models::MessagePhase;
@@ -478,6 +479,12 @@ pub enum Op {
         /// Updated permissions profile for tool calls.
         #[serde(skip_serializing_if = "Option::is_none")]
         permission_profile: Option<PermissionProfile>,
+
+        /// Named or built-in profile that produced `permission_profile`, if
+        /// the update selected a profile rather than supplying raw
+        /// permissions.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        active_permission_profile: Option<ActivePermissionProfile>,
 
         /// Updated Windows sandbox mode for tool execution.
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -1564,10 +1571,26 @@ pub enum HookSource {
     Mdm,
     SessionFlags,
     Plugin,
+    CloudRequirements,
     LegacyManagedConfigFile,
     LegacyManagedConfigMdm,
     #[default]
     Unknown,
+}
+
+impl HookSource {
+    /// Returns whether hooks from this source are managed and therefore not
+    /// user-configurable.
+    pub fn is_managed(self) -> bool {
+        matches!(
+            self,
+            Self::System
+                | Self::Mdm
+                | Self::CloudRequirements
+                | Self::LegacyManagedConfigFile
+                | Self::LegacyManagedConfigMdm
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
@@ -3508,6 +3531,12 @@ pub struct SessionConfiguredEvent {
     /// Canonical effective permissions for commands executed in the session.
     pub permission_profile: PermissionProfile,
 
+    /// Named or implicit built-in profile that produced `permission_profile`,
+    /// when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub active_permission_profile: Option<ActivePermissionProfile>,
+
     /// Working directory that should be treated as the *root* of the
     /// session.
     pub cwd: AbsolutePathBuf,
@@ -3559,6 +3588,8 @@ impl<'de> Deserialize<'de> for SessionConfiguredEvent {
             // and immediately project it into the canonical `permission_profile`.
             sandbox_policy: Option<SandboxPolicy>,
             permission_profile: Option<PermissionProfile>,
+            #[serde(default)]
+            active_permission_profile: Option<ActivePermissionProfile>,
             cwd: AbsolutePathBuf,
             reasoning_effort: Option<ReasoningEffortConfig>,
             history_log_id: u64,
@@ -3590,6 +3621,7 @@ impl<'de> Deserialize<'de> for SessionConfiguredEvent {
             approval_policy: wire.approval_policy,
             approvals_reviewer: wire.approvals_reviewer,
             permission_profile,
+            active_permission_profile: wire.active_permission_profile,
             cwd: wire.cwd,
             reasoning_effort: wire.reasoning_effort,
             history_log_id: wire.history_log_id,
@@ -3975,6 +4007,20 @@ mod tests {
     use tempfile::NamedTempFile;
     use tempfile::TempDir;
 
+    #[test]
+    fn hook_source_managedness_is_source_derived() {
+        assert_eq!(HookSource::System.is_managed(), true);
+        assert_eq!(HookSource::Mdm.is_managed(), true);
+        assert_eq!(HookSource::CloudRequirements.is_managed(), true);
+        assert_eq!(HookSource::LegacyManagedConfigFile.is_managed(), true);
+        assert_eq!(HookSource::LegacyManagedConfigMdm.is_managed(), true);
+        assert_eq!(HookSource::User.is_managed(), false);
+        assert_eq!(HookSource::Project.is_managed(), false);
+        assert_eq!(HookSource::SessionFlags.is_managed(), false);
+        assert_eq!(HookSource::Plugin.is_managed(), false);
+        assert_eq!(HookSource::Unknown.is_managed(), false);
+    }
+
     fn sorted_writable_roots(roots: Vec<WritableRoot>) -> Vec<(PathBuf, Vec<PathBuf>)> {
         let mut sorted_roots: Vec<(PathBuf, Vec<PathBuf>)> = roots
             .into_iter()
@@ -4016,6 +4062,28 @@ mod tests {
         assert_eq!(
             SessionSource::from_startup_arg("app-server").unwrap(),
             SessionSource::Mcp
+        );
+    }
+
+    #[test]
+    fn inter_agent_communication_response_input_item_preserves_commentary_phase() {
+        let communication = InterAgentCommunication {
+            author: AgentPath::root(),
+            recipient: AgentPath::root().join("reviewer").expect("recipient path"),
+            other_recipients: vec![AgentPath::root().join("worker").expect("recipient path")],
+            content: "review the diff".to_string(),
+            trigger_turn: true,
+        };
+
+        assert_eq!(
+            communication.to_response_input_item(),
+            ResponseInputItem::Message {
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText {
+                    text: serde_json::to_string(&communication).expect("serialize communication"),
+                }],
+                phase: Some(MessagePhase::Commentary),
+            }
         );
     }
 
@@ -5114,6 +5182,7 @@ mod tests {
                 approval_policy: AskForApproval::Never,
                 approvals_reviewer: ApprovalsReviewer::User,
                 permission_profile: permission_profile.clone(),
+                active_permission_profile: None,
                 cwd: test_path_buf("/home/user/project").abs(),
                 reasoning_effort: Some(ReasoningEffortConfig::default()),
                 history_log_id: 0,

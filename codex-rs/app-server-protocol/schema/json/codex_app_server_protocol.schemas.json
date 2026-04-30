@@ -649,6 +649,30 @@
             },
             "method": {
               "enum": [
+                "hooks/list"
+              ],
+              "title": "Hooks/listRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/HooksListParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Hooks/listRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "marketplace/add"
               ],
               "title": "Marketplace/addRequestMethod",
@@ -1264,6 +1288,30 @@
             "params"
           ],
           "title": "Model/listRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "modelProvider/capabilities/read"
+              ],
+              "title": "ModelProvider/capabilities/readRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ModelProviderCapabilitiesReadParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "ModelProvider/capabilities/readRequest",
           "type": "object"
         },
         {
@@ -4352,6 +4400,26 @@
           "properties": {
             "method": {
               "enum": [
+                "remoteControl/status/changed"
+              ],
+              "title": "RemoteControl/status/changedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/RemoteControlStatusChangedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "RemoteControl/status/changedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "externalAgentConfig/import/completed"
               ],
               "title": "ExternalAgentConfig/import/completedNotificationMethod",
@@ -5344,6 +5412,59 @@
         },
         "title": "AccountUpdatedNotification",
         "type": "object"
+      },
+      "ActivePermissionProfile": {
+        "properties": {
+          "extends": {
+            "default": null,
+            "description": "Parent profile identifier once permissions profiles support inheritance. This is currently always `null`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "Identifier from `default_permissions` or the implicit built-in default, such as `:workspace` or a user-defined `[permissions.<id>]` profile.",
+            "type": "string"
+          },
+          "modifications": {
+            "default": [],
+            "description": "Bounded user-requested modifications applied on top of the named profile, if any.",
+            "items": {
+              "$ref": "#/definitions/v2/ActivePermissionProfileModification"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "ActivePermissionProfileModification": {
+        "oneOf": [
+          {
+            "description": "Additional concrete directory that should be writable.",
+            "properties": {
+              "path": {
+                "$ref": "#/definitions/v2/AbsolutePathBuf"
+              },
+              "type": {
+                "enum": [
+                  "additionalWritableRoot"
+                ],
+                "title": "AdditionalWritableRootActivePermissionProfileModificationType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "type"
+            ],
+            "title": "AdditionalWritableRootActivePermissionProfileModification",
+            "type": "object"
+          }
+        ]
       },
       "AddCreditsNudgeCreditType": {
         "enum": [
@@ -6765,6 +6886,17 @@
           "declined"
         ],
         "type": "string"
+      },
+      "CommandMigration": {
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
       },
       "Config": {
         "additionalProperties": true,
@@ -8327,6 +8459,9 @@
           "SKILLS",
           "PLUGINS",
           "MCP_SERVER_CONFIG",
+          "SUBAGENTS",
+          "HOOKS",
+          "COMMANDS",
           "SESSIONS"
         ],
         "type": "string"
@@ -9510,6 +9645,21 @@
         "title": "HookCompletedNotification",
         "type": "object"
       },
+      "HookErrorInfo": {
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message",
+          "path"
+        ],
+        "type": "object"
+      },
       "HookEventName": {
         "enum": [
           "preToolUse",
@@ -9535,6 +9685,87 @@
           "agent"
         ],
         "type": "string"
+      },
+      "HookMetadata": {
+        "properties": {
+          "command": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "displayOrder": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "eventName": {
+            "$ref": "#/definitions/v2/HookEventName"
+          },
+          "handlerType": {
+            "$ref": "#/definitions/v2/HookHandlerType"
+          },
+          "isManaged": {
+            "type": "boolean"
+          },
+          "key": {
+            "type": "string"
+          },
+          "matcher": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pluginId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "$ref": "#/definitions/v2/HookSource"
+          },
+          "sourcePath": {
+            "$ref": "#/definitions/v2/AbsolutePathBuf"
+          },
+          "statusMessage": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timeoutSec": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "displayOrder",
+          "enabled",
+          "eventName",
+          "handlerType",
+          "isManaged",
+          "key",
+          "source",
+          "sourcePath",
+          "timeoutSec"
+        ],
+        "type": "object"
+      },
+      "HookMigration": {
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
       },
       "HookOutputEntry": {
         "properties": {
@@ -9681,6 +9912,7 @@
           "mdm",
           "sessionFlags",
           "plugin",
+          "cloudRequirements",
           "legacyManagedConfigFile",
           "legacyManagedConfigMdm",
           "unknown"
@@ -9708,6 +9940,68 @@
           "threadId"
         ],
         "title": "HookStartedNotification",
+        "type": "object"
+      },
+      "HooksListEntry": {
+        "properties": {
+          "cwd": {
+            "type": "string"
+          },
+          "errors": {
+            "items": {
+              "$ref": "#/definitions/v2/HookErrorInfo"
+            },
+            "type": "array"
+          },
+          "hooks": {
+            "items": {
+              "$ref": "#/definitions/v2/HookMetadata"
+            },
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "cwd",
+          "errors",
+          "hooks",
+          "warnings"
+        ],
+        "type": "object"
+      },
+      "HooksListParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "cwds": {
+            "description": "When empty, defaults to the current session working directory.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "title": "HooksListParams",
+        "type": "object"
+      },
+      "HooksListResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/definitions/v2/HooksListEntry"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "HooksListResponse",
         "type": "object"
       },
       "ImageDetail": {
@@ -10006,6 +10300,9 @@
           },
           {
             "properties": {
+              "codexStreamlinedLogin": {
+                "type": "boolean"
+              },
               "type": {
                 "enum": [
                   "chatgpt"
@@ -10449,6 +10746,17 @@
         "title": "McpResourceReadResponse",
         "type": "object"
       },
+      "McpServerMigration": {
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
       "McpServerOauthLoginCompletedNotification": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
@@ -10773,6 +11081,27 @@
       },
       "MigrationDetails": {
         "properties": {
+          "commands": {
+            "default": [],
+            "items": {
+              "$ref": "#/definitions/v2/CommandMigration"
+            },
+            "type": "array"
+          },
+          "hooks": {
+            "default": [],
+            "items": {
+              "$ref": "#/definitions/v2/HookMigration"
+            },
+            "type": "array"
+          },
+          "mcpServers": {
+            "default": [],
+            "items": {
+              "$ref": "#/definitions/v2/McpServerMigration"
+            },
+            "type": "array"
+          },
           "plugins": {
             "default": [],
             "items": {
@@ -10784,6 +11113,13 @@
             "default": [],
             "items": {
               "$ref": "#/definitions/v2/SessionMigration"
+            },
+            "type": "array"
+          },
+          "subagents": {
+            "default": [],
+            "items": {
+              "$ref": "#/definitions/v2/SubagentMigration"
             },
             "type": "array"
           }
@@ -10949,6 +11285,32 @@
           "data"
         ],
         "title": "ModelListResponse",
+        "type": "object"
+      },
+      "ModelProviderCapabilitiesReadParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "ModelProviderCapabilitiesReadParams",
+        "type": "object"
+      },
+      "ModelProviderCapabilitiesReadResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "imageGeneration": {
+            "type": "boolean"
+          },
+          "namespaceTools": {
+            "type": "boolean"
+          },
+          "webSearch": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "imageGeneration",
+          "namespaceTools",
+          "webSearch"
+        ],
+        "title": "ModelProviderCapabilitiesReadResponse",
         "type": "object"
       },
       "ModelRerouteReason": {
@@ -11392,6 +11754,31 @@
           }
         ]
       },
+      "PermissionProfileModificationParams": {
+        "oneOf": [
+          {
+            "description": "Additional concrete directory that should be writable.",
+            "properties": {
+              "path": {
+                "$ref": "#/definitions/v2/AbsolutePathBuf"
+              },
+              "type": {
+                "enum": [
+                  "additionalWritableRoot"
+                ],
+                "title": "AdditionalWritableRootPermissionProfileModificationParamsType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "type"
+            ],
+            "title": "AdditionalWritableRootPermissionProfileModificationParams",
+            "type": "object"
+          }
+        ]
+      },
       "PermissionProfileNetworkPermissions": {
         "properties": {
           "enabled": {
@@ -11402,6 +11789,40 @@
           "enabled"
         ],
         "type": "object"
+      },
+      "PermissionProfileSelectionParams": {
+        "oneOf": [
+          {
+            "description": "Select a named built-in or user-defined profile and optionally apply bounded modifications that Codex knows how to validate.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "modifications": {
+                "items": {
+                  "$ref": "#/definitions/v2/PermissionProfileModificationParams"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "type": {
+                "enum": [
+                  "profile"
+                ],
+                "title": "ProfilePermissionProfileSelectionParamsType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "type"
+            ],
+            "title": "ProfilePermissionProfileSelectionParams",
+            "type": "object"
+          }
+        ]
       },
       "Personality": {
         "enum": [
@@ -12498,6 +12919,35 @@
           "remote_control_client_enrollment"
         ],
         "type": "string"
+      },
+      "RemoteControlConnectionStatus": {
+        "enum": [
+          "disabled",
+          "connecting",
+          "connected",
+          "errored"
+        ],
+        "type": "string"
+      },
+      "RemoteControlStatusChangedNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "Current remote-control connection status and environment id exposed to clients.",
+        "properties": {
+          "environmentId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/definitions/v2/RemoteControlConnectionStatus"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "RemoteControlStatusChangedNotification",
+        "type": "object"
       },
       "RequestId": {
         "anyOf": [
@@ -14087,6 +14537,17 @@
           }
         ]
       },
+      "SubagentMigration": {
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
       "TerminalInteractionNotification": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
@@ -14544,7 +15005,7 @@
                 "$ref": "#/definitions/v2/SandboxPolicy"
               }
             ],
-            "description": "Legacy sandbox policy retained for compatibility. New clients should use `permissionProfile` when present as the canonical active permissions view."
+            "description": "Legacy sandbox policy retained for compatibility. Experimental clients should prefer `permissionProfile` when they need exact runtime permissions."
           },
           "serviceTier": {
             "anyOf": [
@@ -16055,7 +16516,7 @@
                 "$ref": "#/definitions/v2/SandboxPolicy"
               }
             ],
-            "description": "Legacy sandbox policy retained for compatibility. New clients should use `permissionProfile` when present as the canonical active permissions view."
+            "description": "Legacy sandbox policy retained for compatibility. Experimental clients should prefer `permissionProfile` when they need exact runtime permissions."
           },
           "serviceTier": {
             "anyOf": [
@@ -16359,7 +16820,7 @@
                 "$ref": "#/definitions/v2/SandboxPolicy"
               }
             ],
-            "description": "Legacy sandbox policy retained for compatibility. New clients should use `permissionProfile` when present as the canonical active permissions view."
+            "description": "Legacy sandbox policy retained for compatibility. Experimental clients should prefer `permissionProfile` when they need exact runtime permissions."
           },
           "serviceTier": {
             "anyOf": [
