@@ -149,9 +149,10 @@ def run(
 ) -> subprocess.CompletedProcess[str]:
     """Run a shell command and stream output."""
     merged_env = {**os.environ, **(env or {})}
+    resolved_cmd = _resolve_windows_command(cmd, merged_env)
     print(f"  → {' '.join(cmd)}", file=sys.stderr)
     return subprocess.run(
-        cmd,
+        resolved_cmd,
         cwd=cwd,
         env=merged_env,
         check=check,
@@ -170,6 +171,24 @@ def pnpm_available() -> bool:
 
 def node_available() -> bool:
     return shutil.which("node") is not None
+
+
+def _resolve_windows_command(cmd: list[str], env: dict[str, str]) -> list[str]:
+    """Resolve command shims that CreateProcess cannot find by bare name."""
+    if os.name != "nt" or not cmd:
+        return cmd
+
+    path = None
+    for key in reversed(list(env)):
+        if key.upper() == "PATH":
+            path = env[key]
+            break
+
+    resolved = shutil.which(cmd[0], path=path)
+    if resolved is None:
+        return cmd
+
+    return [resolved, *cmd[1:]]
 
 
 def detect_cli_target() -> str:
