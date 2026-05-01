@@ -24,15 +24,19 @@ from __future__ import annotations
 import argparse
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 # Repository root (where this script lives)
 REPO_ROOT = Path(__file__).resolve().parent
 RUST_ROOT = REPO_ROOT / "codex-rs"
 TS_ROOT = REPO_ROOT / "codex-cli"
+AICODEX_VERSION_FILE = REPO_ROOT / "AICODEX_VERSION"
 
 # Output binary name
 OUTPUT_BINARY_NAME = "aicodex"
@@ -48,6 +52,91 @@ CLI_TARGETS = (
     "x86_64-pc-windows-msvc",
     "aarch64-pc-windows-msvc",
 )
+
+
+def read_aicodex_version() -> str:
+    """Read the product version embedded into Rust binaries."""
+    try:
+        version = AICODEX_VERSION_FILE.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        print(f"ERROR: version file not found: {AICODEX_VERSION_FILE}", file=sys.stderr)
+        sys.exit(1)
+
+    if not version:
+        print(f"ERROR: version file is empty: {AICODEX_VERSION_FILE}", file=sys.stderr)
+        sys.exit(1)
+
+    if any(ch.isspace() for ch in version):
+        print(
+            f"ERROR: version file must contain a single version token: {AICODEX_VERSION_FILE}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if any(ch in version for ch in ('"', "\\")):
+        print(
+            f"ERROR: version contains characters that cannot be written to Cargo.toml: {version!r}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if not re.fullmatch(
+        r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?",
+        version,
+    ):
+        print(
+            f"ERROR: version must be a Cargo-compatible semver value: {version!r}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    return version
+
+
+def _cargo_toml_with_workspace_version(text: str, version: str) -> str:
+    lines = text.splitlines(keepends=True)
+    in_workspace_package = False
+
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == "[workspace.package]":
+            in_workspace_package = True
+            continue
+
+        if in_workspace_package and stripped.startswith("["):
+            break
+
+        if in_workspace_package and stripped.startswith("version"):
+            prefix = line[: len(line) - len(line.lstrip())]
+            newline = "\n" if line.endswith("\n") else ""
+            lines[index] = f'{prefix}version = "{version}"{newline}'
+            return "".join(lines)
+
+    raise RuntimeError("Could not find [workspace.package] version in codex-rs/Cargo.toml")
+
+
+@contextmanager
+def patched_rust_workspace_version(version: str) -> Iterator[None]:
+    """Temporarily patch Cargo metadata so env!(\"CARGO_PKG_VERSION\") is correct."""
+    cargo_toml = RUST_ROOT / "Cargo.toml"
+    cargo_lock = RUST_ROOT / "Cargo.lock"
+    original_toml = cargo_toml.read_text(encoding="utf-8")
+    patched_toml = _cargo_toml_with_workspace_version(original_toml, version)
+    original_lock = cargo_lock.read_bytes() if cargo_lock.exists() else None
+
+    if patched_toml != original_toml:
+        print(f"  → Embedding AICODEX_VERSION={version}", file=sys.stderr)
+        cargo_toml.write_text(patched_toml, encoding="utf-8")
+
+    try:
+        yield
+    finally:
+        cargo_toml.write_text(original_toml, encoding="utf-8")
+        if original_lock is None:
+            if cargo_lock.exists():
+                cargo_lock.unlink()
+        else:
+            cargo_lock.write_bytes(original_lock)
 
 
 def run(
@@ -145,7 +234,9 @@ def build_rust(
     if verbose:
         cmd.append("--verbose")
 
-    run(cmd, cwd=RUST_ROOT)
+    version = read_aicodex_version()
+    with patched_rust_workspace_version(version):
+        run(cmd, cwd=RUST_ROOT)
 
 
 def build_codex_cli(
