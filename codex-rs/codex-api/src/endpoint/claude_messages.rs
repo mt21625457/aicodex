@@ -19,9 +19,11 @@ use http::StatusCode;
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::instrument;
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
+const CLAUDE_COUNT_TOKENS_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct ClaudeMessagesClient<T: HttpTransport> {
     session: EndpointSession<T>,
@@ -179,11 +181,14 @@ impl<T: HttpTransport> ClaudeMessagesClient<T> {
     ) -> Result<ClaudeCountTokensResponse, ApiError> {
         let response = self
             .session
-            .execute(
+            .execute_with(
                 Method::POST,
                 "messages/count_tokens",
                 extra_headers,
                 Some(body),
+                |req| {
+                    req.timeout = Some(CLAUDE_COUNT_TOKENS_TIMEOUT);
+                },
             )
             .await
             .map_err(map_claude_api_error)?;

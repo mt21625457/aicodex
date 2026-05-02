@@ -49,6 +49,9 @@ backward-compatible alias for `claude`.
 Claude requests preserve base64 data URL images and HTTP(S) image URLs as
 native Anthropic image blocks. Structured tool outputs that contain text and
 images are sent back as Claude `tool_result` content blocks when possible.
+Claude providers do not expose OpenAI server-side tools such as Responses web
+search or image generation; local/function-style Codex tools remain available
+through Claude `tool_use` blocks.
 
 When `model_reasoning_effort` is set for a Claude provider, Codex sends
 Anthropic extended thinking using a budget mapped from the selected effort.
@@ -64,9 +67,12 @@ enabled by code or tests.
 
 Codex exposes a Claude endpoint client for `POST /v1/messages/count_tokens`.
 The count request reuses the typed Claude message, system, tool, thinking, and
-service-tier request model while omitting streaming-only fields. Ordinary
-Claude streaming turns do not call `count_tokens`; completion usage from the
-stream remains the source of final token accounting.
+service-tier request model while omitting streaming-only fields. After a
+successful Claude streaming turn, Codex refreshes current context-window usage
+with `count_tokens`; if the endpoint is unavailable, rejected, rate-limited, or
+times out, Codex falls back to the local context estimate. Completion usage from
+the stream remains available for response-level accounting when the provider
+returns it.
 
 For long-running Claude responses, Codex preserves Claude `pause_turn` stop
 reasons separately from client-side `tool_use`. A `pause_turn` response is

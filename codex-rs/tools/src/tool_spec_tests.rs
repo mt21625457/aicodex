@@ -401,6 +401,38 @@ fn create_tools_json_for_claude_messages_flattens_supported_tools() {
                         "workdir": { "type": "string" },
                         "timeout_ms": { "type": "number" },
                         "sandbox_permissions": { "type": "string" },
+                        "additional_permissions": {
+                            "type": "object",
+                            "properties": {
+                                "network": {
+                                    "type": "object",
+                                    "properties": {
+                                        "enabled": {
+                                            "type": "boolean",
+                                            "description": "Set to true to request network access.",
+                                        },
+                                    },
+                                    "additionalProperties": false,
+                                },
+                                "file_system": {
+                                    "type": "object",
+                                    "properties": {
+                                        "read": {
+                                            "type": "array",
+                                            "description": "Absolute paths to grant read access to.",
+                                            "items": { "type": "string" },
+                                        },
+                                        "write": {
+                                            "type": "array",
+                                            "description": "Absolute paths to grant write access to.",
+                                            "items": { "type": "string" },
+                                        },
+                                    },
+                                    "additionalProperties": false,
+                                },
+                            },
+                            "additionalProperties": false,
+                        },
                         "justification": { "type": "string" },
                         "prefix_rule": {
                             "type": "array",

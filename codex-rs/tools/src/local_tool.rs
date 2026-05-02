@@ -376,7 +376,7 @@ fn create_approval_parameters(
     properties
 }
 
-fn permission_profile_schema() -> JsonSchema {
+pub(crate) fn permission_profile_schema() -> JsonSchema {
     JsonSchema::object(
         BTreeMap::from([
             ("network".to_string(), network_permissions_schema()),

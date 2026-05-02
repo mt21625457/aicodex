@@ -4,6 +4,7 @@ use crate::LoadableToolSpec;
 use crate::ResponsesApiNamespace;
 use crate::ResponsesApiNamespaceTool;
 use crate::ResponsesApiTool;
+use crate::local_tool::permission_profile_schema;
 use codex_protocol::config_types::WebSearchConfig;
 use codex_protocol::config_types::WebSearchContextSize;
 use codex_protocol::config_types::WebSearchFilters as ConfigWebSearchFilters;
@@ -271,6 +272,8 @@ pub fn create_tools_json_for_claude_messages(
             ToolSpec::LocalShell {} => {
                 let claude_name =
                     unique_claude_tool_name(&mut used_names, /*namespace*/ None, tool.name());
+                let additional_permissions_schema =
+                    serde_json::to_value(permission_profile_schema())?;
                 claude_tools.push(claude_function_tool_json(
                     &claude_name,
                     "Runs a local shell command and returns its output.",
@@ -284,6 +287,7 @@ pub fn create_tools_json_for_claude_messages(
                             "workdir": { "type": "string" },
                             "timeout_ms": { "type": "number" },
                             "sandbox_permissions": { "type": "string" },
+                            "additional_permissions": additional_permissions_schema,
                             "justification": { "type": "string" },
                             "prefix_rule": {
                                 "type": "array",
