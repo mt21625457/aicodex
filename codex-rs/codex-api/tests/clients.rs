@@ -449,6 +449,7 @@ async fn claude_messages_client_counts_tokens_on_count_tokens_path() -> Result<(
     let requests = state.take_execute_requests();
     assert_path_ends_with(&requests, "/messages/count_tokens");
     let req = &requests[0];
+    assert_eq!(req.timeout, Some(Duration::from_secs(15)));
     assert_eq!(
         req.headers
             .get("anthropic-version")

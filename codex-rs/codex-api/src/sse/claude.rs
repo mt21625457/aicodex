@@ -262,18 +262,22 @@ impl ClaudeUsage {
             .or(self.cache_creation_input_tokens);
     }
 
-    fn token_usage(&self) -> TokenUsage {
+    fn token_usage(&self) -> Option<TokenUsage> {
         let input_tokens = self.input_tokens.unwrap_or_default();
         let output_tokens = self.output_tokens.unwrap_or_default();
         let cached_input_tokens = self.cache_read_input_tokens.unwrap_or_default()
             + self.cache_creation_input_tokens.unwrap_or_default();
-        TokenUsage {
+        let total_tokens = input_tokens + output_tokens;
+        if total_tokens == 0 && cached_input_tokens == 0 {
+            return None;
+        }
+        Some(TokenUsage {
             input_tokens,
             cached_input_tokens,
             output_tokens,
             reasoning_output_tokens: 0,
-            total_tokens: input_tokens + output_tokens,
-        }
+            total_tokens,
+        })
     }
 }
 
@@ -742,7 +746,7 @@ impl ClaudeStreamState {
         tx_event
             .send(Ok(ResponseEvent::Completed {
                 response_id: self.response_id(),
-                token_usage: Some(self.usage.token_usage()),
+                token_usage: self.usage.token_usage(),
                 end_turn: self.stop_reason.map(|stop_reason| match stop_reason {
                     ClaudeStopReason::EndTurn
                     | ClaudeStopReason::MaxTokens
@@ -1065,6 +1069,38 @@ mod tests {
             })
             .expect("completed event");
         assert_eq!(end_turn, Some(false));
+    }
+
+    #[tokio::test]
+    async fn claude_stream_does_not_emit_zero_usage_when_usage_is_absent() {
+        let events = run_events(
+            vec![
+                json!({
+                    "type": "message_start",
+                    "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": []}
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": "Done"}
+                }),
+                json!({"type": "content_block_stop", "index": 0}),
+                json!({
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn"},
+                    "usage": {"output_tokens": 0}
+                }),
+                json!({"type": "message_stop"}),
+            ],
+            HashMap::new(),
+        )
+        .await;
+
+        let completed_usage = events.iter().find_map(|event| match event {
+            ResponseEvent::Completed { token_usage, .. } => Some(token_usage),
+            _ => None,
+        });
+        assert_eq!(completed_usage, Some(&None));
     }
 
     #[tokio::test]

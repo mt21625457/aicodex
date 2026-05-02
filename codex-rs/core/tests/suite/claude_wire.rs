@@ -1,19 +1,69 @@
 use codex_core::config::Config;
 use codex_model_provider_info::WireApi;
+use codex_protocol::models::PermissionProfile;
+use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::ReviewDecision;
+use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::user_input::UserInput;
+use core_test_support::responses::ev_assistant_message;
+use core_test_support::responses::ev_completed_with_tokens;
+use core_test_support::responses::ev_response_created;
+use core_test_support::responses::mount_claude_count_tokens_never;
+use core_test_support::responses::mount_claude_count_tokens_response;
 use core_test_support::responses::mount_claude_sse_sequence;
+use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
+use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
+use wiremock::ResponseTemplate;
 
 const EXISTING_ENV_VAR_WITH_NON_EMPTY_VALUE: &str = "PATH";
+
+async fn submit_turn_and_wait_for_token_event<F>(
+    test: &TestCodex,
+    prompt: &str,
+    matches_token_event: F,
+) -> anyhow::Result<EventMsg>
+where
+    F: Fn(&EventMsg) -> bool,
+{
+    test.codex
+        .submit(Op::UserTurn {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: prompt.into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            cwd: test.config.cwd.to_path_buf(),
+            approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
+            sandbox_policy: SandboxPolicy::DangerFullAccess,
+            permission_profile: Some(PermissionProfile::Disabled),
+            model: test.session_configured.model.clone(),
+            effort: None,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
+        })
+        .await?;
+
+    let token_event = wait_for_event(&test.codex, matches_token_event).await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    Ok(token_event)
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn claude_wire_tool_loop_posts_messages_and_tool_result() -> anyhow::Result<()> {
@@ -21,6 +71,12 @@ async fn claude_wire_tool_loop_posts_messages_and_tool_result() -> anyhow::Resul
     let responses = mount_claude_sse_sequence(
         &server,
         vec![claude_tool_use_sse(), claude_text_sse("msg_2", "done")],
+    )
+    .await;
+    let count_tokens = mount_claude_count_tokens_response(
+        &server,
+        ResponseTemplate::new(200).set_body_json(json!({ "input_tokens": 789 })),
+        1,
     )
     .await;
 
@@ -68,6 +124,172 @@ async fn claude_wire_tool_loop_posts_messages_and_tool_result() -> anyhow::Resul
             .expect("tool_result content")
             .contains("claude")
     );
+
+    let count_request = count_tokens.single_request().body_json();
+    assert!(
+        message_content_blocks(&count_request)
+            .iter()
+            .any(|block| block.get("text").and_then(Value::as_str) == Some("done")),
+        "count_tokens should run after the Claude tool loop completes: {count_request}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_wire_uses_count_tokens_for_post_turn_context_usage() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let responses = mount_claude_sse_sequence(
+        &server,
+        vec![claude_text_sse_without_usage("msg_1", "done")],
+    )
+    .await;
+    let count_tokens = mount_claude_count_tokens_response(
+        &server,
+        ResponseTemplate::new(200).set_body_json(json!({ "input_tokens": 456 })),
+        1,
+    )
+    .await;
+
+    let test = test_codex()
+        .with_config(configure_claude_provider)
+        .build(&server)
+        .await?;
+
+    let token_event =
+        submit_turn_and_wait_for_token_event(&test, "count this Claude context", |event| {
+            matches!(
+                event,
+                EventMsg::TokenCount(payload)
+                    if payload.info.as_ref().is_some_and(|info| {
+                        info.last_token_usage.total_tokens == 456
+                            && info.last_token_usage.input_tokens == 456
+                    })
+            )
+        })
+        .await?;
+    let EventMsg::TokenCount(payload) = token_event else {
+        unreachable!("wait_for_event returned unexpected event");
+    };
+    assert_eq!(
+        payload
+            .info
+            .expect("token usage info")
+            .last_token_usage
+            .total_tokens,
+        456
+    );
+
+    let count_request = count_tokens.single_request().body_json();
+    assert!(
+        message_content_blocks(&count_request)
+            .iter()
+            .any(|block| block.get("text").and_then(Value::as_str) == Some("done")),
+        "count_tokens request should include completed assistant context: {count_request}"
+    );
+    assert_eq!(responses.requests().len(), 1);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_wire_fallback_uses_local_context_estimate() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    mount_claude_sse_sequence(
+        &server,
+        vec![claude_text_sse_without_usage("msg_1", "done")],
+    )
+    .await;
+    mount_claude_count_tokens_response(
+        &server,
+        ResponseTemplate::new(404).set_body_json(json!({
+            "error": {
+                "type": "not_found_error",
+                "message": "count_tokens is not supported"
+            }
+        })),
+        1,
+    )
+    .await;
+
+    let test = test_codex()
+        .with_config(configure_claude_provider)
+        .build(&server)
+        .await?;
+
+    let token_event = submit_turn_and_wait_for_token_event(
+        &test,
+        "count this Claude context with fallback",
+        |event| {
+            matches!(
+                event,
+                EventMsg::TokenCount(payload)
+                    if payload.info.as_ref().is_some_and(|info| {
+                        info.last_token_usage.total_tokens > 0
+                    })
+            )
+        },
+    )
+    .await?;
+    let EventMsg::TokenCount(payload) = token_event else {
+        unreachable!("wait_for_event returned unexpected event");
+    };
+    assert!(
+        payload
+            .info
+            .expect("token usage info")
+            .last_token_usage
+            .total_tokens
+            > 0
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_provider_does_not_call_claude_count_tokens() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let responses = mount_sse_sequence(
+        &server,
+        vec![sse(vec![
+            ev_response_created("resp_1"),
+            ev_assistant_message("msg_1", "done"),
+            ev_completed_with_tokens("resp_1", 321),
+        ])],
+    )
+    .await;
+    let count_tokens = mount_claude_count_tokens_never(&server).await;
+
+    let test = test_codex().build(&server).await?;
+
+    let token_event = submit_turn_and_wait_for_token_event(
+        &test,
+        "keep Responses accounting unchanged",
+        |event| {
+            matches!(
+                event,
+                EventMsg::TokenCount(payload)
+                    if payload.info.as_ref().is_some_and(|info| {
+                        info.last_token_usage.total_tokens == 321
+                    })
+            )
+        },
+    )
+    .await?;
+    let EventMsg::TokenCount(payload) = token_event else {
+        unreachable!("wait_for_event returned unexpected event");
+    };
+    assert_eq!(
+        payload
+            .info
+            .expect("token usage info")
+            .last_token_usage
+            .total_tokens,
+        321
+    );
+
+    assert_eq!(responses.requests().len(), 1);
+    assert_eq!(count_tokens.requests().len(), 0);
 
     Ok(())
 }
@@ -159,6 +381,100 @@ async fn claude_wire_marks_tool_result_errors() -> anyhow::Result<()> {
         content.contains("missing field `cmd`") || content.contains("missing field"),
         "unexpected error content: {content}"
     );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_wire_exec_command_uses_existing_approval_flow() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let responses = mount_claude_sse_sequence(
+        &server,
+        vec![
+            claude_escalated_exec_tool_use_sse(),
+            claude_text_sse("msg_2", "handled denial"),
+        ],
+    )
+    .await;
+
+    let test = test_codex()
+        .with_config(configure_claude_provider)
+        .build(&server)
+        .await?;
+
+    let sandbox_policy = SandboxPolicy::WorkspaceWrite {
+        writable_roots: Vec::new(),
+        network_access: false,
+        exclude_tmpdir_env_var: false,
+        exclude_slash_tmp: false,
+    };
+    let permission_profile = PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+        &sandbox_policy,
+        test.config.cwd.as_path(),
+    );
+    test.codex
+        .submit(Op::UserTurn {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: "run an escalated Claude shell command".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            cwd: test.config.cwd.to_path_buf(),
+            approval_policy: AskForApproval::OnRequest,
+            approvals_reviewer: None,
+            sandbox_policy,
+            permission_profile: Some(permission_profile),
+            model: test.session_configured.model.clone(),
+            effort: None,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
+        })
+        .await?;
+
+    let approval = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::ExecApprovalRequest(approval) => Some(approval.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(approval.call_id, "toolu_approval");
+    assert!(
+        approval
+            .command
+            .iter()
+            .any(|part| part.contains("printf approval")),
+        "unexpected approval command: {:?}",
+        approval.command
+    );
+
+    test.codex
+        .submit(Op::ExecApproval {
+            id: approval.effective_approval_id(),
+            turn_id: None,
+            decision: ReviewDecision::Denied,
+        })
+        .await?;
+
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 2);
+    let second = requests[1].body_json();
+    let tool_result = message_content_blocks(&second)
+        .into_iter()
+        .find(|block| {
+            block.get("type").and_then(Value::as_str) == Some("tool_result")
+                && block.get("tool_use_id").and_then(Value::as_str) == Some("toolu_approval")
+        })
+        .unwrap_or_else(|| {
+            panic!("second Claude request should include denied approval result: {second}")
+        });
+    assert_eq!(tool_result["is_error"].as_bool(), Some(true));
 
     Ok(())
 }
@@ -439,6 +755,46 @@ fn claude_invalid_tool_use_sse() -> String {
     ])
 }
 
+fn claude_escalated_exec_tool_use_sse() -> String {
+    sse(vec![
+        json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            }
+        }),
+        json!({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+                "type": "tool_use",
+                "id": "toolu_approval",
+                "name": "exec_command",
+                "input": {}
+            }
+        }),
+        json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+                "type": "input_json_delta",
+                "partial_json": "{\"cmd\":\"printf approval\",\"sandbox_permissions\":\"require_escalated\",\"justification\":\"Need full access for approval test\"}"
+            }
+        }),
+        json!({"type": "content_block_stop", "index": 0}),
+        json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": "tool_use"},
+            "usage": {"output_tokens": 5}
+        }),
+        claude_message_stop(),
+    ])
+}
+
 fn claude_multi_tool_use_sse() -> String {
     sse(vec![
         json!({
@@ -529,6 +885,37 @@ fn claude_text_sse(message_id: &str, text: &str) -> String {
             "delta": {"type": "text_delta", "text": text}
         }),
         json!({"type": "content_block_stop", "index": 0}),
+        claude_message_stop(),
+    ])
+}
+
+fn claude_text_sse_without_usage(message_id: &str, text: &str) -> String {
+    sse(vec![
+        json!({
+            "type": "message_start",
+            "message": {
+                "id": message_id,
+                "type": "message",
+                "role": "assistant",
+                "content": []
+            }
+        }),
+        json!({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "text", "text": ""}
+        }),
+        json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": text}
+        }),
+        json!({"type": "content_block_stop", "index": 0}),
+        json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn"},
+            "usage": {"output_tokens": 0}
+        }),
         claude_message_stop(),
     ])
 }

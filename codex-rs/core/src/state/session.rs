@@ -120,6 +120,15 @@ impl SessionState {
         self.history.update_token_info(usage, model_context_window);
     }
 
+    pub(crate) fn set_context_token_usage(
+        &mut self,
+        context_tokens: i64,
+        model_context_window: Option<i64>,
+    ) {
+        self.history
+            .set_context_token_usage(context_tokens, model_context_window);
+    }
+
     pub(crate) fn token_info(&self) -> Option<TokenUsageInfo> {
         self.history.token_info()
     }

@@ -71,6 +71,7 @@ use codex_hooks::HookEvent;
 use codex_hooks::HookEventAfterAgent;
 use codex_hooks::HookPayload;
 use codex_hooks::HookResult;
+use codex_model_provider_info::WireApi;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
@@ -974,6 +975,65 @@ pub(crate) fn build_prompt(
     }
 }
 
+fn prompt_for_current_context(sess_history: Vec<ResponseItem>, prompt: &Prompt) -> Prompt {
+    Prompt {
+        input: sess_history,
+        tools: prompt.tools.clone(),
+        parallel_tool_calls: prompt.parallel_tool_calls,
+        base_instructions: prompt.base_instructions.clone(),
+        personality: prompt.personality,
+        output_schema: prompt.output_schema.clone(),
+        output_schema_strict: prompt.output_schema_strict,
+    }
+}
+
+async fn update_claude_token_usage_after_completion(
+    sess: &Session,
+    turn_context: &TurnContext,
+    client_session: &ModelClientSession,
+    prompt: &Prompt,
+    streamed_token_usage: Option<&codex_protocol::protocol::TokenUsage>,
+) {
+    let context_input = sess
+        .clone_history()
+        .await
+        .for_prompt(&turn_context.model_info.input_modalities);
+    let context_prompt = prompt_for_current_context(context_input, prompt);
+    let mut counted_tokens = match client_session
+        .count_claude_context_tokens(
+            &context_prompt,
+            &turn_context.model_info,
+            &turn_context.session_telemetry,
+            turn_context.reasoning_effort,
+            turn_context.config.service_tier,
+        )
+        .await
+    {
+        Ok(tokens) if tokens > 0 => Some(tokens),
+        Ok(tokens) => {
+            warn!(
+                tokens,
+                "Claude count_tokens returned an unusable context token count; falling back to local estimate"
+            );
+            None
+        }
+        Err(err) => {
+            warn!(error = %err, "Claude count_tokens failed; falling back to local estimate");
+            None
+        }
+    };
+    if counted_tokens.is_none() {
+        counted_tokens = sess.get_estimated_context_token_count().await;
+    }
+
+    sess.update_token_usage_info_with_context_count(
+        turn_context,
+        streamed_token_usage,
+        counted_tokens,
+    )
+    .await;
+}
+
 #[allow(clippy::too_many_arguments)]
 #[instrument(level = "trace",
     skip_all,
@@ -1874,6 +1934,8 @@ async fn try_run_sampling_request(
     let plan_mode = turn_context.collaboration_mode.mode == ModeKind::Plan;
     let mut assistant_message_stream_parsers = AssistantMessageStreamParsers::new(plan_mode);
     let mut plan_mode_state = plan_mode.then(|| PlanModeStreamState::new(&turn_context.sub_id));
+    let mut completed_claude_token_usage: Option<codex_protocol::protocol::TokenUsage> = None;
+    let mut completed_claude_response = false;
     let receiving_span = trace_span!("receiving_stream");
     let outcome: CodexResult<SamplingRequestResult> = loop {
         let handle_responses = trace_span!(
@@ -2113,8 +2175,13 @@ async fn try_run_sampling_request(
                     &mut assistant_message_stream_parsers,
                 )
                 .await;
-                sess.update_token_usage_info(&turn_context, token_usage.as_ref())
-                    .await;
+                if turn_context.provider.info().wire_api == WireApi::Claude {
+                    completed_claude_response = true;
+                    completed_claude_token_usage = token_usage;
+                } else {
+                    sess.update_token_usage_info(&turn_context, token_usage.as_ref())
+                        .await;
+                }
                 should_emit_turn_diff = true;
                 if let Some(false) = end_turn {
                     needs_follow_up = true;
@@ -2235,6 +2302,19 @@ async fn try_run_sampling_request(
 
     if cancellation_token.is_cancelled() {
         return Err(CodexErr::TurnAborted);
+    }
+
+    let should_refresh_claude_context_usage =
+        matches!(&outcome, Ok(output) if !output.needs_follow_up) && completed_claude_response;
+    if should_refresh_claude_context_usage {
+        update_claude_token_usage_after_completion(
+            sess.as_ref(),
+            turn_context.as_ref(),
+            client_session,
+            prompt,
+            completed_claude_token_usage.as_ref(),
+        )
+        .await;
     }
 
     if should_emit_turn_diff {

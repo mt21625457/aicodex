@@ -271,6 +271,29 @@ impl ContextManager {
         );
     }
 
+    pub(crate) fn set_context_token_usage(
+        &mut self,
+        context_tokens: i64,
+        model_context_window: Option<i64>,
+    ) {
+        let mut info = self.token_info.clone().unwrap_or(TokenUsageInfo {
+            total_token_usage: TokenUsage::default(),
+            last_token_usage: TokenUsage::default(),
+            model_context_window,
+        });
+        info.last_token_usage = TokenUsage {
+            input_tokens: context_tokens.max(0),
+            cached_input_tokens: 0,
+            output_tokens: 0,
+            reasoning_output_tokens: 0,
+            total_tokens: context_tokens.max(0),
+        };
+        if let Some(model_context_window) = model_context_window {
+            info.model_context_window = Some(model_context_window);
+        }
+        self.token_info = Some(info);
+    }
+
     fn get_non_last_reasoning_items_tokens(&self) -> i64 {
         // Get reasoning items excluding all the ones after the last instruction boundary.
         let Some(last_user_index) = self.items.iter().rposition(is_user_turn_boundary) else {

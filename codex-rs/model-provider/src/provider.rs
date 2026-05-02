@@ -7,6 +7,7 @@ use codex_api::SharedAuthProvider;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::WireApi;
 use codex_models_manager::manager::OpenAiModelsManager;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_models_manager::manager::StaticModelsManager;
@@ -161,6 +162,18 @@ impl ConfiguredModelProvider {
 impl ModelProvider for ConfiguredModelProvider {
     fn info(&self) -> &ModelProviderInfo {
         &self.info
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        if self.info.wire_api == WireApi::Claude {
+            ProviderCapabilities {
+                namespace_tools: true,
+                image_generation: false,
+                web_search: false,
+            }
+        } else {
+            ProviderCapabilities::default()
+        }
     }
 
     fn auth_manager(&self) -> Option<Arc<AuthManager>> {
@@ -336,6 +349,26 @@ mod tests {
         );
 
         assert_eq!(provider.capabilities(), ProviderCapabilities::default());
+    }
+
+    #[test]
+    fn claude_provider_disables_openai_server_side_tools() {
+        let provider = create_model_provider(
+            codex_model_provider_info::create_oss_provider_with_base_url(
+                "https://api.anthropic.com/v1",
+                WireApi::Claude,
+            ),
+            /*auth_manager*/ None,
+        );
+
+        assert_eq!(
+            provider.capabilities(),
+            ProviderCapabilities {
+                namespace_tools: true,
+                image_generation: false,
+                web_search: false,
+            }
+        );
     }
 
     #[tokio::test]
