@@ -17,6 +17,7 @@ Usage:
     ./build.py all --debug         # Build everything in debug mode
     ./build.py codex-cli           # Build the aicodex CLI binary (release mode)
     ./build.py codex-cli --all-targets
+    ./build.py clean --dry-run     # Show build artifacts that can be removed
 """
 
 from __future__ import annotations
@@ -52,6 +53,34 @@ CLI_TARGETS = (
     "x86_64-pc-windows-msvc",
     "aarch64-pc-windows-msvc",
 )
+
+CLEAN_BUILD_DIRS = (
+    REPO_ROOT / "dist",
+    REPO_ROOT / "build",
+    REPO_ROOT / "out",
+    REPO_ROOT / "storybook-static",
+    REPO_ROOT / ".cache",
+    REPO_ROOT / ".turbo",
+    REPO_ROOT / ".parcel-cache",
+    REPO_ROOT / ".jest",
+    REPO_ROOT / ".nyc_output",
+    REPO_ROOT / "coverage",
+    REPO_ROOT / "bazel-bin",
+    REPO_ROOT / "bazel-out",
+    REPO_ROOT / "bazel-testlogs",
+    REPO_ROOT / "bazel-aicodex",
+)
+
+CLEAN_TS_DEP_DIRS = (
+    REPO_ROOT / "node_modules",
+    REPO_ROOT / ".pnpm-store",
+)
+
+CLEAN_VENDOR_DIRS = (
+    TS_ROOT / "vendor",
+)
+
+CLEAN_TARGETS = ("build", "rust", "ts", "deps", "vendor", "all")
 
 
 def read_aicodex_version() -> str:
@@ -216,6 +245,177 @@ def detect_cli_target() -> str:
 def executable_name(base_name: str, target: str) -> str:
     """Return the executable filename for a Rust target triple."""
     return f"{base_name}.exe" if "windows" in target else base_name
+
+
+# ---------------------------------------------------------------------------
+# Cleaning
+# ---------------------------------------------------------------------------
+
+def repo_relative(path: Path) -> str:
+    """Return a path display string relative to the repository when possible."""
+    try:
+        return str(path.resolve().relative_to(REPO_ROOT))
+    except ValueError:
+        return str(path)
+
+
+def remove_path(path: Path, *, dry_run: bool) -> bool:
+    """Remove a file, symlink, or directory if it exists."""
+    if not path.exists() and not path.is_symlink():
+        return False
+
+    action = "Would remove" if dry_run else "Removing"
+    print(f"  → {action} {repo_relative(path)}", file=sys.stderr)
+    if dry_run:
+        return True
+
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+    return True
+
+
+def root_binary_paths() -> list[Path]:
+    """Return known top-level binaries produced by this build script."""
+    paths = [REPO_ROOT / OUTPUT_BINARY_NAME, REPO_ROOT / f"{OUTPUT_BINARY_NAME}.exe"]
+    for target in CLI_TARGETS:
+        paths.append(REPO_ROOT / executable_name(f"{OUTPUT_BINARY_NAME}-{target}", target))
+
+    seen = set()
+    unique_paths = []
+    for path in paths:
+        if path not in seen:
+            unique_paths.append(path)
+            seen.add(path)
+    return unique_paths
+
+
+def rust_target_dirs() -> list[Path]:
+    """Return Cargo target directories known to this workspace."""
+    target_dirs = [RUST_ROOT / "target"]
+    target_dirs.extend(sorted(RUST_ROOT.glob("target-*")))
+    return target_dirs
+
+
+def clean_rust_outputs(*, dry_run: bool, target: str | None = None) -> None:
+    """Clean Rust build outputs while respecting Cargo target selection."""
+    if target:
+        cmd = ["cargo", "clean", "--target", target]
+        if dry_run:
+            print(f"  → Would run {' '.join(cmd)} in {repo_relative(RUST_ROOT)}", file=sys.stderr)
+            return
+        if cargo_available():
+            run(cmd, cwd=RUST_ROOT)
+            return
+        remove_path(RUST_ROOT / "target" / target, dry_run=dry_run)
+        return
+
+    if cargo_available():
+        cmd = ["cargo", "clean"]
+        if dry_run:
+            print(f"  → Would run {' '.join(cmd)} in {repo_relative(RUST_ROOT)}", file=sys.stderr)
+        else:
+            run(cmd, cwd=RUST_ROOT)
+
+    for path in rust_target_dirs():
+        remove_path(path, dry_run=dry_run)
+
+
+def clean_build_outputs(
+    *,
+    dry_run: bool,
+    target: str | None = None,
+    include_root_binaries: bool = True,
+) -> None:
+    """Clean generated build artifacts, keeping dependency directories intact."""
+    clean_rust_outputs(dry_run=dry_run, target=target)
+    for path in CLEAN_BUILD_DIRS:
+        remove_path(path, dry_run=dry_run)
+    if include_root_binaries:
+        for path in root_binary_paths():
+            remove_path(path, dry_run=dry_run)
+
+
+def clean_ts_outputs(*, dry_run: bool) -> None:
+    """Clean TypeScript build/cache outputs without deleting installed deps."""
+    for path in CLEAN_BUILD_DIRS:
+        remove_path(path, dry_run=dry_run)
+
+
+def clean_dependency_dirs(*, dry_run: bool) -> None:
+    """Clean repository-local dependency directories."""
+    for path in CLEAN_TS_DEP_DIRS:
+        remove_path(path, dry_run=dry_run)
+
+
+def prune_pnpm_store(*, dry_run: bool) -> None:
+    """Prune pnpm's store when pnpm is available."""
+    cmd = ["pnpm", "store", "prune"]
+    if dry_run:
+        print(f"  → Would run {' '.join(cmd)}", file=sys.stderr)
+        return
+    if not pnpm_available():
+        print("  → Skipping pnpm store prune: pnpm not found", file=sys.stderr)
+        return
+    run(cmd, cwd=REPO_ROOT)
+
+
+def clean_vendor_outputs(*, dry_run: bool) -> None:
+    """Clean native binaries staged for npm packages."""
+    for path in CLEAN_VENDOR_DIRS:
+        remove_path(path, dry_run=dry_run)
+
+
+def clean_requested_targets(
+    targets: list[str],
+    *,
+    dry_run: bool = False,
+    target: str | None = None,
+    prune_store: bool = False,
+    include_root_binaries: bool = True,
+) -> None:
+    """Clean the requested artifact groups."""
+    selected = list(targets or ["build"])
+    unknown = sorted(set(selected) - set(CLEAN_TARGETS))
+    if unknown:
+        raise ValueError(f"Unknown clean target(s): {', '.join(unknown)}")
+
+    if "all" in selected:
+        selected = ["build", "deps", "vendor"]
+
+    print(f"Cleaning targets: {', '.join(selected)}", file=sys.stderr)
+    if dry_run:
+        print("Dry run only; no files will be removed.", file=sys.stderr)
+
+    if "build" in selected:
+        clean_build_outputs(
+            dry_run=dry_run,
+            target=target,
+            include_root_binaries=include_root_binaries,
+        )
+    else:
+        if "rust" in selected:
+            clean_rust_outputs(dry_run=dry_run, target=target)
+        if "ts" in selected:
+            clean_ts_outputs(dry_run=dry_run)
+
+    if "deps" in selected:
+        clean_dependency_dirs(dry_run=dry_run)
+        if prune_store:
+            prune_pnpm_store(dry_run=dry_run)
+
+    if "vendor" in selected:
+        clean_vendor_outputs(dry_run=dry_run)
+
+
+def clean_targets_for_build_command(command: str | None) -> list[str]:
+    """Return the artifact group to clean around a build command."""
+    if command == "rust":
+        return ["rust"]
+    if command == "ts":
+        return ["ts"]
+    return ["build"]
 
 
 # ---------------------------------------------------------------------------
@@ -473,9 +673,44 @@ def main(argv: list[str] | None = None) -> None:
         help="Rename the output binary",
     )
 
+    # clean
+    clean_parser = sub.add_parser("clean", help="Clean build artifacts and dependency directories")
+    clean_parser.add_argument(
+        "targets",
+        nargs="*",
+        choices=CLEAN_TARGETS,
+        default=["build"],
+        help="Artifact groups to clean: build, rust, ts, deps, vendor, all",
+    )
+    clean_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print what would be removed without deleting anything",
+    )
+    clean_parser.add_argument(
+        "--target",
+        default=None,
+        help="Rust target triple to pass to cargo clean",
+    )
+    clean_parser.add_argument(
+        "--prune-pnpm-store",
+        action="store_true",
+        help="Run pnpm store prune when cleaning deps",
+    )
+
     # Common flags
     for p in (rust_parser, cli_parser, all_parser, ts_parser):
         p.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
+        p.add_argument(
+            "--clean-before",
+            action="store_true",
+            help="Clean build artifacts before running this build",
+        )
+        p.add_argument(
+            "--clean-after",
+            action="store_true",
+            help="Clean intermediate build artifacts after a successful build",
+        )
 
     args = parser.parse_args(argv)
 
@@ -484,6 +719,14 @@ def main(argv: list[str] | None = None) -> None:
         build_all(release=True, rename=OUTPUT_BINARY_NAME)
         print("Build completed successfully.", file=sys.stderr)
         return
+
+    build_clean_target = getattr(args, "target", None)
+    if getattr(args, "all_targets", False):
+        build_clean_target = None
+
+    command_clean_targets = clean_targets_for_build_command(args.command)
+    if getattr(args, "clean_before", False):
+        clean_requested_targets(command_clean_targets, target=build_clean_target)
 
     if args.command == "rust":
         build_rust(
@@ -523,9 +766,25 @@ def main(argv: list[str] | None = None) -> None:
             rename=args.rename or OUTPUT_BINARY_NAME,
             verbose=args.verbose,
         )
+    elif args.command == "clean":
+        clean_requested_targets(
+            args.targets,
+            dry_run=args.dry_run,
+            target=args.target,
+            prune_store=args.prune_pnpm_store,
+        )
+        print("Clean completed successfully.", file=sys.stderr)
+        return
     else:
         parser.print_help()
         sys.exit(1)
+
+    if getattr(args, "clean_after", False):
+        clean_requested_targets(
+            command_clean_targets,
+            target=build_clean_target,
+            include_root_binaries=False,
+        )
 
     print("Build completed successfully.", file=sys.stderr)
 
