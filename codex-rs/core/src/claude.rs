@@ -318,9 +318,10 @@ fn apply_prompt_cache_policy(
     }
     let cache_control = Some(ClaudeCacheControl::ephemeral(options.ttl));
     if !tools.is_empty()
-        && let Some(last_tool) = tools.last_mut() {
-            last_tool.cache_control = cache_control.clone();
-        }
+        && let Some(last_tool) = tools.last_mut()
+    {
+        last_tool.cache_control = cache_control.clone();
+    }
     if !system.trim().is_empty() && options.mode == ClaudePromptCacheMode::System {
         return;
     }

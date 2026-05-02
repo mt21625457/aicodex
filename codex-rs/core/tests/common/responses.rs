@@ -1024,6 +1024,14 @@ fn claude_messages_mock() -> (MockBuilder, ResponseMock) {
     (mock, response_mock)
 }
 
+fn claude_count_tokens_mock() -> (MockBuilder, ResponseMock) {
+    let response_mock = ResponseMock::new();
+    let mock = Mock::given(method("POST"))
+        .and(path_regex(".*/messages/count_tokens$"))
+        .and(response_mock.clone());
+    (mock, response_mock)
+}
+
 fn compact_mock() -> (MockBuilder, ResponseMock) {
     let response_mock = ResponseMock::new();
     let mock = Mock::given(method("POST"))
@@ -1507,6 +1515,29 @@ pub async fn mount_sse_sequence(server: &MockServer, bodies: Vec<String>) -> Res
 /// behavior instead of reusing the OpenAI Responses mock path.
 pub async fn mount_claude_sse_sequence(server: &MockServer, bodies: Vec<String>) -> ResponseMock {
     mount_sse_sequence_with_mock(server, bodies, claude_messages_mock()).await
+}
+
+pub async fn mount_claude_count_tokens_response(
+    server: &MockServer,
+    response: ResponseTemplate,
+    expected_calls: u64,
+) -> ResponseMock {
+    let (mock, response_mock) = claude_count_tokens_mock();
+    mock.respond_with(response)
+        .up_to_n_times(expected_calls)
+        .expect(expected_calls)
+        .mount(server)
+        .await;
+    response_mock
+}
+
+pub async fn mount_claude_count_tokens_never(server: &MockServer) -> ResponseMock {
+    let (mock, response_mock) = claude_count_tokens_mock();
+    mock.respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(server)
+        .await;
+    response_mock
 }
 
 async fn mount_sse_sequence_with_mock(

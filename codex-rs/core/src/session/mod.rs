@@ -1116,6 +1116,14 @@ impl Session {
         state.history.estimate_token_count(turn_context)
     }
 
+    pub(crate) async fn get_estimated_context_token_count(&self) -> Option<i64> {
+        let history = self.clone_history().await;
+        let base_instructions = self.get_base_instructions().await;
+        history
+            .estimate_token_count_with_base_instructions(&base_instructions)
+            .map(|tokens| tokens.max(0))
+    }
+
     pub(crate) async fn get_base_instructions(&self) -> BaseInstructions {
         let state = self.state.lock().await;
         BaseInstructions {
@@ -2812,6 +2820,27 @@ impl Session {
         if let Some(token_usage) = token_usage {
             let mut state = self.state.lock().await;
             state.update_token_info_from_usage(token_usage, turn_context.model_context_window());
+        }
+        self.send_token_count_event(turn_context).await;
+    }
+
+    pub(crate) async fn update_token_usage_info_with_context_count(
+        &self,
+        turn_context: &TurnContext,
+        token_usage: Option<&TokenUsage>,
+        context_tokens: Option<i64>,
+    ) {
+        {
+            let mut state = self.state.lock().await;
+            if let Some(token_usage) = token_usage {
+                state
+                    .update_token_info_from_usage(token_usage, turn_context.model_context_window());
+            }
+            if let Some(context_tokens) = context_tokens
+                && context_tokens > 0
+            {
+                state.set_context_token_usage(context_tokens, turn_context.model_context_window());
+            }
         }
         self.send_token_count_event(turn_context).await;
     }
