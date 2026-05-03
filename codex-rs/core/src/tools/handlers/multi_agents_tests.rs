@@ -3146,8 +3146,26 @@ async fn close_agent_submits_shutdown_and_returns_previous_status() {
     assert_eq!(status_after, AgentStatus::NotFound);
 }
 
-#[tokio::test]
-async fn tool_handlers_cascade_close_and_resume_and_keep_explicitly_closed_subtrees_closed() {
+#[test]
+fn tool_handlers_cascade_close_and_resume_and_keep_explicitly_closed_subtrees_closed() {
+    std::thread::Builder::new()
+        .name("cascade-close-resume-test".to_string())
+        .stack_size(/*size*/ 16 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime should build")
+                .block_on(
+                    tool_handlers_cascade_close_and_resume_and_keep_explicitly_closed_subtrees_closed_inner(),
+                );
+        })
+        .expect("large-stack test thread should spawn")
+        .join()
+        .expect("large-stack test thread should finish");
+}
+
+async fn tool_handlers_cascade_close_and_resume_and_keep_explicitly_closed_subtrees_closed_inner() {
     let (_session, turn) = make_session_and_context().await;
     let manager = thread_manager();
     let mut config = turn.config.as_ref().clone();

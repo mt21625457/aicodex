@@ -72,6 +72,7 @@ use codex_hooks::HookEventAfterAgent;
 use codex_hooks::HookPayload;
 use codex_hooks::HookResult;
 use codex_model_provider_info::WireApi;
+use codex_otel::LEGACY_NOTIFY_RUN_METRIC;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
@@ -97,7 +98,7 @@ use codex_protocol::protocol::TurnDiffEvent;
 use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
 use codex_tools::ToolName;
-use codex_tools::filter_tool_suggest_discoverable_tools_for_client;
+use codex_tools::filter_request_plugin_install_discoverable_tools_for_client;
 use codex_utils_stream_parser::AssistantTextChunk;
 use codex_utils_stream_parser::AssistantTextStreamParser;
 use codex_utils_stream_parser::ProposedPlanSegment;
@@ -598,6 +599,13 @@ pub(crate) async fn run_turn(
                             },
                         })
                         .await;
+                    if !hook_outcomes.is_empty() {
+                        turn_context.session_telemetry.counter(
+                            LEGACY_NOTIFY_RUN_METRIC,
+                            /*inc*/ 1,
+                            &[],
+                        );
+                    }
 
                     let mut abort_message = None;
                     for hook_outcome in hook_outcomes {
@@ -1244,7 +1252,7 @@ pub(crate) async fn built_tools(
             )
             .await
             .map(|discoverable_tools| {
-                filter_tool_suggest_discoverable_tools_for_client(
+                filter_request_plugin_install_discoverable_tools_for_client(
                     discoverable_tools,
                     turn_context.app_server_client_name.as_deref(),
                 )
@@ -1545,9 +1553,9 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<String> {
         | EventMsg::PatchApplyBegin(_)
         | EventMsg::PatchApplyUpdated(_)
         | EventMsg::PatchApplyEnd(_)
-        | EventMsg::ViewImageToolCall(_)
         | EventMsg::ImageGenerationBegin(_)
         | EventMsg::ImageGenerationEnd(_)
+        | EventMsg::ViewImageToolCall(_)
         | EventMsg::ExecApprovalRequest(_)
         | EventMsg::RequestPermissions(_)
         | EventMsg::RequestUserInput(_)

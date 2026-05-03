@@ -73,6 +73,23 @@ impl ThreadConfigSnapshot {
     }
 }
 
+fn pending_message_input_item(message: &ResponseItem) -> CodexResult<ResponseInputItem> {
+    match message {
+        ResponseItem::Message {
+            role,
+            content,
+            phase,
+            ..
+        } => Ok(ResponseInputItem::Message {
+            role: role.clone(),
+            content: content.clone(),
+            phase: phase.clone(),
+        }),
+        _ => Err(CodexErr::InvalidRequest(
+            "append_message only supports ResponseItem::Message".to_string(),
+        )),
+    }
+}
 /// Turn context overrides that app-server validates before starting a turn.
 #[derive(Clone, Default)]
 pub struct CodexThreadTurnContextOverrides {
@@ -330,25 +347,15 @@ impl CodexThread {
     }
 
     /// Append a prebuilt message to the thread history without treating it as a user turn.
-    ///
-    /// If the thread already has an active turn, the message is queued as pending input for that
-    /// turn. Otherwise it is queued at session scope and a regular turn is started so the agent
-    /// can consume that pending input through the normal turn pipeline.
     #[cfg(test)]
     pub(crate) async fn append_message(&self, message: ResponseItem) -> CodexResult<String> {
         let submission_id = uuid::Uuid::new_v4().to_string();
-        let pending_item = pending_message_input_item(&message)?;
-        if let Err(items) = self
-            .codex
-            .session
-            .inject_response_items(vec![pending_item])
-            .await
-        {
-            self.codex
-                .session
-                .queue_response_items_for_next_turn(items)
-                .await;
-            self.codex.session.maybe_start_turn_for_pending_work().await;
+        if let ResponseItem::Message { .. } = &message {
+            self.inject_response_items(vec![message]).await?;
+        } else {
+            return Err(CodexErr::InvalidRequest(
+                "append_message only supports ResponseItem::Message".to_string(),
+            ));
         }
 
         Ok(submission_id)
@@ -493,23 +500,5 @@ impl CodexThread {
         }
 
         Ok(*guard)
-    }
-}
-
-fn pending_message_input_item(message: &ResponseItem) -> CodexResult<ResponseInputItem> {
-    match message {
-        ResponseItem::Message {
-            role,
-            content,
-            phase,
-            ..
-        } => Ok(ResponseInputItem::Message {
-            role: role.clone(),
-            content: content.clone(),
-            phase: phase.clone(),
-        }),
-        _ => Err(CodexErr::InvalidRequest(
-            "append_message only supports ResponseItem::Message".to_string(),
-        )),
     }
 }

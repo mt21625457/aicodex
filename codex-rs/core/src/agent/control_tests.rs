@@ -1600,6 +1600,17 @@ async fn resume_thread_subagent_restores_stored_nickname_and_role() {
         .session_source
         .get_nickname()
         .expect("spawned sub-agent should have a nickname");
+    child_thread
+        .codex
+        .session
+        .ensure_rollout_materialized()
+        .await;
+    child_thread
+        .codex
+        .session
+        .flush_rollout()
+        .await
+        .expect("child rollout should flush before resume");
     let state_db = child_thread
         .state_db()
         .expect("sqlite state db should be available for nickname resume test");
