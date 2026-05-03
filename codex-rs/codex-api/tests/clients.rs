@@ -522,6 +522,29 @@ async fn claude_messages_client_surfaces_anthropic_api_error() -> Result<()> {
 }
 
 #[tokio::test]
+async fn claude_messages_client_preserves_unauthorized_transport_error() -> Result<()> {
+    let transport = HttpErrorTransport::new(
+        StatusCode::UNAUTHORIZED,
+        r#"{"type":"error","error":{"type":"authentication_error","message":"bad key"}}"#,
+    );
+    let client = ClaudeMessagesClient::new(transport, provider("anthropic"), Arc::new(NoAuth));
+
+    let result = client
+        .stream_request(claude_request(), ClaudeMessagesOptions::default())
+        .await;
+    let Err(ApiError::Transport(TransportError::Http { status, body, .. })) = result else {
+        panic!("expected preserved unauthorized HTTP transport error");
+    };
+
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        body.as_deref(),
+        Some(r#"{"type":"error","error":{"type":"authentication_error","message":"bad key"}}"#)
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn streaming_client_adds_auth_headers() -> Result<()> {
     let state = RecordingState::default();
     let transport = RecordingTransport::new(state.clone());

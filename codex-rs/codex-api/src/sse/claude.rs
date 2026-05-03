@@ -16,6 +16,7 @@ use serde::Deserialize;
 use serde_json::Map;
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -109,8 +110,7 @@ struct ClaudeMessageDelta {
     stop_sequence: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ClaudeStopReason {
     EndTurn,
     MaxTokens,
@@ -118,17 +118,52 @@ enum ClaudeStopReason {
     ToolUse,
     PauseTurn,
     Refusal,
+    ModelContextWindowExceeded,
+    Unknown(String),
+}
+
+impl<'de> Deserialize<'de> for ClaudeStopReason {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "end_turn" => Self::EndTurn,
+            "max_tokens" => Self::MaxTokens,
+            "stop_sequence" => Self::StopSequence,
+            "tool_use" => Self::ToolUse,
+            "pause_turn" => Self::PauseTurn,
+            "refusal" => Self::Refusal,
+            "model_context_window_exceeded" => Self::ModelContextWindowExceeded,
+            _ => Self::Unknown(value),
+        })
+    }
 }
 
 impl ClaudeStopReason {
-    fn as_str(self) -> &'static str {
+    fn as_str(&self) -> &str {
         match self {
-            ClaudeStopReason::EndTurn => "end_turn",
-            ClaudeStopReason::MaxTokens => "max_tokens",
-            ClaudeStopReason::StopSequence => "stop_sequence",
-            ClaudeStopReason::ToolUse => "tool_use",
-            ClaudeStopReason::PauseTurn => "pause_turn",
-            ClaudeStopReason::Refusal => "refusal",
+            Self::EndTurn => "end_turn",
+            Self::MaxTokens => "max_tokens",
+            Self::StopSequence => "stop_sequence",
+            Self::ToolUse => "tool_use",
+            Self::PauseTurn => "pause_turn",
+            Self::Refusal => "refusal",
+            Self::ModelContextWindowExceeded => "model_context_window_exceeded",
+            Self::Unknown(value) => value,
+        }
+    }
+
+    fn end_turn(&self) -> Option<bool> {
+        match self {
+            Self::EndTurn
+            | Self::MaxTokens
+            | Self::StopSequence
+            | Self::Refusal
+            | Self::ModelContextWindowExceeded => Some(true),
+            Self::ToolUse | Self::PauseTurn => Some(false),
+            Self::Unknown(_) => None,
         }
     }
 }
@@ -265,8 +300,11 @@ impl ClaudeUsage {
     fn token_usage(&self) -> Option<TokenUsage> {
         let input_tokens = self.input_tokens.unwrap_or_default();
         let output_tokens = self.output_tokens.unwrap_or_default();
-        let cached_input_tokens = self.cache_read_input_tokens.unwrap_or_default()
-            + self.cache_creation_input_tokens.unwrap_or_default();
+        let cached_input_tokens = self
+            .cache_read_input_tokens
+            .unwrap_or_default()
+            .max(0)
+            .min(input_tokens.max(0));
         let total_tokens = input_tokens + output_tokens;
         if total_tokens == 0 && cached_input_tokens == 0 {
             return None;
@@ -293,8 +331,9 @@ struct ClaudeStreamState {
     response_id: Option<String>,
     message_id: Option<String>,
     message_started: bool,
-    message_item_started: bool,
-    reasoning_item_started: bool,
+    started_text_blocks: BTreeSet<usize>,
+    started_reasoning_blocks: BTreeSet<usize>,
+    finalized_blocks: BTreeSet<usize>,
     block_kinds: BTreeMap<usize, ClaudeStreamBlockKind>,
     text_blocks: BTreeMap<usize, String>,
     reasoning_blocks: BTreeMap<usize, String>,
@@ -362,7 +401,7 @@ impl ClaudeStreamState {
                     .await?;
             }
             ClaudeStreamEvent::ContentBlockStop { index } => {
-                self.handle_content_block_stop(index)?;
+                self.handle_content_block_stop(index, tx_event).await?;
             }
             ClaudeStreamEvent::MessageDelta { delta, usage } => {
                 self.ensure_message_started("message_delta")?;
@@ -409,8 +448,8 @@ impl ClaudeStreamState {
         match block {
             ClaudeStreamContentBlock::Text { text } => {
                 self.block_kinds.insert(index, ClaudeStreamBlockKind::Text);
-                self.ensure_message_item_started(tx_event).await?;
                 if !text.is_empty() {
+                    self.ensure_text_item_started(index, tx_event).await?;
                     self.push_text_delta(index, &text, tx_event).await?;
                 }
             }
@@ -430,7 +469,7 @@ impl ClaudeStreamState {
             } => {
                 self.block_kinds
                     .insert(index, ClaudeStreamBlockKind::Thinking);
-                self.ensure_reasoning_item_started(tx_event).await?;
+                self.ensure_reasoning_item_started(index, tx_event).await?;
                 if !thinking.is_empty() {
                     self.push_reasoning_delta(index, &thinking, tx_event)
                         .await?;
@@ -451,8 +490,8 @@ impl ClaudeStreamState {
                     self.provider_state_blocks.insert(index, value);
                 } else {
                     self.block_kinds.insert(index, ClaudeStreamBlockKind::Text);
-                    self.ensure_message_item_started(tx_event).await?;
                     let placeholder = format!("[unsupported Claude content block: {kind}]");
+                    self.ensure_text_item_started(index, tx_event).await?;
                     self.push_text_delta(index, &placeholder, tx_event).await?;
                 }
             }
@@ -467,11 +506,18 @@ impl ClaudeStreamState {
         tx_event: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
     ) -> Result<(), ApiError> {
         self.ensure_message_started("content_block_delta")?;
+        if self.finalized_blocks.contains(&index) {
+            return Err(ApiError::Stream(format!(
+                "Claude content_block_delta received after content_block_stop for block {index}"
+            )));
+        }
         match delta {
             ClaudeStreamDelta::TextDelta { text } => {
                 self.ensure_delta_matches(index, ClaudeStreamBlockKind::Text, "text_delta")?;
-                self.ensure_message_item_started(tx_event).await?;
-                self.push_text_delta(index, &text, tx_event).await?;
+                if !text.is_empty() {
+                    self.ensure_text_item_started(index, tx_event).await?;
+                    self.push_text_delta(index, &text, tx_event).await?;
+                }
             }
             ClaudeStreamDelta::InputJsonDelta { partial_json } => {
                 self.ensure_delta_matches(
@@ -490,9 +536,11 @@ impl ClaudeStreamState {
                     ClaudeStreamBlockKind::Thinking,
                     "thinking_delta",
                 )?;
-                self.ensure_reasoning_item_started(tx_event).await?;
-                self.push_reasoning_delta(index, &thinking, tx_event)
-                    .await?;
+                self.ensure_reasoning_item_started(index, tx_event).await?;
+                if !thinking.is_empty() {
+                    self.push_reasoning_delta(index, &thinking, tx_event)
+                        .await?;
+                }
             }
             ClaudeStreamDelta::SignatureDelta { signature } => {
                 self.ensure_delta_matches(
@@ -510,23 +558,25 @@ impl ClaudeStreamState {
         Ok(())
     }
 
-    fn handle_content_block_stop(&mut self, index: usize) -> Result<(), ApiError> {
+    async fn handle_content_block_stop(
+        &mut self,
+        index: usize,
+        tx_event: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
+    ) -> Result<(), ApiError> {
         self.ensure_message_started("content_block_stop")?;
-        let Some(state) = self.tool_blocks.get_mut(&index) else {
-            return Ok(());
+        if let Some(state) = self.tool_blocks.get_mut(&index)
+            && !state.partial_json.trim().is_empty()
+        {
+            let value = serde_json::from_str::<Value>(&state.partial_json).map_err(|err| {
+                ApiError::Stream(format!(
+                    "invalid Claude tool input JSON for content block {index}: {err}"
+                ))
+            })?;
+            state.input = Some(value);
+            state.partial_json.clear();
         };
-        if state.partial_json.trim().is_empty() {
-            return Ok(());
-        }
 
-        let value = serde_json::from_str::<Value>(&state.partial_json).map_err(|err| {
-            ApiError::Stream(format!(
-                "invalid Claude tool input JSON for content block {index}: {err}"
-            ))
-        })?;
-        state.input = Some(value);
-        state.partial_json.clear();
-        Ok(())
+        self.emit_final_block(index, tx_event).await
     }
 
     fn ensure_message_started(&self, event_name: &str) -> Result<(), ApiError> {
@@ -557,17 +607,17 @@ impl ClaudeStreamState {
         )))
     }
 
-    async fn ensure_message_item_started(
+    async fn ensure_text_item_started(
         &mut self,
+        index: usize,
         tx_event: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
     ) -> Result<(), ApiError> {
-        if self.message_item_started {
+        if !self.started_text_blocks.insert(index) {
             return Ok(());
         }
-        self.message_item_started = true;
         tx_event
             .send(Ok(ResponseEvent::OutputItemAdded(ResponseItem::Message {
-                id: self.message_id.clone(),
+                id: self.message_id_for_block(index),
                 role: "assistant".to_string(),
                 content: Vec::new(),
                 phase: None,
@@ -578,19 +628,19 @@ impl ClaudeStreamState {
 
     async fn ensure_reasoning_item_started(
         &mut self,
+        index: usize,
         tx_event: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
     ) -> Result<(), ApiError> {
-        if self.reasoning_item_started {
+        if !self.started_reasoning_blocks.insert(index) {
             return Ok(());
         }
-        self.reasoning_item_started = true;
         tx_event
             .send(Ok(ResponseEvent::OutputItemAdded(
                 ResponseItem::Reasoning {
-                    id: self.reasoning_id(),
+                    id: self.reasoning_id_for_block(index),
                     summary: Vec::new(),
                     content: Some(Vec::new()),
-                    encrypted_content: self.join_reasoning_signatures(),
+                    encrypted_content: None,
                 },
             )))
             .await
@@ -698,64 +748,27 @@ impl ClaudeStreamState {
         &mut self,
         tx_event: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
     ) -> Result<(), ApiError> {
-        if self.reasoning_item_started {
-            tx_event
-                .send(Ok(ResponseEvent::OutputItemDone(ResponseItem::Reasoning {
-                    id: self.reasoning_id(),
-                    summary: Vec::new(),
-                    content: Some(vec![ReasoningItemContent::ReasoningText {
-                        text: self.join_reasoning(),
-                    }]),
-                    encrypted_content: self.join_reasoning_signatures(),
-                })))
-                .await
-                .map_err(|err| ApiError::Stream(err.to_string()))?;
-        }
-        if self.message_item_started {
-            tx_event
-                .send(Ok(ResponseEvent::OutputItemDone(ResponseItem::Message {
-                    id: self.message_id.clone(),
-                    role: "assistant".to_string(),
-                    content: vec![ContentItem::OutputText {
-                        text: self.join_text(),
-                    }],
-                    phase: None,
-                })))
-                .await
-                .map_err(|err| ApiError::Stream(err.to_string()))?;
-        }
-
-        for item in self.tool_call_items()? {
-            tx_event
-                .send(Ok(ResponseEvent::OutputItemDone(item)))
-                .await
-                .map_err(|err| ApiError::Stream(err.to_string()))?;
-        }
-
-        for value in self.provider_state_blocks.values() {
-            tx_event
-                .send(Ok(ResponseEvent::OutputItemDone(
-                    ResponseItem::Compaction {
-                        encrypted_content: value.to_string(),
-                    },
-                )))
-                .await
-                .map_err(|err| ApiError::Stream(err.to_string()))?;
+        let unfinished_blocks = self
+            .block_kinds
+            .keys()
+            .copied()
+            .filter(|index| !self.finalized_blocks.contains(index))
+            .collect::<Vec<_>>();
+        for index in unfinished_blocks {
+            self.emit_final_block(index, tx_event).await?;
         }
 
         tx_event
             .send(Ok(ResponseEvent::Completed {
                 response_id: self.response_id(),
                 token_usage: self.usage.token_usage(),
-                end_turn: self.stop_reason.map(|stop_reason| match stop_reason {
-                    ClaudeStopReason::EndTurn
-                    | ClaudeStopReason::MaxTokens
-                    | ClaudeStopReason::StopSequence
-                    | ClaudeStopReason::Refusal => true,
-                    ClaudeStopReason::ToolUse | ClaudeStopReason::PauseTurn => false,
-                }),
+                end_turn: self
+                    .stop_reason
+                    .as_ref()
+                    .and_then(ClaudeStopReason::end_turn),
                 provider_stop_reason: self
                     .stop_reason
+                    .as_ref()
                     .map(ClaudeStopReason::as_str)
                     .map(str::to_string),
             }))
@@ -763,51 +776,121 @@ impl ClaudeStreamState {
             .map_err(|err| ApiError::Stream(err.to_string()))
     }
 
-    fn tool_call_items(&self) -> Result<Vec<ResponseItem>, ApiError> {
-        self.tool_blocks
-            .values()
-            .filter_map(|state| {
-                let claude_name = state.name.as_ref()?;
-                let call_id = state.id.clone().unwrap_or_else(|| claude_name.clone());
-                let input = match state.input_value() {
-                    Ok(input) => input,
-                    Err(err) => return Some(Err(err)),
-                };
-                let info = self
-                    .tool_call_info
-                    .get(claude_name)
-                    .cloned()
-                    .unwrap_or_else(|| ClaudeToolCallInfo {
-                        name: claude_name.clone(),
-                        namespace: None,
-                        kind: ClaudeToolCallKind::Function,
-                    });
+    async fn emit_final_block(
+        &mut self,
+        index: usize,
+        tx_event: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
+    ) -> Result<(), ApiError> {
+        if !self.block_kinds.contains_key(&index) {
+            return Ok(());
+        }
+        if !self.finalized_blocks.insert(index) {
+            return Ok(());
+        }
+        let Some(item) = self.final_response_item_for_block(index)? else {
+            return Ok(());
+        };
+        tx_event
+            .send(Ok(ResponseEvent::OutputItemDone(item)))
+            .await
+            .map_err(|err| ApiError::Stream(err.to_string()))
+    }
 
-                Some(match info.kind {
-                    ClaudeToolCallKind::Function => Ok(ResponseItem::FunctionCall {
-                        id: Some(call_id.clone()),
-                        name: info.name,
-                        namespace: info.namespace,
-                        arguments: stringify_tool_input(&input),
-                        call_id,
-                    }),
-                    ClaudeToolCallKind::Custom => Ok(ResponseItem::CustomToolCall {
-                        id: Some(call_id.clone()),
-                        status: None,
-                        call_id,
-                        name: info.name,
-                        input: custom_tool_input(&input),
-                    }),
-                    ClaudeToolCallKind::ToolSearch => Ok(ResponseItem::ToolSearchCall {
-                        id: Some(call_id.clone()),
-                        call_id: Some(call_id),
-                        status: None,
-                        execution: "client".to_string(),
-                        arguments: input,
-                    }),
-                })
-            })
-            .collect()
+    fn final_response_item_for_block(
+        &self,
+        index: usize,
+    ) -> Result<Option<ResponseItem>, ApiError> {
+        let Some(kind) = self.block_kinds.get(&index) else {
+            return Ok(None);
+        };
+        match kind {
+            ClaudeStreamBlockKind::Text => {
+                if let Some(text) = self.text_blocks.get(&index)
+                    && !text.is_empty()
+                {
+                    return Ok(Some(ResponseItem::Message {
+                        id: self.message_id_for_block(index),
+                        role: "assistant".to_string(),
+                        content: vec![ContentItem::OutputText { text: text.clone() }],
+                        phase: None,
+                    }));
+                }
+                Ok(None)
+            }
+            ClaudeStreamBlockKind::Thinking => Ok(Some(self.reasoning_item_for_block(index))),
+            ClaudeStreamBlockKind::ToolUse => self.tool_call_item_for_block(index),
+            ClaudeStreamBlockKind::ProviderState => {
+                Ok(self
+                    .provider_state_blocks
+                    .get(&index)
+                    .map(|value| ResponseItem::Compaction {
+                        encrypted_content: value.to_string(),
+                    }))
+            }
+        }
+    }
+
+    fn reasoning_item_for_block(&self, index: usize) -> ResponseItem {
+        let text = self
+            .reasoning_blocks
+            .get(&index)
+            .cloned()
+            .unwrap_or_default();
+        let signature = self
+            .reasoning_signatures
+            .get(&index)
+            .filter(|signature| !signature.trim().is_empty())
+            .cloned();
+        ResponseItem::Reasoning {
+            id: self.reasoning_id_for_block(index),
+            summary: Vec::new(),
+            content: Some(vec![ReasoningItemContent::ReasoningText { text }]),
+            encrypted_content: signature,
+        }
+    }
+
+    fn tool_call_item_for_block(&self, index: usize) -> Result<Option<ResponseItem>, ApiError> {
+        let Some(state) = self.tool_blocks.get(&index) else {
+            return Ok(None);
+        };
+        let Some(claude_name) = state.name.as_ref() else {
+            return Ok(None);
+        };
+        let call_id = state.id.clone().unwrap_or_else(|| claude_name.clone());
+        let input = state.input_value()?;
+        let info = self
+            .tool_call_info
+            .get(claude_name)
+            .cloned()
+            .unwrap_or_else(|| ClaudeToolCallInfo {
+                name: claude_name.clone(),
+                namespace: None,
+                kind: ClaudeToolCallKind::Function,
+            });
+
+        Ok(Some(match info.kind {
+            ClaudeToolCallKind::Function => ResponseItem::FunctionCall {
+                id: Some(call_id.clone()),
+                name: info.name,
+                namespace: info.namespace,
+                arguments: stringify_tool_input(&input),
+                call_id,
+            },
+            ClaudeToolCallKind::Custom => ResponseItem::CustomToolCall {
+                id: Some(call_id.clone()),
+                status: None,
+                call_id,
+                name: info.name,
+                input: custom_tool_input(&input),
+            },
+            ClaudeToolCallKind::ToolSearch => ResponseItem::ToolSearchCall {
+                id: Some(call_id.clone()),
+                call_id: Some(call_id),
+                status: None,
+                execution: "client".to_string(),
+                arguments: input,
+            },
+        }))
     }
 
     fn response_id(&self) -> String {
@@ -816,25 +899,18 @@ impl ClaudeStreamState {
             .unwrap_or_else(|| "claude-response".to_string())
     }
 
-    fn reasoning_id(&self) -> String {
-        format!("{}_reasoning", self.response_id())
+    fn message_id_for_block(&self, index: usize) -> Option<String> {
+        self.message_id.as_ref().map(|message_id| {
+            if index == 0 {
+                message_id.clone()
+            } else {
+                format!("{message_id}_text_{index}")
+            }
+        })
     }
 
-    fn join_text(&self) -> String {
-        self.text_blocks.values().cloned().collect::<String>()
-    }
-
-    fn join_reasoning(&self) -> String {
-        self.reasoning_blocks.values().cloned().collect::<String>()
-    }
-
-    fn join_reasoning_signatures(&self) -> Option<String> {
-        let signatures = self
-            .reasoning_signatures
-            .values()
-            .cloned()
-            .collect::<String>();
-        (!signatures.is_empty()).then_some(signatures)
+    fn reasoning_id_for_block(&self, index: usize) -> String {
+        format!("{}_reasoning_{index}", self.response_id())
     }
 }
 
@@ -868,6 +944,7 @@ fn custom_tool_input(input: &Value) -> String {
 
 fn is_provider_state_block_type(kind: &str) -> bool {
     kind == "compaction"
+        || kind == "redacted_thinking"
         || kind == "server_tool_use"
         || kind.ends_with("_tool_use")
         || kind.ends_with("_tool_result")
@@ -952,7 +1029,7 @@ mod tests {
         events: Vec<Value>,
         tool_call_info: HashMap<String, ClaudeToolCallInfo>,
     ) -> Vec<ResponseEvent> {
-        let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent, ApiError>>(16);
+        let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent, ApiError>>(64);
         let mut state = ClaudeStreamState::new(tool_call_info);
         for event in events {
             let event = serde_json::from_value::<ClaudeStreamEvent>(event).expect("event parses");
@@ -1218,7 +1295,7 @@ mod tests {
             usage,
             TokenUsage {
                 input_tokens: 12,
-                cached_input_tokens: 7,
+                cached_input_tokens: 4,
                 output_tokens: 8,
                 reasoning_output_tokens: 0,
                 total_tokens: 20,
@@ -1243,6 +1320,48 @@ mod tests {
             })
             .expect("provider stop reason");
         assert_eq!(provider_stop_reason, "stop_sequence");
+    }
+
+    #[test]
+    fn claude_usage_maps_cache_creation_without_cached_input() {
+        let usage = ClaudeUsage {
+            input_tokens: Some(10),
+            output_tokens: Some(2),
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: Some(6),
+        };
+
+        assert_eq!(
+            usage.token_usage(),
+            Some(TokenUsage {
+                input_tokens: 10,
+                cached_input_tokens: 0,
+                output_tokens: 2,
+                reasoning_output_tokens: 0,
+                total_tokens: 12,
+            })
+        );
+    }
+
+    #[test]
+    fn claude_usage_clamps_cache_read_to_input_tokens() {
+        let usage = ClaudeUsage {
+            input_tokens: Some(3),
+            output_tokens: Some(1),
+            cache_read_input_tokens: Some(10),
+            cache_creation_input_tokens: Some(7),
+        };
+
+        assert_eq!(
+            usage.token_usage(),
+            Some(TokenUsage {
+                input_tokens: 3,
+                cached_input_tokens: 3,
+                output_tokens: 1,
+                reasoning_output_tokens: 0,
+                total_tokens: 4,
+            })
+        );
     }
 
     #[test]
@@ -1279,6 +1398,40 @@ mod tests {
                 }),
                 ..
             }
+        ));
+
+        let context_window = serde_json::from_value::<ClaudeStreamEvent>(json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": "model_context_window_exceeded"},
+            "usage": {"output_tokens": 0}
+        }))
+        .expect("model_context_window_exceeded parses");
+        assert!(matches!(
+            context_window,
+            ClaudeStreamEvent::MessageDelta {
+                delta: Some(ClaudeMessageDelta {
+                    stop_reason: Some(ClaudeStopReason::ModelContextWindowExceeded),
+                    ..
+                }),
+                ..
+            }
+        ));
+
+        let unknown = serde_json::from_value::<ClaudeStreamEvent>(json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": "new_future_reason"},
+            "usage": {"output_tokens": 0}
+        }))
+        .expect("unknown stop reason parses");
+        assert!(matches!(
+            unknown,
+            ClaudeStreamEvent::MessageDelta {
+                delta: Some(ClaudeMessageDelta {
+                    stop_reason: Some(ClaudeStopReason::Unknown(reason)),
+                    ..
+                }),
+                ..
+            } if reason == "new_future_reason"
         ));
     }
 
@@ -1423,6 +1576,228 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn claude_stream_preserves_redacted_thinking_as_provider_state() {
+        let redacted = json!({
+            "type": "redacted_thinking",
+            "data": "opaque-provider-state"
+        });
+        let events = run_events(
+            vec![
+                json!({
+                    "type": "message_start",
+                    "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": []}
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": redacted.clone()
+                }),
+                json!({"type": "content_block_stop", "index": 0}),
+                json!({"type": "message_stop"}),
+            ],
+            HashMap::new(),
+        )
+        .await;
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ResponseEvent::OutputItemDone(ResponseItem::Compaction { encrypted_content })
+                if serde_json::from_str::<Value>(encrypted_content).ok().as_ref() == Some(&redacted)
+        )));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, ResponseEvent::OutputTextDelta(_)))
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_stream_emits_final_items_in_content_block_order() {
+        let events = run_events(
+            vec![
+                json!({
+                    "type": "message_start",
+                    "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": []}
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "thinking", "thinking": "first"}
+                }),
+                json!({
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "signature_delta", "signature": "sig1"}
+                }),
+                json!({"type": "content_block_stop", "index": 0}),
+                json!({
+                    "type": "content_block_start",
+                    "index": 1,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "lookup",
+                        "input": {"id": 1}
+                    }
+                }),
+                json!({"type": "content_block_stop", "index": 1}),
+                json!({
+                    "type": "content_block_start",
+                    "index": 2,
+                    "content_block": {"type": "thinking", "thinking": "second"}
+                }),
+                json!({
+                    "type": "content_block_delta",
+                    "index": 2,
+                    "delta": {"type": "signature_delta", "signature": "sig2"}
+                }),
+                json!({"type": "content_block_stop", "index": 2}),
+                json!({
+                    "type": "content_block_start",
+                    "index": 3,
+                    "content_block": {"type": "text", "text": "done"}
+                }),
+                json!({"type": "content_block_stop", "index": 3}),
+                json!({"type": "message_stop"}),
+            ],
+            HashMap::new(),
+        )
+        .await;
+
+        let done_items = events
+            .iter()
+            .filter_map(|event| match event {
+                ResponseEvent::OutputItemDone(item) => Some(item),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(done_items.len(), 4);
+        assert!(matches!(
+            done_items[0],
+            ResponseItem::Reasoning {
+                content: Some(content),
+                encrypted_content: Some(signature),
+                ..
+            } if content == &vec![ReasoningItemContent::ReasoningText {
+                text: "first".to_string()
+            }] && signature == "sig1"
+        ));
+        assert!(matches!(
+            done_items[1],
+            ResponseItem::FunctionCall {
+                name,
+                arguments,
+                call_id,
+                ..
+            } if name == "lookup" && arguments == "{\"id\":1}" && call_id == "toolu_1"
+        ));
+        assert!(matches!(
+            done_items[2],
+            ResponseItem::Reasoning {
+                content: Some(content),
+                encrypted_content: Some(signature),
+                ..
+            } if content == &vec![ReasoningItemContent::ReasoningText {
+                text: "second".to_string()
+            }] && signature == "sig2"
+        ));
+        assert!(matches!(
+            done_items[3],
+            ResponseItem::Message { content, .. }
+                if content == &vec![ContentItem::OutputText {
+                    text: "done".to_string()
+                }]
+        ));
+    }
+
+    #[tokio::test]
+    async fn claude_stream_starts_new_text_item_after_reasoning() {
+        let events = run_events(
+            vec![
+                json!({
+                    "type": "message_start",
+                    "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": []}
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": "before"}
+                }),
+                json!({"type": "content_block_stop", "index": 0}),
+                json!({
+                    "type": "content_block_start",
+                    "index": 1,
+                    "content_block": {"type": "thinking", "thinking": "ponder"}
+                }),
+                json!({"type": "content_block_stop", "index": 1}),
+                json!({
+                    "type": "content_block_start",
+                    "index": 2,
+                    "content_block": {"type": "text", "text": "after"}
+                }),
+                json!({"type": "content_block_stop", "index": 2}),
+                json!({"type": "message_stop"}),
+            ],
+            HashMap::new(),
+        )
+        .await;
+
+        let item_label = |item: &ResponseItem| match item {
+            ResponseItem::Message { id, .. } => id.as_ref().map(|id| format!("message:{id}")),
+            ResponseItem::Reasoning { id, .. } => Some(format!("reasoning:{id}")),
+            _ => None,
+        };
+        let added = events
+            .iter()
+            .filter_map(|event| match event {
+                ResponseEvent::OutputItemAdded(item) => item_label(item),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let done = events
+            .iter()
+            .filter_map(|event| match event {
+                ResponseEvent::OutputItemDone(item) => item_label(item),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let lifecycle = events
+            .iter()
+            .filter_map(|event| match event {
+                ResponseEvent::OutputItemAdded(item) => {
+                    item_label(item).map(|label| format!("added:{label}"))
+                }
+                ResponseEvent::OutputItemDone(item) => {
+                    item_label(item).map(|label| format!("done:{label}"))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            added,
+            vec![
+                "message:msg_1".to_string(),
+                "reasoning:msg_1_reasoning_1".to_string(),
+                "message:msg_1_text_2".to_string(),
+            ]
+        );
+        assert_eq!(done, added);
+        assert_eq!(
+            lifecycle,
+            vec![
+                "added:message:msg_1".to_string(),
+                "done:message:msg_1".to_string(),
+                "added:reasoning:msg_1_reasoning_1".to_string(),
+                "done:reasoning:msg_1_reasoning_1".to_string(),
+                "added:message:msg_1_text_2".to_string(),
+                "done:message:msg_1_text_2".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn claude_stream_marks_unknown_user_visible_block() {
         let events = run_events(
             vec![
@@ -1553,6 +1928,34 @@ mod tests {
             error
                 .to_string()
                 .contains("text_delta received for unknown content block 5")
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_stream_rejects_delta_after_content_block_stop() {
+        let error = run_events_expect_error(vec![
+            json!({
+                "type": "message_start",
+                "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": []}
+            }),
+            json!({
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": "done"}
+            }),
+            json!({"type": "content_block_stop", "index": 0}),
+            json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "oops"}
+            }),
+        ])
+        .await;
+
+        assert!(
+            error
+                .to_string()
+                .contains("content_block_delta received after content_block_stop for block 0")
         );
     }
 

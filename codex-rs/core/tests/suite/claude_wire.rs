@@ -552,6 +552,95 @@ async fn claude_wire_round_trips_provider_state_on_pause_turn() -> anyhow::Resul
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_wire_replays_interleaved_state_and_tool_use_in_order() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let responses = mount_claude_sse_sequence(
+        &server,
+        vec![
+            claude_interleaved_state_tool_use_sse(),
+            claude_text_sse("msg_2", "done"),
+        ],
+    )
+    .await;
+    mount_claude_count_tokens_response(
+        &server,
+        ResponseTemplate::new(200).set_body_json(json!({ "input_tokens": 789 })),
+        1,
+    )
+    .await;
+
+    let test = test_codex()
+        .with_config(configure_claude_provider)
+        .build(&server)
+        .await?;
+
+    test.submit_turn("preserve interleaved Claude state")
+        .await?;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 2);
+
+    let second = requests[1].body_json();
+    let messages = second["messages"].as_array().expect("messages array");
+    let assistant = messages
+        .iter()
+        .find(|message| message["role"].as_str() == Some("assistant"))
+        .unwrap_or_else(|| {
+            panic!("second Claude request should include assistant history: {second}")
+        });
+    let content = assistant["content"].as_array().expect("assistant content");
+
+    assert_eq!(content.len(), 4, "assistant content: {content:?}");
+    assert_eq!(content[0], json!({"type": "text", "text": "intro"}));
+    assert_eq!(
+        content[1],
+        json!({
+            "type": "thinking",
+            "thinking": "ponder",
+            "signature": "sig-a"
+        })
+    );
+    assert_eq!(
+        content[2],
+        json!({
+            "type": "redacted_thinking",
+            "data": "opaque-provider-state"
+        })
+    );
+    assert_eq!(
+        content[3],
+        json!({
+            "type": "tool_use",
+            "id": "toolu_interleaved",
+            "name": "exec_command",
+            "input": {"cmd": "printf interleaved"}
+        })
+    );
+
+    let tool_result = messages
+        .iter()
+        .find(|message| {
+            message["role"].as_str() == Some("user")
+                && message["content"].as_array().is_some_and(|content| {
+                    content.iter().any(|block| {
+                        block.get("type").and_then(Value::as_str) == Some("tool_result")
+                            && block.get("tool_use_id").and_then(Value::as_str)
+                                == Some("toolu_interleaved")
+                    })
+                })
+        })
+        .unwrap_or_else(|| panic!("second Claude request should include tool result: {second}"));
+    assert!(
+        tool_result["content"][0]["content"]
+            .as_str()
+            .expect("tool_result content")
+            .contains("interleaved")
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn claude_wire_caps_repeated_pause_turn_continuations() -> anyhow::Result<()> {
     let server = start_mock_server().await;
     let responses = mount_claude_sse_sequence(
@@ -678,6 +767,72 @@ fn claude_pause_turn_with_provider_state_sse() -> String {
         json!({
             "type": "message_delta",
             "delta": {"stop_reason": "pause_turn"},
+            "usage": {"output_tokens": 5}
+        }),
+        claude_message_stop(),
+    ])
+}
+
+fn claude_interleaved_state_tool_use_sse() -> String {
+    sse(vec![
+        json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            }
+        }),
+        json!({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "text", "text": "intro"}
+        }),
+        json!({"type": "content_block_stop", "index": 0}),
+        json!({
+            "type": "content_block_start",
+            "index": 1,
+            "content_block": {"type": "thinking", "thinking": "ponder"}
+        }),
+        json!({
+            "type": "content_block_delta",
+            "index": 1,
+            "delta": {"type": "signature_delta", "signature": "sig-a"}
+        }),
+        json!({"type": "content_block_stop", "index": 1}),
+        json!({
+            "type": "content_block_start",
+            "index": 2,
+            "content_block": {
+                "type": "redacted_thinking",
+                "data": "opaque-provider-state"
+            }
+        }),
+        json!({"type": "content_block_stop", "index": 2}),
+        json!({
+            "type": "content_block_start",
+            "index": 3,
+            "content_block": {
+                "type": "tool_use",
+                "id": "toolu_interleaved",
+                "name": "exec_command",
+                "input": {}
+            }
+        }),
+        json!({
+            "type": "content_block_delta",
+            "index": 3,
+            "delta": {
+                "type": "input_json_delta",
+                "partial_json": "{\"cmd\":\"printf interleaved\"}"
+            }
+        }),
+        json!({"type": "content_block_stop", "index": 3}),
+        json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": "tool_use"},
             "usage": {"output_tokens": 5}
         }),
         claude_message_stop(),

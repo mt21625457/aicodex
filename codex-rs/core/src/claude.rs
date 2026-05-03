@@ -18,6 +18,7 @@ use codex_api::ClaudeToolCallKind as ApiClaudeToolCallKind;
 use codex_api::ClaudeToolChoice;
 use codex_api::ClaudeToolResultContent;
 use codex_protocol::config_types::ServiceTier;
+use codex_protocol::error::CodexErr;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
@@ -320,6 +321,7 @@ pub(crate) fn build_claude_messages_request(
         .collect::<Vec<_>>()
         .join("\n\n");
     apply_prompt_cache_policy(options.prompt_cache, &mut tools, &system, &mut messages);
+    validate_tool_result_history(&messages)?;
     let (thinking, output_config) = match options.provider_compat {
         ClaudeProviderCompat::Anthropic => (claude_thinking_config(options.reasoning_effort), None),
         ClaudeProviderCompat::DeepSeek => {
@@ -462,6 +464,116 @@ fn push_message(
         return;
     }
     messages.push(ClaudeMessage { role, content });
+}
+
+fn validate_tool_result_history(messages: &[ClaudeMessage]) -> codex_protocol::error::Result<()> {
+    let mut pending_tool_use_ids: Vec<String> = Vec::new();
+    for (message_index, message) in messages.iter().enumerate() {
+        if pending_tool_use_ids.is_empty() {
+            if message.role == ClaudeMessageRole::User
+                && message.content.iter().any(is_tool_result_block)
+            {
+                return invalid_claude_history(format!(
+                    "user message {message_index} contains tool_result without a preceding assistant tool_use"
+                ));
+            }
+        } else {
+            validate_pending_tool_results(message_index, message, &pending_tool_use_ids)?;
+            pending_tool_use_ids.clear();
+        }
+
+        if message.role == ClaudeMessageRole::Assistant {
+            pending_tool_use_ids = message
+                .content
+                .iter()
+                .filter_map(tool_use_id)
+                .map(str::to_string)
+                .collect();
+        }
+    }
+
+    if !pending_tool_use_ids.is_empty() {
+        return invalid_claude_history(format!(
+            "assistant tool_use blocks were not followed by matching user tool_result blocks: {}",
+            pending_tool_use_ids.join(", ")
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_pending_tool_results(
+    message_index: usize,
+    message: &ClaudeMessage,
+    pending_tool_use_ids: &[String],
+) -> codex_protocol::error::Result<()> {
+    if message.role != ClaudeMessageRole::User {
+        return invalid_claude_history(format!(
+            "assistant tool_use blocks must be followed by a user tool_result message, got {:?} message {message_index}",
+            message.role
+        ));
+    }
+
+    if message.content.len() < pending_tool_use_ids.len() {
+        return invalid_claude_history(format!(
+            "user message {message_index} has fewer tool_result blocks than preceding tool_use blocks"
+        ));
+    }
+
+    for (offset, expected_id) in pending_tool_use_ids.iter().enumerate() {
+        let Some(block) = message.content.get(offset) else {
+            return invalid_claude_history(format!(
+                "user message {message_index} has fewer tool_result blocks than preceding tool_use blocks"
+            ));
+        };
+        let Some(actual_id) = tool_result_id(block) else {
+            return invalid_claude_history(format!(
+                "user message {message_index} has ordinary content before required tool_result {offset} for preceding tool_use id {expected_id}"
+            ));
+        };
+        if actual_id != expected_id {
+            return invalid_claude_history(format!(
+                "user message {message_index} tool_result {offset} does not match preceding tool_use id {expected_id}"
+            ));
+        }
+    }
+
+    if message
+        .content
+        .iter()
+        .skip(pending_tool_use_ids.len())
+        .any(is_tool_result_block)
+    {
+        return invalid_claude_history(format!(
+            "user message {message_index} contains tool_result blocks after ordinary content"
+        ));
+    }
+
+    Ok(())
+}
+
+fn is_tool_result_block(block: &ClaudeContentBlock) -> bool {
+    matches!(block, ClaudeContentBlock::ToolResult { .. })
+}
+
+fn tool_result_id(block: &ClaudeContentBlock) -> Option<&str> {
+    match block {
+        ClaudeContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+        _ => None,
+    }
+}
+
+fn tool_use_id(block: &ClaudeContentBlock) -> Option<&str> {
+    match block {
+        ClaudeContentBlock::ToolUse { id, .. } => Some(id.as_str()),
+        _ => None,
+    }
+}
+
+fn invalid_claude_history<T>(message: String) -> codex_protocol::error::Result<T> {
+    Err(CodexErr::InvalidRequest(format!(
+        "invalid Claude tool history: {message}"
+    )))
 }
 
 fn tool_names_by_identity(
@@ -1279,6 +1391,10 @@ mod tests {
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
                 },
+                ResponseItem::FunctionCallOutput {
+                    call_id: "call_1".to_string(),
+                    output: FunctionCallOutputPayload::from_text("ok".to_string()),
+                },
             ],
             tools: vec![
                 ToolSpec::Function(ResponsesApiTool {
@@ -1322,20 +1438,139 @@ mod tests {
             .expect("colliding tool mapping");
         assert_eq!(
             request.messages,
-            vec![ClaudeMessage {
-                role: ClaudeMessageRole::Assistant,
-                content: vec![
-                    ClaudeContentBlock::Thinking {
-                        thinking: "thinking".to_string(),
-                        signature: Some("signature".to_string()),
-                    },
-                    ClaudeContentBlock::ToolUse {
-                        id: "call_1".to_string(),
-                        name: colliding_name,
-                        input: json!({}),
-                    },
-                ],
-            }]
+            vec![
+                ClaudeMessage {
+                    role: ClaudeMessageRole::Assistant,
+                    content: vec![
+                        ClaudeContentBlock::Thinking {
+                            thinking: "thinking".to_string(),
+                            signature: Some("signature".to_string()),
+                        },
+                        ClaudeContentBlock::ToolUse {
+                            id: "call_1".to_string(),
+                            name: colliding_name,
+                            input: json!({}),
+                        },
+                    ],
+                },
+                ClaudeMessage {
+                    role: ClaudeMessageRole::User,
+                    content: vec![ClaudeContentBlock::ToolResult {
+                        tool_use_id: "call_1".to_string(),
+                        content: ClaudeToolResultContent::Text("ok".to_string()),
+                        is_error: false,
+                    }],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_claude_tool_result_without_preceding_tool_use() {
+        let prompt = Prompt {
+            input: vec![ResponseItem::FunctionCallOutput {
+                call_id: "call_1".to_string(),
+                output: FunctionCallOutputPayload::from_text("ok".to_string()),
+            }],
+            base_instructions: BaseInstructions {
+                text: String::new(),
+            },
+            ..Default::default()
+        };
+
+        let error =
+            build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
+                .expect_err("invalid history");
+
+        assert!(
+            error
+                .to_string()
+                .contains("tool_result without a preceding assistant tool_use")
+        );
+    }
+
+    #[test]
+    fn rejects_user_text_before_pending_tool_result() {
+        let prompt = Prompt {
+            input: vec![
+                ResponseItem::FunctionCall {
+                    id: None,
+                    name: "lookup".to_string(),
+                    namespace: None,
+                    arguments: "{}".to_string(),
+                    call_id: "call_1".to_string(),
+                },
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "too soon".to_string(),
+                    }],
+                    phase: None,
+                },
+                ResponseItem::FunctionCallOutput {
+                    call_id: "call_1".to_string(),
+                    output: FunctionCallOutputPayload::from_text("ok".to_string()),
+                },
+            ],
+            base_instructions: BaseInstructions {
+                text: String::new(),
+            },
+            ..Default::default()
+        };
+
+        let error =
+            build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
+                .expect_err("invalid history");
+
+        assert!(
+            error
+                .to_string()
+                .contains("ordinary content before required tool_result 0")
+        );
+    }
+
+    #[test]
+    fn rejects_reordered_claude_parallel_tool_results() {
+        let prompt = Prompt {
+            input: vec![
+                ResponseItem::FunctionCall {
+                    id: None,
+                    name: "lookup".to_string(),
+                    namespace: None,
+                    arguments: "{}".to_string(),
+                    call_id: "call_1".to_string(),
+                },
+                ResponseItem::FunctionCall {
+                    id: None,
+                    name: "read".to_string(),
+                    namespace: None,
+                    arguments: "{}".to_string(),
+                    call_id: "call_2".to_string(),
+                },
+                ResponseItem::FunctionCallOutput {
+                    call_id: "call_2".to_string(),
+                    output: FunctionCallOutputPayload::from_text("second first".to_string()),
+                },
+                ResponseItem::FunctionCallOutput {
+                    call_id: "call_1".to_string(),
+                    output: FunctionCallOutputPayload::from_text("first second".to_string()),
+                },
+            ],
+            base_instructions: BaseInstructions {
+                text: String::new(),
+            },
+            ..Default::default()
+        };
+
+        let error =
+            build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
+                .expect_err("invalid history");
+
+        assert!(
+            error
+                .to_string()
+                .contains("tool_result 0 does not match preceding tool_use id call_1")
         );
     }
 

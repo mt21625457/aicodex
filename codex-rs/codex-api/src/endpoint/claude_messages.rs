@@ -219,12 +219,22 @@ struct ParsedClaudeApiError {
 fn map_claude_api_error(error: ApiError) -> ApiError {
     let ApiError::Transport(TransportError::Http {
         status,
+        url,
+        headers,
         body: Some(body),
-        ..
     }) = error
     else {
         return error;
     };
+
+    if status == StatusCode::UNAUTHORIZED {
+        return ApiError::Transport(TransportError::Http {
+            status,
+            url,
+            headers,
+            body: Some(body),
+        });
+    }
 
     match parse_claude_api_error(&body) {
         Some(error) => {
@@ -313,5 +323,29 @@ mod tests {
             map_claude_api_error(error),
             ApiError::ServerOverloaded
         ));
+    }
+
+    #[test]
+    fn preserves_claude_unauthorized_http_error_for_auth_recovery() {
+        let error = ApiError::Transport(TransportError::Http {
+            status: StatusCode::UNAUTHORIZED,
+            url: Some("https://example.com/v1/messages".to_string()),
+            headers: None,
+            body: Some(
+                r#"{"type":"error","error":{"type":"authentication_error","message":"bad key"}}"#
+                    .to_string(),
+            ),
+        });
+
+        let ApiError::Transport(TransportError::Http { status, body, .. }) =
+            map_claude_api_error(error)
+        else {
+            panic!("expected preserved HTTP transport error");
+        };
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            body.as_deref(),
+            Some(r#"{"type":"error","error":{"type":"authentication_error","message":"bad key"}}"#)
+        );
     }
 }

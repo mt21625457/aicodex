@@ -53,6 +53,12 @@ Claude providers do not expose OpenAI server-side tools such as Responses web
 search or image generation; local/function-style Codex tools remain available
 through Claude `tool_use` blocks.
 
+If a turn provides an output JSON schema, Claude requests include an instruction
+to answer with matching JSON. This is not the same as OpenAI Responses
+server-side strict JSON-schema validation: `output_schema_strict` remains a
+prompt-guided constraint for Claude providers unless a future Claude-specific
+enforcement strategy is added.
+
 When `model_reasoning_effort` is set for a Claude provider, Codex sends
 Anthropic extended thinking using a budget mapped from the selected effort.
 `service_tier = "fast"` maps to Anthropic `service_tier = "auto"`, while

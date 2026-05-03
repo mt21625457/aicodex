@@ -828,12 +828,113 @@ async fn provider_auth_command_refreshes_after_401() {
     send_provider_auth_request(&server, auth_fixture.auth()).await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn provider_auth_command_refreshes_after_claude_401_error_envelope() {
+    skip_if_no_network!();
+
+    let server = MockServer::start().await;
+    let auth_fixture = ProviderAuthCommandFixture::new(&["first-token", "second-token"]).unwrap();
+
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(header_regex("Authorization", "Bearer first-token"))
+        .respond_with(ResponseTemplate::new(401).set_body_string(
+            r#"{"type":"error","error":{"type":"authentication_error","message":"bad key"}}"#,
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(header_regex("Authorization", "Bearer second-token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(claude_completed_sse(), "text/event-stream"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    send_provider_auth_request_for_wire_api(&server, auth_fixture.auth(), WireApi::Claude).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn provider_auth_command_surfaces_claude_401_when_recovery_exhausted() {
+    skip_if_no_network!();
+
+    let server = MockServer::start().await;
+    let auth_fixture = ProviderAuthCommandFixture::new(&["only-token"]).unwrap();
+
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(header_regex("Authorization", "Bearer only-token"))
+        .respond_with(ResponseTemplate::new(401).set_body_string(
+            r#"{"type":"error","error":{"type":"authentication_error","message":"bad key"}}"#,
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let error =
+        try_provider_auth_request_for_wire_api(&server, auth_fixture.auth(), WireApi::Claude)
+            .await
+            .expect_err("auth should fail after recovery is exhausted");
+
+    assert!(matches!(
+        error,
+        CodexErr::UnexpectedStatus(err)
+            if err.status == http::StatusCode::UNAUTHORIZED
+                && err.body.contains("authentication_error")
+    ));
+}
+
+fn claude_completed_sse() -> String {
+    [
+        r#"event: message_start
+data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[]}}
+
+"#,
+        r#"event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":1,"output_tokens":1}}
+
+"#,
+        r#"event: message_stop
+data: {"type":"message_stop"}
+
+"#,
+    ]
+    .join("")
+}
+
 /// Issues one streamed Responses request through a provider configured with command-backed auth.
 ///
 /// The caller owns the server-side assertions, so this helper only validates that the request
 /// reaches `Completed` without surfacing an auth or transport error to the client.
-#[expect(clippy::expect_used, clippy::unwrap_used)]
 async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuthInfo) {
+    send_provider_auth_request_for_wire_api(server, auth, WireApi::Responses).await;
+}
+
+/// Issues one streamed request through a provider configured with command-backed auth.
+///
+/// The caller owns the server-side assertions, so this helper only validates that the request
+/// reaches `Completed` without surfacing an auth or transport error to the client.
+#[expect(clippy::expect_used)]
+async fn send_provider_auth_request_for_wire_api(
+    server: &MockServer,
+    auth: ModelProviderAuthInfo,
+    wire_api: WireApi,
+) {
+    try_provider_auth_request_for_wire_api(server, auth, wire_api)
+        .await
+        .expect("stream to complete");
+}
+
+async fn try_provider_auth_request_for_wire_api(
+    server: &MockServer,
+    auth: ModelProviderAuthInfo,
+    wire_api: WireApi,
+) -> codex_protocol::error::Result<()> {
     let provider = ModelProviderInfo {
         name: "corp".into(),
         base_url: Some(format!("{}/v1", server.uri())),
@@ -842,7 +943,7 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
         experimental_bearer_token: None,
         auth: Some(auth),
         aws: None,
-        wire_api: WireApi::Responses,
+        wire_api,
         query_params: None,
         http_headers: None,
         env_http_headers: None,
@@ -854,7 +955,7 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
         supports_websockets: false,
     };
 
-    let codex_home = TempDir::new().unwrap();
+    let codex_home = TempDir::new()?;
     let mut config = load_default_config_for_test(&codex_home).await;
     config.model_provider_id = provider.name.clone();
     config.model_provider = provider.clone();
@@ -913,14 +1014,17 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
             /*turn_metadata_header*/ None,
             &codex_rollout_trace::InferenceTraceContext::disabled(),
         )
-        .await
-        .expect("responses stream to start");
+        .await?;
 
     while let Some(event) = stream.next().await {
-        if let Ok(ResponseEvent::Completed { .. }) = event {
-            break;
+        if let ResponseEvent::Completed { .. } = event? {
+            return Ok(());
         }
     }
+    Err(CodexErr::Stream(
+        "stream ended before completion".to_string(),
+        /*delay*/ None,
+    ))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
