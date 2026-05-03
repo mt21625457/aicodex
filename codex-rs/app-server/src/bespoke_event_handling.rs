@@ -3365,6 +3365,8 @@ mod tests {
                 reasoning_output_tokens: 1,
                 total_tokens: 23,
             },
+            context_tokens: None,
+            context_source: None,
             model_context_window: Some(4096),
         };
         let rate_limits = RateLimitSnapshot {

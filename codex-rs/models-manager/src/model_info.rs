@@ -19,6 +19,8 @@ const LOCAL_FRIENDLY_TEMPLATE: &str =
     "You optimize for team morale and being a supportive teammate as much as code quality.";
 const LOCAL_PRAGMATIC_TEMPLATE: &str = "You are a deeply pragmatic, effective software engineer.";
 const PERSONALITY_PLACEHOLDER: &str = "{{ personality }}";
+const DEFAULT_FALLBACK_CONTEXT_WINDOW: i64 = 272_000;
+const DEEPSEEK_FALLBACK_CONTEXT_WINDOW: i64 = 1_000_000;
 
 pub fn with_config_overrides(mut model: ModelInfo, config: &ModelsManagerConfig) -> ModelInfo {
     if let Some(supports_reasoning_summaries) = config.model_supports_reasoning_summaries
@@ -65,6 +67,7 @@ pub fn with_config_overrides(mut model: ModelInfo, config: &ModelsManagerConfig)
 /// Build a minimal fallback model descriptor for missing/unknown slugs.
 pub fn model_info_from_slug(slug: &str) -> ModelInfo {
     warn!("Unknown model {slug} is used. This will use fallback model metadata.");
+    let fallback_context_window = fallback_context_window_for_slug(slug);
     ModelInfo {
         slug: slug.to_string(),
         display_name: slug.to_string(),
@@ -89,14 +92,26 @@ pub fn model_info_from_slug(slug: &str) -> ModelInfo {
         truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
         supports_parallel_tool_calls: false,
         supports_image_detail_original: false,
-        context_window: Some(272_000),
-        max_context_window: Some(272_000),
+        context_window: Some(fallback_context_window),
+        max_context_window: Some(fallback_context_window),
         auto_compact_token_limit: None,
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
         input_modalities: default_input_modalities(),
         used_fallback_model_metadata: true, // this is the fallback model metadata
         supports_search_tool: false,
+    }
+}
+
+fn fallback_context_window_for_slug(slug: &str) -> i64 {
+    let normalized = slug.to_ascii_lowercase();
+    if normalized == "deepseek-chat"
+        || normalized == "deepseek-reasoner"
+        || normalized.starts_with("deepseek-")
+    {
+        DEEPSEEK_FALLBACK_CONTEXT_WINDOW
+    } else {
+        DEFAULT_FALLBACK_CONTEXT_WINDOW
     }
 }
 

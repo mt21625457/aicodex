@@ -63,6 +63,7 @@ use codex_protocol::plan_tool::StepStatus as CorePlanStepStatus;
 use codex_protocol::protocol::AgentStatus as CoreAgentStatus;
 use codex_protocol::protocol::AskForApproval as CoreAskForApproval;
 use codex_protocol::protocol::CodexErrorInfo as CoreCodexErrorInfo;
+use codex_protocol::protocol::ContextTokenUsageSource as CoreContextTokenUsageSource;
 use codex_protocol::protocol::CreditsSnapshot as CoreCreditsSnapshot;
 use codex_protocol::protocol::ExecCommandSource as CoreExecCommandSource;
 use codex_protocol::protocol::ExecCommandStatus as CoreExecCommandStatus;
@@ -5138,12 +5139,26 @@ pub struct ThreadTokenUsageUpdatedNotification {
     pub token_usage: ThreadTokenUsage,
 }
 
+v2_enum_from_core! {
+    pub enum ContextTokenUsageSource from CoreContextTokenUsageSource {
+        ProviderUsage,
+        ClaudeCountTokens,
+        DeepseekStreamUsage,
+        LocalEstimate,
+        ContextWindowFull,
+        Replay,
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadTokenUsage {
     pub total: TokenUsageBreakdown,
     pub last: TokenUsageBreakdown,
+    #[ts(type = "number | null")]
+    pub context_tokens: Option<i64>,
+    pub context_source: Option<ContextTokenUsageSource>,
     // TODO(aibrahim): make this not optional
     #[ts(type = "number | null")]
     pub model_context_window: Option<i64>,
@@ -5154,6 +5169,8 @@ impl From<CoreTokenUsageInfo> for ThreadTokenUsage {
         Self {
             total: value.total_token_usage.into(),
             last: value.last_token_usage.into(),
+            context_tokens: value.context_tokens,
+            context_source: value.context_source.map(Into::into),
             model_context_window: value.model_context_window,
         }
     }

@@ -1466,6 +1466,8 @@ async fn record_initial_history_seeds_token_info_from_rollout() {
             reasoning_output_tokens: 0,
             total_tokens: 7,
         },
+        context_tokens: None,
+        context_source: None,
         model_context_window: Some(1_000),
     };
     let info2 = TokenUsageInfo {
@@ -1483,6 +1485,8 @@ async fn record_initial_history_seeds_token_info_from_rollout() {
             reasoning_output_tokens: 5,
             total_tokens: 35,
         },
+        context_tokens: None,
+        context_source: None,
         model_context_window: Some(2_000),
     };
 
@@ -1572,6 +1576,8 @@ async fn recompute_token_usage_updates_model_context_window() {
         state.set_token_info(Some(TokenUsageInfo {
             total_token_usage: TokenUsage::default(),
             last_token_usage: TokenUsage::default(),
+            context_tokens: None,
+            context_source: None,
             model_context_window: Some(258_400),
         }));
     }
@@ -7289,6 +7295,8 @@ async fn set_total_token_usage(sess: &Session, total_token_usage: TokenUsage) {
     state.set_token_info(Some(TokenUsageInfo {
         total_token_usage,
         last_token_usage: TokenUsage::default(),
+        context_tokens: None,
+        context_source: None,
         model_context_window: None,
     }));
 }

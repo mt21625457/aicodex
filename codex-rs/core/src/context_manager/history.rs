@@ -13,6 +13,7 @@ use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ImageDetail;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::InputModality;
+use codex_protocol::protocol::ContextTokenUsageSource;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TokenUsageInfo;
@@ -274,23 +275,14 @@ impl ContextManager {
     pub(crate) fn set_context_token_usage(
         &mut self,
         context_tokens: i64,
+        source: ContextTokenUsageSource,
         model_context_window: Option<i64>,
     ) {
-        let mut info = self.token_info.clone().unwrap_or(TokenUsageInfo {
-            total_token_usage: TokenUsage::default(),
-            last_token_usage: TokenUsage::default(),
-            model_context_window,
-        });
-        info.last_token_usage = TokenUsage {
-            input_tokens: context_tokens.max(0),
-            cached_input_tokens: 0,
-            output_tokens: 0,
-            reasoning_output_tokens: 0,
-            total_tokens: context_tokens.max(0),
-        };
-        if let Some(model_context_window) = model_context_window {
-            info.model_context_window = Some(model_context_window);
-        }
+        let mut info = self
+            .token_info
+            .clone()
+            .unwrap_or_else(|| TokenUsageInfo::empty(model_context_window));
+        info.set_context_usage(context_tokens, source, model_context_window);
         self.token_info = Some(info);
     }
 

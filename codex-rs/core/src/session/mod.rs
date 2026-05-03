@@ -322,6 +322,7 @@ use codex_protocol::protocol::ApplyPatchApprovalRequestEvent;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::CompactedItem;
+use codex_protocol::protocol::ContextTokenUsageSource;
 use codex_protocol::protocol::DeprecationNoticeEvent;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::Event;
@@ -2825,6 +2826,7 @@ impl Session {
         turn_context: &TurnContext,
         token_usage: Option<&TokenUsage>,
         context_tokens: Option<i64>,
+        context_source: Option<ContextTokenUsageSource>,
     ) {
         {
             let mut state = self.state.lock().await;
@@ -2833,9 +2835,14 @@ impl Session {
                     .update_token_info_from_usage(token_usage, turn_context.model_context_window());
             }
             if let Some(context_tokens) = context_tokens
-                && context_tokens > 0
+                && context_tokens >= 0
+                && let Some(context_source) = context_source
             {
-                state.set_context_token_usage(context_tokens, turn_context.model_context_window());
+                state.set_context_token_usage(
+                    context_tokens,
+                    context_source,
+                    turn_context.model_context_window(),
+                );
             }
         }
         self.send_token_count_event(turn_context).await;
@@ -2851,23 +2858,14 @@ impl Session {
         };
         {
             let mut state = self.state.lock().await;
-            let mut info = state.token_info().unwrap_or(TokenUsageInfo {
-                total_token_usage: TokenUsage::default(),
-                last_token_usage: TokenUsage::default(),
-                model_context_window: None,
-            });
-
-            info.last_token_usage = TokenUsage {
-                input_tokens: 0,
-                cached_input_tokens: 0,
-                output_tokens: 0,
-                reasoning_output_tokens: 0,
-                total_tokens: estimated_total_tokens.max(0),
-            };
-
-            if let Some(model_context_window) = turn_context.model_context_window() {
-                info.model_context_window = Some(model_context_window);
-            }
+            let mut info = state
+                .token_info()
+                .unwrap_or_else(|| TokenUsageInfo::empty(None));
+            info.set_context_usage(
+                estimated_total_tokens,
+                ContextTokenUsageSource::LocalEstimate,
+                turn_context.model_context_window(),
+            );
 
             state.set_token_info(Some(info));
         }

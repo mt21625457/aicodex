@@ -7309,7 +7309,7 @@
             "type": "object"
           },
           {
-            "description": "User config layer from $CODEX_HOME/config.toml. This layer is special in that it is expected to be: - writable by the user - generally outside the workspace directory",
+            "description": "User config layer from $AICODEX_HOME/config.toml. This layer is special in that it is expected to be: - writable by the user - generally outside the workspace directory",
             "properties": {
               "file": {
                 "allOf": [
@@ -7819,6 +7819,17 @@
         ],
         "title": "ContextCompactedNotification",
         "type": "object"
+      },
+      "ContextTokenUsageSource": {
+        "enum": [
+          "providerUsage",
+          "claudeCountTokens",
+          "deepseekStreamUsage",
+          "localEstimate",
+          "contextWindowFull",
+          "replay"
+        ],
+        "type": "string"
       },
       "CreditsSnapshot": {
         "properties": {
@@ -14956,7 +14967,7 @@
                 "$ref": "#/definitions/v2/SessionSource"
               }
             ],
-            "description": "Origin of the thread (CLI, VSCode, codex exec, codex app-server, etc.)."
+            "description": "Origin of the thread (CLI, VSCode, aicodex exec, aicodex app-server, etc.)."
           },
           "status": {
             "allOf": [
@@ -17188,6 +17199,23 @@
       },
       "ThreadTokenUsage": {
         "properties": {
+          "contextSource": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ContextTokenUsageSource"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "contextTokens": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "last": {
             "$ref": "#/definitions/v2/TokenUsageBreakdown"
           },

@@ -1315,14 +1315,17 @@ impl ModelClientSession {
                 RequestRouteTelemetry::for_endpoint(CLAUDE_MESSAGES_ENDPOINT),
                 self.client.state.auth_env_telemetry.clone(),
             );
+            let provider_info = self.client.state.provider.info();
             let request = crate::claude::build_claude_messages_request(
                 prompt,
                 model_info,
                 crate::claude::ClaudeRequestOptions {
                     reasoning_effort: effort,
                     service_tier,
-                    provider_compat: crate::claude::provider_compat_for_base_url(
-                        self.client.state.provider.info().base_url.as_deref(),
+                    provider_compat: crate::claude::provider_compat_for_provider(
+                        &provider_info.name,
+                        provider_info.base_url.as_deref(),
+                        Some(&model_info.slug),
                     ),
                     ..Default::default()
                 },
@@ -1430,14 +1433,17 @@ impl ModelClientSession {
             RequestRouteTelemetry::for_endpoint(CLAUDE_COUNT_TOKENS_ENDPOINT),
             self.client.state.auth_env_telemetry.clone(),
         );
+        let provider_info = self.client.state.provider.info();
         let request = crate::claude::build_claude_messages_request(
             prompt,
             model_info,
             crate::claude::ClaudeRequestOptions {
                 reasoning_effort: effort,
                 service_tier,
-                provider_compat: crate::claude::provider_compat_for_base_url(
-                    self.client.state.provider.info().base_url.as_deref(),
+                provider_compat: crate::claude::provider_compat_for_provider(
+                    &provider_info.name,
+                    provider_info.base_url.as_deref(),
+                    Some(&model_info.slug),
                 ),
                 ..Default::default()
             },

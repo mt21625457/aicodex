@@ -9,6 +9,7 @@ use crate::summarize_for_label;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AgentMessageEvent;
+use codex_protocol::protocol::ContextTokenUsageSource;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::TokenCountEvent;
@@ -161,6 +162,8 @@ fn token_count_item(response_items: &[ResponseItem]) -> RolloutItem {
         info: Some(TokenUsageInfo {
             total_token_usage: usage.clone(),
             last_token_usage: usage,
+            context_tokens: Some(last_model_visible_tokens),
+            context_source: Some(ContextTokenUsageSource::LocalEstimate),
             model_context_window: None,
         }),
         rate_limits: None,

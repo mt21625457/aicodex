@@ -2048,16 +2048,46 @@ pub struct TokenUsage {
     pub total_tokens: i64,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum ContextTokenUsageSource {
+    ProviderUsage,
+    ClaudeCountTokens,
+    DeepseekStreamUsage,
+    LocalEstimate,
+    ContextWindowFull,
+    Replay,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
 pub struct TokenUsageInfo {
     pub total_token_usage: TokenUsage,
     pub last_token_usage: TokenUsage,
+    /// Current model-visible context occupancy, when it is known separately from
+    /// streamed provider usage for a single response.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub context_tokens: Option<i64>,
+    #[serde(default)]
+    #[ts(type = "ContextTokenUsageSource | null")]
+    pub context_source: Option<ContextTokenUsageSource>,
     // TODO(aibrahim): make this not optional
     #[ts(type = "number | null")]
     pub model_context_window: Option<i64>,
 }
 
 impl TokenUsageInfo {
+    pub fn empty(model_context_window: Option<i64>) -> Self {
+        Self {
+            total_token_usage: TokenUsage::default(),
+            last_token_usage: TokenUsage::default(),
+            context_tokens: None,
+            context_source: None,
+            model_context_window,
+        }
+    }
+
     pub fn new_or_append(
         info: &Option<TokenUsageInfo>,
         last: &Option<TokenUsage>,
@@ -2069,11 +2099,7 @@ impl TokenUsageInfo {
 
         let mut info = match info {
             Some(info) => info.clone(),
-            None => Self {
-                total_token_usage: TokenUsage::default(),
-                last_token_usage: TokenUsage::default(),
-                model_context_window,
-            },
+            None => Self::empty(model_context_window),
         };
         if let Some(last) = last {
             info.append_last_usage(last);
@@ -2087,6 +2113,8 @@ impl TokenUsageInfo {
     pub fn append_last_usage(&mut self, last: &TokenUsage) {
         self.total_token_usage.add_assign(last);
         self.last_token_usage = last.clone();
+        self.context_tokens = None;
+        self.context_source = None;
     }
 
     pub fn fill_to_context_window(&mut self, context_window: i64) {
@@ -2102,14 +2130,33 @@ impl TokenUsageInfo {
             total_tokens: delta,
             ..TokenUsage::default()
         };
+        self.context_tokens = Some(context_window);
+        self.context_source = Some(ContextTokenUsageSource::ContextWindowFull);
+    }
+
+    pub fn set_context_usage(
+        &mut self,
+        context_tokens: i64,
+        source: ContextTokenUsageSource,
+        model_context_window: Option<i64>,
+    ) {
+        let context_tokens = context_tokens.max(0);
+        self.last_token_usage = TokenUsage {
+            input_tokens: context_tokens,
+            cached_input_tokens: 0,
+            output_tokens: 0,
+            reasoning_output_tokens: 0,
+            total_tokens: context_tokens,
+        };
+        self.context_tokens = Some(context_tokens);
+        self.context_source = Some(source);
+        if let Some(model_context_window) = model_context_window {
+            self.model_context_window = Some(model_context_window);
+        }
     }
 
     pub fn full_context_window(context_window: i64) -> Self {
-        let mut info = Self {
-            total_token_usage: TokenUsage::default(),
-            last_token_usage: TokenUsage::default(),
-            model_context_window: Some(context_window),
-        };
+        let mut info = Self::empty(Some(context_window));
         info.fill_to_context_window(context_window);
         info
     }
@@ -5339,6 +5386,8 @@ mod tests {
         let initial = Some(TokenUsageInfo {
             total_token_usage: TokenUsage::default(),
             last_token_usage: TokenUsage::default(),
+            context_tokens: None,
+            context_source: None,
             model_context_window: Some(258_400),
         });
         let last = Some(TokenUsage {
@@ -5360,6 +5409,8 @@ mod tests {
         let initial = Some(TokenUsageInfo {
             total_token_usage: TokenUsage::default(),
             last_token_usage: TokenUsage::default(),
+            context_tokens: None,
+            context_source: None,
             model_context_window: Some(258_400),
         });
         let last = Some(TokenUsage {

@@ -79,6 +79,28 @@ pub(crate) fn provider_compat_for_base_url(base_url: Option<&str>) -> ClaudeProv
     }
 }
 
+pub(crate) fn provider_compat_for_provider(
+    provider_name: &str,
+    base_url: Option<&str>,
+    model_slug: Option<&str>,
+) -> ClaudeProviderCompat {
+    if provider_compat_for_base_url(base_url) == ClaudeProviderCompat::DeepSeek
+        || looks_like_deepseek_identifier(provider_name)
+        || model_slug.is_some_and(looks_like_deepseek_identifier)
+    {
+        ClaudeProviderCompat::DeepSeek
+    } else {
+        ClaudeProviderCompat::Anthropic
+    }
+}
+
+fn looks_like_deepseek_identifier(value: &str) -> bool {
+    value
+        .to_ascii_lowercase()
+        .replace([' ', '-', '_'], "")
+        .contains("deepseek")
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ClaudePromptCacheOptions {
     pub(crate) mode: ClaudePromptCacheMode,
@@ -848,6 +870,18 @@ mod tests {
         assert_eq!(
             provider_compat_for_base_url(Some("https://notapi.deepseek.com/anthropic")),
             ClaudeProviderCompat::Anthropic
+        );
+        assert_eq!(
+            provider_compat_for_provider("DeepSeek", Some("http://localhost/v1"), None),
+            ClaudeProviderCompat::DeepSeek
+        );
+        assert_eq!(
+            provider_compat_for_provider(
+                "custom claude",
+                Some("http://localhost/v1"),
+                Some("deepseek-v4-pro")
+            ),
+            ClaudeProviderCompat::DeepSeek
         );
     }
 

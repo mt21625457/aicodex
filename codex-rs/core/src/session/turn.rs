@@ -89,6 +89,7 @@ use codex_protocol::protocol::AgentMessageContentDeltaEvent;
 use codex_protocol::protocol::AgentReasoningSectionBreakEvent;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CodexErrorInfo;
+use codex_protocol::protocol::ContextTokenUsageSource;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::PlanDeltaEvent;
@@ -1002,11 +1003,44 @@ async fn update_claude_token_usage_after_completion(
     prompt: &Prompt,
     streamed_token_usage: Option<&codex_protocol::protocol::TokenUsage>,
 ) {
+    let provider_info = turn_context.provider.info();
+    let provider_compat = crate::claude::provider_compat_for_provider(
+        &provider_info.name,
+        provider_info.base_url.as_deref(),
+        Some(&turn_context.model_info.slug),
+    );
+    if provider_compat == crate::claude::ClaudeProviderCompat::DeepSeek {
+        let (context_tokens, context_source) = streamed_token_usage
+            .map(|usage| usage.total_tokens)
+            .filter(|tokens| *tokens > 0)
+            .map(|tokens| {
+                (
+                    Some(tokens),
+                    Some(ContextTokenUsageSource::DeepseekStreamUsage),
+                )
+            })
+            .unwrap_or_else(|| (None, Some(ContextTokenUsageSource::LocalEstimate)));
+        let context_tokens = match context_tokens {
+            Some(tokens) => Some(tokens),
+            None => sess.get_estimated_context_token_count().await,
+        };
+        let context_source = context_tokens.and(context_source);
+        sess.update_token_usage_info_with_context_count(
+            turn_context,
+            streamed_token_usage,
+            context_tokens,
+            context_source,
+        )
+        .await;
+        return;
+    }
+
     let context_input = sess
         .clone_history()
         .await
         .for_prompt(&turn_context.model_info.input_modalities);
     let context_prompt = prompt_for_current_context(context_input, prompt);
+    let mut context_source = Some(ContextTokenUsageSource::ClaudeCountTokens);
     let mut counted_tokens = match client_session
         .count_claude_context_tokens(
             &context_prompt,
@@ -1032,12 +1066,14 @@ async fn update_claude_token_usage_after_completion(
     };
     if counted_tokens.is_none() {
         counted_tokens = sess.get_estimated_context_token_count().await;
+        context_source = Some(ContextTokenUsageSource::LocalEstimate);
     }
 
     sess.update_token_usage_info_with_context_count(
         turn_context,
         streamed_token_usage,
         counted_tokens,
+        counted_tokens.and(context_source),
     )
     .await;
 }

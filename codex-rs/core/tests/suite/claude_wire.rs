@@ -2,6 +2,7 @@ use codex_core::config::Config;
 use codex_model_provider_info::WireApi;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::ContextTokenUsageSource;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ReviewDecision;
@@ -188,6 +189,54 @@ async fn claude_wire_uses_count_tokens_for_post_turn_context_usage() -> anyhow::
         "count_tokens request should include completed assistant context: {count_request}"
     );
     assert_eq!(responses.requests().len(), 1);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deepseek_claude_wire_uses_stream_usage_without_count_tokens() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let responses = mount_claude_sse_sequence(
+        &server,
+        vec![claude_text_sse_with_usage("msg_1", "done", 333, 12)],
+    )
+    .await;
+    let count_tokens = mount_claude_count_tokens_never(&server).await;
+
+    let test = test_codex()
+        .with_config(configure_deepseek_claude_provider)
+        .build(&server)
+        .await?;
+
+    let token_event = submit_turn_and_wait_for_token_event(
+        &test,
+        "count this DeepSeek Claude context",
+        |event| {
+            matches!(
+                event,
+                EventMsg::TokenCount(payload)
+                    if payload.info.as_ref().is_some_and(|info| {
+                        info.context_tokens == Some(345)
+                            && info.context_source
+                                == Some(ContextTokenUsageSource::DeepseekStreamUsage)
+                            && info.last_token_usage.total_tokens == 345
+                    })
+            )
+        },
+    )
+    .await?;
+    let EventMsg::TokenCount(payload) = token_event else {
+        unreachable!("wait_for_event returned unexpected event");
+    };
+    let info = payload.info.expect("token usage info");
+    assert_eq!(info.context_tokens, Some(345));
+    assert_eq!(
+        info.context_source,
+        Some(ContextTokenUsageSource::DeepseekStreamUsage)
+    );
+
+    assert_eq!(responses.requests().len(), 1);
+    assert_eq!(count_tokens.requests().len(), 0);
 
     Ok(())
 }
@@ -699,6 +748,11 @@ fn configure_claude_provider(config: &mut Config) {
     config.model_provider.wire_api = WireApi::Claude;
 }
 
+fn configure_deepseek_claude_provider(config: &mut Config) {
+    configure_claude_provider(config);
+    config.model_provider.name = "DeepSeek".to_string();
+}
+
 fn claude_pause_turn_sse(message_id: &str, text: &str) -> String {
     sse(vec![
         json!({
@@ -1018,6 +1072,15 @@ fn claude_multi_tool_use_sse() -> String {
 }
 
 fn claude_text_sse(message_id: &str, text: &str) -> String {
+    claude_text_sse_with_usage(message_id, text, 1, 1)
+}
+
+fn claude_text_sse_with_usage(
+    message_id: &str,
+    text: &str,
+    input_tokens: i64,
+    output_tokens: i64,
+) -> String {
     sse(vec![
         json!({
             "type": "message_start",
@@ -1026,7 +1089,7 @@ fn claude_text_sse(message_id: &str, text: &str) -> String {
                 "type": "message",
                 "role": "assistant",
                 "content": [],
-                "usage": {"input_tokens": 1, "output_tokens": 1}
+                "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens}
             }
         }),
         json!({

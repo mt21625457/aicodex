@@ -10,6 +10,7 @@ use crate::context_manager::ContextManager;
 use crate::session::PreviousTurnSettings;
 use crate::session::session::SessionConfiguration;
 use crate::session_startup_prewarm::SessionStartupPrewarmHandle;
+use codex_protocol::protocol::ContextTokenUsageSource;
 use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TokenUsageInfo;
@@ -123,10 +124,11 @@ impl SessionState {
     pub(crate) fn set_context_token_usage(
         &mut self,
         context_tokens: i64,
+        source: ContextTokenUsageSource,
         model_context_window: Option<i64>,
     ) {
         self.history
-            .set_context_token_usage(context_tokens, model_context_window);
+            .set_context_token_usage(context_tokens, source, model_context_window);
     }
 
     pub(crate) fn token_info(&self) -> Option<TokenUsageInfo> {

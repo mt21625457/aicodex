@@ -913,6 +913,17 @@
       ],
       "type": "object"
     },
+    "ContextTokenUsageSource": {
+      "enum": [
+        "providerUsage",
+        "claudeCountTokens",
+        "deepseekStreamUsage",
+        "localEstimate",
+        "contextWindowFull",
+        "replay"
+      ],
+      "type": "string"
+    },
     "CreditsSnapshot": {
       "properties": {
         "balance": {
@@ -2976,7 +2987,7 @@
               "$ref": "#/definitions/SessionSource"
             }
           ],
-          "description": "Origin of the thread (CLI, VSCode, codex exec, codex app-server, etc.)."
+          "description": "Origin of the thread (CLI, VSCode, aicodex exec, aicodex app-server, etc.)."
         },
         "status": {
           "allOf": [
@@ -4095,6 +4106,23 @@
     },
     "ThreadTokenUsage": {
       "properties": {
+        "contextSource": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ContextTokenUsageSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "contextTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "last": {
           "$ref": "#/definitions/TokenUsageBreakdown"
         },
