@@ -1321,6 +1321,9 @@ impl ModelClientSession {
                 crate::claude::ClaudeRequestOptions {
                     reasoning_effort: effort,
                     service_tier,
+                    provider_compat: crate::claude::provider_compat_for_base_url(
+                        self.client.state.provider.info().base_url.as_deref(),
+                    ),
                     ..Default::default()
                 },
             )?;
@@ -1433,6 +1436,9 @@ impl ModelClientSession {
             crate::claude::ClaudeRequestOptions {
                 reasoning_effort: effort,
                 service_tier,
+                provider_compat: crate::claude::provider_compat_for_base_url(
+                    self.client.state.provider.info().base_url.as_deref(),
+                ),
                 ..Default::default()
             },
         )?;

@@ -58,6 +58,13 @@ Anthropic extended thinking using a budget mapped from the selected effort.
 `service_tier = "fast"` maps to Anthropic `service_tier = "auto"`, while
 `service_tier = "flex"` maps to `service_tier = "standard_only"`.
 
+DeepSeek's Anthropic-compatible endpoint uses the same `claude` wire protocol
+with `base_url = "https://api.deepseek.com/anthropic"`. For this official
+DeepSeek endpoint, Codex also sends DeepSeek's `output_config.effort` when
+`model_reasoning_effort` is set: `minimal`, `low`, `medium`, and `high` map to
+`"high"`, while `xhigh` maps to `"max"`. Setting
+`model_reasoning_effort = "none"` sends an explicit disabled thinking toggle.
+
 The Claude adapter also has protocol support for Anthropic prompt-cache markers
 at supported stable-prefix locations, including tool definitions, system text
 blocks, and prior message content blocks. This is currently controlled by the

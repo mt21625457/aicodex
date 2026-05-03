@@ -218,6 +218,8 @@ pub struct ClaudeMessagesApiRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<ClaudeThinkingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_config: Option<ClaudeOutputConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<ClaudeServiceTier>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_management: Option<ClaudeContextManagement>,
@@ -239,6 +241,8 @@ pub struct ClaudeCountTokensRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<ClaudeThinkingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_config: Option<ClaudeOutputConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<ClaudeServiceTier>,
 }
 
@@ -251,6 +255,7 @@ impl From<&ClaudeMessagesApiRequest> for ClaudeCountTokensRequest {
             tools: request.tools.clone(),
             tool_choice: request.tool_choice.clone(),
             thinking: request.thinking.clone(),
+            output_config: request.output_config,
             service_tier: request.service_tier,
         }
     }
@@ -552,6 +557,18 @@ pub enum ClaudeThinkingConfig {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClaudeOutputConfig {
+    pub effort: ClaudeOutputEffort,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ClaudeOutputEffort {
+    High,
+    Max,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ClaudeServiceTier {
     Auto,
@@ -824,6 +841,12 @@ mod claude_wire_tests {
             json!({"type": "enabled", "budget_tokens": 1024}),
         );
         roundtrip(&ClaudeThinkingConfig::Disabled, json!({"type": "disabled"}));
+        roundtrip(
+            &ClaudeOutputConfig {
+                effort: ClaudeOutputEffort::Max,
+            },
+            json!({"effort": "max"}),
+        );
         roundtrip(&ClaudeServiceTier::StandardOnly, json!("standard_only"));
     }
 
@@ -852,6 +875,7 @@ mod claude_wire_tests {
             tools: Vec::new(),
             tool_choice: None,
             thinking: None,
+            output_config: None,
             service_tier: None,
             context_management: None,
             stream: true,

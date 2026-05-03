@@ -7,6 +7,8 @@ use codex_api::ClaudeImageSource;
 use codex_api::ClaudeMessage;
 use codex_api::ClaudeMessageRole;
 use codex_api::ClaudeMessagesApiRequest;
+use codex_api::ClaudeOutputConfig;
+use codex_api::ClaudeOutputEffort;
 use codex_api::ClaudeServiceTier;
 use codex_api::ClaudeSystemPrompt;
 use codex_api::ClaudeThinkingConfig;
@@ -31,6 +33,7 @@ use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::HashMap;
+use url::Url;
 
 const DEFAULT_MAX_TOKENS: u64 = 8_192;
 const CLAUDE_THINKING_MIN_BUDGET_TOKENS: u32 = 1_024;
@@ -47,6 +50,32 @@ pub(crate) struct ClaudeRequestOptions {
     pub(crate) service_tier: Option<ServiceTier>,
     pub(crate) prompt_cache: ClaudePromptCacheOptions,
     pub(crate) context_management: Option<ClaudeContextManagement>,
+    pub(crate) provider_compat: ClaudeProviderCompat,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum ClaudeProviderCompat {
+    #[default]
+    Anthropic,
+    DeepSeek,
+}
+
+pub(crate) fn provider_compat_for_base_url(base_url: Option<&str>) -> ClaudeProviderCompat {
+    let Some(base_url) = base_url else {
+        return ClaudeProviderCompat::Anthropic;
+    };
+    let Ok(url) = Url::parse(base_url) else {
+        return ClaudeProviderCompat::Anthropic;
+    };
+    if url
+        .host_str()
+        .is_some_and(|host| host.eq_ignore_ascii_case("api.deepseek.com"))
+        && matches!(url.path(), "/anthropic" | "/anthropic/")
+    {
+        ClaudeProviderCompat::DeepSeek
+    } else {
+        ClaudeProviderCompat::Anthropic
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -291,6 +320,31 @@ pub(crate) fn build_claude_messages_request(
         .collect::<Vec<_>>()
         .join("\n\n");
     apply_prompt_cache_policy(options.prompt_cache, &mut tools, &system, &mut messages);
+    let (thinking, output_config) = match options.provider_compat {
+        ClaudeProviderCompat::Anthropic => (claude_thinking_config(options.reasoning_effort), None),
+        ClaudeProviderCompat::DeepSeek => {
+            let thinking = match options.reasoning_effort {
+                Some(ReasoningEffortConfig::None) => Some(ClaudeThinkingConfig::Disabled),
+                Some(_) => claude_thinking_config(options.reasoning_effort),
+                None => None,
+            };
+            let output_config = match options.reasoning_effort {
+                Some(ReasoningEffortConfig::None) | None => None,
+                Some(
+                    ReasoningEffortConfig::Minimal
+                    | ReasoningEffortConfig::Low
+                    | ReasoningEffortConfig::Medium
+                    | ReasoningEffortConfig::High,
+                ) => Some(ClaudeOutputConfig {
+                    effort: ClaudeOutputEffort::High,
+                }),
+                Some(ReasoningEffortConfig::XHigh) => Some(ClaudeOutputConfig {
+                    effort: ClaudeOutputEffort::Max,
+                }),
+            };
+            (thinking, output_config)
+        }
+    };
 
     Ok(ClaudeMessagesApiRequest {
         model: model_info.slug.clone(),
@@ -299,7 +353,8 @@ pub(crate) fn build_claude_messages_request(
         system: system_prompt(system, options.prompt_cache),
         tools,
         tool_choice,
-        thinking: claude_thinking_config(options.reasoning_effort),
+        thinking,
+        output_config,
         service_tier: claude_service_tier(options.service_tier),
         context_management: options.context_management,
         stream: true,
@@ -662,6 +717,26 @@ mod tests {
             "experimental_supported_tools": []
         }))
         .expect("deserialize model info")
+    }
+
+    #[test]
+    fn detects_deepseek_anthropic_base_url() {
+        assert_eq!(
+            provider_compat_for_base_url(Some("https://api.deepseek.com/anthropic")),
+            ClaudeProviderCompat::DeepSeek
+        );
+        assert_eq!(
+            provider_compat_for_base_url(Some("https://api.deepseek.com/anthropic/")),
+            ClaudeProviderCompat::DeepSeek
+        );
+        assert_eq!(
+            provider_compat_for_base_url(Some("https://api.anthropic.com/v1")),
+            ClaudeProviderCompat::Anthropic
+        );
+        assert_eq!(
+            provider_compat_for_base_url(Some("https://notapi.deepseek.com/anthropic")),
+            ClaudeProviderCompat::Anthropic
+        );
     }
 
     #[test]
@@ -1045,6 +1120,106 @@ mod tests {
                     "budget_tokens": CLAUDE_THINKING_HIGH_BUDGET_TOKENS
                 },
                 "service_tier": "auto",
+                "stream": true
+            })
+        );
+    }
+
+    #[test]
+    fn builds_deepseek_anthropic_request_with_output_config_effort() {
+        let prompt = Prompt {
+            input: vec![ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "think harder".to_string(),
+                }],
+                phase: None,
+            }],
+            base_instructions: BaseInstructions {
+                text: String::new(),
+            },
+            ..Default::default()
+        };
+
+        let request = build_claude_messages_request(
+            &prompt,
+            &model_info(),
+            ClaudeRequestOptions {
+                reasoning_effort: Some(ReasoningEffortConfig::XHigh),
+                provider_compat: ClaudeProviderCompat::DeepSeek,
+                ..Default::default()
+            },
+        )
+        .expect("request");
+
+        assert_eq!(
+            serde_json::to_value(&request).expect("serialize request"),
+            json!({
+                "model": "claude-sonnet-4-5",
+                "max_tokens": DEFAULT_MAX_TOKENS,
+                "messages": [{
+                    "role": "user",
+                    "content": [{
+                        "type": "text",
+                        "text": "think harder"
+                    }]
+                }],
+                "thinking": {
+                    "type": "enabled",
+                    "budget_tokens": CLAUDE_THINKING_XHIGH_BUDGET_TOKENS
+                },
+                "output_config": {
+                    "effort": "max"
+                },
+                "stream": true
+            })
+        );
+    }
+
+    #[test]
+    fn builds_deepseek_anthropic_request_with_disabled_thinking() {
+        let prompt = Prompt {
+            input: vec![ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "answer directly".to_string(),
+                }],
+                phase: None,
+            }],
+            base_instructions: BaseInstructions {
+                text: String::new(),
+            },
+            ..Default::default()
+        };
+
+        let request = build_claude_messages_request(
+            &prompt,
+            &model_info(),
+            ClaudeRequestOptions {
+                reasoning_effort: Some(ReasoningEffortConfig::None),
+                provider_compat: ClaudeProviderCompat::DeepSeek,
+                ..Default::default()
+            },
+        )
+        .expect("request");
+
+        assert_eq!(
+            serde_json::to_value(&request).expect("serialize request"),
+            json!({
+                "model": "claude-sonnet-4-5",
+                "max_tokens": DEFAULT_MAX_TOKENS,
+                "messages": [{
+                    "role": "user",
+                    "content": [{
+                        "type": "text",
+                        "text": "answer directly"
+                    }]
+                }],
+                "thinking": {
+                    "type": "disabled"
+                },
                 "stream": true
             })
         );

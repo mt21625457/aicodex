@@ -349,6 +349,7 @@ fn claude_request() -> ClaudeMessagesApiRequest {
         tools: Vec::new(),
         tool_choice: None,
         thinking: None,
+        output_config: None,
         service_tier: None,
         context_management: None,
         stream: true,

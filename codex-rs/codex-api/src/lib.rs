@@ -33,6 +33,8 @@ pub use crate::common::ClaudeImageSource;
 pub use crate::common::ClaudeMessage;
 pub use crate::common::ClaudeMessageRole;
 pub use crate::common::ClaudeMessagesApiRequest;
+pub use crate::common::ClaudeOutputConfig;
+pub use crate::common::ClaudeOutputEffort;
 pub use crate::common::ClaudeServiceTier;
 pub use crate::common::ClaudeSystemPrompt;
 pub use crate::common::ClaudeThinkingConfig;
