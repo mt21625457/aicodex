@@ -64,7 +64,8 @@ Anthropic extended thinking using a budget mapped from the selected effort.
 `service_tier = "flex"` maps to `service_tier = "standard_only"`.
 
 DeepSeek's Anthropic-compatible endpoint uses the same `claude` wire protocol
-with `base_url = "https://api.deepseek.com/anthropic"`. For this official
+with `base_url = "https://api.deepseek.com/anthropic"` or
+`base_url = "https://api.deepseek.com/anthropic/v1"`. For this official
 DeepSeek endpoint, Codex also sends DeepSeek's `output_config.effort` when
 `model_reasoning_effort` is set: `minimal`, `low`, `medium`, and `high` map to
 `"high"`, while `xhigh` maps to `"max"`. Setting

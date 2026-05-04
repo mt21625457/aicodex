@@ -436,6 +436,7 @@ mod tests {
                 response_id: "resp-compact".to_string(),
                 token_usage: None,
                 end_turn: Some(true),
+                provider_stop_reason: None,
             }),
         ]);
 
