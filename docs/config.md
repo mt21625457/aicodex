@@ -5,7 +5,6 @@ For basic configuration instructions, see [this documentation](https://developer
 For advanced configuration instructions, see [this documentation](https://developers.openai.com/codex/config-advanced).
 
 For a full configuration reference, see [this documentation](https://developers.openai.com/codex/config-reference).
-
 ## Connecting to MCP servers
 
 AICodex can connect to MCP servers configured in `~/.aicodex/config.toml`. See the configuration reference for the latest MCP server options:
