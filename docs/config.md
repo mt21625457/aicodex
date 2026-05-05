@@ -5,7 +5,6 @@ For basic configuration instructions, see [this documentation](https://developer
 For advanced configuration instructions, see [this documentation](https://developers.openai.com/codex/config-advanced).
 
 For a full configuration reference, see [this documentation](https://developers.openai.com/codex/config-reference).
-
 ## Connecting to MCP servers
 
 AICodex can connect to MCP servers configured in `~/.aicodex/config.toml`. See the configuration reference for the latest MCP server options:
@@ -65,7 +64,8 @@ Anthropic extended thinking using a budget mapped from the selected effort.
 `service_tier = "flex"` maps to `service_tier = "standard_only"`.
 
 DeepSeek's Anthropic-compatible endpoint uses the same `claude` wire protocol
-with `base_url = "https://api.deepseek.com/anthropic"`. For this official
+with `base_url = "https://api.deepseek.com/anthropic"` or
+`base_url = "https://api.deepseek.com/anthropic/v1"`. For this official
 DeepSeek endpoint, Codex also sends DeepSeek's `output_config.effort` when
 `model_reasoning_effort` is set: `minimal`, `low`, `medium`, and `high` map to
 `"high"`, while `xhigh` maps to `"max"`. Setting

@@ -4,6 +4,7 @@ use crate::LoadableToolSpec;
 use crate::ResponsesApiNamespace;
 use crate::ResponsesApiNamespaceTool;
 use crate::ResponsesApiTool;
+use crate::apply_patch_tool::APPLY_PATCH_JSON_TOOL_DESCRIPTION;
 use crate::local_tool::permission_profile_schema;
 use codex_protocol::config_types::WebSearchConfig;
 use codex_protocol::config_types::WebSearchContextSize;
@@ -282,15 +283,29 @@ pub fn create_tools_json_for_claude_messages(
                         "properties": {
                             "command": {
                                 "type": "array",
+                                "description": "Command and arguments to execute locally.",
                                 "items": { "type": "string" }
                             },
-                            "workdir": { "type": "string" },
-                            "timeout_ms": { "type": "number" },
-                            "sandbox_permissions": { "type": "string" },
+                            "workdir": {
+                                "type": "string",
+                                "description": "Optional working directory for the command."
+                            },
+                            "timeout_ms": {
+                                "type": "number",
+                                "description": "Optional command timeout in milliseconds."
+                            },
+                            "sandbox_permissions": {
+                                "type": "string",
+                                "description": "Sandbox permissions for the command."
+                            },
                             "additional_permissions": additional_permissions_schema,
-                            "justification": { "type": "string" },
+                            "justification": {
+                                "type": "string",
+                                "description": "Optional justification when requesting escalated permissions."
+                            },
                             "prefix_rule": {
                                 "type": "array",
+                                "description": "Optional command prefix rule for similar future commands.",
                                 "items": { "type": "string" }
                             }
                         },
@@ -305,40 +320,20 @@ pub fn create_tools_json_for_claude_messages(
                     kind: ClaudeToolCallKind::Function,
                 });
             }
-            ToolSpec::WebSearch { .. } => {
-                let claude_name =
-                    unique_claude_tool_name(&mut used_names, /*namespace*/ None, tool.name());
-                claude_tools.push(claude_function_tool_json(
-                    &claude_name,
-                    "Searches the web for public information.",
-                    json!({
-                        "type": "object",
-                        "properties": {
-                            "external_web_access": { "type": "boolean" }
-                        },
-                        "additionalProperties": false
-                    }),
-                ));
-                tool_call_info.push(ClaudeToolCallInfo {
-                    claude_name,
-                    name: tool.name().to_string(),
-                    namespace: None,
-                    kind: ClaudeToolCallKind::Function,
-                });
-            }
+            ToolSpec::WebSearch { .. } => {}
             ToolSpec::ImageGeneration { .. } => {}
             ToolSpec::Freeform(tool) => {
                 let claude_name =
                     unique_claude_tool_name(&mut used_names, /*namespace*/ None, &tool.name);
                 claude_tools.push(claude_function_tool_json(
                     &claude_name,
-                    &tool.description,
+                    &claude_freeform_tool_description(tool),
                     json!({
                         "type": "object",
                         "properties": {
                             "input": {
                                 "type": "string",
-                                "description": "Raw freeform tool input."
+                                "description": claude_freeform_input_description(tool)
                             }
                         },
                         "required": ["input"],
@@ -393,11 +388,10 @@ fn unique_claude_tool_name(
 }
 
 fn claude_tool_raw_name(namespace: Option<&str>, name: &str) -> String {
-    let raw = match namespace {
+    match namespace {
         Some(namespace) => format!("{namespace}{name}"),
         None => name.to_string(),
-    };
-    raw
+    }
 }
 
 fn claude_function_tool_json(name: &str, description: &str, input_schema: Value) -> Value {
@@ -406,6 +400,33 @@ fn claude_function_tool_json(name: &str, description: &str, input_schema: Value)
         "description": description,
         "input_schema": input_schema,
     })
+}
+
+fn claude_freeform_tool_description(tool: &FreeformTool) -> String {
+    let wrapper_guidance = "Claude must call this freeform tool through a JSON `tool_use.input` object. Put the raw freeform body in the nested `input` string. If any tool-specific text says not to wrap the body in JSON, that applies only to the nested `input` string; the Claude tool call itself is still JSON.";
+    match tool.name.as_str() {
+        "apply_patch" => format!("{APPLY_PATCH_JSON_TOOL_DESCRIPTION}\n\n{wrapper_guidance}"),
+        _ => format!(
+            "{}\n\n{}\n\nFreeform input format ({} {}):\n```{}\n{}\n```",
+            tool.description,
+            wrapper_guidance,
+            tool.format.syntax,
+            tool.format.r#type,
+            tool.format.syntax,
+            tool.format.definition
+        ),
+    }
+}
+
+fn claude_freeform_input_description(tool: &FreeformTool) -> String {
+    match tool.name.as_str() {
+        "apply_patch" => "The entire raw apply_patch patch body. It must start with `*** Begin Patch`, contain one or more file sections such as `*** Add File: <path>`, and end with `*** End Patch`. For add-file sections, every content line must start with `+`.".to_string(),
+        "exec" => "Raw JavaScript source text for Code Mode exec. The value is the raw source string inside Claude's JSON tool call, not a Markdown code fence or a JSON-quoted program. It may start with an optional first-line pragma like `// @exec: {\"yield_time_ms\": 10000, \"max_output_tokens\": 1000}` followed by JavaScript source on subsequent lines.".to_string(),
+        _ => format!(
+            "Raw freeform body for `{}`. The value is the raw string inside Claude's JSON tool call and must follow the tool's {} {} format.",
+            tool.name, tool.format.syntax, tool.format.r#type
+        ),
+    }
 }
 
 fn sanitize_claude_tool_name(raw: &str) -> String {

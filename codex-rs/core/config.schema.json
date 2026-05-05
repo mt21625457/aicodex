@@ -496,6 +496,9 @@
             "realtime_conversation": {
               "type": "boolean"
             },
+            "remote_compaction_v2": {
+              "type": "boolean"
+            },
             "remote_control": {
               "type": "boolean"
             },
@@ -3967,6 +3970,9 @@
           "type": "boolean"
         },
         "realtime_conversation": {
+          "type": "boolean"
+        },
+        "remote_compaction_v2": {
           "type": "boolean"
         },
         "remote_control": {

@@ -44,6 +44,31 @@ these Claude-specific boundaries:
 - unsupported user-visible Claude blocks should produce explicit placeholder
   text rather than disappearing from the assistant response.
 
+## Troubleshoot tool calls
+
+Once requests are reaching `/v1/messages` with `anthropic-version` and
+`x-api-key`, treat failures such as `missing field cmd` or malformed
+`apply_patch` bodies as tool-call contract failures, not Responses/WebSocket
+routing failures.
+
+Claude tools are always called through JSON `tool_use.input`. For Codex
+freeform tools, the nested `input` string contains the raw freeform body:
+
+- `apply_patch`: `tool_use.input` is `{"input":"*** Begin Patch\n..."}`. The
+  string itself must use Codex patch syntax, including `*** Add File: <path>`
+  and `+` prefixes for every new-file content line.
+- Code Mode `exec`: `tool_use.input` is `{"input":"// @exec: {...}\n..."}` or
+  raw JavaScript source text. Do not send Markdown fences as the raw input.
+
+If a Claude-compatible provider omits the nested `input` string or sends a
+non-string value, Codex should return an error tool result for that `tool_use`
+id and the freeform handler should not run.
+
+OpenAI hosted tools such as `web_search` and `image_generation` are not
+Claude-executable tools in this smoke path unless a future Claude-specific
+handler-backed implementation is added. They should not appear in Claude
+request `tools`.
+
 ## Run the TUI
 
 From the repository root:

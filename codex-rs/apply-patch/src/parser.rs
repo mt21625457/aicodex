@@ -272,8 +272,15 @@ fn parse_one_hunk(lines: &[&str], line_number: usize) -> Result<(Hunk, usize), P
                 contents.push_str(line_to_add);
                 contents.push('\n');
                 parsed_lines += 1;
-            } else {
+            } else if add_line.starts_with('*') {
                 break;
+            } else {
+                return Err(InvalidHunkError {
+                    message: format!(
+                        "Add file content line must start with '+', got: '{add_line}'. Prefix each new file content line with '+'."
+                    ),
+                    line_number: line_number + parsed_lines,
+                });
             }
         }
         return Ok((
@@ -586,6 +593,16 @@ fn test_parse_patch() {
             path: PathBuf::from("foo"),
             contents: "hi\n".to_string()
         }]
+    );
+    assert_eq!(
+        parse_patch_text(
+            "*** Begin Patch\n*** Add File: foo\n# heading\n*** End Patch",
+            ParseMode::Strict
+        ),
+        Err(InvalidHunkError {
+            message: "Add file content line must start with '+', got: '# heading'. Prefix each new file content line with '+'.".to_string(),
+            line_number: 3,
+        })
     );
     assert_eq!(
         parse_patch_text(

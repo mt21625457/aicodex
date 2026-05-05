@@ -2,6 +2,7 @@ use super::completed_item_defers_mailbox_delivery_to_next_turn;
 use super::handle_non_tool_response_item;
 use super::image_generation_artifact_path;
 use super::last_assistant_message_from_item;
+use super::respond_to_model_error_response;
 use super::response_item_may_include_external_context;
 use super::save_image_generation_result;
 use crate::session::tests::make_session_and_context;
@@ -108,6 +109,34 @@ fn external_context_pollution_items_exclude_local_tool_calls() {
             .iter()
             .any(response_item_may_include_external_context)
     );
+}
+
+#[test]
+fn respond_to_model_error_response_preserves_custom_tool_call_id_and_name() {
+    let response = respond_to_model_error_response(
+        &ResponseItem::CustomToolCall {
+            id: Some("toolu-1".to_string()),
+            status: None,
+            call_id: "toolu-1".to_string(),
+            name: "apply_patch".to_string(),
+            input: String::new(),
+        },
+        "missing input".to_string(),
+    );
+
+    match response {
+        codex_protocol::models::ResponseInputItem::CustomToolCallOutput {
+            call_id,
+            name,
+            output,
+        } => {
+            assert_eq!(call_id, "toolu-1");
+            assert_eq!(name, Some("apply_patch".to_string()));
+            assert_eq!(output.text_content(), Some("missing input"));
+            assert_eq!(output.success, Some(false));
+        }
+        other => panic!("expected custom tool call output, got {other:?}"),
+    }
 }
 
 #[tokio::test]

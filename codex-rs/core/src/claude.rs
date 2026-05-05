@@ -71,7 +71,10 @@ pub(crate) fn provider_compat_for_base_url(base_url: Option<&str>) -> ClaudeProv
     if url
         .host_str()
         .is_some_and(|host| host.eq_ignore_ascii_case("api.deepseek.com"))
-        && matches!(url.path(), "/anthropic" | "/anthropic/")
+        && matches!(
+            url.path().trim_end_matches('/'),
+            "/anthropic" | "/anthropic/v1"
+        )
     {
         ClaudeProviderCompat::DeepSeek
     } else {
@@ -297,6 +300,13 @@ pub(crate) fn build_claude_messages_request(
             }
             ResponseItem::Compaction { encrypted_content } => {
                 if let Some(block) = provider_state_block(&encrypted_content) {
+                    push_message(&mut messages, ClaudeMessageRole::Assistant, vec![block]);
+                }
+            }
+            ResponseItem::ContextCompaction { encrypted_content } => {
+                if let Some(encrypted_content) = encrypted_content
+                    && let Some(block) = provider_state_block(&encrypted_content)
+                {
                     push_message(&mut messages, ClaudeMessageRole::Assistant, vec![block]);
                 }
             }
@@ -864,11 +874,29 @@ mod tests {
             ClaudeProviderCompat::DeepSeek
         );
         assert_eq!(
+            provider_compat_for_base_url(Some("https://api.deepseek.com/anthropic/v1")),
+            ClaudeProviderCompat::DeepSeek
+        );
+        assert_eq!(
+            provider_compat_for_base_url(Some("https://api.deepseek.com/anthropic/v1/")),
+            ClaudeProviderCompat::DeepSeek
+        );
+        assert_eq!(
             provider_compat_for_base_url(Some("https://api.anthropic.com/v1")),
             ClaudeProviderCompat::Anthropic
         );
         assert_eq!(
             provider_compat_for_base_url(Some("https://notapi.deepseek.com/anthropic")),
+            ClaudeProviderCompat::Anthropic
+        );
+        assert_eq!(
+            provider_compat_for_base_url(Some("https://api.deepseek.com/other")),
+            ClaudeProviderCompat::Anthropic
+        );
+        assert_eq!(
+            provider_compat_for_base_url(Some(
+                "https://api.anthropic.com/v1?proxy=api.deepseek.com/anthropic"
+            )),
             ClaudeProviderCompat::Anthropic
         );
         assert_eq!(
@@ -1731,6 +1759,35 @@ mod tests {
         let prompt = Prompt {
             input: vec![ResponseItem::Compaction {
                 encrypted_content: raw_compaction.to_string(),
+            }],
+            base_instructions: BaseInstructions {
+                text: String::new(),
+            },
+            ..Default::default()
+        };
+
+        let request =
+            build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
+                .expect("request");
+
+        assert_eq!(
+            serde_json::to_value(&request.messages).expect("serialize messages"),
+            json!([{
+                "role": "assistant",
+                "content": [raw_compaction]
+            }])
+        );
+    }
+
+    #[test]
+    fn builds_claude_request_with_context_compaction_provider_state_block() {
+        let raw_compaction = json!({
+            "type": "compaction",
+            "content": "summarized provider state"
+        });
+        let prompt = Prompt {
+            input: vec![ResponseItem::ContextCompaction {
+                encrypted_content: Some(raw_compaction.to_string()),
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
