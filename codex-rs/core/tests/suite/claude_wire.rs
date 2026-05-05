@@ -205,14 +205,84 @@ async fn claude_wire_uses_count_tokens_for_post_turn_context_usage() -> anyhow::
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn deepseek_claude_wire_uses_stream_usage_without_count_tokens() -> anyhow::Result<()> {
+async fn deepseek_count_tokens_success_updates_context_usage() -> anyhow::Result<()> {
     let server = start_mock_server().await;
     let responses = mount_claude_sse_sequence(
         &server,
         vec![claude_text_sse_with_usage("msg_1", "done", 333, 12)],
     )
     .await;
-    let count_tokens = mount_claude_count_tokens_never(&server).await;
+    let count_tokens = mount_claude_count_tokens_response(
+        &server,
+        ResponseTemplate::new(200).set_body_json(json!({ "input_tokens": 777 })),
+        1,
+    )
+    .await;
+
+    let test = test_codex()
+        .with_config(configure_deepseek_claude_provider)
+        .build(&server)
+        .await?;
+
+    let token_event = submit_turn_and_wait_for_token_event(
+        &test,
+        "count this DeepSeek Claude context",
+        |event| {
+            matches!(
+                event,
+                EventMsg::TokenCount(payload)
+                    if payload.info.as_ref().is_some_and(|info| {
+                        info.context_tokens == Some(777)
+                            && info.context_source
+                                == Some(ContextTokenUsageSource::ClaudeCountTokens)
+                            && info.last_token_usage.total_tokens == 777
+                    })
+            )
+        },
+    )
+    .await?;
+    let EventMsg::TokenCount(payload) = token_event else {
+        unreachable!("wait_for_event returned unexpected event");
+    };
+    let info = payload.info.expect("token usage info");
+    assert_eq!(info.context_tokens, Some(777));
+    assert_eq!(
+        info.context_source,
+        Some(ContextTokenUsageSource::ClaudeCountTokens)
+    );
+
+    let count_request = count_tokens.single_request().body_json();
+    assert!(
+        message_content_blocks(&count_request)
+            .iter()
+            .any(|block| block.get("text").and_then(Value::as_str) == Some("done")),
+        "count_tokens request should include completed assistant context: {count_request}"
+    );
+
+    assert_eq!(responses.requests().len(), 1);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deepseek_count_tokens_error_uses_stream_usage() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let responses = mount_claude_sse_sequence(
+        &server,
+        vec![claude_text_sse_with_usage("msg_1", "done", 333, 12)],
+    )
+    .await;
+    let count_tokens = mount_claude_count_tokens_response(
+        &server,
+        ResponseTemplate::new(404).set_body_json(json!({
+            "error": {
+                "type": "not_found_error",
+                "message": "count_tokens is not supported"
+            }
+        })),
+        1,
+    )
+    .await;
 
     let test = test_codex()
         .with_config(configure_deepseek_claude_provider)
@@ -247,7 +317,7 @@ async fn deepseek_claude_wire_uses_stream_usage_without_count_tokens() -> anyhow
     );
 
     assert_eq!(responses.requests().len(), 1);
-    assert_eq!(count_tokens.requests().len(), 0);
+    assert_eq!(count_tokens.requests().len(), 1);
 
     Ok(())
 }

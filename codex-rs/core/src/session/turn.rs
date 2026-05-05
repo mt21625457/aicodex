@@ -1038,37 +1038,16 @@ async fn update_claude_token_usage_after_completion(
         provider_info.base_url.as_deref(),
         Some(&turn_context.model_info.slug),
     );
-    if provider_compat == crate::claude::ClaudeProviderCompat::DeepSeek {
-        let (context_tokens, context_source) = streamed_token_usage
-            .map(|usage| usage.total_tokens)
-            .filter(|tokens| *tokens > 0)
-            .map(|tokens| {
-                (
-                    Some(tokens),
-                    Some(ContextTokenUsageSource::DeepseekStreamUsage),
-                )
-            })
-            .unwrap_or_else(|| (None, Some(ContextTokenUsageSource::LocalEstimate)));
-        let context_tokens = match context_tokens {
-            Some(tokens) => Some(tokens),
-            None => sess.get_estimated_context_token_count().await,
-        };
-        let context_source = context_tokens.and(context_source);
-        sess.update_token_usage_info_with_context_count(
-            turn_context,
-            streamed_token_usage,
-            context_tokens,
-            context_source,
-        )
-        .await;
-        return;
-    }
-
     let context_input = sess
         .clone_history()
         .await
         .for_prompt(&turn_context.model_info.input_modalities);
     let context_prompt = prompt_for_current_context(context_input, prompt);
+    let fallback_description = if provider_compat == crate::claude::ClaudeProviderCompat::DeepSeek {
+        "streamed usage or local estimate"
+    } else {
+        "local estimate"
+    };
     let mut context_source = Some(ContextTokenUsageSource::ClaudeCountTokens);
     let mut counted_tokens = match client_session
         .count_claude_context_tokens(
@@ -1084,15 +1063,29 @@ async fn update_claude_token_usage_after_completion(
         Ok(tokens) => {
             warn!(
                 tokens,
-                "Claude count_tokens returned an unusable context token count; falling back to local estimate"
+                fallback = fallback_description,
+                "Claude count_tokens returned an unusable context token count; falling back"
             );
             None
         }
         Err(err) => {
-            warn!(error = %err, "Claude count_tokens failed; falling back to local estimate");
+            warn!(
+                error = %err,
+                fallback = fallback_description,
+                "Claude count_tokens failed; falling back"
+            );
             None
         }
     };
+    if counted_tokens.is_none()
+        && provider_compat == crate::claude::ClaudeProviderCompat::DeepSeek
+        && let Some(tokens) = streamed_token_usage
+            .map(|usage| usage.total_tokens)
+            .filter(|tokens| *tokens > 0)
+    {
+        counted_tokens = Some(tokens);
+        context_source = Some(ContextTokenUsageSource::DeepseekStreamUsage);
+    }
     if counted_tokens.is_none() {
         counted_tokens = sess.get_estimated_context_token_count().await;
         context_source = Some(ContextTokenUsageSource::LocalEstimate);
