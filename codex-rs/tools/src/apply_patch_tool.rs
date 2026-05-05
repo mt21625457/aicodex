@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 const APPLY_PATCH_LARK_GRAMMAR: &str = include_str!("tool_apply_patch.lark");
 
-const APPLY_PATCH_JSON_TOOL_DESCRIPTION: &str = r#"Use the `apply_patch` tool to edit files.
+pub(crate) const APPLY_PATCH_JSON_TOOL_DESCRIPTION: &str = r#"Use the `apply_patch` tool to edit files.
 Your patch language is a stripped‑down, file‑oriented diff format designed to be easy to parse and safe to apply. You can think of it as a high‑level envelope:
 
 *** Begin Patch

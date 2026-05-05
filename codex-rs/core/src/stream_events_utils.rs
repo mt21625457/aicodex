@@ -321,13 +321,7 @@ pub(crate) async fn handle_output_item_done(
         }
         // The tool request should be answered directly (or was denied); push that response into the transcript.
         Err(FunctionCallError::RespondToModel(message)) => {
-            let response = ResponseInputItem::FunctionCallOutput {
-                call_id: String::new(),
-                output: FunctionCallOutputPayload {
-                    body: FunctionCallOutputBody::Text(message),
-                    ..Default::default()
-                },
-            };
+            let response = respond_to_model_error_response(&item, message);
             record_completed_response_item(ctx.sess.as_ref(), ctx.turn_context.as_ref(), &item)
                 .await;
             if let Some(response_item) = response_input_to_response_item(&response) {
@@ -348,6 +342,30 @@ pub(crate) async fn handle_output_item_done(
     }
 
     Ok(output)
+}
+
+fn respond_to_model_error_response(item: &ResponseItem, message: String) -> ResponseInputItem {
+    let output = FunctionCallOutputPayload {
+        body: FunctionCallOutputBody::Text(message),
+        success: Some(false),
+    };
+    match item {
+        ResponseItem::CustomToolCall { call_id, name, .. } => {
+            ResponseInputItem::CustomToolCallOutput {
+                call_id: call_id.clone(),
+                name: Some(name.clone()),
+                output,
+            }
+        }
+        ResponseItem::FunctionCall { call_id, .. } => ResponseInputItem::FunctionCallOutput {
+            call_id: call_id.clone(),
+            output,
+        },
+        _ => ResponseInputItem::FunctionCallOutput {
+            call_id: String::new(),
+            output,
+        },
+    }
 }
 
 pub(crate) async fn handle_non_tool_response_item(

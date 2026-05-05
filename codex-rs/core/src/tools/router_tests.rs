@@ -1,14 +1,20 @@
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use crate::function_tool::FunctionCallError;
 use crate::session::tests::make_session_and_context;
 use crate::tools::context::ToolPayload;
+use codex_mcp::ToolInfo;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::ResponseItem;
+use codex_tools::ClaudeToolCallKind;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
+use codex_tools::create_tools_json_for_claude_messages;
 use pretty_assertions::assert_eq;
+use serde_json::Value;
 use serde_json::json;
 
 use super::ToolCall;
@@ -95,6 +101,32 @@ async fn build_tool_call_uses_namespace_for_registry_name() -> anyhow::Result<()
         }
         other => panic!("expected function payload, got {other:?}"),
     }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn build_tool_call_rejects_invalid_claude_custom_tool_input() -> anyhow::Result<()> {
+    let (session, _) = make_session_and_context().await;
+    let session = Arc::new(session);
+
+    let err = ToolRouter::build_tool_call(
+        &session,
+        ResponseItem::CustomToolCall {
+            id: Some("toolu-bad".to_string()),
+            status: Some("invalid_claude_custom_tool_input: missing input string".to_string()),
+            call_id: "toolu-bad".to_string(),
+            name: "apply_patch".to_string(),
+            input: String::new(),
+        },
+    )
+    .await
+    .expect_err("invalid Claude custom input should be returned to model");
+
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel("missing input string".to_string())
+    );
 
     Ok(())
 }
@@ -198,6 +230,128 @@ async fn model_visible_specs_filter_deferred_dynamic_tools() -> anyhow::Result<(
     Ok(())
 }
 
+#[tokio::test]
+async fn claude_model_visible_tools_have_registered_handlers() -> anyhow::Result<()> {
+    let (_, turn) = make_session_and_context().await;
+    let mut tools_config = turn.tools_config;
+    tools_config.namespace_tools = true;
+    tools_config.search_tool = true;
+
+    let mcp_namespace = "mcp__test_server__";
+    let mcp_tool_name = "echo";
+    let visible_dynamic_tool = "visible_dynamic_tool";
+    let deferred_dynamic_tool = "deferred_dynamic_tool";
+    let dynamic_tools = vec![
+        DynamicToolSpec {
+            namespace: Some("codex_app".to_string()),
+            name: visible_dynamic_tool.to_string(),
+            description: "Visible dynamic tool.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false,
+            }),
+            defer_loading: false,
+        },
+        DynamicToolSpec {
+            namespace: Some("codex_app".to_string()),
+            name: deferred_dynamic_tool.to_string(),
+            description: "Deferred dynamic tool.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false,
+            }),
+            defer_loading: true,
+        },
+    ];
+    let mcp_tools = HashMap::from([(
+        "mcp__test_server__echo".to_string(),
+        mcp_tool_info(mcp_tool(
+            mcp_tool_name,
+            "Echo input.",
+            json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false,
+            }),
+        )),
+    )]);
+    let router = ToolRouter::from_config(
+        &tools_config,
+        ToolRouterParams {
+            deferred_mcp_tools: None,
+            mcp_tools: Some(mcp_tools),
+            unavailable_called_tools: Vec::new(),
+            parallel_mcp_server_names: HashSet::new(),
+            discoverable_tools: None,
+            dynamic_tools: &dynamic_tools,
+        },
+    );
+
+    let claude_tools = create_tools_json_for_claude_messages(&router.model_visible_specs())?;
+    let claude_names = claude_tools
+        .tools
+        .iter()
+        .map(claude_tool_name)
+        .collect::<Vec<_>>();
+    assert_eq!(claude_names.len(), claude_tools.tool_call_info.len());
+
+    for claude_name in &claude_names {
+        let mapping_count = claude_tools
+            .tool_call_info
+            .iter()
+            .filter(|info| info.claude_name == *claude_name)
+            .count();
+        assert_eq!(
+            mapping_count, 1,
+            "Claude tool `{claude_name}` should have exactly one reverse mapping"
+        );
+    }
+
+    for info in &claude_tools.tool_call_info {
+        let tool_name = ToolName::new(info.namespace.clone(), info.name.clone());
+        assert!(
+            router.has_handler_for_test(&tool_name),
+            "Claude tool `{}` maps to `{tool_name}` without a registered handler",
+            info.claude_name
+        );
+        if info.kind == ClaudeToolCallKind::ToolSearch {
+            assert_eq!(tool_name, ToolName::plain("tool_search"));
+        }
+    }
+
+    assert!(
+        claude_tools.tool_call_info.iter().any(|info| {
+            info.namespace.as_deref() == Some(mcp_namespace) && info.name == mcp_tool_name
+        }),
+        "representative MCP tool should be advertised through Claude"
+    );
+    assert!(
+        claude_tools.tool_call_info.iter().any(|info| {
+            info.namespace.as_deref() == Some("codex_app") && info.name == visible_dynamic_tool
+        }),
+        "visible dynamic tool should be advertised through Claude"
+    );
+    assert!(
+        claude_tools
+            .tool_call_info
+            .iter()
+            .any(|info| info.kind == ClaudeToolCallKind::ToolSearch),
+        "deferred dynamic tools should advertise the special tool_search path"
+    );
+    assert!(
+        !claude_names.iter().any(|name| name == "web_search"),
+        "Claude must not advertise hosted web_search"
+    );
+    assert!(
+        !claude_names.iter().any(|name| name == "image_generation"),
+        "Claude must not advertise hosted image_generation"
+    );
+
+    Ok(())
+}
+
 fn namespace_function_names(specs: &[ToolSpec], namespace_name: &str) -> Vec<String> {
     specs
         .iter()
@@ -220,4 +374,39 @@ fn namespace_function_names(specs: &[ToolSpec], namespace_name: &str) -> Vec<Str
             | ToolSpec::Namespace(_) => None,
         })
         .unwrap_or_default()
+}
+
+fn claude_tool_name(tool: &Value) -> String {
+    tool["name"]
+        .as_str()
+        .unwrap_or_else(|| panic!("Claude tool should have a name: {tool}"))
+        .to_string()
+}
+
+fn mcp_tool(name: &str, description: &str, input_schema: Value) -> rmcp::model::Tool {
+    rmcp::model::Tool {
+        name: name.to_string().into(),
+        title: None,
+        description: Some(description.to_string().into()),
+        input_schema: Arc::new(rmcp::model::object(input_schema)),
+        output_schema: None,
+        annotations: None,
+        execution: None,
+        icons: None,
+        meta: None,
+    }
+}
+
+fn mcp_tool_info(tool: rmcp::model::Tool) -> ToolInfo {
+    ToolInfo {
+        server_name: "test_server".to_string(),
+        callable_name: tool.name.to_string(),
+        callable_namespace: "mcp__test_server__".to_string(),
+        server_instructions: None,
+        tool,
+        connector_id: None,
+        connector_name: None,
+        plugin_display_names: Vec::new(),
+        connector_description: None,
+    }
 }

@@ -27,6 +27,7 @@ use tracing::debug;
 use tracing::trace;
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
+const INVALID_CLAUDE_CUSTOM_TOOL_INPUT_STATUS_PREFIX: &str = "invalid_claude_custom_tool_input: ";
 
 pub fn spawn_claude_response_stream(
     stream_response: StreamResponse,
@@ -876,12 +877,23 @@ impl ClaudeStreamState {
                 arguments: stringify_tool_input(&input),
                 call_id,
             },
-            ClaudeToolCallKind::Custom => ResponseItem::CustomToolCall {
-                id: Some(call_id.clone()),
-                status: None,
-                call_id,
-                name: info.name,
-                input: custom_tool_input(&input),
+            ClaudeToolCallKind::Custom => match custom_tool_input(&input) {
+                Ok(input) => ResponseItem::CustomToolCall {
+                    id: Some(call_id.clone()),
+                    status: None,
+                    call_id,
+                    name: info.name,
+                    input,
+                },
+                Err(message) => ResponseItem::CustomToolCall {
+                    id: Some(call_id.clone()),
+                    status: Some(format!(
+                        "{INVALID_CLAUDE_CUSTOM_TOOL_INPUT_STATUS_PREFIX}{message}"
+                    )),
+                    call_id,
+                    name: info.name,
+                    input: String::new(),
+                },
             },
             ClaudeToolCallKind::ToolSearch => ResponseItem::ToolSearchCall {
                 id: Some(call_id.clone()),
@@ -934,12 +946,18 @@ fn stringify_tool_input(input: &Value) -> String {
     serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string())
 }
 
-fn custom_tool_input(input: &Value) -> String {
-    input
-        .get("input")
-        .and_then(Value::as_str)
-        .map(ToString::to_string)
-        .unwrap_or_else(|| stringify_tool_input(input))
+fn custom_tool_input(input: &Value) -> Result<String, String> {
+    match input.get("input") {
+        Some(Value::String(input)) => Ok(input.clone()),
+        Some(_) => Err(
+            "Claude custom/freeform tool field `input` must be a string containing the raw tool body"
+                .to_string(),
+        ),
+        None => Err(
+            "Claude custom/freeform tool calls must include an `input` string containing the raw tool body"
+                .to_string(),
+        ),
+    }
 }
 
 fn is_provider_state_block_type(kind: &str) -> bool {
@@ -1055,6 +1073,17 @@ mod tests {
             }
         }
         panic!("expected Claude stream event error")
+    }
+
+    fn custom_apply_patch_tool_call_info() -> HashMap<String, ClaudeToolCallInfo> {
+        HashMap::from([(
+            "apply_patch".to_string(),
+            ClaudeToolCallInfo {
+                name: "apply_patch".to_string(),
+                namespace: None,
+                kind: ClaudeToolCallKind::Custom,
+            },
+        )])
     }
 
     #[test]
@@ -1483,6 +1512,86 @@ mod tests {
             event,
             ResponseEvent::OutputItemDone(ResponseItem::CustomToolCall { input, .. })
                 if input == "*** Begin Patch"
+        )));
+    }
+
+    #[tokio::test]
+    async fn claude_stream_marks_custom_tool_missing_input_string() {
+        let events = run_events(
+            vec![
+                json!({
+                    "type": "message_start",
+                    "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": []}
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "apply_patch",
+                        "input": {}
+                    }
+                }),
+                json!({"type": "message_stop"}),
+            ],
+            custom_apply_patch_tool_call_info(),
+        )
+        .await;
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ResponseEvent::OutputItemDone(ResponseItem::CustomToolCall {
+                call_id,
+                name,
+                status: Some(status),
+                input,
+                ..
+            }) if call_id == "toolu_1"
+                && name == "apply_patch"
+                && input.is_empty()
+                && status.starts_with(INVALID_CLAUDE_CUSTOM_TOOL_INPUT_STATUS_PREFIX)
+                && status.contains("must include an `input` string")
+        )));
+    }
+
+    #[tokio::test]
+    async fn claude_stream_marks_custom_tool_non_string_input() {
+        let events = run_events(
+            vec![
+                json!({
+                    "type": "message_start",
+                    "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": []}
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "apply_patch",
+                        "input": {"input": {"not": "a string"}}
+                    }
+                }),
+                json!({"type": "message_stop"}),
+            ],
+            custom_apply_patch_tool_call_info(),
+        )
+        .await;
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ResponseEvent::OutputItemDone(ResponseItem::CustomToolCall {
+                call_id,
+                name,
+                status: Some(status),
+                input,
+                ..
+            }) if call_id == "toolu_1"
+                && name == "apply_patch"
+                && input.is_empty()
+                && status.starts_with(INVALID_CLAUDE_CUSTOM_TOOL_INPUT_STATUS_PREFIX)
+                && status.contains("field `input` must be a string")
         )));
     }
 

@@ -867,6 +867,16 @@ mod tests {
             provider_compat_for_base_url(Some("https://notapi.deepseek.com/anthropic")),
             ClaudeProviderCompat::Anthropic
         );
+        assert_eq!(
+            provider_compat_for_base_url(Some("https://api.deepseek.com/other")),
+            ClaudeProviderCompat::Anthropic
+        );
+        assert_eq!(
+            provider_compat_for_base_url(Some(
+                "https://api.anthropic.com/v1?proxy=api.deepseek.com/anthropic"
+            )),
+            ClaudeProviderCompat::Anthropic
+        );
     }
 
     #[test]

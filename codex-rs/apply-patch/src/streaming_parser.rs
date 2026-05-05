@@ -184,7 +184,7 @@ impl StreamingPatchParser {
                 }
                 Err(InvalidHunkError {
                     message: format!(
-                        "'{trimmed}' is not a valid hunk header. Valid hunk headers: '*** Add File: {{path}}', '*** Delete File: {{path}}', '*** Update File: {{path}}'"
+                        "Add file content line must start with '+', got: '{line}'. Prefix each new file content line with '+'."
                     ),
                     line_number: self.line_number,
                 })
@@ -724,7 +724,7 @@ mod tests {
         assert_eq!(
             parser.push_delta("*** Begin Patch\n*** Add File: file.txt\nbad\n"),
             Err(InvalidHunkError {
-                message: "'bad' is not a valid hunk header. Valid hunk headers: '*** Add File: {path}', '*** Delete File: {path}', '*** Update File: {path}'"
+                message: "Add file content line must start with '+', got: 'bad'. Prefix each new file content line with '+'."
                     .to_string(),
                 line_number: 3,
             })

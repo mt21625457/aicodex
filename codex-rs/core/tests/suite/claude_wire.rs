@@ -1,4 +1,5 @@
 use codex_core::config::Config;
+use codex_features::Feature;
 use codex_model_provider_info::WireApi;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
@@ -108,6 +109,16 @@ async fn claude_wire_tool_loop_posts_messages_and_tool_result() -> anyhow::Resul
     assert!(
         first_tool_names.iter().any(|name| name == "exec_command"),
         "first Claude request tools: {first_tool_names:?}"
+    );
+    assert!(
+        !first_tool_names.iter().any(|name| name == "web_search"),
+        "Claude requests must not advertise hosted web_search: {first_tool_names:?}"
+    );
+    assert!(
+        !first_tool_names
+            .iter()
+            .any(|name| name == "image_generation"),
+        "Claude requests must not advertise hosted image_generation: {first_tool_names:?}"
     );
 
     let second = requests[1].body_json();
@@ -381,6 +392,181 @@ async fn claude_wire_marks_tool_result_errors() -> anyhow::Result<()> {
         content.contains("missing field `cmd`") || content.contains("missing field"),
         "unexpected error content: {content}"
     );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_wire_marks_malformed_custom_tool_input_errors() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let responses = mount_claude_sse_sequence(
+        &server,
+        vec![
+            claude_custom_tool_use_sse("toolu_bad_custom", "apply_patch", json!({})),
+            claude_text_sse("msg_2", "handled"),
+        ],
+    )
+    .await;
+
+    let test = test_codex()
+        .with_config(configure_claude_provider_with_apply_patch)
+        .build(&server)
+        .await?;
+
+    test.submit_turn("call malformed apply_patch").await?;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 2);
+    let second = requests[1].body_json();
+    let tool_result = tool_result_block(&second, "toolu_bad_custom");
+    assert_eq!(tool_result["is_error"].as_bool(), Some(true));
+    let content = tool_result["content"]
+        .as_str()
+        .expect("tool_result error content");
+    assert!(
+        content.contains("must include an `input` string"),
+        "unexpected error content: {content}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_wire_marks_malformed_code_mode_exec_input_errors() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let responses = mount_claude_sse_sequence(
+        &server,
+        vec![
+            claude_custom_tool_use_sse("toolu_bad_exec", "exec", json!({})),
+            claude_text_sse("msg_2", "handled"),
+        ],
+    )
+    .await;
+
+    let test = test_codex()
+        .with_config(configure_claude_provider_with_code_mode)
+        .build(&server)
+        .await?;
+
+    test.submit_turn("call malformed code mode exec").await?;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 2);
+
+    let first = requests[0].body_json();
+    let first_tool_names = tool_names(&first);
+    assert!(
+        first_tool_names.iter().any(|name| name == "exec"),
+        "Code Mode Claude request should advertise exec: {first_tool_names:?}"
+    );
+
+    let second = requests[1].body_json();
+    let tool_result = tool_result_block(&second, "toolu_bad_exec");
+    assert_eq!(tool_result["is_error"].as_bool(), Some(true));
+    let content = tool_result["content"]
+        .as_str()
+        .expect("tool_result error content");
+    assert!(
+        content.contains("must include an `input` string"),
+        "unexpected error content: {content}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_wire_reports_invalid_apply_patch_header() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let responses = mount_claude_sse_sequence(
+        &server,
+        vec![
+            claude_custom_tool_use_sse(
+                "toolu_bad_patch",
+                "apply_patch",
+                json!({"input": "Create file: report.md\n# Report\n"}),
+            ),
+            claude_text_sse("msg_2", "handled"),
+        ],
+    )
+    .await;
+
+    let test = test_codex()
+        .with_config(configure_claude_provider_with_apply_patch)
+        .build(&server)
+        .await?;
+
+    test.submit_turn("call apply_patch with a bad header")
+        .await?;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 2);
+    let second = requests[1].body_json();
+    let tool_result = tool_result_block(&second, "toolu_bad_patch");
+    assert_eq!(tool_result["is_error"].as_bool(), Some(true));
+    let content = tool_result["content"]
+        .as_str()
+        .expect("tool_result error content");
+    assert!(
+        content.contains("*** Begin Patch") || content.contains("first line"),
+        "unexpected error content: {content}"
+    );
+    assert!(!test.config.cwd.join("report.md").exists());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_wire_allows_corrected_apply_patch_after_missing_add_prefix() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let responses = mount_claude_sse_sequence(
+        &server,
+        vec![
+            claude_custom_tool_use_sse(
+                "toolu_bad_add",
+                "apply_patch",
+                json!({
+                    "input": "*** Begin Patch\n*** Add File: claude_retry.txt\nplain text\n*** End Patch"
+                }),
+            ),
+            claude_custom_tool_use_sse(
+                "toolu_good_add",
+                "apply_patch",
+                json!({
+                    "input": "*** Begin Patch\n*** Add File: claude_retry.txt\n+plain text\n*** End Patch"
+                }),
+            ),
+            claude_text_sse("msg_3", "done"),
+        ],
+    )
+    .await;
+
+    let test = test_codex()
+        .with_config(configure_claude_provider_with_apply_patch)
+        .build(&server)
+        .await?;
+
+    test.submit_turn("retry apply_patch with valid plus prefixes")
+        .await?;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 3);
+
+    let second = requests[1].body_json();
+    let bad_result = tool_result_block(&second, "toolu_bad_add");
+    assert_eq!(bad_result["is_error"].as_bool(), Some(true));
+    let bad_content = bad_result["content"]
+        .as_str()
+        .expect("bad tool_result content");
+    assert!(
+        bad_content.contains("Add file content line must start with '+'"),
+        "unexpected bad apply_patch content: {bad_content}"
+    );
+
+    let third = requests[2].body_json();
+    let good_result = tool_result_block(&third, "toolu_good_add");
+    assert_ne!(good_result["is_error"].as_bool(), Some(true));
+    let written = std::fs::read_to_string(test.config.cwd.join("claude_retry.txt"))?;
+    assert_eq!(written, "plain text\n");
 
     Ok(())
 }
@@ -699,6 +885,18 @@ fn configure_claude_provider(config: &mut Config) {
     config.model_provider.wire_api = WireApi::Claude;
 }
 
+fn configure_claude_provider_with_apply_patch(config: &mut Config) {
+    configure_claude_provider(config);
+    config.include_apply_patch_tool = true;
+}
+
+fn configure_claude_provider_with_code_mode(config: &mut Config) {
+    configure_claude_provider(config);
+    if let Err(error) = config.features.enable(Feature::CodeMode) {
+        panic!("Code Mode should be enableable in tests: {error:?}");
+    }
+}
+
 fn claude_pause_turn_sse(message_id: &str, text: &str) -> String {
     sse(vec![
         json!({
@@ -870,6 +1068,37 @@ fn claude_tool_use_sse() -> String {
             }
         }),
         json!({"type": "content_block_stop", "index": 0}),
+        json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": "tool_use"},
+            "usage": {"output_tokens": 5}
+        }),
+        claude_message_stop(),
+    ])
+}
+
+fn claude_custom_tool_use_sse(tool_id: &str, name: &str, input: Value) -> String {
+    sse(vec![
+        json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            }
+        }),
+        json!({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+                "type": "tool_use",
+                "id": tool_id,
+                "name": name,
+                "input": input
+            }
+        }),
         json!({
             "type": "message_delta",
             "delta": {"stop_reason": "tool_use"},
@@ -1102,6 +1331,18 @@ fn message_content_blocks(body: &Value) -> Vec<Value> {
         .flatten()
         .cloned()
         .collect()
+}
+
+fn tool_result_block(body: &Value, tool_use_id: &str) -> Value {
+    message_content_blocks(body)
+        .into_iter()
+        .find(|block| {
+            block.get("type").and_then(Value::as_str) == Some("tool_result")
+                && block.get("tool_use_id").and_then(Value::as_str) == Some(tool_use_id)
+        })
+        .unwrap_or_else(|| {
+            panic!("Claude request should include tool_result {tool_use_id}: {body}")
+        })
 }
 
 fn assistant_message_content_blocks(body: &Value) -> Vec<Value> {

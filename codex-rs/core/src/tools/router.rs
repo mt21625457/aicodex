@@ -29,6 +29,8 @@ use tracing::instrument;
 
 pub use crate::tools::context::ToolCallSource;
 
+const INVALID_CLAUDE_CUSTOM_TOOL_INPUT_STATUS_PREFIX: &str = "invalid_claude_custom_tool_input: ";
+
 #[derive(Clone, Debug)]
 pub struct ToolCall {
     pub tool_name: ToolName,
@@ -136,6 +138,11 @@ impl ToolRouter {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn has_handler_for_test(&self, name: &ToolName) -> bool {
+        self.registry.has_handler(name)
+    }
+
     pub(crate) fn create_diff_consumer(
         &self,
         tool_name: &ToolName,
@@ -227,12 +234,20 @@ impl ToolRouter {
                 name,
                 input,
                 call_id,
+                status,
                 ..
-            } => Ok(Some(ToolCall {
-                tool_name: ToolName::plain(name),
-                call_id,
-                payload: ToolPayload::Custom { input },
-            })),
+            } => {
+                if let Some(message) = status.as_deref().and_then(|status| {
+                    status.strip_prefix(INVALID_CLAUDE_CUSTOM_TOOL_INPUT_STATUS_PREFIX)
+                }) {
+                    return Err(FunctionCallError::RespondToModel(message.to_string()));
+                }
+                Ok(Some(ToolCall {
+                    tool_name: ToolName::plain(name),
+                    call_id,
+                    payload: ToolPayload::Custom { input },
+                }))
+            }
             ResponseItem::LocalShellCall {
                 id,
                 call_id,
