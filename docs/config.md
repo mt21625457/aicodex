@@ -5,6 +5,7 @@ For basic configuration instructions, see [this documentation](https://developer
 For advanced configuration instructions, see [this documentation](https://developers.openai.com/codex/config-advanced).
 
 For a full configuration reference, see [this documentation](https://developers.openai.com/codex/config-reference).
+
 ## Connecting to MCP servers
 
 AICodex can connect to MCP servers configured in `~/.aicodex/config.toml`. See the configuration reference for the latest MCP server options:
@@ -192,3 +193,24 @@ the realtime start message in prompt history and does not change websocket
 backend prompt settings or the realtime end/inactive message.
 
 Ctrl+C/Ctrl+D quitting uses a ~1 second double-press hint (`ctrl + c again to quit`).
+
+## Commit attribution
+
+AICodex can add a [git trailer](https://git-scm.com/docs/git-interpret-trailers) to
+generated commit messages so commits make AICodex's involvement explicit. This
+behavior is gated by the `codex_git_commit` feature flag; the top-level
+`commit_attribution` setting is only used when that feature is enabled.
+
+Add the following to `~/.aicodex/config.toml`:
+
+```toml
+commit_attribution = "Codex <noreply@openai.com>"
+
+[features]
+codex_git_commit = true
+```
+
+When enabled, Codex appends a `Co-authored-by:` trailer using the configured
+attribution value. If `commit_attribution` is omitted, Codex uses
+`Codex <noreply@openai.com>`. Set `commit_attribution = ""` to disable the
+trailer while leaving the feature flag enabled.

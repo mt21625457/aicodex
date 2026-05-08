@@ -4,22 +4,43 @@ use crate::LoadableToolSpec;
 use crate::ResponsesApiNamespace;
 use crate::ResponsesApiNamespaceTool;
 use crate::ResponsesApiTool;
-use crate::apply_patch_tool::APPLY_PATCH_JSON_TOOL_DESCRIPTION;
-use crate::local_tool::permission_profile_schema;
-use codex_protocol::config_types::WebSearchConfig;
 use codex_protocol::config_types::WebSearchContextSize;
 use codex_protocol::config_types::WebSearchFilters as ConfigWebSearchFilters;
-use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::config_types::WebSearchUserLocation as ConfigWebSearchUserLocation;
 use codex_protocol::config_types::WebSearchUserLocationType;
-use codex_protocol::openai_models::WebSearchToolType;
 use serde::Serialize;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::HashSet;
 
-const WEB_SEARCH_TEXT_AND_IMAGE_CONTENT_TYPES: [&str; 2] = ["text", "image"];
 const MAX_CLAUDE_TOOL_NAME_LEN: usize = 64;
+
+const APPLY_PATCH_CLAUDE_TOOL_DESCRIPTION: &str = r#"Use the `apply_patch` tool to edit files.
+Your patch language is a stripped-down, file-oriented diff format designed to be easy to parse and safe to apply:
+
+*** Begin Patch
+[ one or more file sections ]
+*** End Patch
+
+Each operation starts with one of three headers:
+
+*** Add File: <path> - create a new file. Every following line is a + line.
+*** Delete File: <path> - remove an existing file.
+*** Update File: <path> - patch an existing file in place.
+
+A full patch can combine several operations:
+
+*** Begin Patch
+*** Add File: hello.txt
++Hello world
+*** Update File: src/app.py
+@@ def greet():
+-print("Hi")
++print("Hello, world!")
+*** Delete File: obsolete.txt
+*** End Patch
+
+Remember: include an Add/Delete/Update header, prefix new lines with `+`, and use relative file paths."#;
 
 /// When serialized as JSON, this produces a valid "Tool" in the OpenAI
 /// Responses API.
@@ -84,54 +105,6 @@ impl From<LoadableToolSpec> for ToolSpec {
             LoadableToolSpec::Namespace(namespace) => ToolSpec::Namespace(namespace),
         }
     }
-}
-
-pub fn create_local_shell_tool() -> ToolSpec {
-    ToolSpec::LocalShell {}
-}
-
-pub fn create_image_generation_tool(output_format: &str) -> ToolSpec {
-    ToolSpec::ImageGeneration {
-        output_format: output_format.to_string(),
-    }
-}
-
-pub struct WebSearchToolOptions<'a> {
-    pub web_search_mode: Option<WebSearchMode>,
-    pub web_search_config: Option<&'a WebSearchConfig>,
-    pub web_search_tool_type: WebSearchToolType,
-}
-
-pub fn create_web_search_tool(options: WebSearchToolOptions<'_>) -> Option<ToolSpec> {
-    let external_web_access = match options.web_search_mode {
-        Some(WebSearchMode::Cached) => Some(false),
-        Some(WebSearchMode::Live) => Some(true),
-        Some(WebSearchMode::Disabled) | None => None,
-    }?;
-
-    let search_content_types = match options.web_search_tool_type {
-        WebSearchToolType::Text => None,
-        WebSearchToolType::TextAndImage => Some(
-            WEB_SEARCH_TEXT_AND_IMAGE_CONTENT_TYPES
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
-        ),
-    };
-
-    Some(ToolSpec::WebSearch {
-        external_web_access: Some(external_web_access),
-        filters: options
-            .web_search_config
-            .and_then(|config| config.filters.clone().map(Into::into)),
-        user_location: options
-            .web_search_config
-            .and_then(|config| config.user_location.clone().map(Into::into)),
-        search_context_size: options
-            .web_search_config
-            .and_then(|config| config.search_context_size),
-        search_content_types,
-    })
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -273,8 +246,6 @@ pub fn create_tools_json_for_claude_messages(
             ToolSpec::LocalShell {} => {
                 let claude_name =
                     unique_claude_tool_name(&mut used_names, /*namespace*/ None, tool.name());
-                let additional_permissions_schema =
-                    serde_json::to_value(permission_profile_schema())?;
                 claude_tools.push(claude_function_tool_json(
                     &claude_name,
                     "Runs a local shell command and returns its output.",
@@ -298,7 +269,7 @@ pub fn create_tools_json_for_claude_messages(
                                 "type": "string",
                                 "description": "Sandbox permissions for the command."
                             },
-                            "additional_permissions": additional_permissions_schema,
+                            "additional_permissions": claude_permission_profile_schema_json(),
                             "justification": {
                                 "type": "string",
                                 "description": "Optional justification when requesting escalated permissions."
@@ -402,10 +373,45 @@ fn claude_function_tool_json(name: &str, description: &str, input_schema: Value)
     })
 }
 
+fn claude_permission_profile_schema_json() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "network": {
+                "type": "object",
+                "properties": {
+                    "enabled": {
+                        "type": "boolean",
+                        "description": "Set to true to request network access."
+                    }
+                },
+                "additionalProperties": false
+            },
+            "file_system": {
+                "type": "object",
+                "properties": {
+                    "read": {
+                        "type": "array",
+                        "description": "Absolute paths to grant read access to.",
+                        "items": { "type": "string" }
+                    },
+                    "write": {
+                        "type": "array",
+                        "description": "Absolute paths to grant write access to.",
+                        "items": { "type": "string" }
+                    }
+                },
+                "additionalProperties": false
+            }
+        },
+        "additionalProperties": false
+    })
+}
+
 fn claude_freeform_tool_description(tool: &FreeformTool) -> String {
     let wrapper_guidance = "Claude must call this freeform tool through a JSON `tool_use.input` object. Put the raw freeform body in the nested `input` string. If any tool-specific text says not to wrap the body in JSON, that applies only to the nested `input` string; the Claude tool call itself is still JSON.";
     match tool.name.as_str() {
-        "apply_patch" => format!("{APPLY_PATCH_JSON_TOOL_DESCRIPTION}\n\n{wrapper_guidance}"),
+        "apply_patch" => format!("{APPLY_PATCH_CLAUDE_TOOL_DESCRIPTION}\n\n{wrapper_guidance}"),
         _ => format!(
             "{}\n\n{}\n\nFreeform input format ({} {}):\n```{}\n{}\n```",
             tool.description,

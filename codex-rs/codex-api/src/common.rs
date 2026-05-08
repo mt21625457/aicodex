@@ -35,6 +35,10 @@ pub struct CompactionInput<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<Reasoning>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_key: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<TextControls>,
 }
 
@@ -625,6 +629,11 @@ pub struct ResponseCreateWsRequest {
     pub client_metadata: Option<HashMap<String, String>>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ResponseProcessedWsRequest {
+    pub response_id: String,
+}
+
 pub fn response_create_client_metadata(
     client_metadata: Option<HashMap<String, String>>,
     trace: Option<&W3cTraceContext>,
@@ -653,6 +662,8 @@ pub fn response_create_client_metadata(
 pub enum ResponsesWsRequest {
     #[serde(rename = "response.create")]
     ResponseCreate(ResponseCreateWsRequest),
+    #[serde(rename = "response.processed")]
+    ResponseProcessed(ResponseProcessedWsRequest),
 }
 
 pub fn create_text_param_for_request(

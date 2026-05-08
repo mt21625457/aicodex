@@ -8,15 +8,34 @@ fn backend(tempdir: &TempDir) -> LocalMemoriesBackend {
     LocalMemoriesBackend::from_memory_root(tempdir.path())
 }
 
+fn search_request(queries: &[&str]) -> SearchMemoriesRequest {
+    SearchMemoriesRequest {
+        queries: queries.iter().map(|query| (*query).to_string()).collect(),
+        match_mode: SearchMatchMode::Any,
+        path: None,
+        cursor: None,
+        context_lines: 0,
+        case_sensitive: true,
+        normalized: false,
+        max_results: DEFAULT_SEARCH_MAX_RESULTS,
+    }
+}
+
 #[tokio::test]
 async fn list_returns_shallow_memory_paths() {
     let tempdir = TempDir::new().expect("tempdir");
     tokio::fs::create_dir_all(tempdir.path().join("skills/example"))
         .await
         .expect("create skills dir");
+    tokio::fs::create_dir_all(tempdir.path().join(".git"))
+        .await
+        .expect("create hidden dir");
     tokio::fs::write(tempdir.path().join("MEMORY.md"), "summary")
         .await
         .expect("write memory file");
+    tokio::fs::write(tempdir.path().join(".DS_Store"), "metadata")
+        .await
+        .expect("write hidden file");
     tokio::fs::write(tempdir.path().join("skills/example/SKILL.md"), "skill")
         .await
         .expect("write skill file");
@@ -182,6 +201,25 @@ async fn list_scoped_directory_is_shallow() {
 }
 
 #[tokio::test]
+async fn list_rejects_hidden_scoped_paths() {
+    let tempdir = TempDir::new().expect("tempdir");
+    tokio::fs::create_dir_all(tempdir.path().join(".git"))
+        .await
+        .expect("create hidden dir");
+
+    let err = backend(&tempdir)
+        .list(ListMemoriesRequest {
+            path: Some(".git".to_string()),
+            cursor: None,
+            max_results: DEFAULT_LIST_MAX_RESULTS,
+        })
+        .await
+        .expect_err("hidden scoped paths should stay invisible");
+
+    assert!(matches!(err, MemoriesBackendError::NotFound { .. }));
+}
+
+#[tokio::test]
 async fn list_rejects_invalid_cursor() {
     let tempdir = TempDir::new().expect("tempdir");
     tokio::fs::write(tempdir.path().join("MEMORY.md"), "summary")
@@ -259,6 +297,23 @@ async fn read_rejects_directory_and_returns_file_content() {
 }
 
 #[tokio::test]
+async fn read_rejects_missing_paths() {
+    let tempdir = TempDir::new().expect("tempdir");
+
+    let err = backend(&tempdir)
+        .read(ReadMemoryRequest {
+            path: "missing.md".to_string(),
+            line_offset: 1,
+            max_lines: None,
+            max_tokens: DEFAULT_READ_MAX_TOKENS,
+        })
+        .await
+        .expect_err("missing files should be rejected");
+
+    assert!(matches!(err, MemoriesBackendError::NotFound { .. }));
+}
+
+#[tokio::test]
 async fn read_supports_line_offset() {
     let tempdir = TempDir::new().expect("tempdir");
     tokio::fs::write(tempdir.path().join("MEMORY.md"), "alpha\nbeta\ngamma\n")
@@ -284,6 +339,29 @@ async fn read_supports_line_offset() {
             truncated: false,
         }
     );
+}
+
+#[tokio::test]
+async fn read_rejects_hidden_paths() {
+    let tempdir = TempDir::new().expect("tempdir");
+    tokio::fs::create_dir_all(tempdir.path().join(".git"))
+        .await
+        .expect("create hidden dir");
+    tokio::fs::write(tempdir.path().join(".git/HEAD"), "ref: refs/heads/main\n")
+        .await
+        .expect("write hidden file");
+
+    let err = backend(&tempdir)
+        .read(ReadMemoryRequest {
+            path: ".git/HEAD".to_string(),
+            line_offset: 1,
+            max_lines: None,
+            max_tokens: DEFAULT_READ_MAX_TOKENS,
+        })
+        .await
+        .expect_err("hidden paths should stay invisible");
+
+    assert!(matches!(err, MemoriesBackendError::NotFound { .. }));
 }
 
 #[tokio::test]
@@ -381,14 +459,7 @@ async fn search_supports_directory_and_file_scopes() {
     .expect("write rollout summary");
 
     let response = backend(&tempdir)
-        .search(SearchMemoriesRequest {
-            query: "needle".to_string(),
-            path: None,
-            cursor: None,
-            context_lines: 0,
-            case_sensitive: true,
-            max_results: DEFAULT_SEARCH_MAX_RESULTS,
-        })
+        .search(search_request(&["needle"]))
         .await
         .expect("search all memories");
     assert_eq!(
@@ -399,27 +470,24 @@ async fn search_supports_directory_and_file_scopes() {
                 match_line_number: 2,
                 content_start_line_number: 2,
                 content: "needle".to_string(),
+                matched_queries: vec!["needle".to_string()],
             },
             MemorySearchMatch {
                 path: "rollout_summaries/a.jsonl".to_string(),
                 match_line_number: 1,
                 content_start_line_number: 1,
                 content: "needle again".to_string(),
+                matched_queries: vec!["needle".to_string()],
             },
         ]
     );
     assert_eq!(response.next_cursor, None);
     assert_eq!(response.truncated, false);
 
+    let mut request = search_request(&["needle"]);
+    request.path = Some("MEMORY.md".to_string());
     let file_response = backend(&tempdir)
-        .search(SearchMemoriesRequest {
-            query: "needle".to_string(),
-            path: Some("MEMORY.md".to_string()),
-            cursor: None,
-            context_lines: 0,
-            case_sensitive: true,
-            max_results: DEFAULT_SEARCH_MAX_RESULTS,
-        })
+        .search(request)
         .await
         .expect("search one memory file");
     assert_eq!(
@@ -429,6 +497,7 @@ async fn search_supports_directory_and_file_scopes() {
             match_line_number: 2,
             content_start_line_number: 2,
             content: "needle".to_string(),
+            matched_queries: vec!["needle".to_string()],
         }]
     );
     assert_eq!(file_response.next_cursor, None);
@@ -451,15 +520,10 @@ async fn search_supports_pagination() {
     .await
     .expect("write rollout summary");
 
+    let mut page1_request = search_request(&["needle"]);
+    page1_request.max_results = 2;
     let page1 = backend(&tempdir)
-        .search(SearchMemoriesRequest {
-            query: "needle".to_string(),
-            path: None,
-            cursor: None,
-            context_lines: 0,
-            case_sensitive: true,
-            max_results: 2,
-        })
+        .search(page1_request)
         .await
         .expect("search first page");
     assert_eq!(
@@ -470,27 +534,25 @@ async fn search_supports_pagination() {
                 match_line_number: 1,
                 content_start_line_number: 1,
                 content: "needle one".to_string(),
+                matched_queries: vec!["needle".to_string()],
             },
             MemorySearchMatch {
                 path: "MEMORY.md".to_string(),
                 match_line_number: 2,
                 content_start_line_number: 2,
                 content: "needle two".to_string(),
+                matched_queries: vec!["needle".to_string()],
             },
         ]
     );
     assert_eq!(page1.next_cursor.as_deref(), Some("2"));
     assert_eq!(page1.truncated, true);
 
+    let mut page2_request = search_request(&["needle"]);
+    page2_request.cursor = page1.next_cursor;
+    page2_request.max_results = 2;
     let page2 = backend(&tempdir)
-        .search(SearchMemoriesRequest {
-            query: "needle".to_string(),
-            path: None,
-            cursor: page1.next_cursor,
-            context_lines: 0,
-            case_sensitive: true,
-            max_results: 2,
-        })
+        .search(page2_request)
         .await
         .expect("search second page");
     assert_eq!(
@@ -500,10 +562,100 @@ async fn search_supports_pagination() {
             match_line_number: 1,
             content_start_line_number: 1,
             content: "needle three".to_string(),
+            matched_queries: vec!["needle".to_string()],
         }]
     );
     assert_eq!(page2.next_cursor, None);
     assert_eq!(page2.truncated, false);
+}
+
+#[tokio::test]
+async fn search_preserves_global_lexicographic_path_order() {
+    let tempdir = TempDir::new().expect("tempdir");
+    tokio::fs::create_dir_all(tempdir.path().join("a"))
+        .await
+        .expect("create nested dir");
+    tokio::fs::write(tempdir.path().join("a/child.md"), "needle in child\n")
+        .await
+        .expect("write nested file");
+    tokio::fs::write(tempdir.path().join("a.txt"), "needle in sibling\n")
+        .await
+        .expect("write sibling file");
+
+    let response = backend(&tempdir)
+        .search(search_request(&["needle"]))
+        .await
+        .expect("search memories");
+
+    assert_eq!(
+        response.matches,
+        vec![
+            MemorySearchMatch {
+                path: "a.txt".to_string(),
+                match_line_number: 1,
+                content_start_line_number: 1,
+                content: "needle in sibling".to_string(),
+                matched_queries: vec!["needle".to_string()],
+            },
+            MemorySearchMatch {
+                path: "a/child.md".to_string(),
+                match_line_number: 1,
+                content_start_line_number: 1,
+                content: "needle in child".to_string(),
+                matched_queries: vec!["needle".to_string()],
+            },
+        ]
+    );
+}
+
+#[tokio::test]
+async fn search_skips_hidden_paths() {
+    let tempdir = TempDir::new().expect("tempdir");
+    tokio::fs::create_dir_all(tempdir.path().join(".git"))
+        .await
+        .expect("create hidden dir");
+    tokio::fs::write(tempdir.path().join("MEMORY.md"), "needle visible\n")
+        .await
+        .expect("write visible file");
+    tokio::fs::write(tempdir.path().join(".git/HEAD"), "needle hidden\n")
+        .await
+        .expect("write hidden file");
+    tokio::fs::write(tempdir.path().join(".hidden"), "needle hidden\n")
+        .await
+        .expect("write hidden file");
+
+    let response = backend(&tempdir)
+        .search(search_request(&["needle"]))
+        .await
+        .expect("search memories");
+
+    assert_eq!(
+        response.matches,
+        vec![MemorySearchMatch {
+            path: "MEMORY.md".to_string(),
+            match_line_number: 1,
+            content_start_line_number: 1,
+            content: "needle visible".to_string(),
+            matched_queries: vec!["needle".to_string()],
+        }]
+    );
+}
+
+#[tokio::test]
+async fn search_rejects_hidden_scoped_paths() {
+    let tempdir = TempDir::new().expect("tempdir");
+    tokio::fs::create_dir_all(tempdir.path().join(".git"))
+        .await
+        .expect("create hidden dir");
+
+    let mut request = search_request(&["needle"]);
+    request.path = Some(".git".to_string());
+    let err = backend(&tempdir)
+        .search(request)
+        .await
+        .expect_err("hidden scoped paths should stay invisible");
+
+    assert!(matches!(err, MemoriesBackendError::NotFound { .. }));
 }
 
 #[tokio::test]
@@ -516,15 +668,10 @@ async fn search_supports_context_lines() {
     .await
     .expect("write memory file");
 
+    let mut request = search_request(&["needle"]);
+    request.context_lines = 1;
     let response = backend(&tempdir)
-        .search(SearchMemoriesRequest {
-            query: "needle".to_string(),
-            path: None,
-            cursor: None,
-            context_lines: 1,
-            case_sensitive: true,
-            max_results: DEFAULT_SEARCH_MAX_RESULTS,
-        })
+        .search(request)
         .await
         .expect("search with context");
 
@@ -536,12 +683,14 @@ async fn search_supports_context_lines() {
                 match_line_number: 2,
                 content_start_line_number: 1,
                 content: "alpha\nneedle\nomega".to_string(),
+                matched_queries: vec!["needle".to_string()],
             },
             MemorySearchMatch {
                 path: "MEMORY.md".to_string(),
                 match_line_number: 4,
                 content_start_line_number: 3,
                 content: "omega\nneedle again".to_string(),
+                matched_queries: vec!["needle".to_string()],
             },
         ]
     );
@@ -555,14 +704,7 @@ async fn search_supports_case_insensitive_matching() {
         .expect("write memory file");
 
     let sensitive_response = backend(&tempdir)
-        .search(SearchMemoriesRequest {
-            query: "needle".to_string(),
-            path: None,
-            cursor: None,
-            context_lines: 0,
-            case_sensitive: true,
-            max_results: DEFAULT_SEARCH_MAX_RESULTS,
-        })
+        .search(search_request(&["needle"]))
         .await
         .expect("search with case-sensitive matching");
     assert_eq!(
@@ -572,18 +714,14 @@ async fn search_supports_case_insensitive_matching() {
             match_line_number: 2,
             content_start_line_number: 2,
             content: "needle".to_string(),
+            matched_queries: vec!["needle".to_string()],
         }]
     );
 
+    let mut request = search_request(&["needle"]);
+    request.case_sensitive = false;
     let insensitive_response = backend(&tempdir)
-        .search(SearchMemoriesRequest {
-            query: "needle".to_string(),
-            path: None,
-            cursor: None,
-            context_lines: 0,
-            case_sensitive: false,
-            max_results: DEFAULT_SEARCH_MAX_RESULTS,
-        })
+        .search(request)
         .await
         .expect("search with case-insensitive matching");
     assert_eq!(
@@ -594,21 +732,201 @@ async fn search_supports_case_insensitive_matching() {
                 match_line_number: 1,
                 content_start_line_number: 1,
                 content: "Needle".to_string(),
+                matched_queries: vec!["needle".to_string()],
             },
             MemorySearchMatch {
                 path: "MEMORY.md".to_string(),
                 match_line_number: 2,
                 content_start_line_number: 2,
                 content: "needle".to_string(),
+                matched_queries: vec!["needle".to_string()],
             },
             MemorySearchMatch {
                 path: "MEMORY.md".to_string(),
                 match_line_number: 3,
                 content_start_line_number: 3,
                 content: "NEEDLE".to_string(),
+                matched_queries: vec!["needle".to_string()],
             },
         ]
     );
+}
+
+#[tokio::test]
+async fn search_supports_normalized_matching() {
+    let tempdir = TempDir::new().expect("tempdir");
+    tokio::fs::write(
+        tempdir.path().join("MEMORY.md"),
+        "MultiAgentV2\ncold-resume\n",
+    )
+    .await
+    .expect("write memory file");
+
+    let literal_response = backend(&tempdir)
+        .search(search_request(&["multi agent v2", "cold resume"]))
+        .await
+        .expect("search without normalization");
+    assert_eq!(literal_response.matches, Vec::new());
+
+    let mut request = search_request(&["multi agent v2", "cold resume"]);
+    request.case_sensitive = false;
+    request.normalized = true;
+    let normalized_response = backend(&tempdir)
+        .search(request)
+        .await
+        .expect("search with normalization");
+    assert_eq!(
+        normalized_response.matches,
+        vec![
+            MemorySearchMatch {
+                path: "MEMORY.md".to_string(),
+                match_line_number: 1,
+                content_start_line_number: 1,
+                content: "MultiAgentV2".to_string(),
+                matched_queries: vec!["multi agent v2".to_string()],
+            },
+            MemorySearchMatch {
+                path: "MEMORY.md".to_string(),
+                match_line_number: 2,
+                content_start_line_number: 2,
+                content: "cold-resume".to_string(),
+                matched_queries: vec!["cold resume".to_string()],
+            },
+        ]
+    );
+}
+
+#[tokio::test]
+async fn search_rejects_queries_that_normalize_to_empty_strings() {
+    let tempdir = TempDir::new().expect("tempdir");
+    tokio::fs::write(tempdir.path().join("MEMORY.md"), "needle\n")
+        .await
+        .expect("write memory file");
+
+    let mut request = search_request(&["-"]);
+    request.normalized = true;
+    let err = backend(&tempdir)
+        .search(request)
+        .await
+        .expect_err("separator-only normalized queries should be rejected");
+
+    assert!(matches!(err, MemoriesBackendError::EmptyQuery));
+}
+
+#[tokio::test]
+async fn search_supports_any_and_all_on_same_line_match_modes() {
+    let tempdir = TempDir::new().expect("tempdir");
+    tokio::fs::write(
+        tempdir.path().join("MEMORY.md"),
+        "alpha needle beta\nalpha only\nneedle only\n",
+    )
+    .await
+    .expect("write memory file");
+
+    let any_response = backend(&tempdir)
+        .search(search_request(&["alpha", "needle"]))
+        .await
+        .expect("search with any match mode");
+    assert_eq!(
+        any_response.matches,
+        vec![
+            MemorySearchMatch {
+                path: "MEMORY.md".to_string(),
+                match_line_number: 1,
+                content_start_line_number: 1,
+                content: "alpha needle beta".to_string(),
+                matched_queries: vec!["alpha".to_string(), "needle".to_string()],
+            },
+            MemorySearchMatch {
+                path: "MEMORY.md".to_string(),
+                match_line_number: 2,
+                content_start_line_number: 2,
+                content: "alpha only".to_string(),
+                matched_queries: vec!["alpha".to_string()],
+            },
+            MemorySearchMatch {
+                path: "MEMORY.md".to_string(),
+                match_line_number: 3,
+                content_start_line_number: 3,
+                content: "needle only".to_string(),
+                matched_queries: vec!["needle".to_string()],
+            },
+        ]
+    );
+
+    let mut request = search_request(&["alpha", "needle"]);
+    request.match_mode = SearchMatchMode::AllOnSameLine;
+    let all_response = backend(&tempdir)
+        .search(request)
+        .await
+        .expect("search with all-on-same-line match mode");
+    assert_eq!(
+        all_response.matches,
+        vec![MemorySearchMatch {
+            path: "MEMORY.md".to_string(),
+            match_line_number: 1,
+            content_start_line_number: 1,
+            content: "alpha needle beta".to_string(),
+            matched_queries: vec!["alpha".to_string(), "needle".to_string()],
+        }]
+    );
+}
+
+#[tokio::test]
+async fn search_supports_all_within_lines_match_mode() {
+    let tempdir = TempDir::new().expect("tempdir");
+    tokio::fs::write(
+        tempdir.path().join("MEMORY.md"),
+        "alpha first\nmiddle\nneedle later\nalpha again needle together\n",
+    )
+    .await
+    .expect("write memory file");
+
+    let mut request = search_request(&["alpha", "needle"]);
+    request.match_mode = SearchMatchMode::AllWithinLines { line_count: 3 };
+    request.context_lines = 1;
+    let response = backend(&tempdir)
+        .search(request)
+        .await
+        .expect("search with all-within-lines match mode");
+
+    assert_eq!(
+        response.matches,
+        vec![
+            MemorySearchMatch {
+                path: "MEMORY.md".to_string(),
+                match_line_number: 1,
+                content_start_line_number: 1,
+                content: "alpha first\nmiddle\nneedle later\nalpha again needle together"
+                    .to_string(),
+                matched_queries: vec!["alpha".to_string(), "needle".to_string()],
+            },
+            MemorySearchMatch {
+                path: "MEMORY.md".to_string(),
+                match_line_number: 4,
+                content_start_line_number: 3,
+                content: "needle later\nalpha again needle together".to_string(),
+                matched_queries: vec!["alpha".to_string(), "needle".to_string()],
+            },
+        ]
+    );
+}
+
+#[tokio::test]
+async fn search_rejects_zero_line_window() {
+    let tempdir = TempDir::new().expect("tempdir");
+    tokio::fs::write(tempdir.path().join("MEMORY.md"), "needle\n")
+        .await
+        .expect("write memory file");
+
+    let mut request = search_request(&["needle"]);
+    request.match_mode = SearchMatchMode::AllWithinLines { line_count: 0 };
+    let err = backend(&tempdir)
+        .search(request)
+        .await
+        .expect_err("zero-width windows should be rejected");
+
+    assert!(matches!(err, MemoriesBackendError::InvalidMatchWindow));
 }
 
 #[tokio::test]
@@ -618,36 +936,54 @@ async fn search_rejects_invalid_cursor() {
         .await
         .expect("write memory file");
 
+    let mut request = search_request(&["needle"]);
+    request.cursor = Some("bogus".to_string());
     let err = backend(&tempdir)
-        .search(SearchMemoriesRequest {
-            query: "needle".to_string(),
-            path: None,
-            cursor: Some("bogus".to_string()),
-            context_lines: 0,
-            case_sensitive: true,
-            max_results: DEFAULT_SEARCH_MAX_RESULTS,
-        })
+        .search(request)
         .await
         .expect_err("cursor should be rejected");
-
     assert!(matches!(err, MemoriesBackendError::InvalidCursor { .. }));
 
+    let mut request = search_request(&["needle"]);
+    request.cursor = Some("2".to_string());
     let past_end_err = backend(&tempdir)
-        .search(SearchMemoriesRequest {
-            query: "needle".to_string(),
-            path: None,
-            cursor: Some("2".to_string()),
-            context_lines: 0,
-            case_sensitive: true,
-            max_results: DEFAULT_SEARCH_MAX_RESULTS,
-        })
+        .search(request)
         .await
         .expect_err("cursor past end should be rejected");
-
     assert!(matches!(
         past_end_err,
         MemoriesBackendError::InvalidCursor { .. }
     ));
+}
+
+#[tokio::test]
+async fn list_rejects_missing_scoped_paths() {
+    let tempdir = TempDir::new().expect("tempdir");
+
+    let err = backend(&tempdir)
+        .list(ListMemoriesRequest {
+            path: Some("missing".to_string()),
+            cursor: None,
+            max_results: DEFAULT_LIST_MAX_RESULTS,
+        })
+        .await
+        .expect_err("missing scoped paths should be rejected");
+
+    assert!(matches!(err, MemoriesBackendError::NotFound { .. }));
+}
+
+#[tokio::test]
+async fn search_rejects_missing_scoped_paths() {
+    let tempdir = TempDir::new().expect("tempdir");
+
+    let mut request = search_request(&["needle"]);
+    request.path = Some("missing".to_string());
+    let err = backend(&tempdir)
+        .search(request)
+        .await
+        .expect_err("missing scoped paths should be rejected");
+
+    assert!(matches!(err, MemoriesBackendError::NotFound { .. }));
 }
 
 #[tokio::test]
@@ -686,6 +1022,77 @@ async fn read_rejects_symlinked_files() {
         })
         .await
         .expect_err("symlink should be rejected");
+
+    assert!(matches!(err, MemoriesBackendError::InvalidPath { .. }));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn read_rejects_symlinked_ancestor_directories() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let outside = tempdir.path().join("outside");
+    tokio::fs::create_dir_all(&outside)
+        .await
+        .expect("create outside dir");
+    tokio::fs::write(outside.join("secret.md"), "outside secret")
+        .await
+        .expect("write outside file");
+    std::os::unix::fs::symlink(&outside, tempdir.path().join("skills")).expect("create symlink");
+
+    let err = backend(&tempdir)
+        .read(ReadMemoryRequest {
+            path: "skills/secret.md".to_string(),
+            line_offset: 1,
+            max_lines: None,
+            max_tokens: DEFAULT_READ_MAX_TOKENS,
+        })
+        .await
+        .expect_err("symlinked ancestors should be rejected");
+
+    assert!(matches!(err, MemoriesBackendError::InvalidPath { .. }));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn list_rejects_symlinked_directories() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let outside = tempdir.path().join("outside");
+    tokio::fs::create_dir_all(&outside)
+        .await
+        .expect("create outside dir");
+    std::os::unix::fs::symlink(&outside, tempdir.path().join("skills")).expect("create symlink");
+
+    let err = backend(&tempdir)
+        .list(ListMemoriesRequest {
+            path: Some("skills".to_string()),
+            cursor: None,
+            max_results: DEFAULT_LIST_MAX_RESULTS,
+        })
+        .await
+        .expect_err("symlinked directories should be rejected");
+
+    assert!(matches!(err, MemoriesBackendError::InvalidPath { .. }));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn search_rejects_symlinked_directories() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let outside = tempdir.path().join("outside");
+    tokio::fs::create_dir_all(&outside)
+        .await
+        .expect("create outside dir");
+    tokio::fs::write(outside.join("secret.md"), "needle")
+        .await
+        .expect("write outside file");
+    std::os::unix::fs::symlink(&outside, tempdir.path().join("skills")).expect("create symlink");
+
+    let mut request = search_request(&["needle"]);
+    request.path = Some("skills".to_string());
+    let err = backend(&tempdir)
+        .search(request)
+        .await
+        .expect_err("symlinked directories should be rejected");
 
     assert!(matches!(err, MemoriesBackendError::InvalidPath { .. }));
 }

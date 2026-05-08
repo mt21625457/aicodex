@@ -352,13 +352,9 @@
           ]
         },
         "service_tier": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/ServiceTier"
-            },
-            {
-              "type": "null"
-            }
+          "type": [
+            "string",
+            "null"
           ]
         },
         "tools": {
@@ -476,7 +472,7 @@
           "type": "object"
         },
         {
-          "description": "User config layer from $CODEX_HOME/config.toml. This layer is special in that it is expected to be: - writable by the user - generally outside the workspace directory",
+          "description": "User config layer from $AICODEX_HOME/config.toml. This layer is special in that it is expected to be: - writable by the user - generally outside the workspace directory",
           "properties": {
             "file": {
               "allOf": [
@@ -658,13 +654,9 @@
           ]
         },
         "service_tier": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/ServiceTier"
-            },
-            {
-              "type": "null"
-            }
+          "type": [
+            "string",
+            "null"
           ]
         },
         "tools": {
@@ -753,13 +745,6 @@
         }
       },
       "type": "object"
-    },
-    "ServiceTier": {
-      "enum": [
-        "fast",
-        "flex"
-      ],
-      "type": "string"
     },
     "ToolsV2": {
       "properties": {
