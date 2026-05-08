@@ -4,36 +4,20 @@ use super::ResponsesApiWebSearchFilters;
 use super::ResponsesApiWebSearchUserLocation;
 use super::ToolSpec;
 use crate::AdditionalProperties;
-use crate::CommandToolOptions;
 use crate::FreeformTool;
 use crate::FreeformToolFormat;
 use crate::JsonSchema;
 use crate::ResponsesApiNamespaceTool;
 use crate::ResponsesApiTool;
-use crate::ShellToolOptions;
-use crate::ViewImageToolOptions;
 use crate::claude_tool_name;
-use crate::create_close_agent_tool_v1;
-use crate::create_exec_command_tool;
-use crate::create_image_generation_tool;
-use crate::create_request_permissions_tool;
-use crate::create_request_user_input_tool;
-use crate::create_shell_command_tool;
-use crate::create_shell_tool;
 use crate::create_tools_json_for_claude_messages;
 use crate::create_tools_json_for_responses_api;
-use crate::create_update_plan_tool;
-use crate::create_view_image_tool;
-use crate::create_web_search_tool;
-use crate::create_write_stdin_tool;
 use crate::dynamic_tool_to_loadable_tool_spec;
 use codex_protocol::config_types::WebSearchContextSize;
 use codex_protocol::config_types::WebSearchFilters as ConfigWebSearchFilters;
-use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::config_types::WebSearchUserLocation as ConfigWebSearchUserLocation;
 use codex_protocol::config_types::WebSearchUserLocationType;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
-use codex_protocol::openai_models::WebSearchToolType;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
@@ -462,26 +446,70 @@ fn create_tools_json_for_claude_messages_flattens_supported_tools() {
 #[test]
 fn create_tools_json_for_claude_messages_preserves_representative_tool_contracts() {
     let result = create_tools_json_for_claude_messages(&[
-        create_exec_command_tool(CommandToolOptions {
-            allow_login_shell: true,
-            exec_permission_approvals_enabled: true,
-        }),
-        create_write_stdin_tool(),
-        create_shell_tool(ShellToolOptions {
-            exec_permission_approvals_enabled: true,
-        }),
-        create_shell_command_tool(CommandToolOptions {
-            allow_login_shell: true,
-            exec_permission_approvals_enabled: true,
-        }),
+        test_function_tool(
+            "exec_command",
+            "Runs a command in a PTY.",
+            &["cmd"],
+            &[
+                ("cmd", "Shell command to execute."),
+                ("sandbox_permissions", "Sandbox permissions"),
+            ],
+        ),
+        test_function_tool(
+            "write_stdin",
+            "Writes characters to an existing unified exec session.",
+            &["session_id"],
+            &[(
+                "session_id",
+                "Identifier of the running unified exec session.",
+            )],
+        ),
+        test_function_tool(
+            "shell",
+            "Runs a shell command and returns its output.",
+            &["command"],
+            &[("command", "The command to execute")],
+        ),
+        test_function_tool(
+            "shell_command",
+            "Runs a shell command and returns its output.",
+            &["command"],
+            &[(
+                "command",
+                "The shell script to execute in the user's default shell",
+            )],
+        ),
         ToolSpec::LocalShell {},
-        create_request_permissions_tool("Request more permissions".to_string()),
-        create_update_plan_tool(),
-        create_request_user_input_tool("Ask the user for input".to_string()),
-        create_view_image_tool(ViewImageToolOptions {
-            can_request_original_image_detail: true,
-        }),
-        create_close_agent_tool_v1(),
+        test_function_tool(
+            "request_permissions",
+            "Request more permissions",
+            &["permissions"],
+            &[("permissions", "Permission profile to request.")],
+        ),
+        test_function_tool(
+            "update_plan",
+            "Updates the task plan.",
+            &["plan"],
+            &[("plan", "The list of steps")],
+        ),
+        test_function_tool(
+            "request_user_input",
+            "Ask the user for input.",
+            &["questions"],
+            &[("questions", "Questions to show the user")],
+        ),
+        test_function_tool(
+            "view_image",
+            "View a local image.",
+            &["path"],
+            &[("path", "Local filesystem path")],
+        ),
+        test_function_tool(
+            "close_agent",
+            "Close an agent.",
+            &["target"],
+            &[("target", "Agent id to close")],
+        ),
         ToolSpec::ToolSearch {
             execution: "client".to_string(),
             description: "Search available tools".to_string(),
@@ -612,15 +640,17 @@ fn create_tools_json_for_claude_messages_preserves_dynamic_tool_schema() {
 
 #[test]
 fn create_tools_json_for_claude_messages_omits_hosted_tools() {
-    let web_search = create_web_search_tool(crate::WebSearchToolOptions {
-        web_search_mode: Some(WebSearchMode::Live),
-        web_search_config: None,
-        web_search_tool_type: WebSearchToolType::Text,
-    })
-    .expect("web search tool");
     let result = create_tools_json_for_claude_messages(&[
-        web_search,
-        create_image_generation_tool("png"),
+        ToolSpec::WebSearch {
+            external_web_access: Some(true),
+            filters: None,
+            user_location: None,
+            search_context_size: None,
+            search_content_types: None,
+        },
+        ToolSpec::ImageGeneration {
+            output_format: "png".to_string(),
+        },
         ToolSpec::Function(ResponsesApiTool {
             name: "lookup_order".to_string(),
             description: "Look up an order".to_string(),
@@ -731,6 +761,34 @@ fn create_tools_json_for_claude_messages_deduplicates_colliding_names() {
     assert!(names[1].starts_with("a_b_"));
     assert!(names[1].len() <= 64);
     assert_eq!(result.tool_call_info[1].claude_name, names[1]);
+}
+
+fn test_function_tool(
+    name: &str,
+    description: &str,
+    required: &[&str],
+    properties: &[(&str, &str)],
+) -> ToolSpec {
+    ToolSpec::Function(ResponsesApiTool {
+        name: name.to_string(),
+        description: description.to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::object(
+            properties
+                .iter()
+                .map(|(name, description)| {
+                    (
+                        (*name).to_string(),
+                        JsonSchema::string(Some((*description).to_string())),
+                    )
+                })
+                .collect(),
+            /*required*/ Some(required.iter().map(|field| (*field).to_string()).collect()),
+            /*additional_properties*/ Some(false.into()),
+        ),
+        output_schema: None,
+    })
 }
 
 fn claude_tool<'a>(result: &'a crate::ClaudeToolsJson, name: &str) -> &'a Value {

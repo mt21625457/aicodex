@@ -110,12 +110,17 @@ fn bearer_auth_for_provider(
 }
 
 fn anthropic_auth_for_provider(
-    _auth: Option<&CodexAuth>,
+    auth: Option<&CodexAuth>,
     provider: &ModelProviderInfo,
 ) -> codex_protocol::error::Result<AnthropicAuthProvider> {
     let api_key = provider.api_key()?;
     let auth_token = if api_key.is_none() {
-        provider.experimental_bearer_token.clone()
+        provider.experimental_bearer_token.clone().or_else(|| {
+            provider
+                .auth
+                .as_ref()
+                .and_then(|_| auth.and_then(|auth| auth.get_token().ok()))
+        })
     } else {
         None
     };
@@ -178,6 +183,30 @@ mod tests {
         let headers = auth.to_auth_headers();
 
         assert_eq!(headers.get(http::header::AUTHORIZATION), None);
+        assert_eq!(headers.get("x-api-key"), None);
+    }
+
+    #[test]
+    fn claude_provider_auth_uses_provider_command_bearer_token() {
+        let mut provider =
+            create_oss_provider_with_base_url("https://api.anthropic.com/v1", WireApi::Claude);
+        provider.auth = Some(
+            serde_json::from_value(serde_json::json!({
+                "command": "provider-token-cmd",
+                "cwd": "/tmp"
+            }))
+            .expect("valid provider auth config"),
+        );
+        let auth = CodexAuth::from_api_key("provider-command-token");
+        let auth = resolve_provider_auth(Some(&auth), &provider).expect("auth should resolve");
+        let headers = auth.to_auth_headers();
+
+        assert_eq!(
+            headers
+                .get(http::header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer provider-command-token")
+        );
         assert_eq!(headers.get("x-api-key"), None);
     }
 }

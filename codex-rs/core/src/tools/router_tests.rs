@@ -402,11 +402,10 @@ fn mcp_tool_info(tool: rmcp::model::Tool) -> ToolInfo {
         server_name: "test_server".to_string(),
         callable_name: tool.name.to_string(),
         callable_namespace: "mcp__test_server__".to_string(),
-        server_instructions: None,
+        namespace_description: None,
         tool,
         connector_id: None,
         connector_name: None,
         plugin_display_names: Vec::new(),
-        connector_description: None,
     }
 }
