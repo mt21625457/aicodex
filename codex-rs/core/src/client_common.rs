@@ -82,6 +82,11 @@ impl Prompt {
     }
 }
 
+pub(crate) fn is_claude_reasoning_item_id(id: &str) -> bool {
+    id.rsplit_once("_reasoning_")
+        .is_some_and(|(_, index)| index.parse::<usize>().is_ok())
+}
+
 fn reserialize_shell_outputs(items: &mut [ResponseItem]) {
     let mut shell_call_ids: HashSet<String> = HashSet::new();
 

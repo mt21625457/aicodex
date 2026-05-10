@@ -9,6 +9,15 @@ use pretty_assertions::assert_eq;
 use super::*;
 
 #[test]
+fn identifies_claude_reasoning_item_ids() {
+    assert!(is_claude_reasoning_item_id("msg_1_reasoning_0"));
+    assert!(is_claude_reasoning_item_id("claude-response_reasoning_12"));
+    assert!(!is_claude_reasoning_item_id("rs_123"));
+    assert!(!is_claude_reasoning_item_id("msg_1_reasoning"));
+    assert!(!is_claude_reasoning_item_id("msg_1_reasoning_x"));
+}
+
+#[test]
 fn serializes_text_verbosity_when_set() {
     let input: Vec<ResponseItem> = vec![];
     let tools: Vec<serde_json::Value> = vec![];
