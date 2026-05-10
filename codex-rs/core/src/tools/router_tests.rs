@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -265,18 +264,15 @@ async fn claude_model_visible_tools_have_registered_handlers() -> anyhow::Result
             defer_loading: true,
         },
     ];
-    let mcp_tools = HashMap::from([(
-        "mcp__test_server__echo".to_string(),
-        mcp_tool_info(mcp_tool(
-            mcp_tool_name,
-            "Echo input.",
-            json!({
-                "type": "object",
-                "properties": {},
-                "additionalProperties": false,
-            }),
-        )),
-    )]);
+    let mcp_tools = vec![mcp_tool_info(mcp_tool(
+        mcp_tool_name,
+        "Echo input.",
+        json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false,
+        }),
+    ))];
     let router = ToolRouter::from_config(
         &tools_config,
         ToolRouterParams {
