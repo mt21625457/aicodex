@@ -112,6 +112,7 @@ use tracing::warn;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
+use crate::client_common::is_claude_reasoning_item_id;
 use crate::feedback_tags;
 use crate::flags::CODEX_RS_SSE_FIXTURE;
 use crate::util::emit_feedback_auth_recovery_tags;
@@ -692,7 +693,8 @@ impl ModelClient {
         service_tier: Option<String>,
     ) -> Result<ResponsesApiRequest> {
         let instructions = &prompt.base_instructions.text;
-        let input = prompt.get_formatted_input();
+        let mut input = prompt.get_formatted_input();
+        strip_reasoning_content_for_responses_input(&mut input);
         let tools = create_tools_json_for_responses_api(&prompt.tools)?;
         let reasoning = Self::build_reasoning(model_info, effort, summary);
         let include = if reasoning.is_some() {
@@ -892,6 +894,36 @@ impl ModelClient {
     }
 }
 
+fn strip_reasoning_content_for_responses_input(input: &mut [ResponseItem]) {
+    for item in input {
+        if let ResponseItem::Reasoning {
+            id,
+            content,
+            encrypted_content,
+            ..
+        } = item
+        {
+            let has_raw_reasoning_content =
+                content.as_ref().is_some_and(|content| !content.is_empty());
+            // Responses reasoning items are replayed with encrypted_content/summary.
+            // Raw reasoning_text content is output-only; sending it back as input
+            // causes OpenAI-compatible Responses providers to reject the request.
+            // Claude-wire reasoning signatures are a different provider-specific
+            // state format and must not be replayed as OpenAI encrypted reasoning.
+            // Older persisted histories may not have retained the reasoning item
+            // id, so unknown-origin raw reasoning also cannot safely carry
+            // encrypted_content into a Responses request.
+            //
+            // Use an empty vector because the protocol serializer currently omits
+            // empty reasoning content, while None serializes as content: null.
+            *content = Some(Vec::new());
+            if is_claude_reasoning_item_id(id) || (id.is_empty() && has_raw_reasoning_content) {
+                *encrypted_content = None;
+            }
+        }
+    }
+}
+
 impl Drop for ModelClientSession {
     fn drop(&mut self) {
         let websocket_session = std::mem::take(&mut self.websocket_session);
@@ -977,7 +1009,9 @@ impl ModelClientSession {
 
         let mut baseline = previous_request.input.clone();
         if let Some(last_response) = last_response {
-            baseline.extend(last_response.items_added.clone());
+            let mut items_added = last_response.items_added.clone();
+            strip_reasoning_content_for_responses_input(&mut items_added);
+            baseline.extend(items_added);
         }
 
         let baseline_len = baseline.len();

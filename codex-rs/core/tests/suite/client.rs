@@ -2422,14 +2422,14 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
 
     let mut prompt = Prompt::default();
     prompt.input.push(ResponseItem::Reasoning {
-        id: "reasoning-id".into(),
+        id: "msg_1_reasoning_0".into(),
         summary: vec![ReasoningItemReasoningSummary::SummaryText {
             text: "summary".into(),
         }],
         content: Some(vec![ReasoningItemContent::ReasoningText {
             text: "content".into(),
         }]),
-        encrypted_content: None,
+        encrypted_content: Some("provider-specific-signature".into()),
     });
     prompt.input.push(ResponseItem::Message {
         id: Some("message-id".into()),
@@ -2510,7 +2510,17 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
     assert_eq!(body["store"], serde_json::Value::Bool(true));
     assert_eq!(body["stream"], serde_json::Value::Bool(true));
     assert_eq!(body["input"].as_array().map(Vec::len), Some(8));
-    assert_eq!(body["input"][0]["id"].as_str(), Some("reasoning-id"));
+    assert_eq!(body["input"][0]["id"].as_str(), Some("msg_1_reasoning_0"));
+    assert!(
+        body["input"][0].get("content").is_none(),
+        "Responses input must not replay raw reasoning content: {}",
+        body["input"][0]
+    );
+    assert!(
+        body["input"][0].get("encrypted_content").is_none(),
+        "Responses input must not replay non-OpenAI reasoning signatures: {}",
+        body["input"][0]
+    );
     assert_eq!(body["input"][1]["id"].as_str(), Some("message-id"));
     assert_eq!(body["input"][2]["id"].as_str(), Some("web-search-id"));
     assert_eq!(body["input"][3]["id"].as_str(), Some("function-id"));

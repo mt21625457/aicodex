@@ -1,4 +1,5 @@
 use crate::client_common::Prompt;
+use crate::client_common::is_claude_reasoning_item_id;
 use codex_api::ClaudeCacheControl;
 use codex_api::ClaudeCacheTtl;
 use codex_api::ClaudeContentBlock;
@@ -289,11 +290,13 @@ pub(crate) fn build_claude_messages_request(
                 );
             }
             ResponseItem::Reasoning {
+                id,
                 content,
                 encrypted_content,
                 ..
             } => {
-                if let Some(block) = thinking_block(content.as_deref(), encrypted_content.as_ref())
+                if let Some(block) =
+                    thinking_block(&id, content.as_deref(), encrypted_content.as_ref())
                 {
                     push_message(&mut messages, ClaudeMessageRole::Assistant, vec![block]);
                 }
@@ -714,9 +717,14 @@ fn tool_result_block(
 }
 
 fn thinking_block(
+    id: &str,
     content: Option<&[codex_protocol::models::ReasoningItemContent]>,
     encrypted_content: Option<&String>,
 ) -> Option<ClaudeContentBlock> {
+    if !is_claude_reasoning_item_id(id) {
+        return None;
+    }
+
     let thinking = content
         .unwrap_or_default()
         .iter()
@@ -726,6 +734,7 @@ fn thinking_block(
         })
         .collect::<String>();
     let signature = encrypted_content.filter(|signature| !signature.trim().is_empty());
+
     if thinking.trim().is_empty() && signature.is_none() {
         return None;
     }
@@ -826,6 +835,7 @@ mod tests {
     use codex_protocol::models::FunctionCallOutputPayload;
     use codex_protocol::models::ImageDetail;
     use codex_protocol::models::ReasoningItemContent;
+    use codex_protocol::models::ReasoningItemReasoningSummary;
     use codex_tools::AdditionalProperties;
     use codex_tools::JsonSchema;
     use codex_tools::ResponsesApiNamespace;
@@ -1439,7 +1449,7 @@ mod tests {
         let prompt = Prompt {
             input: vec![
                 ResponseItem::Reasoning {
-                    id: "reasoning_1".to_string(),
+                    id: "msg_1_reasoning_0".to_string(),
                     summary: Vec::new(),
                     content: Some(vec![ReasoningItemContent::ReasoningText {
                         text: "thinking".to_string(),
@@ -1524,6 +1534,130 @@ mod tests {
                     }],
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn builds_claude_history_without_openai_encrypted_reasoning_as_signature_only_block() {
+        let prompt = Prompt {
+            input: vec![
+                ResponseItem::Reasoning {
+                    id: "rs_1".to_string(),
+                    summary: vec![ReasoningItemReasoningSummary::SummaryText {
+                        text: "OpenAI reasoning summary".to_string(),
+                    }],
+                    content: None,
+                    encrypted_content: Some("openai-encrypted-content".to_string()),
+                },
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "continue".to_string(),
+                    }],
+                    phase: None,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let request =
+            build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
+                .expect("request");
+
+        assert_eq!(
+            request.messages,
+            vec![ClaudeMessage {
+                role: ClaudeMessageRole::User,
+                content: vec![ClaudeContentBlock::Text {
+                    text: "continue".to_string(),
+                    cache_control: None,
+                }],
+            }]
+        );
+    }
+
+    #[test]
+    fn builds_claude_history_without_summaryless_openai_encrypted_reasoning_as_signature() {
+        let prompt = Prompt {
+            input: vec![ResponseItem::Reasoning {
+                id: "rs_1".to_string(),
+                summary: Vec::new(),
+                content: None,
+                encrypted_content: Some("openai-encrypted-content".to_string()),
+            }],
+            ..Default::default()
+        };
+
+        let request =
+            build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
+                .expect("request");
+
+        assert!(
+            request.messages.iter().all(|message| message
+                .content
+                .iter()
+                .all(|block| !matches!(block, ClaudeContentBlock::Thinking { .. }))),
+            "OpenAI encrypted reasoning must not be replayed as Claude thinking signature"
+        );
+    }
+
+    #[test]
+    fn builds_claude_history_with_omitted_thinking_signature_only_block() {
+        let prompt = Prompt {
+            input: vec![ResponseItem::Reasoning {
+                id: "msg_1_reasoning_0".to_string(),
+                summary: Vec::new(),
+                content: Some(vec![ReasoningItemContent::ReasoningText {
+                    text: String::new(),
+                }]),
+                encrypted_content: Some("claude-thinking-signature".to_string()),
+            }],
+            ..Default::default()
+        };
+
+        let request =
+            build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
+                .expect("request");
+
+        assert_eq!(
+            request.messages,
+            vec![ClaudeMessage {
+                role: ClaudeMessageRole::Assistant,
+                content: vec![ClaudeContentBlock::Thinking {
+                    thinking: String::new(),
+                    signature: Some("claude-thinking-signature".to_string()),
+                }],
+            }]
+        );
+    }
+
+    #[test]
+    fn builds_claude_history_without_openai_reasoning_as_thinking_block() {
+        let prompt = Prompt {
+            input: vec![ResponseItem::Reasoning {
+                id: "rs_1".to_string(),
+                summary: vec![ReasoningItemReasoningSummary::SummaryText {
+                    text: "OpenAI reasoning summary".to_string(),
+                }],
+                content: Some(vec![ReasoningItemContent::ReasoningText {
+                    text: "visible reasoning".to_string(),
+                }]),
+                encrypted_content: Some("openai-encrypted-content".to_string()),
+            }],
+            ..Default::default()
+        };
+
+        let request =
+            build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
+                .expect("request");
+
+        assert!(
+            request.messages.iter().all(|message| message
+                .content
+                .iter()
+                .all(|block| !matches!(block, ClaudeContentBlock::Thinking { .. }))),
+            "OpenAI reasoning content must not be replayed as Claude thinking"
         );
     }
 

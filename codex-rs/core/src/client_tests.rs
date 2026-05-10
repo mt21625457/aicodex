@@ -7,6 +7,7 @@ use super::X_CODEX_PARENT_THREAD_ID_HEADER;
 use super::X_CODEX_TURN_METADATA_HEADER;
 use super::X_CODEX_WINDOW_ID_HEADER;
 use super::X_OPENAI_SUBAGENT_HEADER;
+use super::strip_reasoning_content_for_responses_input;
 use codex_api::ApiError;
 use codex_api::ResponseEvent;
 use codex_app_server_protocol::AuthMode;
@@ -16,6 +17,8 @@ use codex_model_provider_info::create_oss_provider_with_base_url;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::ReasoningItemContent;
+use codex_protocol::models::ReasoningItemReasoningSummary;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::InternalSessionSource;
@@ -193,6 +196,111 @@ fn output_message(id: &str, text: &str) -> ResponseItem {
         }],
         phase: None,
     }
+}
+
+#[test]
+fn strips_provider_specific_reasoning_state_before_responses_serialization() {
+    let mut input = vec![ResponseItem::Reasoning {
+        id: "msg_1_reasoning_0".to_string(),
+        summary: vec![ReasoningItemReasoningSummary::SummaryText {
+            text: "summary".to_string(),
+        }],
+        content: Some(vec![ReasoningItemContent::ReasoningText {
+            text: "raw chain of thought".to_string(),
+        }]),
+        encrypted_content: Some("encrypted-reasoning".to_string()),
+    }];
+
+    strip_reasoning_content_for_responses_input(&mut input);
+
+    let serialized = serde_json::to_value(&input[0]).expect("serialize reasoning item");
+    assert_eq!(serialized["type"], "reasoning");
+    assert_eq!(serialized["summary"][0]["text"].as_str(), Some("summary"));
+    assert!(
+        serialized.get("content").is_none(),
+        "raw reasoning content must not be replayed as Responses input: {serialized}"
+    );
+    assert!(
+        serialized.get("encrypted_content").is_none(),
+        "non-OpenAI reasoning signatures must not be replayed as Responses encrypted_content: {serialized}"
+    );
+}
+
+#[test]
+fn preserves_openai_encrypted_reasoning_state_without_raw_content_for_responses_serialization() {
+    let mut input = vec![ResponseItem::Reasoning {
+        id: "rs_1".to_string(),
+        summary: vec![ReasoningItemReasoningSummary::SummaryText {
+            text: "summary".to_string(),
+        }],
+        content: None,
+        encrypted_content: Some("encrypted-reasoning".to_string()),
+    }];
+
+    strip_reasoning_content_for_responses_input(&mut input);
+
+    let serialized = serde_json::to_value(&input[0]).expect("serialize reasoning item");
+    assert_eq!(serialized["type"], "reasoning");
+    assert_eq!(
+        serialized["encrypted_content"].as_str(),
+        Some("encrypted-reasoning")
+    );
+    assert_eq!(serialized["summary"][0]["text"].as_str(), Some("summary"));
+    assert!(
+        serialized.get("content").is_none(),
+        "Responses encrypted reasoning handoff should not include raw content: {serialized}"
+    );
+}
+
+#[test]
+fn preserves_openai_encrypted_reasoning_state_with_raw_content_for_responses_serialization() {
+    let mut input = vec![ResponseItem::Reasoning {
+        id: "rs_1".to_string(),
+        summary: vec![ReasoningItemReasoningSummary::SummaryText {
+            text: "summary".to_string(),
+        }],
+        content: Some(vec![ReasoningItemContent::ReasoningText {
+            text: "raw chain of thought".to_string(),
+        }]),
+        encrypted_content: Some("encrypted-reasoning".to_string()),
+    }];
+
+    strip_reasoning_content_for_responses_input(&mut input);
+
+    let serialized = serde_json::to_value(&input[0]).expect("serialize reasoning item");
+    assert_eq!(serialized["type"], "reasoning");
+    assert_eq!(
+        serialized["encrypted_content"].as_str(),
+        Some("encrypted-reasoning")
+    );
+    assert!(
+        serialized.get("content").is_none(),
+        "OpenAI raw reasoning content must be removed while preserving encrypted handoff: {serialized}"
+    );
+}
+
+#[test]
+fn strips_unknown_raw_reasoning_state_before_responses_serialization() {
+    let mut input = vec![ResponseItem::Reasoning {
+        id: String::new(),
+        summary: Vec::new(),
+        content: Some(vec![ReasoningItemContent::ReasoningText {
+            text: "raw provider reasoning".to_string(),
+        }]),
+        encrypted_content: Some("provider-specific-state".to_string()),
+    }];
+
+    strip_reasoning_content_for_responses_input(&mut input);
+
+    let serialized = serde_json::to_value(&input[0]).expect("serialize reasoning item");
+    assert!(
+        serialized.get("content").is_none(),
+        "unknown-origin raw reasoning content must not be replayed as Responses input: {serialized}"
+    );
+    assert!(
+        serialized.get("encrypted_content").is_none(),
+        "unknown-origin raw reasoning state must not be replayed as OpenAI encrypted_content: {serialized}"
+    );
 }
 
 async fn replay_until_cancelled(temp: &TempDir) -> anyhow::Result<RolloutTrace> {

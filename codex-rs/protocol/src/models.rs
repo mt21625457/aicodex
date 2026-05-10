@@ -763,6 +763,8 @@ pub enum ResponseItem {
         #[serde(default, skip_serializing_if = "should_serialize_reasoning_content")]
         #[ts(optional)]
         content: Option<Vec<ReasoningItemContent>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         encrypted_content: Option<String>,
     },
     LocalShellCall {
