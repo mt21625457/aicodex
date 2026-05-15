@@ -1,6 +1,5 @@
 use super::ClaudeMessagesToolOptions;
 use super::ClaudeWebSearchToolKind;
-use super::ConfiguredToolSpec;
 use super::ResponsesApiNamespace;
 use super::ResponsesApiWebSearchFilters;
 use super::ResponsesApiWebSearchUserLocation;
@@ -14,7 +13,7 @@ use crate::ResponsesApiTool;
 use crate::claude_tool_name;
 use crate::create_tools_json_for_claude_messages;
 use crate::create_tools_json_for_responses_api;
-use crate::dynamic_tool_to_loadable_tool_spec;
+use crate::dynamic_tool_to_responses_api_tool;
 use codex_protocol::config_types::WebSearchContextSize;
 use codex_protocol::config_types::WebSearchFilters as ConfigWebSearchFilters;
 use codex_protocol::config_types::WebSearchUserLocation as ConfigWebSearchUserLocation;
@@ -65,7 +64,6 @@ fn tool_spec_name_covers_all_variants() {
         .name(),
         "tool_search"
     );
-    assert_eq!(ToolSpec::LocalShell {}.name(), "local_shell");
     assert_eq!(
         ToolSpec::ImageGeneration {
             output_format: "png".to_string(),
@@ -96,29 +94,6 @@ fn tool_spec_name_covers_all_variants() {
         })
         .name(),
         "exec"
-    );
-}
-
-#[test]
-fn configured_tool_spec_name_delegates_to_tool_spec() {
-    assert_eq!(
-        ConfiguredToolSpec::new(
-            ToolSpec::Function(ResponsesApiTool {
-                name: "lookup_order".to_string(),
-                description: "Look up an order".to_string(),
-                strict: false,
-                defer_loading: None,
-                parameters: JsonSchema::object(
-                    BTreeMap::new(),
-                    /*required*/ None,
-                    /*additional_properties*/ None
-                ),
-                output_schema: None,
-            }),
-            /*supports_parallel_tool_calls*/ true,
-        )
-        .name(),
-        "lookup_order"
     );
 }
 
@@ -345,7 +320,6 @@ fn create_tools_json_for_claude_messages_flattens_supported_tools() {
                 Some(AdditionalProperties::Boolean(false)),
             ),
         },
-        ToolSpec::LocalShell {},
         ToolSpec::Freeform(FreeformTool {
             name: "apply_patch".to_string(),
             description: "Apply a patch".to_string(),
@@ -369,7 +343,6 @@ fn create_tools_json_for_claude_messages_flattens_supported_tools() {
             "lookup_order",
             "mcp__demo__search",
             "tool_search",
-            "local_shell",
             "apply_patch"
         ]
     );
@@ -406,19 +379,6 @@ fn create_tools_json_for_claude_messages_flattens_supported_tools() {
         })
     );
 
-    let local_shell = claude_tool(&result, "local_shell");
-    assert_required_field(local_shell, "command");
-    assert_property_description_contains(
-        local_shell,
-        "command",
-        "Command and arguments to execute locally.",
-    );
-    assert_property_description_contains(
-        local_shell,
-        "workdir",
-        "Optional working directory for the command.",
-    );
-
     let apply_patch = claude_tool(&result, "apply_patch");
     assert_required_field(apply_patch, "input");
     assert_tool_description_contains(
@@ -440,7 +400,7 @@ fn create_tools_json_for_claude_messages_flattens_supported_tools() {
         crate::ClaudeToolCallKind::ToolSearch
     );
     assert_eq!(
-        result.tool_call_info[4].kind,
+        result.tool_call_info[3].kind,
         crate::ClaudeToolCallKind::Custom
     );
 }
@@ -481,7 +441,6 @@ fn create_tools_json_for_claude_messages_preserves_representative_tool_contracts
                 "The shell script to execute in the user's default shell",
             )],
         ),
-        ToolSpec::LocalShell {},
         test_function_tool(
             "request_permissions",
             "Request more permissions",
@@ -556,14 +515,6 @@ fn create_tools_json_for_claude_messages_preserves_representative_tool_contracts
         "The shell script to execute in the user's default shell",
     );
 
-    let local_shell = claude_tool(&result, "local_shell");
-    assert_required_field(local_shell, "command");
-    assert_property_description_contains(
-        local_shell,
-        "command",
-        "Command and arguments to execute locally.",
-    );
-
     let request_permissions = claude_tool(&result, "request_permissions");
     assert_required_field(request_permissions, "permissions");
 
@@ -603,7 +554,7 @@ fn create_tools_json_for_claude_messages_preserves_representative_tool_contracts
 
 #[test]
 fn create_tools_json_for_claude_messages_preserves_dynamic_tool_schema() {
-    let dynamic_tool = dynamic_tool_to_loadable_tool_spec(&DynamicToolSpec {
+    let dynamic_tool = DynamicToolSpec {
         namespace: Some("codex_app".to_string()),
         name: "lookup_order".to_string(),
         description: "Look up an order".to_string(),
@@ -619,11 +570,17 @@ fn create_tools_json_for_claude_messages_preserves_dynamic_tool_schema() {
             "additionalProperties": false
         }),
         defer_loading: false,
-    })
-    .expect("convert dynamic tool");
+    };
+    let dynamic_tool = ToolSpec::Namespace(ResponsesApiNamespace {
+        name: "codex_app".to_string(),
+        description: "Dynamic tools".to_string(),
+        tools: vec![ResponsesApiNamespaceTool::Function(
+            dynamic_tool_to_responses_api_tool(&dynamic_tool).expect("convert dynamic tool"),
+        )],
+    });
 
-    let result = create_tools_json_for_claude_messages(&[ToolSpec::from(dynamic_tool)])
-        .expect("serialize dynamic tool");
+    let result =
+        create_tools_json_for_claude_messages(&[dynamic_tool]).expect("serialize dynamic tool");
 
     let claude_name = claude_tool_name(Some("codex_app"), "lookup_order");
     let tool = claude_tool(&result, &claude_name);

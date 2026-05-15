@@ -3,8 +3,8 @@ use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::handlers::parse_arguments;
+use crate::tools::registry::ToolExecutor;
 use crate::tools::registry::ToolHandler;
-use crate::tools::registry::ToolKind;
 use crate::web_search::web_search_action_detail;
 use codex_login::default_client::build_reqwest_client;
 use codex_protocol::items::TurnItem;
@@ -29,7 +29,6 @@ const MAX_WEB_SEARCH_QUERIES: usize = 5;
 const MAX_RESULTS_PER_QUERY: usize = 5;
 
 pub struct WebSearchHandler {
-    spec: ToolSpec,
     endpoint: Url,
     client: reqwest::Client,
     allowed_domains: Vec<String>,
@@ -41,7 +40,6 @@ impl WebSearchHandler {
             .expect("built-in DuckDuckGo HTML endpoint must parse");
         let allowed_domains = allowed_domains_from_spec(&spec);
         Self {
-            spec,
             endpoint,
             client: build_reqwest_client(),
             allowed_domains,
@@ -52,7 +50,6 @@ impl WebSearchHandler {
     fn new_for_test(spec: ToolSpec, endpoint: Url, client: reqwest::Client) -> Self {
         let allowed_domains = allowed_domains_from_spec(&spec);
         Self {
-            spec,
             endpoint,
             client,
             allowed_domains,
@@ -87,19 +84,12 @@ struct WebSearchResult {
     snippet: String,
 }
 
-impl ToolHandler for WebSearchHandler {
+#[async_trait::async_trait]
+impl ToolExecutor<ToolInvocation> for WebSearchHandler {
     type Output = FunctionToolOutput;
 
     fn tool_name(&self) -> ToolName {
         ToolName::plain(WEB_SEARCH_TOOL_NAME)
-    }
-
-    fn spec(&self) -> Option<ToolSpec> {
-        Some(self.spec.clone())
-    }
-
-    fn kind(&self) -> ToolKind {
-        ToolKind::Function
     }
 
     async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
@@ -145,6 +135,8 @@ impl ToolHandler for WebSearchHandler {
         Ok(FunctionToolOutput::from_text(text, Some(true)))
     }
 }
+
+impl ToolHandler for WebSearchHandler {}
 
 fn allowed_domains_from_spec(spec: &ToolSpec) -> Vec<String> {
     let ToolSpec::WebSearch { filters, .. } = spec else {

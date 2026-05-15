@@ -96,7 +96,7 @@ async fn run_web_searches_uses_configured_endpoint_and_returns_results() {
 }
 
 #[test]
-fn handler_keeps_web_search_spec_and_allowed_domains() {
+fn handler_uses_web_search_spec_for_allowed_domains_without_exposing_duplicate_spec() {
     let spec = ToolSpec::WebSearch {
         external_web_access: Some(true),
         filters: Some(ResponsesApiWebSearchFilters {
@@ -107,8 +107,8 @@ fn handler_keeps_web_search_spec_and_allowed_domains() {
         search_content_types: None,
     };
     let endpoint = Url::parse("https://example.test/html/").expect("endpoint");
-    let handler = WebSearchHandler::new_for_test(spec.clone(), endpoint, reqwest::Client::new());
+    let handler = WebSearchHandler::new_for_test(spec, endpoint, reqwest::Client::new());
 
-    assert_eq!(handler.spec().as_ref(), Some(&spec));
+    assert_eq!(handler.spec(), None);
     assert_eq!(handler.allowed_domains, vec!["example.com"]);
 }

@@ -20,8 +20,30 @@ use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn window_id_advances_after_compact_persists_on_resume_and_resets_on_fork() -> Result<()> {
+#[test]
+fn window_id_advances_after_compact_persists_on_resume_and_resets_on_fork() -> Result<()> {
+    let handle = std::thread::Builder::new()
+        .name("window_id_advances_after_compact_persists_on_resume_and_resets_on_fork".to_string())
+        .stack_size(/*size*/ 8 * 1024 * 1024)
+        .spawn(|| -> Result<()> {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(Box::pin(
+                window_id_advances_after_compact_persists_on_resume_and_resets_on_fork_inner(),
+            ))
+        })?;
+
+    match handle.join() {
+        Ok(result) => result,
+        Err(_) => Err(anyhow::anyhow!(
+            "window_id_advances_after_compact_persists_on_resume_and_resets_on_fork thread panicked"
+        )),
+    }
+}
+
+async fn window_id_advances_after_compact_persists_on_resume_and_resets_on_fork_inner() -> Result<()>
+{
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;

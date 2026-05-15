@@ -63,11 +63,10 @@ pub(crate) struct SessionConfiguration {
     /// When to escalate for approval for execution
     pub(super) approval_policy: Constrained<AskForApproval>,
     pub(super) approvals_reviewer: ApprovalsReviewer,
-    /// Canonical permission profile for the session.
-    pub(super) permission_profile: Constrained<PermissionProfile>,
-    /// Named or implicit built-in permissions profile selected from config, if
-    /// any.
-    pub(super) active_permission_profile: Option<ActivePermissionProfile>,
+    /// Permission profile state for the session. Keep the constrained profile
+    /// and selected profile id in sync by using the methods below instead of
+    /// mutating the fields independently.
+    pub(super) permission_profile_state: PermissionProfileState,
     pub(super) windows_sandbox_level: WindowsSandboxLevel,
 
     /// Absolute working directory that should be treated as the *root* of the
@@ -103,12 +102,32 @@ impl SessionConfiguration {
         &self.codex_home
     }
 
+    pub(super) fn permission_profile_state(&self) -> &PermissionProfileState {
+        &self.permission_profile_state
+    }
+
     pub(super) fn permission_profile(&self) -> PermissionProfile {
-        self.permission_profile.get().clone()
+        self.permission_profile_state.permission_profile().clone()
     }
 
     pub(super) fn active_permission_profile(&self) -> Option<ActivePermissionProfile> {
-        self.active_permission_profile.clone()
+        self.permission_profile_state.active_permission_profile()
+    }
+
+    pub(super) fn apply_permission_profile_to_permissions(
+        &self,
+        permissions: &mut crate::config::Permissions,
+    ) {
+        permissions.set_permission_profile_state(self.permission_profile_state.clone());
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_permission_profile_for_tests(
+        &mut self,
+        permission_profile: PermissionProfile,
+    ) -> ConstraintResult<()> {
+        self.permission_profile_state
+            .set_legacy_permission_profile(permission_profile)
     }
 
     pub(super) fn sandbox_policy(&self) -> SandboxPolicy {
@@ -117,7 +136,7 @@ impl SessionConfiguration {
             .unwrap_or_else(|_| {
                 let file_system_sandbox_policy = self.file_system_sandbox_policy();
                 codex_sandboxing::compatibility_sandbox_policy_for_permission_profile(
-                    self.permission_profile.get(),
+                    self.permission_profile_state.permission_profile(),
                     &file_system_sandbox_policy,
                     self.network_sandbox_policy(),
                     &self.cwd,
@@ -126,11 +145,13 @@ impl SessionConfiguration {
     }
 
     pub(super) fn file_system_sandbox_policy(&self) -> FileSystemSandboxPolicy {
-        self.permission_profile.get().file_system_sandbox_policy()
+        self.permission_profile().file_system_sandbox_policy()
     }
 
     pub(super) fn network_sandbox_policy(&self) -> NetworkSandboxPolicy {
-        self.permission_profile.get().network_sandbox_policy()
+        self.permission_profile_state
+            .permission_profile()
+            .network_sandbox_policy()
     }
 
     pub(super) fn thread_config_snapshot(&self) -> ThreadConfigSnapshot {
@@ -227,16 +248,16 @@ impl SessionConfiguration {
             let active_permission_profile =
                 updates.active_permission_profile.clone().or_else(|| {
                     if permission_profile == self.permission_profile() {
-                        self.active_permission_profile.clone()
+                        self.active_permission_profile()
                     } else {
                         None
                     }
                 });
             next_configuration.set_permission_profile_projection(
                 permission_profile,
+                active_permission_profile,
                 Some(&current_file_system_sandbox_policy),
             )?;
-            next_configuration.active_permission_profile = active_permission_profile;
         } else if let Some(sandbox_policy) = updates.sandbox_policy.clone() {
             let file_system_sandbox_policy =
                 FileSystemSandboxPolicy::from_legacy_sandbox_policy_preserving_deny_entries(
@@ -245,14 +266,15 @@ impl SessionConfiguration {
                     &current_file_system_sandbox_policy,
                 );
             let network_sandbox_policy = NetworkSandboxPolicy::from(&sandbox_policy);
-            next_configuration.permission_profile.set(
-                PermissionProfile::from_runtime_permissions_with_enforcement(
-                    SandboxEnforcement::from_legacy_sandbox_policy(&sandbox_policy),
-                    &file_system_sandbox_policy,
-                    network_sandbox_policy,
-                ),
-            )?;
-            next_configuration.active_permission_profile = None;
+            next_configuration
+                .permission_profile_state
+                .set_legacy_permission_profile(
+                    PermissionProfile::from_runtime_permissions_with_enforcement(
+                        SandboxEnforcement::from_legacy_sandbox_policy(&sandbox_policy),
+                        &file_system_sandbox_policy,
+                        network_sandbox_policy,
+                    ),
+                )?;
         } else if cwd_changed
             && file_system_policy_matches_legacy
             && file_system_policy_has_rebindable_project_root_write
@@ -266,13 +288,15 @@ impl SessionConfiguration {
                     &next_configuration.cwd,
                     &current_file_system_sandbox_policy,
                 );
-            next_configuration.permission_profile.set(
-                PermissionProfile::from_runtime_permissions_with_enforcement(
-                    SandboxEnforcement::from_legacy_sandbox_policy(&current_sandbox_policy),
-                    &file_system_sandbox_policy,
-                    current_network_sandbox_policy,
-                ),
-            )?;
+            next_configuration
+                .permission_profile_state
+                .set_legacy_permission_profile(
+                    PermissionProfile::from_runtime_permissions_with_enforcement(
+                        SandboxEnforcement::from_legacy_sandbox_policy(&current_sandbox_policy),
+                        &file_system_sandbox_policy,
+                        current_network_sandbox_policy,
+                    ),
+                )?;
         }
         if let Some(app_server_client_name) = updates.app_server_client_name.clone() {
             next_configuration.app_server_client_name = Some(app_server_client_name);
@@ -286,6 +310,7 @@ impl SessionConfiguration {
     fn set_permission_profile_projection(
         &mut self,
         permission_profile: PermissionProfile,
+        active_permission_profile: Option<ActivePermissionProfile>,
         preserve_deny_reads_from: Option<&FileSystemSandboxPolicy>,
     ) -> ConstraintResult<()> {
         let enforcement = permission_profile.enforcement();
@@ -301,8 +326,11 @@ impl SessionConfiguration {
                 &file_system_sandbox_policy,
                 network_sandbox_policy,
             );
-        self.permission_profile.set(effective_permission_profile)?;
-        Ok(())
+        self.permission_profile_state.set_active_permission_profile(
+            effective_permission_profile,
+            active_permission_profile,
+            Vec::new(),
+        )
     }
 }
 
@@ -364,6 +392,7 @@ impl Session {
         skills_manager: Arc<SkillsManager>,
         plugins_manager: Arc<PluginsManager>,
         mcp_manager: Arc<McpManager>,
+        extensions: Arc<codex_extension_api::ExtensionRegistry<crate::config::Config>>,
         agent_control: AgentControl,
         environment_manager: Arc<EnvironmentManager>,
         analytics_events_client: Option<AnalyticsEventsClient>,
@@ -563,19 +592,6 @@ impl Session {
                     }),
                 });
             }
-            if crate::config::uses_deprecated_instructions_file(&config.config_layer_stack) {
-                post_session_configured_events.push(Event {
-                    id: INITIAL_SUBMIT_ID.to_owned(),
-                    msg: EventMsg::DeprecationNotice(DeprecationNoticeEvent {
-                        summary: "`experimental_instructions_file` is deprecated and ignored. Use `model_instructions_file` instead."
-                            .to_string(),
-                        details: Some(
-                            "Move the setting to `model_instructions_file` in config.toml (or under a profile) to load instructions from a file."
-                                .to_string(),
-                        ),
-                    }),
-                });
-            }
             for message in &config.startup_warnings {
                 post_session_configured_events.push(Event {
                     id: "".to_owned(),
@@ -768,7 +784,7 @@ impl Session {
                     let (network_proxy, session_network_proxy) = Self::start_managed_network_proxy(
                         spec,
                         current_exec_policy.as_ref(),
-                        config.permissions.permission_profile.get(),
+                        config.permissions.permission_profile(),
                         network_policy_decider.as_ref().map(Arc::clone),
                         blocked_request_observer.as_ref().map(Arc::clone),
                         managed_network_requirements_configured,
@@ -810,6 +826,18 @@ impl Session {
                 SessionId::from(thread_id)
             };
             let agent_control = agent_control.with_session_id(session_id);
+            let session_extension_data =
+                codex_extension_api::ExtensionData::new(session_id.to_string());
+            let thread_extension_data =
+                codex_extension_api::ExtensionData::new(thread_id.to_string());
+            for contributor in extensions.thread_lifecycle_contributors() {
+                contributor.on_thread_start(codex_extension_api::ThreadStartInput {
+                    config: config.as_ref(),
+                    session_store: &session_extension_data,
+                    thread_store: &thread_extension_data,
+                });
+            }
+
             let services = SessionServices {
                 // Initialize the MCP connection manager with an uninitialized
                 // instance. It will be replaced with one created via
@@ -818,10 +846,12 @@ impl Session {
                 // before any MCP-related events. It is reasonable to consider
                 // changing this to use Option or OnceCell, though the current
                 // setup is straightforward enough and performs well.
-                mcp_connection_manager: Arc::new(RwLock::new(McpConnectionManager::new_uninitialized(
-                    &config.permissions.approval_policy,
-                    &config.permissions.permission_profile,
-                ))),
+                mcp_connection_manager: Arc::new(RwLock::new(
+                    McpConnectionManager::new_uninitialized_with_permission_profile(
+                        &config.permissions.approval_policy,
+                        config.permissions.permission_profile(),
+                    ),
+                )),
                 mcp_startup_cancellation_token: Mutex::new(CancellationToken::new()),
                 unified_exec_manager: UnifiedExecProcessManager::new(
                     config.background_terminal_max_timeout,
@@ -845,6 +875,10 @@ impl Session {
                 skills_manager,
                 plugins_manager: Arc::clone(&plugins_manager),
                 mcp_manager: Arc::clone(&mcp_manager),
+                extensions,
+                // TODO(jif): extract session to share between sub-agents
+                session_extension_data,
+                thread_extension_data,
                 agent_control,
                 network_proxy,
                 network_approval: Arc::clone(&network_approval),
@@ -922,7 +956,9 @@ impl Session {
                     initial_messages,
                     network_proxy: session_network_proxy.filter(|_| {
                         Self::managed_network_proxy_active_for_permission_profile(
-                            session_configuration.permission_profile.get(),
+                            session_configuration
+                                .permission_profile_state()
+                                .permission_profile(),
                         )
                     }),
                     rollout_path,
@@ -946,6 +982,14 @@ impl Session {
             let host_owned_codex_apps_enabled = config
                 .features
                 .apps_enabled_for_auth(auth.as_ref().is_some_and(|auth| auth.uses_codex_backend()));
+            let client_elicitation_capability = if config.features.enabled(Feature::AuthElicitation) {
+                ElicitationCapability {
+                    form: Some(FormElicitationCapability::default()),
+                    url: Some(UrlElicitationCapability::default()),
+                }
+            } else {
+                ElicitationCapability::default()
+            };
             {
                 let mut cancel_guard = sess.services.mcp_startup_cancellation_token.lock().await;
                 cancel_guard.cancel();
@@ -988,6 +1032,7 @@ impl Session {
                 config.codex_home.to_path_buf(),
                 codex_apps_tools_cache_key(auth),
                 host_owned_codex_apps_enabled,
+                client_elicitation_capability,
                 tool_plugin_provenance,
                 auth,
                 Some(sess.mcp_elicitation_reviewer()),

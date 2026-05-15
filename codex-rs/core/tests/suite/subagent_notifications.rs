@@ -305,8 +305,29 @@ async fn subagent_notification_is_included_without_wait() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn spawned_child_receives_forked_parent_context() -> Result<()> {
+#[test]
+fn spawned_child_receives_forked_parent_context() -> Result<()> {
+    let handle = std::thread::Builder::new()
+        .name("spawned_child_receives_forked_parent_context".to_string())
+        .stack_size(/*size*/ 8 * 1024 * 1024)
+        .spawn(|| -> Result<()> {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(Box::pin(
+                spawned_child_receives_forked_parent_context_inner(),
+            ))
+        })?;
+
+    match handle.join() {
+        Ok(result) => result,
+        Err(_) => Err(anyhow::anyhow!(
+            "spawned_child_receives_forked_parent_context thread panicked"
+        )),
+    }
+}
+
+async fn spawned_child_receives_forked_parent_context_inner() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -423,8 +444,29 @@ async fn spawn_agent_requested_model_and_reasoning_override_inherited_settings_w
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn spawned_multi_agent_v2_child_inherits_parent_developer_context() -> Result<()> {
+#[test]
+fn spawned_multi_agent_v2_child_inherits_parent_developer_context() -> Result<()> {
+    let handle = std::thread::Builder::new()
+        .name("spawned_multi_agent_v2_child_inherits_parent_developer_context".to_string())
+        .stack_size(/*size*/ 8 * 1024 * 1024)
+        .spawn(|| -> Result<()> {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(Box::pin(
+                spawned_multi_agent_v2_child_inherits_parent_developer_context_inner(),
+            ))
+        })?;
+
+    match handle.join() {
+        Ok(result) => result,
+        Err(_) => Err(anyhow::anyhow!(
+            "spawned_multi_agent_v2_child_inherits_parent_developer_context thread panicked"
+        )),
+    }
+}
+
+async fn spawned_multi_agent_v2_child_inherits_parent_developer_context_inner() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -508,8 +550,29 @@ async fn spawned_multi_agent_v2_child_inherits_parent_developer_context() -> Res
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn skills_toggle_skips_instructions_for_parent_and_spawned_child() -> Result<()> {
+#[test]
+fn skills_toggle_skips_instructions_for_parent_and_spawned_child() -> Result<()> {
+    let handle = std::thread::Builder::new()
+        .name("skills_toggle_skips_instructions_for_parent_and_spawned_child".to_string())
+        .stack_size(/*size*/ 8 * 1024 * 1024)
+        .spawn(|| -> Result<()> {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(Box::pin(
+                skills_toggle_skips_instructions_for_parent_and_spawned_child_inner(),
+            ))
+        })?;
+
+    match handle.join() {
+        Ok(result) => result,
+        Err(_) => Err(anyhow::anyhow!(
+            "skills_toggle_skips_instructions_for_parent_and_spawned_child thread panicked"
+        )),
+    }
+}
+
+async fn skills_toggle_skips_instructions_for_parent_and_spawned_child_inner() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;

@@ -19,7 +19,8 @@ impl App {
             .chat_widget
             .config_ref()
             .permissions
-            .permission_profile();
+            .permission_profile()
+            .clone();
         let active_permission_profile = self
             .chat_widget
             .config_ref()
@@ -101,6 +102,7 @@ impl App {
             .config_ref()
             .permissions
             .permission_profile()
+            .clone()
     }
 
     fn current_active_permission_profile(&self) -> Option<ActivePermissionProfile> {
@@ -350,11 +352,12 @@ mod tests {
             .chat_widget
             .config_ref()
             .permissions
-            .permission_profile();
+            .permission_profile()
+            .clone();
         assert_eq!(session.permission_profile, expected_permission_profile);
         assert_ne!(
             session.permission_profile,
-            app.config.permissions.permission_profile(),
+            app.config.permissions.permission_profile().clone(),
             "thread/read fallback must use the active widget permissions rather than stale app \
              config defaults"
         );

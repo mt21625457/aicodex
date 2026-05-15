@@ -1100,7 +1100,7 @@ fn configure_deepseek_claude_provider(config: &mut Config) {
 
 fn configure_claude_provider_with_apply_patch(config: &mut Config) {
     configure_claude_provider(config);
-    config.include_apply_patch_tool = true;
+    config.model = Some("gpt-5.4".to_string());
 }
 
 fn configure_claude_provider_with_apply_patch_streaming(config: &mut Config) {

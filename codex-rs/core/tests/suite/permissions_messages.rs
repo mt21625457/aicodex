@@ -377,8 +377,27 @@ async fn resume_replays_permissions_messages() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn resume_and_fork_append_permissions_messages() -> Result<()> {
+#[test]
+fn resume_and_fork_append_permissions_messages() -> Result<()> {
+    let handle = std::thread::Builder::new()
+        .name("resume_and_fork_append_permissions_messages".to_string())
+        .stack_size(/*size*/ 8 * 1024 * 1024)
+        .spawn(|| -> Result<()> {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(Box::pin(resume_and_fork_append_permissions_messages_inner()))
+        })?;
+
+    match handle.join() {
+        Ok(result) => result,
+        Err(_) => Err(anyhow::anyhow!(
+            "resume_and_fork_append_permissions_messages thread panicked"
+        )),
+    }
+}
+
+async fn resume_and_fork_append_permissions_messages_inner() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -542,8 +561,9 @@ async fn permissions_message_includes_writable_roots() -> Result<()> {
     .await;
     let writable = TempDir::new()?;
     let writable_root = AbsolutePathBuf::try_from(writable.path())?;
+    let writable_root_for_config = writable_root.clone();
     let permission_profile = PermissionProfile::workspace_write_with(
-        &[writable_root],
+        std::slice::from_ref(&writable_root),
         NetworkSandboxPolicy::Restricted,
         /*exclude_tmpdir_env_var*/ false,
         /*exclude_slash_tmp*/ false,
@@ -555,6 +575,8 @@ async fn permissions_message_includes_writable_roots() -> Result<()> {
             .permissions
             .set_permission_profile(permission_profile)
             .expect("test permission profile should be allowed");
+        let workspace_roots = vec![config.cwd.clone(), writable_root_for_config];
+        config.permissions.set_workspace_roots(workspace_roots);
         config.config_layer_stack = ConfigLayerStack::default();
     });
     let test = builder.build(&server).await?;

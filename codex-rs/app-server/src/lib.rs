@@ -8,7 +8,6 @@ use codex_config::RemoteThreadConfigLoader;
 use codex_config::ThreadConfigLoader;
 use codex_core::config::Config;
 use codex_core::resolve_installation_id;
-use codex_features::Feature;
 use codex_login::AuthManager;
 use codex_utils_cli::CliConfigOverrides;
 use std::collections::HashMap;
@@ -83,6 +82,7 @@ mod config_manager_service;
 mod connection_rpc_gate;
 mod dynamic_tools;
 mod error_code;
+mod extensions;
 mod filters;
 mod fs_watch;
 mod fuzzy_file_search;
@@ -108,6 +108,7 @@ pub use crate::transport::auth::AppServerWebsocketAuthSettings;
 pub use crate::transport::auth::WebsocketAuthCliMode;
 
 const LOG_FORMAT_ENV_VAR: &str = "LOG_FORMAT";
+const OTEL_SERVICE_NAME: &str = "codex-app-server";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LogFormat {
@@ -126,7 +127,7 @@ fn configured_thread_config_loader(config: &Config) -> Arc<dyn ThreadConfigLoade
 
 /// Control-plane messages from the processor/transport side to the outbound router task.
 ///
-/// `run_main_with_transport` now uses two loops/tasks:
+/// `run_main_with_transport_options` uses two loops/tasks:
 /// - processor loop: handles incoming JSON-RPC and request dispatch
 /// - outbound loop: performs potentially slow writes to per-connection writers
 ///
@@ -373,16 +374,19 @@ pub async fn run_main(
     arg0_paths: Arg0DispatchPaths,
     cli_config_overrides: CliConfigOverrides,
     loader_overrides: LoaderOverrides,
+    strict_config: bool,
     default_analytics_enabled: bool,
 ) -> IoResult<()> {
-    run_main_with_transport(
+    run_main_with_transport_options(
         arg0_paths,
         cli_config_overrides,
         loader_overrides,
+        strict_config,
         default_analytics_enabled,
         AppServerTransport::Stdio,
         SessionSource::VSCode,
         AppServerWebsocketAuthSettings::default(),
+        AppServerRuntimeOptions::default(),
     )
     .await
 }
@@ -396,36 +400,16 @@ pub enum PluginStartupTasks {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AppServerRuntimeOptions {
     pub plugin_startup_tasks: PluginStartupTasks,
+    pub remote_control_enabled: bool,
 }
 
 impl Default for AppServerRuntimeOptions {
     fn default() -> Self {
         Self {
             plugin_startup_tasks: PluginStartupTasks::Start,
+            remote_control_enabled: false,
         }
     }
-}
-
-pub async fn run_main_with_transport(
-    arg0_paths: Arg0DispatchPaths,
-    cli_config_overrides: CliConfigOverrides,
-    loader_overrides: LoaderOverrides,
-    default_analytics_enabled: bool,
-    transport: AppServerTransport,
-    session_source: SessionSource,
-    auth: AppServerWebsocketAuthSettings,
-) -> IoResult<()> {
-    run_main_with_transport_options(
-        arg0_paths,
-        cli_config_overrides,
-        loader_overrides,
-        default_analytics_enabled,
-        transport,
-        session_source,
-        auth,
-        AppServerRuntimeOptions::default(),
-    )
-    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -433,6 +417,7 @@ pub async fn run_main_with_transport_options(
     arg0_paths: Arg0DispatchPaths,
     cli_config_overrides: CliConfigOverrides,
     loader_overrides: LoaderOverrides,
+    strict_config: bool,
     default_analytics_enabled: bool,
     transport: AppServerTransport,
     session_source: SessionSource,
@@ -469,6 +454,7 @@ pub async fn run_main_with_transport_options(
         codex_home.to_path_buf(),
         cli_kv_overrides.clone(),
         loader_overrides,
+        strict_config,
         Default::default(),
         arg0_paths.clone(),
         Arc::new(NoopThreadConfigLoader),
@@ -497,6 +483,10 @@ pub async fn run_main_with_transport_options(
     {
         Ok(config) => (config, true),
         Err(err) => {
+            if strict_config {
+                return Err(err);
+            }
+
             let message = config_warning_from_error("Invalid configuration; using defaults.", &err);
             config_warnings.push(message);
             (
@@ -511,9 +501,30 @@ pub async fn run_main_with_transport_options(
         }
     };
 
-    let state_db_result = rollout_state_db::try_init(&config).await;
-    let state_db_init_error = state_db_result.as_ref().err().map(ToString::to_string);
-    let state_db = state_db_result.ok();
+    let otel = codex_core::otel_init::build_provider(
+        &config,
+        env!("CARGO_PKG_VERSION"),
+        Some(OTEL_SERVICE_NAME),
+        default_analytics_enabled,
+    )
+    .map_err(|e| {
+        std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!("error loading otel config: {e}"),
+        )
+    })?;
+    codex_core::otel_init::record_process_start(otel.as_ref(), OTEL_SERVICE_NAME);
+    codex_core::otel_init::install_sqlite_telemetry(otel.as_ref(), OTEL_SERVICE_NAME);
+    let state_db = match rollout_state_db::try_init(&config).await {
+        Ok(state_db) => Some(state_db),
+        Err(err) => {
+            let state_db_path = codex_state::state_db_path(config.sqlite_home.as_path());
+            return Err(std::io::Error::other(format!(
+                "failed to initialize sqlite state db at {}: {err}",
+                state_db_path.display()
+            )));
+        }
+    };
 
     if should_run_personality_migration {
         let effective_toml = config.config_layer_stack.effective_config();
@@ -578,7 +589,7 @@ pub async fn run_main_with_transport_options(
         });
     }
     if let Some(warning) =
-        codex_core::config::system_bwrap_warning(config.permissions.permission_profile.get())
+        codex_core::config::system_bwrap_warning(config.permissions.permission_profile())
     {
         config_warnings.push(ConfigWarningNotification {
             summary: warning,
@@ -589,19 +600,6 @@ pub async fn run_main_with_transport_options(
     }
 
     let feedback = CodexFeedback::new();
-
-    let otel = codex_core::otel_init::build_provider(
-        &config,
-        env!("CARGO_PKG_VERSION"),
-        Some("codex-app-server"),
-        default_analytics_enabled,
-    )
-    .map_err(|e| {
-        std::io::Error::new(
-            ErrorKind::InvalidData,
-            format!("error loading otel config: {e}"),
-        )
-    })?;
 
     // Install a simple subscriber so `tracing` output is visible. Users can
     // control the log level with `RUST_LOG` and switch to JSON logs with
@@ -643,10 +641,6 @@ pub async fn run_main_with_transport_options(
         }
     }
     let installation_id = resolve_installation_id(&config.codex_home).await?;
-    if let Some(err) = &state_db_init_error {
-        error!("failed to initialize sqlite state db: {err}");
-    }
-
     let transport_shutdown_token = CancellationToken::new();
     let mut transport_accept_handles = Vec::<JoinHandle<()>>::new();
 
@@ -691,15 +685,15 @@ pub async fn run_main_with_transport_options(
     let auth_manager =
         AuthManager::shared_from_config(&config, /*enable_codex_api_key_env*/ false).await;
 
-    let remote_control_config_enabled = config.features.enabled(Feature::RemoteControl);
-    let remote_control_enabled = remote_control_config_enabled && state_db.is_some();
-    if remote_control_config_enabled && state_db.is_none() {
+    let remote_control_requested = runtime_options.remote_control_enabled;
+    let remote_control_enabled = remote_control_requested && state_db.is_some();
+    if remote_control_requested && state_db.is_none() {
         error!("remote control disabled because sqlite state db is unavailable");
     }
     if transport_accept_handles.is_empty() && !remote_control_enabled {
         return Err(std::io::Error::new(
             ErrorKind::InvalidInput,
-            if remote_control_config_enabled && state_db.is_none() {
+            if remote_control_requested && state_db.is_none() {
                 "no transport configured; remote control disabled because sqlite state db is unavailable"
             } else {
                 "no transport configured; use --listen or enable remote control"

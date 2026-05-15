@@ -59,8 +59,6 @@ pub enum ToolSpec {
         description: String,
         parameters: JsonSchema,
     },
-    #[serde(rename = "local_shell")]
-    LocalShell {},
     #[serde(rename = "image_generation")]
     ImageGeneration { output_format: String },
     // TODO: Understand why we get an error on web_search although the API docs
@@ -92,7 +90,6 @@ impl ToolSpec {
             ToolSpec::Function(tool) => tool.name.as_str(),
             ToolSpec::Namespace(namespace) => namespace.name.as_str(),
             ToolSpec::ToolSearch { .. } => "tool_search",
-            ToolSpec::LocalShell {} => "local_shell",
             ToolSpec::ImageGeneration { .. } => "image_generation",
             ToolSpec::WebSearch { .. } => "web_search",
             ToolSpec::Freeform(tool) => tool.name.as_str(),
@@ -106,25 +103,6 @@ impl From<LoadableToolSpec> for ToolSpec {
             LoadableToolSpec::Function(tool) => ToolSpec::Function(tool),
             LoadableToolSpec::Namespace(namespace) => ToolSpec::Namespace(namespace),
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ConfiguredToolSpec {
-    pub spec: ToolSpec,
-    pub supports_parallel_tool_calls: bool,
-}
-
-impl ConfiguredToolSpec {
-    pub fn new(spec: ToolSpec, supports_parallel_tool_calls: bool) -> Self {
-        Self {
-            spec,
-            supports_parallel_tool_calls,
-        }
-    }
-
-    pub fn name(&self) -> &str {
-        self.spec.name()
     }
 }
 
@@ -271,54 +249,6 @@ pub fn create_tools_json_for_claude_messages_with_options(
                     kind: ClaudeToolCallKind::ToolSearch,
                 });
             }
-            ToolSpec::LocalShell {} => {
-                let claude_name =
-                    unique_claude_tool_name(&mut used_names, /*namespace*/ None, tool.name());
-                claude_tools.push(claude_function_tool_json(
-                    &claude_name,
-                    "Runs a local shell command and returns its output.",
-                    json!({
-                        "type": "object",
-                        "properties": {
-                            "command": {
-                                "type": "array",
-                                "description": "Command and arguments to execute locally.",
-                                "items": { "type": "string" }
-                            },
-                            "workdir": {
-                                "type": "string",
-                                "description": "Optional working directory for the command."
-                            },
-                            "timeout_ms": {
-                                "type": "number",
-                                "description": "Optional command timeout in milliseconds."
-                            },
-                            "sandbox_permissions": {
-                                "type": "string",
-                                "description": "Sandbox permissions for the command."
-                            },
-                            "additional_permissions": claude_permission_profile_schema_json(),
-                            "justification": {
-                                "type": "string",
-                                "description": "Optional justification when requesting escalated permissions."
-                            },
-                            "prefix_rule": {
-                                "type": "array",
-                                "description": "Optional command prefix rule for similar future commands.",
-                                "items": { "type": "string" }
-                            }
-                        },
-                        "required": ["command"],
-                        "additionalProperties": false
-                    }),
-                ));
-                tool_call_info.push(ClaudeToolCallInfo {
-                    claude_name,
-                    name: tool.name().to_string(),
-                    namespace: None,
-                    kind: ClaudeToolCallKind::Function,
-                });
-            }
             ToolSpec::WebSearch {
                 filters,
                 user_location,
@@ -461,41 +391,6 @@ fn claude_web_search_function_schema_json() -> Value {
                 "type": "array",
                 "description": "Optional batch of search queries. Use only when several closely related searches are needed.",
                 "items": { "type": "string" }
-            }
-        },
-        "additionalProperties": false
-    })
-}
-
-fn claude_permission_profile_schema_json() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "network": {
-                "type": "object",
-                "properties": {
-                    "enabled": {
-                        "type": "boolean",
-                        "description": "Set to true to request network access."
-                    }
-                },
-                "additionalProperties": false
-            },
-            "file_system": {
-                "type": "object",
-                "properties": {
-                    "read": {
-                        "type": "array",
-                        "description": "Absolute paths to grant read access to.",
-                        "items": { "type": "string" }
-                    },
-                    "write": {
-                        "type": "array",
-                        "description": "Absolute paths to grant write access to.",
-                        "items": { "type": "string" }
-                    }
-                },
-                "additionalProperties": false
             }
         },
         "additionalProperties": false
