@@ -34,6 +34,13 @@ CLAUDE.md
 .claude/
 AGENTS.override.md
 
+# local generated artifacts
+/.playwright-cli/
+/aicodex
+/battle-game/
+/zhisec/
+/zhisec-deploy.tar.gz
+
 # caches
 .cache/
 .turbo/
