@@ -25,8 +25,11 @@ use codex_protocol::permissions::FileSystemSandboxEntry as CoreFileSystemSandbox
 use codex_protocol::permissions::FileSystemSpecialPath as CoreFileSystemSpecialPath;
 use codex_protocol::protocol::AgentStatus as CoreAgentStatus;
 use codex_protocol::protocol::AskForApproval as CoreAskForApproval;
+use codex_protocol::protocol::ContextTokenUsageSource as CoreContextTokenUsageSource;
 use codex_protocol::protocol::GranularApprovalConfig as CoreGranularApprovalConfig;
 use codex_protocol::protocol::NetworkAccess as CoreNetworkAccess;
+use codex_protocol::protocol::TokenUsage as CoreTokenUsage;
+use codex_protocol::protocol::TokenUsageInfo as CoreTokenUsageInfo;
 use codex_protocol::request_permissions::RequestPermissionProfile as CoreRequestPermissionProfile;
 use codex_protocol::user_input::UserInput as CoreUserInput;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -53,6 +56,41 @@ fn absolute_path(path: &str) -> AbsolutePathBuf {
 
 fn test_absolute_path() -> AbsolutePathBuf {
     absolute_path("readable")
+}
+
+#[test]
+fn thread_token_usage_from_core_preserves_context_fields() {
+    let usage = ThreadTokenUsage::from(CoreTokenUsageInfo {
+        total_token_usage: CoreTokenUsage {
+            input_tokens: 1000,
+            cached_input_tokens: 100,
+            output_tokens: 200,
+            reasoning_output_tokens: 50,
+            total_tokens: 1350,
+        },
+        last_token_usage: CoreTokenUsage {
+            input_tokens: 700,
+            cached_input_tokens: 70,
+            output_tokens: 120,
+            reasoning_output_tokens: 30,
+            total_tokens: 920,
+        },
+        context_tokens: Some(777),
+        context_source: Some(CoreContextTokenUsageSource::ClaudeCountTokens),
+        model_context_window: Some(200_000),
+    });
+
+    assert_eq!(usage.context_tokens, Some(777));
+    assert_eq!(
+        usage.context_source,
+        Some(ContextTokenUsageSource::ClaudeCountTokens)
+    );
+    assert_eq!(usage.model_context_window, Some(200_000));
+
+    let json = serde_json::to_value(&usage).expect("token usage should serialize");
+    assert_eq!(json["contextTokens"], json!(777));
+    assert_eq!(json["contextSource"], json!("claudeCountTokens"));
+    assert_eq!(json["modelContextWindow"], json!(200_000));
 }
 
 #[test]

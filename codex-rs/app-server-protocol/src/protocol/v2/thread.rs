@@ -16,6 +16,7 @@ use codex_experimental_api_macros::ExperimentalApi;
 use codex_protocol::config_types::Personality;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::ContextTokenUsageSource as CoreContextTokenUsageSource;
 use codex_protocol::protocol::ThreadGoalStatus as CoreThreadGoalStatus;
 use codex_protocol::protocol::TokenUsage as CoreTokenUsage;
 use codex_protocol::protocol::TokenUsageInfo as CoreTokenUsageInfo;
@@ -547,6 +548,17 @@ v2_enum_from_core! {
     }
 }
 
+v2_enum_from_core! {
+    pub enum ContextTokenUsageSource from CoreContextTokenUsageSource {
+        ProviderUsage,
+        ClaudeCountTokens,
+        DeepseekStreamUsage,
+        LocalEstimate,
+        ContextWindowFull,
+        Replay,
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -1072,6 +1084,9 @@ pub struct ThreadTokenUsageUpdatedNotification {
 pub struct ThreadTokenUsage {
     pub total: TokenUsageBreakdown,
     pub last: TokenUsageBreakdown,
+    #[ts(type = "number | null")]
+    pub context_tokens: Option<i64>,
+    pub context_source: Option<ContextTokenUsageSource>,
     // TODO(aibrahim): make this not optional
     #[ts(type = "number | null")]
     pub model_context_window: Option<i64>,
@@ -1082,6 +1097,8 @@ impl From<CoreTokenUsageInfo> for ThreadTokenUsage {
         Self {
             total: value.total_token_usage.into(),
             last: value.last_token_usage.into(),
+            context_tokens: value.context_tokens,
+            context_source: value.context_source.map(Into::into),
             model_context_window: value.model_context_window,
         }
     }
