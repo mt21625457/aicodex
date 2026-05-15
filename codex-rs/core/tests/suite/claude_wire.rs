@@ -214,6 +214,93 @@ async fn claude_wire_uses_count_tokens_for_post_turn_context_usage() -> anyhow::
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_wire_emits_in_flight_estimate_before_final_context_usage() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    mount_claude_sse_sequence(
+        &server,
+        vec![claude_text_sse_without_usage("msg_1", "done")],
+    )
+    .await;
+    mount_claude_count_tokens_response(
+        &server,
+        ResponseTemplate::new(200).set_body_json(json!({ "input_tokens": 456 })),
+        1,
+    )
+    .await;
+
+    let test = test_codex()
+        .with_config(configure_claude_provider)
+        .build(&server)
+        .await?;
+
+    test.codex
+        .submit(Op::UserTurn {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: "show a running Claude context estimate".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            cwd: test.config.cwd.to_path_buf(),
+            approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
+            sandbox_policy: SandboxPolicy::DangerFullAccess,
+            permission_profile: Some(PermissionProfile::Disabled),
+            model: test.session_configured.model.clone(),
+            effort: None,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
+        })
+        .await?;
+
+    let in_flight = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::TokenCount(payload)
+            if payload.info.as_ref().is_some_and(|info| {
+                info.context_source == Some(ContextTokenUsageSource::InFlightEstimate)
+            }) =>
+        {
+            payload.info.clone()
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!(
+        in_flight.context_source,
+        Some(ContextTokenUsageSource::InFlightEstimate)
+    );
+    assert!(
+        in_flight.context_tokens.is_some_and(|tokens| tokens > 0),
+        "in-flight estimate should include a positive context count: {in_flight:?}"
+    );
+
+    let final_info = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::TokenCount(payload)
+            if payload.info.as_ref().is_some_and(|info| {
+                info.context_source == Some(ContextTokenUsageSource::ClaudeCountTokens)
+            }) =>
+        {
+            payload.info.clone()
+        }
+        _ => None,
+    })
+    .await;
+    assert_eq!(final_info.context_tokens, Some(456));
+    assert_eq!(
+        final_info.context_source,
+        Some(ContextTokenUsageSource::ClaudeCountTokens)
+    );
+
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deepseek_count_tokens_success_updates_context_usage() -> anyhow::Result<()> {
     let server = start_mock_server().await;
     let responses = mount_claude_sse_sequence(
@@ -364,7 +451,8 @@ async fn claude_wire_fallback_uses_local_context_estimate() -> anyhow::Result<()
                 event,
                 EventMsg::TokenCount(payload)
                     if payload.info.as_ref().is_some_and(|info| {
-                        info.last_token_usage.total_tokens > 0
+                        info.context_source == Some(ContextTokenUsageSource::LocalEstimate)
+                            && info.last_token_usage.total_tokens > 0
                     })
             )
         },

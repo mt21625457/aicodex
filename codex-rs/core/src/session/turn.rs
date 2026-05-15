@@ -1181,6 +1181,9 @@ async fn run_sampling_request(
             turn_context.as_ref(),
             base_instructions.clone(),
         );
+        if turn_context.provider.info().wire_api == WireApi::Claude {
+            sess.emit_in_flight_context_estimate(&turn_context).await;
+        }
         let err = match try_run_sampling_request(
             tool_runtime.clone(),
             Arc::clone(&sess),

@@ -2984,6 +2984,48 @@ impl Session {
         self.send_token_count_event(turn_context).await;
     }
 
+    pub(crate) async fn emit_in_flight_context_estimate(&self, turn_context: &TurnContext) {
+        let Some(context_tokens) = self.get_estimated_context_token_count().await else {
+            return;
+        };
+        if context_tokens < 0 {
+            return;
+        }
+
+        let (mut info, rate_limits) = {
+            let state = self.state.lock().await;
+            let (info, rate_limits) = state.token_info_and_rate_limits();
+            (
+                info.unwrap_or_else(|| TokenUsageInfo::empty(turn_context.model_context_window())),
+                rate_limits,
+            )
+        };
+        info.set_context_usage(
+            context_tokens,
+            ContextTokenUsageSource::InFlightEstimate,
+            turn_context.model_context_window(),
+        );
+
+        let msg = EventMsg::TokenCount(TokenCountEvent {
+            info: Some(info),
+            rate_limits,
+        });
+        self.services
+            .rollout_thread_trace
+            .record_codex_turn_event(&turn_context.sub_id, &msg);
+        self.services
+            .rollout_thread_trace
+            .record_tool_call_event(turn_context.sub_id.clone(), &msg);
+        self.services
+            .rollout_thread_trace
+            .record_protocol_event(&msg);
+        self.deliver_event_raw(Event {
+            id: turn_context.sub_id.clone(),
+            msg,
+        })
+        .await;
+    }
+
     pub(crate) async fn record_token_usage_info(
         &self,
         turn_context: &TurnContext,
