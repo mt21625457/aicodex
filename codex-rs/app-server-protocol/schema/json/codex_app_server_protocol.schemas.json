@@ -7927,6 +7927,7 @@
           "claudeCountTokens",
           "deepseekStreamUsage",
           "localEstimate",
+          "inFlightEstimate",
           "contextWindowFull",
           "replay"
         ],

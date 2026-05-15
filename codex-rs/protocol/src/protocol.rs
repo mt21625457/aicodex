@@ -2001,6 +2001,7 @@ pub enum ContextTokenUsageSource {
     ClaudeCountTokens,
     DeepseekStreamUsage,
     LocalEstimate,
+    InFlightEstimate,
     ContextWindowFull,
     Replay,
 }

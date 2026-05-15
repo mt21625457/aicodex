@@ -554,6 +554,7 @@ v2_enum_from_core! {
         ClaudeCountTokens,
         DeepseekStreamUsage,
         LocalEstimate,
+        InFlightEstimate,
         ContextWindowFull,
         Replay,
     }

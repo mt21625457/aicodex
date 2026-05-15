@@ -94,6 +94,24 @@ fn thread_token_usage_from_core_preserves_context_fields() {
 }
 
 #[test]
+fn context_token_usage_source_serializes_in_flight_estimate() {
+    let usage = ThreadTokenUsage::from(CoreTokenUsageInfo {
+        total_token_usage: CoreTokenUsage::default(),
+        last_token_usage: CoreTokenUsage::default(),
+        context_tokens: Some(123),
+        context_source: Some(CoreContextTokenUsageSource::InFlightEstimate),
+        model_context_window: Some(200_000),
+    });
+
+    assert_eq!(
+        usage.context_source,
+        Some(ContextTokenUsageSource::InFlightEstimate)
+    );
+    let json = serde_json::to_value(&usage).expect("token usage should serialize");
+    assert_eq!(json["contextSource"], json!("inFlightEstimate"));
+}
+
+#[test]
 fn approvals_reviewer_serializes_auto_review_and_accepts_legacy_guardian_subagent() {
     assert_eq!(
         serde_json::to_string(&ApprovalsReviewer::User).expect("serialize reviewer"),
