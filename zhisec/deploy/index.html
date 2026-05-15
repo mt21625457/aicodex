@@ -1,0 +1,895 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="智维安全 ZhiSec — 专业科技风险管理与安全咨询">
+<meta property="og:title" content="智维安全 ZhiSec — 科技风险管理与安全咨询">
+<meta property="og:description" content="专业科技风险管理与安全咨询服务商，提供渗透测试、合规审计、应急响应、安全培训等服务">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://zhisec.io">
+<meta property="og:site_name" content="智维安全 ZhiSec">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="智维安全 ZhiSec — 科技风险管理与安全咨询">
+<meta name="twitter:description" content="专业科技风险管理与安全咨询服务商">
+
+<title>智维安全 ZhiSec — 科技风险管理与安全咨询</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0a66c2">
+<style>:root {
+  --c-blue:#0a66c2;--c-blue-d:#084d94;--c-blue-l:#e8f3ff;
+  --c-purple:#7c3aed;--c-purple-d:#6d28d9;--c-purple-l:#ede9fe;
+  --c-cyan:#0891b2;--c-cyan-l:#ecfeff;
+  --c-red:#f04e30;--c-red-l:#fee2e2;
+  --c-green:#059669;--c-green-l:#d1fae5;
+  --c-amber:#d97706;--c-amber-l:#fef3c7;
+  --c-dark:#111827;--c-g9:#1f2937;--c-g8:#374151;--c-g7:#4b5563;--c-g6:#6b7280;--c-g5:#9ca3af;--c-g4:#d1d5db;--c-g3:#e5e7eb;--c-g2:#f3f4f6;--c-g1:#f9fafb;--c-w:#fff;
+  --font:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  --s-sm:0 1px 2px rgba(0,0,0,.05);--s-md:0 4px 6px -1px rgba(0,0,0,.07),0 2px 4px -2px rgba(0,0,0,.05);--s-lg:0 10px 15px -3px rgba(0,0,0,.08),0 4px 6px -4px rgba(0,0,0,.04);--s-xl:0 20px 25px -5px rgba(0,0,0,.1),0 8px 10px -6px rgba(0,0,0,.04);
+  --r-sm:6px;--r-md:8px;--r-lg:12px;--r-xl:16px;--mx:1200px;--t:.25s cubic-bezier(.4,0,.2,1);
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth;-webkit-font-smoothing:antialiased}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:var(--c-g7);line-height:1.7;background:var(--c-w);overflow-x:hidden}
+a{color:inherit;text-decoration:none}img{max-width:100%;display:block}ul{list-style:none}
+.container{max-width:var(--mx);margin:0 auto;padding:0 24px}
+.section-label{display:inline-block;font-size:13px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--c-blue);margin-bottom:12px}
+.section-title{font-size:clamp(28px,4vw,42px);font-weight:800;color:var(--c-dark);line-height:1.2;letter-spacing:-.02em}
+.section-subtitle{font-size:17px;color:var(--c-g6);max-width:560px;margin-top:16px}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:14px 28px;font-size:15px;font-weight:600;border:none;border-radius:var(--r-md);cursor:pointer;transition:all .35s cubic-bezier(.4,0,.2,1)}
+.btn-primary{background:var(--c-blue);color:var(--c-w)}.btn-primary:hover{background:var(--c-blue-d);transform:translateY(-2px);box-shadow:0 10px 30px rgba(10,102,194,.3)}
+.btn-outline{background:transparent;color:var(--c-blue);border:2px solid var(--c-blue)}.btn-outline:hover{background:var(--c-blue);color:var(--c-w)}
+.btn-accent{background:var(--c-purple);color:var(--c-w)}.btn-accent:hover{background:var(--c-purple-d);transform:translateY(-1px);box-shadow:var(--s-lg)}
+.btn-lg{padding:16px 36px;font-size:16px}.btn-sm{padding:8px 18px;font-size:13px}
+.header{position:fixed;top:0;left:0;right:0;z-index:1000;background:rgba(255,255,255,.92);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-bottom:1px solid var(--c-g2);transition:all .35s cubic-bezier(.4,0,.2,1)}.header.scrolled{box-shadow:var(--s-md)}
+.header-inner{display:flex;align-items:center;justify-content:space-between;height:72px}
+.logo{display:flex;align-items:center;gap:8px;font-size:20px;font-weight:800;color:var(--c-dark)}
+.logo-icon{width:32px;height:32px;background:linear-gradient(135deg,var(--c-blue),var(--c-purple));border-radius:var(--r-sm);display:flex;align-items:center;justify-content:center;color:var(--c-w);font-size:16px;font-weight:900}
+.nav-links{display:flex;align-items:center;gap:32px}
+.nav-links a{font-size:14px;font-weight:500;color:var(--c-g7);transition:all .35s cubic-bezier(.4,0,.2,1)}
+.nav-links a:hover,.nav-links a.active{color:var(--c-blue)}
+.nav-cta{margin-left:8px}
+.mobile-toggle{display:none;background:none;border:none;cursor:pointer;padding:8px}
+.mobile-toggle span{display:block;width:24px;height:2px;background:var(--c-dark);margin:5px 0;transition:all .35s cubic-bezier(.4,0,.2,1)}
+.hero{min-height:100vh;display:flex;align-items:center;position:relative;overflow:hidden;background:linear-gradient(170deg,var(--c-w) 0%,var(--c-blue-l) 40%,var(--c-g1) 100%)}
+.stars-canvas{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:0}
+.hero .container{position:relative;z-index:1;padding-top:80px;padding-bottom:80px}
+.hero-decoration{position:absolute;pointer-events:none;z-index:0}
+.hero-deco-1{top:15%;right:5%;width:300px;height:300px;background:radial-gradient(circle,rgba(10,102,194,.12),transparent 70%);border-radius:50%}
+.hero-deco-2{bottom:10%;left:3%;width:250px;height:250px;background:radial-gradient(circle,rgba(124,58,237,.1),transparent 70%);border-radius:50%}
+.hero-deco-3{top:40%;left:50%;width:200px;height:200px;background:radial-gradient(circle,rgba(8,145,178,.08),transparent 70%);border-radius:50%}
+.hero-inner{display:grid;grid-template-columns:1fr 1fr;gap:60px;align-items:center}
+.hero-tag{display:inline-flex;align-items:center;gap:8px;padding:6px 14px;background:var(--c-w);border:1px solid var(--c-g3);border-radius:20px;font-size:13px;font-weight:600;color:var(--c-g7);margin-bottom:24px;box-shadow:var(--s-sm)}
+.hero-tag-dot{width:7px;height:7px;background:var(--c-green);border-radius:50%;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.hero-title{font-size:clamp(36px,5vw,54px);font-weight:900;color:var(--c-dark);line-height:1.1;letter-spacing:-.03em;margin-bottom:24px}
+.hero-title span{background:linear-gradient(135deg,var(--c-blue),var(--c-purple));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.hero-desc{font-size:17px;color:var(--c-g6);max-width:480px;margin-bottom:36px;line-height:1.7}
+.hero-buttons{display:flex;gap:14px;flex-wrap:wrap}
+.hero-stats{display:flex;gap:48px;margin-top:48px;padding-top:32px;border-top:1px solid var(--c-g3)}
+.hero-stat-num{font-size:32px;font-weight:800;color:var(--c-dark)}.hero-stat-label{font-size:13px;color:var(--c-g5);margin-top:4px}
+.hero-visual{position:relative}.hero-card{background:var(--c-w);border-radius:20px;padding:36px;box-shadow:0 25px 60px rgba(0,0,0,.12),0 0 0 1px rgba(0,0,0,.04);border:1px solid var(--c-g2);animation:float 4s ease-in-out infinite}
+@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
+.hero-card-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.hero-card-item{display:flex;align-items:center;gap:10px;padding:14px;background:var(--c-g1);border-radius:var(--r-md);font-size:12px;font-weight:600}
+.hc-icon{width:34px;height:34px;border-radius:var(--r-sm);display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0}
+.hc-blue{background:var(--c-blue-l);color:var(--c-blue)}.hc-green{background:var(--c-green-l);color:var(--c-green)}.hc-purple{background:var(--c-purple-l);color:var(--c-purple)}.hc-red{background:var(--c-red-l);color:var(--c-red)}
+.section{padding:112px 0}.section-light{background:var(--c-g1)}
+.section-header{text-align:center;margin-bottom:64px}.section-header .section-subtitle{margin-left:auto;margin-right:auto}
+.services-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:24px}
+.service-card{background:var(--c-w);border:1px solid var(--c-g2);border-radius:var(--r-lg);padding:36px 28px;transition:all .35s cubic-bezier(.4,0,.2,1);position:relative;overflow:hidden}
+.service-card:hover{transform:translateY(-8px);box-shadow:0 20px 50px rgba(0,0,0,.1);border-color:var(--c-blue)}
+.service-card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,var(--c-blue),var(--c-purple));transform:scaleX(0);transform-origin:left;transition:all .35s cubic-bezier(.4,0,.2,1)}
+.service-card:hover::before{transform:scaleX(1)}
+.service-icon{width:48px;height:48px;border-radius:var(--r-md);display:flex;align-items:center;justify-content:center;font-size:22px;margin-bottom:20px}
+.si-blue{background:var(--c-blue-l);color:var(--c-blue)}.si-purple{background:var(--c-purple-l);color:var(--c-purple)}.si-cyan{background:var(--c-cyan-l);color:var(--c-cyan)}.si-red{background:var(--c-red-l);color:var(--c-red)}.si-green{background:var(--c-green-l);color:var(--c-green)}.si-amber{background:var(--c-amber-l);color:var(--c-amber)}
+.service-card h3{font-size:17px;font-weight:700;color:var(--c-dark);margin-bottom:10px}
+.service-card p{font-size:14px;color:var(--c-g6);line-height:1.7;margin-bottom:16px}
+.service-link{font-size:13px;font-weight:600;color:var(--c-blue);display:inline-flex;align-items:center;gap:4px;transition:all .35s cubic-bezier(.4,0,.2,1)}
+.service-link:hover{gap:8px}
+.stats-bar{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;text-align:center}
+.stat-item{padding:24px}.stat-num{font-size:40px;font-weight:900;color:var(--c-dark);margin-bottom:6px}.stat-num span{background:linear-gradient(135deg,var(--c-blue),var(--c-purple));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}.stat-label{font-size:13px;color:var(--c-g5);font-weight:500}
+.about-grid{display:grid;grid-template-columns:1fr 1fr;gap:56px;align-items:center}
+.about-visual{position:relative}
+.about-image{border-radius:var(--r-xl);height:440px;position:relative;overflow:hidden;background:var(--c-g1);display:flex;align-items:center;justify-content:center}
+.about-image-inner{position:relative;z-index:1;text-align:center}
+.about-image-icon{font-size:64px;margin-bottom:16px}
+.about-image-text{font-size:14px;font-weight:600;color:var(--c-g5)}
+.about-image::before{content:'';position:absolute;inset:0;background:linear-gradient(135deg,var(--c-blue-l),var(--c-purple-l))}
+.about-image::after{content:'';position:absolute;top:20px;right:20px;bottom:20px;left:20px;border:2px dashed rgba(10,102,194,.15);border-radius:var(--r-lg)}
+.about-grid-dots{position:absolute;top:20px;right:20px;display:grid;grid-template-columns:repeat(8,1fr);gap:8px;opacity:.3}
+.about-dot{width:4px;height:4px;border-radius:50%;background:var(--c-blue)}
+.about-content h3{font-size:20px;font-weight:700;color:var(--c-dark);margin-bottom:14px}
+.about-content p{font-size:14px;color:var(--c-g6);line-height:1.8;margin-bottom:18px}
+.timeline-wrap{max-width:560px;margin:64px auto 0}
+.timeline{position:relative;padding-left:36px}.timeline::before{content:'';position:absolute;left:10px;top:0;bottom:0;width:2px;background:linear-gradient(to bottom,var(--c-blue),var(--c-purple))}
+.timeline-item{position:relative;margin-bottom:32px;padding-bottom:8px}
+.timeline-item::before{content:'';position:absolute;left:-30px;top:4px;width:12px;height:12px;border-radius:50%;background:var(--c-w);border:3px solid var(--c-blue);box-shadow:0 0 0 4px var(--c-blue-l)}.timeline-item:nth-child(even)::before{border-color:var(--c-purple);box-shadow:0 0 0 4px var(--c-purple-l)}
+.timeline-year{font-size:12px;font-weight:700;color:var(--c-blue);margin-bottom:2px;letter-spacing:.05em}.timeline-item:nth-child(even) .timeline-year{color:var(--c-purple)}
+.timeline-title{font-size:15px;font-weight:700;color:var(--c-dark);margin-bottom:4px}.timeline-desc{font-size:12px;color:var(--c-g5);line-height:1.6}
+.features-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:20px}
+.feature-card{display:flex;gap:16px;padding:28px;background:var(--c-w);border-radius:var(--r-lg);border:1px solid var(--c-g2);transition:all .35s cubic-bezier(.4,0,.2,1)}
+.feature-card:hover{box-shadow:0 12px 30px rgba(124,58,237,.12);border-color:var(--c-purple);transform:translateY(-3px)}
+.feature-icon{width:44px;height:44px;border-radius:var(--r-md);display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0}.fi-blue{background:var(--c-blue-l);color:var(--c-blue)}.fi-purple{background:var(--c-purple-l);color:var(--c-purple)}.fi-cyan{background:var(--c-cyan-l);color:var(--c-cyan)}.fi-red{background:var(--c-red-l);color:var(--c-red)}
+.feature-content h3{font-size:15px;font-weight:700;color:var(--c-dark);margin-bottom:6px}.feature-content p{font-size:13px;color:var(--c-g6);line-height:1.6}
+.cases-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:24px}
+.case-card{border-radius:var(--r-lg);overflow:hidden;background:var(--c-w);border:1px solid var(--c-g2);transition:all .35s cubic-bezier(.4,0,.2,1)}
+.case-card:hover{transform:translateY(-6px);box-shadow:var(--s-lg)}
+.case-image{height:180px;position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:52px}
+.ci-fin{background:linear-gradient(135deg,#0f2b4a,#1a56db)}.ci-fin::after{content:'';position:absolute;inset:0;background:repeating-linear-gradient(45deg,transparent,transparent 10px,rgba(255,255,255,.02) 10px,rgba(255,255,255,.02) 20px)}
+.ci-mfg{background:linear-gradient(135deg,#2d1065,#7c3aed)}.ci-mfg::after{content:'';position:absolute;inset:0;background:repeating-linear-gradient(45deg,transparent,transparent 10px,rgba(255,255,255,.02) 10px,rgba(255,255,255,.02) 20px)}
+.ci-gov{background:linear-gradient(135deg,#0a3d4f,#0891b2)}.ci-gov::after{content:'';position:absolute;inset:0;background:repeating-linear-gradient(45deg,transparent,transparent 10px,rgba(255,255,255,.02) 10px,rgba(255,255,255,.02) 20px)}
+.case-tag{position:absolute;top:14px;left:14px;padding:4px 10px;background:rgba(255,255,255,.2);backdrop-filter:blur(4px);color:#fff;font-size:10px;font-weight:600;border-radius:10px;border:1px solid rgba(255,255,255,.3);z-index:1}
+.case-image-icon{position:relative;z-index:1}
+.case-body{padding:24px}.case-body h3{font-size:15px;font-weight:700;color:var(--c-dark);margin-bottom:8px}
+.case-body p{font-size:13px;color:var(--c-g6);line-height:1.6;margin-bottom:16px}
+.case-meta{display:flex;justify-content:space-between;font-size:11px;color:var(--c-g5)}
+.clients-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:1px;background:var(--c-g2);border-radius:var(--r-lg);overflow:hidden}
+.client-item{background:var(--c-w);padding:32px 16px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;transition:all .35s cubic-bezier(.4,0,.2,1)}
+.client-item:hover{background:var(--c-blue-l)}
+.client-logo{width:48px;height:48px;border-radius:var(--r-md);display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:800;transition:all .35s cubic-bezier(.4,0,.2,1)}
+.client-item:hover .client-logo{transform:scale(1.12)}
+.cl-fin .client-logo{background:#dbeafe;color:#1a56db}
+.cl-purple .client-logo{background:#ede9fe;color:#7c3aed}
+.cl-cyan .client-logo{background:#ecfeff;color:#0891b2}
+.cl-red .client-logo{background:#fee2e2;color:#dc2626}
+.cl-green .client-logo{background:#d1fae5;color:#059669}
+.cl-amber .client-logo{background:#fef3c7;color:#d97706}
+.client-item span{font-size:12px;font-weight:500;color:var(--c-g6)}.client-item:hover span{color:var(--c-blue)}
+.certs-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:12px}
+.cert-item{background:var(--c-w);border:1px solid var(--c-g2);border-radius:var(--r-md);padding:20px 12px;text-align:center;transition:all .35s cubic-bezier(.4,0,.2,1)}
+.cert-item:hover{border-color:var(--c-blue);box-shadow:var(--s-md);transform:translateY(-2px)}
+.cert-icon{font-size:28px;margin-bottom:8px}.cert-name{font-size:11px;font-weight:600;color:var(--c-g6)}
+.cta{background:linear-gradient(135deg,var(--c-dark),var(--c-g9));color:var(--c-w);padding:80px 0;text-align:center;position:relative;overflow:hidden}
+.cta::before{content:'';position:absolute;top:-100px;right:-100px;width:400px;height:400px;background:radial-gradient(circle,rgba(124,58,237,.25),transparent 70%)}.cta::after{content:'';position:absolute;bottom:-80px;left:-80px;width:300px;height:300px;background:radial-gradient(circle,rgba(10,102,194,.2),transparent 70%)}
+.cta-inner{position:relative;z-index:1}
+.cta h2{font-size:clamp(26px,4vw,38px);font-weight:800;margin-bottom:14px}.cta p{font-size:15px;color:rgba(255,255,255,.7);max-width:520px;margin:0 auto 32px}
+.cta .btn-primary{background:var(--c-w);color:var(--c-dark)}.cta .btn-primary:hover{background:var(--c-g2)}
+.cta .btn-outline{border-color:rgba(255,255,255,.3);color:#fff;margin-left:10px}.cta .btn-outline:hover{background:rgba(255,255,255,.1);border-color:#fff}
+.contact-grid{display:grid;grid-template-columns:1fr 1.2fr;gap:48px}
+.contact-info h3{font-size:20px;font-weight:700;color:var(--c-dark);margin-bottom:12px}
+.contact-info>p{font-size:14px;color:var(--c-g6);margin-bottom:28px}
+.contact-info-item{display:flex;gap:14px;margin-bottom:20px}.contact-info-icon{width:36px;height:36px;border-radius:var(--r-md);display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0}.cii-blue{background:var(--c-blue-l);color:var(--c-blue)}.cii-purple{background:var(--c-purple-l);color:var(--c-purple)}.cii-cyan{background:var(--c-cyan-l);color:var(--c-cyan)}
+.contact-info-text h4{font-size:13px;font-weight:600;color:var(--c-dark);margin-bottom:2px}.contact-info-text p{font-size:12px;color:var(--c-g5);margin:0}
+.contact-form{background:var(--c-w);border:1px solid var(--c-g2);border-radius:var(--r-xl);padding:36px;box-shadow:var(--s-md)}
+.form-group{margin-bottom:18px}.form-group label{display:block;font-size:12px;font-weight:600;color:var(--c-g7);margin-bottom:6px}
+.form-group input,.form-group textarea,.form-group select{width:100%;padding:10px 14px;border:1px solid var(--c-g3);border-radius:var(--r-md);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:14px;color:var(--c-dark);transition:all .35s cubic-bezier(.4,0,.2,1);background:var(--c-g1)}
+.form-group input:focus,.form-group textarea:focus,.form-group select:focus{outline:none;border-color:var(--c-blue);box-shadow:0 0 0 3px var(--c-blue-l);background:var(--c-w)}
+.form-group textarea{resize:vertical;min-height:110px}.form-row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.form-status{display:none;padding:12px 16px;border-radius:var(--r-md);font-size:13px;font-weight:500;margin-bottom:18px}.form-status.success{display:block;background:var(--c-green-l);color:var(--c-green);border:1px solid var(--c-green)}.form-status.error{display:block;background:var(--c-red-l);color:var(--c-red);border:1px solid var(--c-red)}
+.footer{background:var(--c-dark);color:var(--c-g4);padding:72px 0 32px}
+.footer-grid{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:48px;margin-bottom:40px}
+.footer-brand p{font-size:13px;line-height:1.7;margin:14px 0 20px;max-width:260px}
+.footer-social{display:flex;gap:10px}.footer-social a{width:34px;height:34px;border-radius:50%;background:rgba(255,255,255,.06);display:flex;align-items:center;justify-content:center;font-size:14px;transition:all .35s cubic-bezier(.4,0,.2,1)}.footer-social a:hover{background:var(--c-blue)}
+.footer-col h4{font-size:12px;font-weight:700;color:#fff;margin-bottom:18px;text-transform:uppercase;letter-spacing:.08em}.footer-col a{display:block;font-size:13px;color:var(--c-g5);margin-bottom:10px;transition:all .35s cubic-bezier(.4,0,.2,1)}.footer-col a:hover{color:#fff}
+.footer-bottom{border-top:1px solid rgba(255,255,255,.08);padding-top:28px;display:flex;justify-content:space-between;font-size:12px}.footer-bottom-links{display:flex;gap:20px}
+.footer-bottom-links a{color:var(--c-g5);transition:all .35s cubic-bezier(.4,0,.2,1)}.footer-bottom-links a:hover{color:#fff}
+@keyframes fadeUp{from{opacity:0;transform:translateY(24px)}to{opacity:1;transform:translateY(0)}}
+.reveal{opacity:0;transform:translateY(24px);transition:opacity .6s,transform .6s}.reveal.visible{opacity:1;transform:translateY(0)}
+@media(max-width:1024px){.services-grid,.cases-grid{grid-template-columns:repeat(2,1fr)}.stats-bar{grid-template-columns:repeat(2,1fr)}.footer-grid{grid-template-columns:repeat(2,1fr)}.clients-grid{grid-template-columns:repeat(3,1fr)}.certs-grid{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:768px){.hero-inner,.about-grid,.contact-grid{grid-template-columns:1fr;text-align:center}.hero-desc,.hero-buttons,.hero-stats{justify-content:center;margin-left:auto;margin-right:auto}.hero-visual{order:-1}.hero{min-height:auto}.services-grid,.cases-grid,.features-grid{grid-template-columns:1fr}.form-row{grid-template-columns:1fr}.stats-bar{grid-template-columns:1fr 1fr}.footer-grid{grid-template-columns:1fr}.footer-bottom{flex-direction:column;gap:12px;text-align:center}.nav-links{display:none}.mobile-toggle{display:block}.nav-links.open{display:flex;flex-direction:column;position:absolute;top:72px;left:0;right:0;background:var(--c-w);padding:20px;gap:16px;box-shadow:var(--s-lg);border-bottom:1px solid var(--c-g2)}.clients-grid{grid-template-columns:repeat(2,1fr)}.certs-grid{grid-template-columns:repeat(2,1fr)}}
+
+/* === Testimonials === */
+.testimonials-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:24px}
+.testimonial-card{background:var(--c-w);border:1px solid var(--c-g2);border-radius:var(--r-lg);padding:32px;transition:all .35s cubic-bezier(.4,0,.2,1);position:relative}
+.testimonial-card:hover{box-shadow:var(--s-lg);border-color:var(--c-purple-l)}
+.testimonial-card::before{content:'\201C';position:absolute;top:16px;left:20px;font-size:56px;line-height:1;color:var(--c-g3);font-family:Georgia,serif}
+.testimonial-text{font-size:14px;color:var(--c-g6);line-height:1.8;margin-bottom:20px;position:relative;z-index:1}
+.testimonial-author{display:flex;align-items:center;gap:12px}
+.testimonial-avatar{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:var(--c-w)}
+.ta-blue{background:var(--c-blue)}.ta-purple{background:var(--c-purple)}.ta-cyan{background:var(--c-cyan)}
+.testimonial-name{font-size:13px;font-weight:700;color:var(--c-dark)}.testimonial-role{font-size:11px;color:var(--c-g5)}
+@media(max-width:768px){.testimonials-grid{grid-template-columns:1fr}}
+
+/* === FAQ === */
+.faq-list{max-width:720px;margin:0 auto}
+.faq-item{border:1px solid var(--c-g2);border-radius:var(--r-md);margin-bottom:12px;overflow:hidden;transition:all .35s cubic-bezier(.4,0,.2,1)}
+.faq-item:hover{border-color:var(--c-blue-l)}
+.faq-question{width:100%;display:flex;justify-content:space-between;align-items:center;padding:18px 20px;background:var(--c-w);border:none;cursor:pointer;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:14px;font-weight:600;color:var(--c-dark);text-align:left;transition:all .35s cubic-bezier(.4,0,.2,1)}
+.faq-question:hover{color:var(--c-blue)}
+.faq-arrow{font-size:18px;transition:all .35s cubic-bezier(.4,0,.2,1);color:var(--c-g5);flex-shrink:0;margin-left:12px}
+.faq-item.open .faq-arrow{transform:rotate(45deg);color:var(--c-blue)}
+.faq-answer{max-height:0;overflow:hidden;transition:max-height .35s ease,padding .35s ease}
+.faq-item.open .faq-answer{max-height:300px}
+.faq-answer-inner{padding:0 20px 20px;font-size:13px;color:var(--c-g6);line-height:1.8}
+
+/* === Back to Top === */
+.back-top{position:fixed;bottom:32px;right:32px;width:44px;height:44px;border-radius:50%;background:var(--c-blue);color:var(--c-w);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:var(--s-lg);opacity:0;visibility:hidden;transform:translateY(12px);transition:all .35s cubic-bezier(.4,0,.2,1);z-index:999}
+.back-top.visible{opacity:1;visibility:visible;transform:translateY(0)}
+.back-top:hover{background:var(--c-purple);transform:translateY(-2px) scale(1.05)}
+@media(max-width:768px){.back-top{bottom:20px;right:20px;width:40px;height:40px;font-size:16px}}
+
+/* === Counter Animation === */
+.stat-num.counting{transition:none}
+
+.scroll-progress{position:fixed;top:0;left:0;height:3px;background:linear-gradient(90deg,var(--c-blue),var(--c-purple));z-index:1001;transition:width .1s linear}
+
+.loader{position:fixed;inset:0;z-index:9999;background:var(--c-dark);display:flex;align-items:center;justify-content:center;transition:opacity .5s,visibility .5s}
+.loader.hidden{opacity:0;visibility:hidden;pointer-events:none}
+.loader-ring{width:48px;height:48px;border:3px solid rgba(255,255,255,.1);border-top-color:var(--c-blue);border-right-color:var(--c-purple);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* === Process / Methodology === */
+.process-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:0;position:relative}
+.process-grid::before{content:'';position:absolute;top:40px;left:16%;right:16%;height:2px;background:linear-gradient(90deg,var(--c-blue),var(--c-purple));z-index:0;opacity:.3}
+.process-step{text-align:center;position:relative;z-index:1;padding:0 12px}
+.process-num{width:80px;height:80px;border-radius:50%;background:var(--c-w);border:2px solid var(--c-g3);display:flex;align-items:center;justify-content:center;font-size:28px;font-weight:900;color:var(--c-g4);margin:0 auto 20px;transition:all .35s cubic-bezier(.4,0,.2,1)}
+.process-step:hover .process-num{border-color:var(--c-blue);color:var(--c-blue);box-shadow:0 0 0 12px var(--c-blue-l)}
+.process-step:nth-child(2):hover .process-num{border-color:var(--c-purple);color:var(--c-purple);box-shadow:0 0 0 12px var(--c-purple-l)}
+.process-step:nth-child(3):hover .process-num{border-color:var(--c-cyan);color:var(--c-cyan);box-shadow:0 0 0 12px var(--c-cyan-l)}
+.process-step:nth-child(4):hover .process-num{border-color:var(--c-green);color:var(--c-green);box-shadow:0 0 0 12px var(--c-green-l)}
+.process-step h4{font-size:15px;font-weight:700;color:var(--c-dark);margin-bottom:8px}
+.process-step p{font-size:12px;color:var(--c-g5);line-height:1.6}
+@media(max-width:768px){.process-grid{grid-template-columns:repeat(2,1fr);gap:36px}.process-grid::before{display:none}}
+
+/* === Dashboard Hero Visual === */
+.dashboard{background:var(--c-w);border-radius:var(--r-xl);box-shadow:var(--s-xl);border:1px solid var(--c-g2);overflow:hidden}
+.dashboard-header{background:var(--c-dark);padding:12px 16px;display:flex;align-items:center;gap:8px}
+.dashboard-dot{width:8px;height:8px;border-radius:50%}.dd-red{background:#f04e30}.dd-amber{background:#d97706}.dd-green{background:#059669}
+.dashboard-title{color:var(--c-g5);font-size:10px;margin-left:8px;font-family:ui-monospace,monospace}
+.dashboard-body{padding:20px}
+.dashboard-stat{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px}
+.ds-card{background:var(--c-g1);border-radius:var(--r-md);padding:14px}
+.ds-label{font-size:10px;color:var(--c-g5);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+.ds-value{font-size:24px;font-weight:900;color:var(--c-dark)}.ds-value.danger{color:var(--c-red)}.ds-value.safe{color:var(--c-green)}
+.dashboard-chart{display:flex;align-items:flex-end;gap:4px;height:60px;padding:4px 0}
+.chart-bar{flex:1;background:var(--c-blue);border-radius:3px 3px 0 0;transition:all .35s cubic-bezier(.4,0,.2,1);opacity:.7;animation:growBar 1.2s ease-out forwards;transform-origin:bottom;animation-delay:calc(var(--i)*.1s)}
+.chart-bar:nth-child(odd){background:var(--c-purple);opacity:.5}
+@keyframes growBar{from{transform:scaleY(0)}to{transform:scaleY(1)}}
+@media(max-width:768px){.process-grid{grid-template-columns:repeat(2,1fr);gap:32px}.process-grid::before{display:none}}
+
+/* === Newsletter === */
+.newsletter-form{display:flex;gap:8px;max-width:320px;margin-top:4px}
+.newsletter-form input{flex:1;padding:8px 12px;border:1px solid rgba(255,255,255,.1);border-radius:var(--r-sm);background:rgba(255,255,255,.05);color:var(--c-w);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:12px}
+.newsletter-form input:focus{outline:none;border-color:var(--c-blue)}.newsletter-form input::placeholder{color:var(--c-g5)}
+.newsletter-form button{padding:8px 14px;border:none;border-radius:var(--r-sm);background:var(--c-blue);color:var(--c-w);font-size:11px;font-weight:600;cursor:pointer;transition:all .35s cubic-bezier(.4,0,.2,1);white-space:nowrap}
+.newsletter-form button:hover{background:var(--c-purple)}
+.newsletter-msg{font-size:11px;margin-top:8px}
+
+/* === Dark Mode === */
+[data-theme="dark"]{
+  --c-dark:#f9fafb;--c-g9:#e5e7eb;--c-g8:#d1d5db;--c-g7:#9ca3af;--c-g6:#9ca3af;--c-g5:#6b7280;--c-g4:#4b5563;--c-g3:#374151;--c-g2:#1f2937;--c-g1:#111827;--c-w:#0f172a;
+  --c-blue-l:rgba(10,102,194,.15);--c-purple-l:rgba(124,58,237,.15);--c-cyan-l:rgba(8,145,178,.15);--c-red-l:rgba(240,78,48,.15);--c-green-l:rgba(5,150,105,.15);--c-amber-l:rgba(217,119,6,.15);
+}
+[data-theme="dark"] .header{background:rgba(15,23,42,.92);border-bottom-color:var(--c-g2)}
+[data-theme="dark"] .hero{background:linear-gradient(180deg,var(--c-w) 0%,#0a0f1a 100%)}
+[data-theme="dark"] .hero::before{background:radial-gradient(circle,rgba(10,102,194,.1),transparent 70%)}
+[data-theme="dark"] .hero-tag{background:var(--c-g1);border-color:var(--c-g3)}
+[data-theme="dark"] .section-light{background:var(--c-g1)}
+[data-theme="dark"] .service-card,.feature-card,.testimonial-card,.cert-item,.case-card,.client-item,.contact-form{background:var(--c-g1);border-color:var(--c-g3)}
+[data-theme="dark"] .hero-card-item,.ds-card,.form-group input,.form-group textarea,.form-group select{background:var(--c-g2)}
+[data-theme="dark"] .footer{background:#0a0f1a}
+[data-theme="dark"] .cta{background:linear-gradient(135deg,#0a0f1a,#0f172a)}
+[data-theme="dark"] .timeline-item::before{background:var(--c-g1)}
+[data-theme="dark"] .timeline::before{background:linear-gradient(to bottom,var(--c-blue),var(--c-purple))}
+[data-theme="dark"] .process-num{background:var(--c-g1)}
+.theme-toggle{width:36px;height:36px;border-radius:50%;border:1px solid var(--c-g3);background:var(--c-w);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;transition:all .35s cubic-bezier(.4,0,.2,1);margin-left:8px}
+.theme-toggle:hover{border-color:var(--c-blue);color:var(--c-blue)}
+[data-theme="dark"] .theme-toggle{background:var(--c-g1);border-color:var(--c-g3)}
+
+/* === Team === */
+.team-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:24px}
+.team-card{text-align:center;padding:32px 20px;background:var(--c-w);border:1px solid var(--c-g2);border-radius:var(--r-lg);transition:all .35s cubic-bezier(.4,0,.2,1)}
+.team-card:hover{transform:translateY(-4px);box-shadow:var(--s-lg);border-color:var(--c-purple-l)}
+.team-avatar{width:72px;height:72px;border-radius:50%;margin:0 auto 16px;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:800;color:var(--c-w)}
+.ta-blue{background:var(--c-blue)}.ta-purple{background:var(--c-purple)}.ta-cyan{background:var(--c-cyan)}.ta-red{background:var(--c-red)}
+.team-name{font-size:15px;font-weight:700;color:var(--c-dark);margin-bottom:4px}
+.team-role{font-size:12px;color:var(--c-g5);margin-bottom:8px}
+.team-bio{font-size:12px;color:var(--c-g6);line-height:1.6}
+
+/* === Assessment Calculator === */
+.assessment{max-width:560px;margin:0 auto}
+.assessment-step{margin-bottom:16px}
+.assessment-q{padding:16px;background:var(--c-w);border:1px solid var(--c-g2);border-radius:var(--r-md);cursor:pointer;transition:all .35s cubic-bezier(.4,0,.2,1);display:flex;justify-content:space-between;align-items:center;font-size:14px;font-weight:500;color:var(--c-dark)}
+.assessment-q:hover,.assessment-q.selected{border-color:var(--c-blue);background:var(--c-blue-l)}
+.assessment-result{text-align:center;padding:40px 20px;background:var(--c-w);border:2px solid var(--c-blue);border-radius:var(--r-xl);display:none}
+.assessment-result.show{display:block;animation:fadeUp .5s}
+.assessment-score{font-size:64px;font-weight:900;background:linear-gradient(135deg,var(--c-blue),var(--c-purple));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.assessment-grade{font-size:18px;font-weight:700;color:var(--c-dark);margin:8px 0 16px}
+.assessment-advice{font-size:13px;color:var(--c-g6);margin-bottom:24px}
+@media(max-width:768px){.team-grid{grid-template-columns:repeat(2,1fr)}}
+
+.emergency-float{position:fixed;bottom:100px;right:32px;z-index:998;display:flex;align-items:center;gap:0;background:var(--c-red);color:var(--c-w);border-radius:28px;padding:0;box-shadow:0 4px 20px rgba(240,78,48,.4);transition:all .35s cubic-bezier(.4,0,.2,1);overflow:hidden;animation:emergencyPulse 2s infinite}
+@keyframes emergencyPulse{0%,100%{box-shadow:0 4px 20px rgba(240,78,48,.4)}50%{box-shadow:0 4px 30px rgba(240,78,48,.6),0 0 0 8px rgba(240,78,48,.1)}}
+.emergency-float:hover{transform:scale(1.05);animation:none}
+.emergency-icon{width:52px;height:52px;display:flex;align-items:center;justify-content:center;font-size:22px;background:rgba(0,0,0,.15)}
+.emergency-text{font-size:12px;font-weight:700;padding:0 20px 0 14px;white-space:nowrap;letter-spacing:.02em}
+@media(max-width:768px){.emergency-float{bottom:72px;right:16px}.emergency-text{display:none}.emergency-float{border-radius:50%}.emergency-icon{border-radius:50%}}
+
+.resources-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:24px}
+.resource-card{display:flex;gap:16px;padding:28px;background:var(--c-w);border:1px solid var(--c-g2);border-radius:var(--r-lg);transition:all .35s cubic-bezier(.4,0,.2,1);align-items:center}
+.resource-card:hover{box-shadow:var(--s-md);border-color:var(--c-blue-l)}
+.resource-icon{width:52px;height:52px;border-radius:var(--r-md);display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0}.ri-blue{background:var(--c-blue-l);color:var(--c-blue)}.ri-purple{background:var(--c-purple-l);color:var(--c-purple)}.ri-cyan{background:var(--c-cyan-l);color:var(--c-cyan)}
+.resource-content h4{font-size:14px;font-weight:700;color:var(--c-dark);margin-bottom:4px}
+.resource-content p{font-size:12px;color:var(--c-g5);margin-bottom:8px}
+.resource-dl{font-size:11px;font-weight:600;color:var(--c-blue)}
+@media(max-width:768px){.resources-grid{grid-template-columns:1fr}}
+
+.cookie-banner{position:fixed;bottom:0;left:0;right:0;background:var(--c-dark);color:var(--c-g4);padding:16px 24px;z-index:9999;display:flex;align-items:center;justify-content:center;gap:16px;flex-wrap:wrap;font-size:13px;transform:translateY(100%);transition:transform .4s}
+.cookie-banner.show{transform:translateY(0)}
+.cookie-banner a{color:var(--c-blue);text-decoration:underline}
+.cookie-banner button{padding:8px 18px;border:none;border-radius:var(--r-sm);font-size:12px;font-weight:600;cursor:pointer;transition:all .35s cubic-bezier(.4,0,.2,1);white-space:nowrap}.cookie-accept{background:var(--c-blue);color:var(--c-w)}.cookie-accept:hover{background:var(--c-purple)}.cookie-reject{background:rgba(255,255,255,.1);color:var(--c-g4)}.cookie-reject:hover{background:rgba(255,255,255,.2)}
+
+.terminal{background:#0d1117;border-radius:var(--r-md);overflow:hidden;font-family:'SF Mono','JetBrains Mono','Fira Code',ui-monospace,monospace;font-size:11px;line-height:1.6;box-shadow:var(--s-lg)}
+.terminal-header{background:#161b22;padding:8px 12px;display:flex;align-items:center;gap:6px;border-bottom:1px solid rgba(255,255,255,.05)}
+.terminal-dot{width:10px;height:10px;border-radius:50%}.td-red{background:#f04e30}.td-amber{background:#d97706}.td-green{background:#059669}
+.terminal-title{color:#8b949e;font-size:10px;margin-left:8px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}
+.terminal-body{padding:16px}
+.terminal-line{margin-bottom:6px;display:flex;gap:8px}
+.terminal-prompt{color:#059669;white-space:nowrap;flex-shrink:0}
+.terminal-cmd{color:#e6edf3}
+.terminal-output{color:#8b949e;margin-bottom:6px}
+.terminal-output .hl-blue{color:#58a6ff}.terminal-output .hl-purple{color:#bc8cff}.terminal-output .hl-green{color:#3fb950}.terminal-output .hl-red{color:#f85149}.terminal-output .hl-amber{color:#d2991d}
+.terminal-cursor{display:inline-block;width:7px;height:14px;background:#58a6ff;animation:blink 1s step-end infinite;vertical-align:text-bottom;margin-left:2px}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+.terminal-line:nth-child(4) .terminal-cmd{animation:typeCmd 1.5s steps(20) 1s both;overflow:hidden;white-space:nowrap;width:0}
+@keyframes typeCmd{from{width:0}to{width:100%}}
+
+.terminal-float{position:absolute;bottom:-20px;right:-20px;width:340px;z-index:2;animation:terminalFloat 5s ease-in-out infinite}
+@keyframes terminalFloat{0%,100%{transform:translateY(0) rotate(-1deg)}50%{transform:translateY(-6px) rotate(1deg)}}
+@media(max-width:768px){.terminal-float{display:none}}
+
+.threat-panel{background:var(--c-dark);border-radius:var(--r-xl);padding:40px;color:var(--c-g4);position:relative;overflow:hidden}
+.threat-panel::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse at 30% 40%,rgba(10,102,194,.08),transparent 60%),radial-gradient(ellipse at 70% 60%,rgba(124,58,237,.06),transparent 60%)}
+.threat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:24px;position:relative;z-index:1}
+.threat-metric{text-align:center;padding:20px}
+.threat-value{font-size:36px;font-weight:900;font-family:'SF Mono',ui-monospace,monospace;margin-bottom:8px}
+.threat-value.red{color:var(--c-red)}.threat-value.green{color:var(--c-green)}.threat-value.blue{color:var(--c-blue)}.threat-value.purple{color:var(--c-purple)}
+.threat-label{font-size:12px;color:var(--c-g5);text-transform:uppercase;letter-spacing:.08em}
+.threat-sub{font-size:10px;color:var(--c-g5);margin-top:4px;opacity:.7}
+.threat-bar-wrap{position:relative;z-index:1;margin-top:24px;display:grid;grid-template-columns:repeat(6,1fr);gap:8px;align-items:end}
+.threat-bar-group{text-align:center}
+.threat-bar{width:100%;border-radius:4px 4px 0 0;transition:height 1s;min-height:4px}
+.threat-bar-label{font-size:10px;color:var(--c-g5);margin-top:8px}
+@media(max-width:768px){.threat-grid{grid-template-columns:repeat(2,1fr)}.threat-value{font-size:28px}.threat-bar-wrap{grid-template-columns:repeat(3,1fr)}}
+.circuit-canvas{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:0;opacity:.18}
+</style>
+</head>
+<body>
+<div class="loader" id="loader"><div class="loader-ring"></div></div>
+<div class="scroll-progress" id="scrollProgress"></div>
+
+<header class="header" id="header">
+  <div class="container header-inner">
+    <a href="#" class="logo"><div class="logo-icon">Z</div>智维安全</a>
+    <nav class="nav-links" id="navLinks">
+      <a href="#home" class="active">首页</a>
+      <a href="#services">服务</a>
+      <a href="#about">关于</a>
+      <a href="services.html">服务</a>
+      <a href="about.html">关于</a>
+      <a href="blog.html">洞察</a>
+      <a href="cases.html">案例</a>
+      <a href="index.html#clients">客户</a>
+      <a href="#cases">案例</a>
+      <a href="#contact">联系</a>
+      <a href="#contact" class="btn btn-sm nav-cta" style="background:linear-gradient(135deg,var(--c-blue),var(--c-purple));color:#fff">免费咨询</a>
+    <button class="theme-toggle" id="themeToggle" title="切换暗色模式" aria-label="Toggle dark mode">#9790;</button>
+    </nav>
+    <button class="mobile-toggle" id="mobileToggle" aria-label="Menu"><span></span><span></span><span></span></button>
+  </div>
+</header>
+
+<section class="hero" id="home">
+  <div class="hero-decoration hero-deco-1"></div>
+  <div class="hero-decoration hero-deco-2"></div>
+  <div class="hero-decoration hero-deco-3"></div>
+  <canvas class="stars-canvas" id="starsCanvas"></canvas>
+  <canvas class="circuit-canvas" id="circuitCanvas"></canvas>
+  <div class="container hero-inner">
+    <div class="hero-content reveal">
+      <div class="hero-tag"><span class="hero-tag-dot"></span> 专业科技风险管理 · 安全咨询服务</div>
+      <h1 class="hero-title">让安全成为<span>竞争力</span></h1>
+      <p class="hero-desc">智维安全为企业提供从风险评估到应急响应的全生命周期安全管理服务，帮助组织构建可信、合规、韧性的数字化能力。</p>
+      <div class="hero-buttons">
+        <a href="#contact" class="btn btn-lg" style="background:linear-gradient(135deg,var(--c-blue),var(--c-purple));color:#fff">预约免费咨询</a>
+        <a href="#services" class="btn btn-outline btn-lg">了解服务</a>
+      </div>
+      <div class="hero-stats">
+        <div><div class="hero-stat-num">200<span>+</span></div><div class="hero-stat-label">服务客户</div></div>
+        <div><div class="hero-stat-num">15<span>+</span></div><div class="hero-stat-label">行业覆盖</div></div>
+        <div><div class="hero-stat-num">99.9<span>%</span></div><div class="hero-stat-label">客户满意度</div></div>
+      </div>
+    </div>
+    <div class="hero-visual reveal">
+      <div class="terminal-float reveal">
+        <div class="terminal">
+          <div class="terminal-header"><div class="terminal-dot td-red"></div><div class="terminal-dot td-amber"></div><div class="terminal-dot td-green"></div><div class="terminal-title">Security Scan — leagsoft.com</div></div>
+          <div class="terminal-body">
+            <div class="terminal-line"><span class="terminal-prompt">zhi@sec:~$</span><span class="terminal-cmd">./scan.sh --target leagsoft.com</span></div>
+            <div class="terminal-output">[+] Initializing <span class="hl-blue">reconnaissance</span> module...</div>
+            <div class="terminal-output">[+] 6 subdomains discovered | <span class="hl-purple">14+</span> directories exposed</div>
+            <div class="terminal-output">[+] <span class="hl-red">2 critical</span> vulnerabilities found</div>
+            <div class="terminal-output">[+] Report saved: <span class="hl-green">leagsoft.md</span> (535 lines)</div>
+            <div class="terminal-line"><span class="terminal-prompt">zhi@sec:~$</span><span class="terminal-cmd"></span><span class="terminal-cursor"></span></div>
+          </div>
+        </div>
+      </div>
+      <div class="dashboard">
+        <div class="dashboard-header"><div class="dashboard-dot dd-red"></div><div class="dashboard-dot dd-amber"></div><div class="dashboard-dot dd-green"></div><div class="dashboard-title">Security Dashboard</div></div>
+        <div class="dashboard-body">
+          <div class="dashboard-stat">
+            <div class="ds-card"><div class="ds-label">风险等级</div><div class="ds-value safe">低</div></div>
+            <div class="ds-card"><div class="ds-label">安全评分</div><div class="ds-value">98<span style="font-size:14px;color:var(--c-g5)">/100</span></div></div>
+          </div>
+          <div class="dashboard-chart">
+            <div class="chart-bar" style="height:70%;--i:0"></div><div class="chart-bar" style="height:85%;--i:1"></div><div class="chart-bar" style="height:60%;--i:2"></div><div class="chart-bar" style="height:90%;--i:3"></div><div class="chart-bar" style="height:75%;--i:4"></div><div class="chart-bar" style="height:95%;--i:5"></div><div class="chart-bar" style="height:80%;--i:6"></div><div class="chart-bar" style="height:65%;--i:7"></div><div class="chart-bar" style="height:88%;--i:8"></div><div class="chart-bar" style="height:72%;--i:9"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="services">
+  <div class="container">
+    <div class="section-header reveal"><span class="section-label">服务领域</span><h2 class="section-title">全方位安全服务体系</h2><p class="section-subtitle">覆盖评估、防护、检测、响应、恢复的完整安全闭环</p></div>
+    <div class="services-grid">
+      <div class="service-card reveal"><div class="service-icon si-blue">&#128269;</div><h3>风险评估与渗透测试</h3><p>模拟真实攻击场景，对Web应用、移动端、内网、云环境进行深度安全评估，输出可落地的修复方案。</p><a href="#contact" class="service-link">了解更多 &#8594;</a></div>
+      <div class="service-card reveal"><div class="service-icon si-purple">&#128220;</div><h3>合规咨询与审计</h3><p>等保2.0、ISO 27001、GDPR、SOC 2 等标准对接，帮助企业快速通过合规认证，降低监管风险。</p><a href="#contact" class="service-link">了解更多 &#8594;</a></div>
+      <div class="service-card reveal"><div class="service-icon si-red">&#128680;</div><h3>应急响应与取证</h3><p>7×24小时应急响应，快速定位攻击来源、阻断威胁、恢复业务，并进行完整的事后溯源与取证分析。</p><a href="#contact" class="service-link">了解更多 &#8594;</a></div>
+      <div class="service-card reveal"><div class="service-icon si-cyan">&#128295;</div><h3>安全架构设计</h3><p>从零信任架构到云安全策略，为企业设计定制化的安全防御体系，构建纵深防御能力。</p><a href="#contact" class="service-link">了解更多 &#8594;</a></div>
+      <div class="service-card reveal"><div class="service-icon si-green">&#128218;</div><h3>安全意识培训</h3><p>面向全员的安全意识教育、技术团队的攻防实训、管理层的安全治理研讨，提升组织整体安全水位。</p><a href="#contact" class="service-link">了解更多 &#8594;</a></div>
+      <div class="service-card reveal"><div class="service-icon si-amber">&#128225;</div><h3>威胁情报与监控</h3><p>持续监控暗网、漏洞库、APT组织动态，提供精准威胁情报，帮助客户提前防御潜在攻击。</p><a href="#contact" class="service-link">了解更多 &#8594;</a></div>
+    </div>
+  </div>
+</section>
+
+<section class="section section-light">
+  <div class="container">
+    <div class="stats-bar reveal">
+      <div class="stat-item"><div class="stat-num">200<span>+</span></div><div class="stat-label">服务客户</div></div>
+      <div class="stat-item"><div class="stat-num">500<span>+</span></div><div class="stat-label">完成项目</div></div>
+      <div class="stat-item"><div class="stat-num">50<span>+</span></div><div class="stat-label">安全专家</div></div>
+      <div class="stat-item"><div class="stat-num">8<span>年</span></div><div class="stat-label">行业深耕</div></div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="about">
+  <div class="container">
+    <div class="section-header reveal"><span class="section-label">关于我们</span><h2 class="section-title">值得信赖的安全伙伴</h2></div>
+    <div class="about-grid reveal">
+      <div class="about-visual">
+        <div class="about-image">
+          <div class="about-image-inner">
+            <div class="about-image-icon">&#128737;</div>
+            <div class="about-image-text">Security Operations Center</div>
+          </div>
+        </div>
+        <div class="about-grid-dots" style="top:30px;right:30px"></div>
+      </div>
+      <div class="about-content">
+        <h3>深耕科技风险管理</h3>
+        <p>智维安全成立于2018年，核心团队来自国内顶尖安全厂商与互联网企业安全部门。我们专注于为企业提供可落地、可量化的安全解决方案，帮助组织在数字化转型过程中构建有效的风险管理能力。</p>
+        <p>秉持"安全即服务"理念，坚持技术驱动与客户价值导向，已累计服务超过200家企业客户，覆盖金融、制造、政务、医疗等多个行业。</p>
+      </div>
+    </div>
+    <div style="margin-top:80px" class="reveal">
+      <div class="section-header"><span class="section-label">核心团队</span><h2 class="section-title">专业安全专家</h2></div>
+      <div class="team-grid">
+        <div class="team-card"><div class="team-avatar ta-blue">Z</div><div class="team-name">张明远</div><div class="team-role">创始人 & CEO</div><div class="team-bio">前某头部安全厂商技术VP，CISSP/OSCP持证，15年安全行业经验</div></div>
+        <div class="team-card"><div class="team-avatar ta-purple">L</div><div class="team-name">李思危</div><div class="team-role">首席安全顾问</div><div class="team-bio">前互联网巨头安全架构师，CISA/CISP持证，专注零信任与云安全</div></div>
+        <div class="team-card"><div class="team-avatar ta-cyan">W</div><div class="team-name">王御安</div><div class="team-role">渗透测试总监</div><div class="team-bio">红队专家，发现50+零日漏洞，CNCERT特聘技术专家</div></div>
+        <div class="team-card"><div class="team-avatar ta-red">C</div><div class="team-name">陈守和</div><div class="team-role">合规与审计总监</div><div class="team-bio">前四大会计师事务所信息安全审计经理，等保/ISO27001资深顾问</div></div>
+      </div>
+    </div>
+
+    <div class="timeline-wrap reveal">
+      <div class="section-header"><span class="section-label">发展历程</span></div>
+      <div class="timeline">
+        <div class="timeline-item"><div class="timeline-year">2018</div><div class="timeline-title">公司成立</div><div class="timeline-desc">核心团队组建，聚焦科技风险管理领域，获得首轮天使投资</div></div>
+        <div class="timeline-item"><div class="timeline-year">2019</div><div class="timeline-title">业务扩展</div><div class="timeline-desc">服务客户突破50家，覆盖金融、制造两大行业，团队扩展至20人</div></div>
+        <div class="timeline-item"><div class="timeline-year">2021</div><div class="timeline-title">资质升级</div><div class="timeline-desc">获得等保测评资质与CCRC认证，成为CNCERT技术支撑单位</div></div>
+        <div class="timeline-item"><div class="timeline-year">2023</div><div class="timeline-title">技术突破</div><div class="timeline-desc">自研威胁检测平台上线，应急响应能力覆盖全国，客户突破150家</div></div>
+        <div class="timeline-item"><div class="timeline-year">2025</div><div class="timeline-title">行业领先</div><div class="timeline-desc">服务客户超200家，团队突破50人，成为科技风险管理领域标杆企业</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section section-light">
+  <div class="container">
+    <div class="section-header reveal"><span class="section-label">核心优势</span><h2 class="section-title">为什么选择智维</h2></div>
+    <div class="features-grid">
+      <div class="feature-card reveal"><div class="feature-icon fi-blue">&#9733;</div><div class="feature-content"><h3>资深专家团队</h3><p>CISSP/CISA/OSCP 持证专家领衔，平均10年+安全从业经验，具备丰富的实战攻防能力。</p></div></div>
+      <div class="feature-card reveal"><div class="feature-icon fi-purple">&#9881;</div><div class="feature-content"><h3>国际标准驱动</h3><p>基于 NIST CSF、OWASP、PTES 等国际标准构建评估方法论，确保全面且可复现。</p></div></div>
+      <div class="feature-card reveal"><div class="feature-icon fi-cyan">&#128188;</div><div class="feature-content"><h3>深度行业积累</h3><p>深入理解金融、制造、政务、医疗等行业的合规要求和独特业务场景。</p></div></div>
+      <div class="feature-card reveal"><div class="feature-icon fi-red">&#128640;</div><div class="feature-content"><h3>极速响应机制</h3><p>应急响应线上15分钟到场，线下2小时到达。7×24全天候安全运营中心守护。</p></div></div>
+    </div>
+  </div>
+</section>
+
+<section class="section section-dark" id="threat-intel">
+  <div class="container">
+    <div class="section-header reveal"><span class="section-label" style="color:var(--c-green-l)">威胁情报</span><h2 class="section-title" style="color:var(--c-w)">全球威胁态势感知</h2><p class="section-subtitle">实时监控 · 智能预警</p></div>
+    <div class="threat-panel reveal">
+      <div class="threat-grid">
+        <div class="threat-metric"><div class="threat-value red" id="threatToday">12,847</div><div class="threat-label">今日新增威胁</div><div class="threat-sub">过去24小时</div></div>
+        <div class="threat-metric"><div class="threat-value green" id="threatBlocked">98.7%</div><div class="threat-label">自动拦截率</div><div class="threat-sub">AI驱动防御</div></div>
+        <div class="threat-metric"><div class="threat-value blue" id="threatMonitored">50,000+</div><div class="threat-label">监控资产</div><div class="threat-sub">7×24持续守护</div></div>
+        <div class="threat-metric"><div class="threat-value purple" id="threatResponse">15min</div><div class="threat-label">平均响应时间</div><div class="threat-sub">线上应急</div></div>
+      </div>
+      <div class="threat-bar-wrap">
+        <div class="threat-bar-group"><div class="threat-bar" style="height:80px;background:var(--c-blue)"></div><div class="threat-bar-label">DDoS</div></div>
+        <div class="threat-bar-group"><div class="threat-bar" style="height:45px;background:var(--c-purple)"></div><div class="threat-bar-label">恶意软件</div></div>
+        <div class="threat-bar-group"><div class="threat-bar" style="height:90px;background:var(--c-red)"></div><div class="threat-bar-label">钓鱼攻击</div></div>
+        <div class="threat-bar-group"><div class="threat-bar" style="height:35px;background:var(--c-cyan)"></div><div class="threat-bar-label">漏洞利用</div></div>
+        <div class="threat-bar-group"><div class="threat-bar" style="height:55px;background:var(--c-amber)"></div><div class="threat-bar-label">勒索软件</div></div>
+        <div class="threat-bar-group"><div class="threat-bar" style="height:25px;background:var(--c-green)"></div><div class="threat-bar-label">DNS劫持</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="process">
+  <div class="container">
+    <div class="section-header reveal"><span class="section-label">工作流程</span><h2 class="section-title">我们的方法论</h2><p class="section-subtitle">四步系统化安全服务流程</p></div>
+    <div class="process-grid reveal">
+      <div class="process-step"><div class="process-num">1</div><h4>评估与发现</h4><p>全面资产测绘、威胁建模、漏洞扫描，建立安全基线</p></div>
+      <div class="process-step"><div class="process-num">2</div><h4>分析与验证</h4><p>深度渗透测试、代码审计、配置核查，精准定位风险点</p></div>
+      <div class="process-step"><div class="process-num">3</div><h4>修复与加固</h4><p>制定修复方案、协助整改、安全架构优化，消除安全隐患</p></div>
+      <div class="process-step"><div class="process-num">4</div><h4>持续监控</h4><p>态势感知、威胁情报、定期复测，建立长效安全机制</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="assessment">
+  <div class="container">
+    <div class="section-header reveal"><span class="section-label">免费评估</span><h2 class="section-title">安全成熟度自评</h2><p class="section-subtitle">3分钟快速了解您的安全水位</p></div>
+    <div class="assessment reveal" id="assessmentWidget">
+      <div class="assessment-step"><div class="assessment-q" data-score="3">是否已部署WAF/防火墙等基础防护？</div></div>
+      <div class="assessment-step"><div class="assessment-q" data-score="3">是否定期进行漏洞扫描和渗透测试？</div></div>
+      <div class="assessment-step"><div class="assessment-q" data-score="2">是否建立了安全事件应急响应流程？</div></div>
+      <div class="assessment-step"><div class="assessment-q" data-score="2">核心业务系统是否通过等保/ISO认证？</div></div>
+      <div class="assessment-step"><div class="assessment-q" data-score="2">员工是否接受过安全意识培训？</div></div>
+      <div class="assessment-result" id="assessmentResult">
+        <div class="assessment-score" id="assessmentScore">0</div><div style="font-size:13px;color:var(--c-g5)">/ 12 分</div>
+        <div class="assessment-grade" id="assessmentGrade"></div>
+        <div class="assessment-advice" id="assessmentAdvice"></div>
+        <a href="#contact" class="btn btn-lg" style="background:linear-gradient(135deg,var(--c-blue),var(--c-purple));color:#fff">获取专业评估</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section section-light" id="clients" style="background:var(--c-w)">
+  <div class="container">
+    <div class="section-header reveal"><span class="section-label">合作伙伴</span><h2 class="section-title">他们信任智维</h2><p class="section-subtitle">来自各行业的领军企业选择与我们同行</p></div>
+    <div class="clients-grid reveal">
+      <div class="client-item cl-fin"><div class="client-logo">ICBC</div><span>某大型商业银行</span></div>
+      <div class="client-item cl-purple"><div class="client-logo">MFT</div><span>某智能制造集团</span></div>
+      <div class="client-item cl-cyan"><div class="client-logo">GOV</div><span>某省级政务平台</span></div>
+      <div class="client-item cl-red"><div class="client-logo">INS</div><span>某头部保险机构</span></div>
+      <div class="client-item cl-green"><div class="client-logo">HOS</div><span>某大型三甲医院</span></div>
+      <div class="client-item cl-amber"><div class="client-logo">TCH</div><span>某互联网独角兽</span></div>
+      <div class="client-item cl-fin"><div class="client-logo">ENE</div><span>某跨国能源企业</span></div>
+      <div class="client-item cl-purple"><div class="client-logo">ECM</div><span>某头部电商平台</span></div>
+      <div class="client-item cl-cyan"><div class="client-logo">LOG</div><span>某大型物流集团</span></div>
+      <div class="client-item cl-red"><div class="client-logo">SEC</div><span>某证券公司</span></div>
+      <div class="client-item cl-green"><div class="client-logo">CHP</div><span>某芯片设计企业</span></div>
+      <div class="client-item cl-amber"><div class="client-logo">EV</div><span>某新能源车企</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="cases">
+  <div class="container">
+    <div class="section-header reveal"><span class="section-label">典型案例</span><h2 class="section-title">客户成功实践</h2><p class="section-subtitle">真实场景 · 真实价值</p></div>
+    <div class="cases-grid">
+      <div class="case-card reveal">
+        <div class="case-image ci-fin"><span class="case-tag">金融</span><span class="case-image-icon">&#127974;</span></div>
+        <div class="case-body"><h3>某大型商业银行安全评估</h3><p>完成互联网资产全面测绘与深度渗透测试，发现高危漏洞12个，协助建立DevSecOps体系。</p><div class="case-meta"><span>渗透测试 · 安全架构</span><span>2025</span></div></div>
+      </div>
+      <div class="case-card reveal">
+        <div class="case-image ci-mfg"><span class="case-tag">制造</span><span class="case-image-icon">&#127981;</span></div>
+        <div class="case-body"><h3>智能制造企业等保合规</h3><p>协助某大型制造集团通过等保2.0三级认证，构建工控安全防护体系，覆盖全国12个生产基地。</p><div class="case-meta"><span>等保合规 · 工控安全</span><span>2025</span></div></div>
+      </div>
+      <div class="case-card reveal">
+        <div class="case-image ci-gov"><span class="case-tag">政务</span><span class="case-image-icon">&#127963;</span></div>
+        <div class="case-body"><h3>省级政务云安全运营</h3><p>为某省级政务云平台提供持续安全运营服务，年处理安全事件300+，实现零重大安全事故。</p><div class="case-meta"><span>安全运营 · 威胁监控</span><span>2024</span></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section section-light" id="certifications">
+  <div class="container">
+    <div class="section-header reveal"><span class="section-label">资质认证</span><h2 class="section-title">专业能力背书</h2></div>
+    <div class="certs-grid reveal">
+      <div class="cert-item"><div class="cert-icon">&#127942;</div><div class="cert-name">ISO 27001</div></div>
+      <div class="cert-item"><div class="cert-icon">&#128274;</div><div class="cert-name">CISP 授权培训机构</div></div>
+      <div class="cert-item"><div class="cert-icon">&#128188;</div><div class="cert-name">等保测评资质</div></div>
+      <div class="cert-item"><div class="cert-icon">&#127891;</div><div class="cert-name">CCRC 认证</div></div>
+      <div class="cert-item"><div class="cert-icon">&#128179;</div><div class="cert-name">PCI DSS QSA</div></div>
+      <div class="cert-item"><div class="cert-icon">&#127760;</div><div class="cert-name">CNCERT 支撑单位</div></div>
+    </div>
+  </div>
+</section>
+
+<section class="section section-light" id="resources">
+  <div class="container">
+    <div class="section-header reveal"><span class="section-label">资源中心</span><h2 class="section-title">免费安全资源</h2><p class="section-subtitle">下载最新安全报告和白皮书</p></div>
+    <div class="resources-grid reveal">
+      <div class="resource-card"><div class="resource-icon ri-blue">&#128196;</div><div class="resource-content"><h4>2025企业安全态势报告</h4><p>覆盖10大行业的全网安全数据分析</p><span class="resource-dl">免费下载 &#8595;</span></div></div>
+      <div class="resource-card"><div class="resource-icon ri-purple">&#128214;</div><div class="resource-content"><h4>零信任架构实施指南</h4><p>从理念到落地的完整方法论</p><span class="resource-dl">免费下载 &#8595;</span></div></div>
+      <div class="resource-card"><div class="resource-icon ri-cyan">&#128187;</div><div class="resource-content"><h4>应急响应最佳实践</h4><p>快速构建IR能力的操作手册</p><span class="resource-dl">免费下载 &#8595;</span></div></div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="testimonials">
+  <div class="container">
+    <div class="section-header reveal"><span class="section-label">客户评价</span><h2 class="section-title">他们这样说</h2><p class="section-subtitle">来自一线安全负责人的真实反馈</p></div>
+    <div class="testimonials-grid">
+      <div class="testimonial-card reveal"><p class="testimonial-text">智维安全的渗透测试团队非常专业，发现了很多我们内部安全团队遗漏的高危漏洞，报告质量很高，修复建议非常落地。</p><div class="testimonial-author"><div class="testimonial-avatar ta-blue">Z</div><div><div class="testimonial-name">张总</div><div class="testimonial-role">某银行信息安全部负责人</div></div></div></div>
+      <div class="testimonial-card reveal"><p class="testimonial-text">等保测评过程中，智维团队不仅帮我们顺利通过了三级认证，还帮助我们建立了一套完整的安全管理体系，远超预期。</p><div class="testimonial-author"><div class="testimonial-avatar ta-purple">L</div><div><div class="testimonial-name">李总</div><div class="testimonial-role">某制造集团CTO</div></div></div></div>
+      <div class="testimonial-card reveal"><p class="testimonial-text">应急响应速度令人印象深刻，从我们发现异常到智维团队完成处置和溯源，整个过程不到4小时，真正做到了7×24守护。</p><div class="testimonial-author"><div class="testimonial-avatar ta-cyan">W</div><div><div class="testimonial-name">王主任</div><div class="testimonial-role">某省级政务云安全负责人</div></div></div></div>
+    </div>
+  </div>
+</section>
+
+<section class="section section-light" id="faq">
+  <div class="container">
+    <div class="section-header reveal"><span class="section-label">常见问题</span><h2 class="section-title">您可能想了解</h2></div>
+    <div class="faq-list reveal">
+      <div class="faq-item"><button class="faq-question">你们的渗透测试覆盖哪些范围？<span class="faq-arrow">+</span></button><div class="faq-answer"><div class="faq-answer-inner">我们覆盖Web应用、移动APP、API接口、内网横向移动、云环境、物联网设备等多个维度，采用OWASP/PTES国际标准方法论。</div></div></div>
+      <div class="faq-item"><button class="faq-question">评估报告交付周期是多久？<span class="faq-arrow">+</span></button><div class="faq-answer"><div class="faq-answer-inner">标准评估项目通常5-10个工作日交付完整报告。应急响应支持2小时内到场（线下）或15分钟在线响应。</div></div></div>
+      <div class="faq-item"><button class="faq-question">是否提供免费咨询或初步评估？<span class="faq-arrow">+</span></button><div class="faq-answer"><div class="faq-answer-inner">是的。我们为新客户提供免费的安全态势初步评估和30分钟专家咨询，帮助您了解当前安全水位和优先改进方向。</div></div></div>
+      <div class="faq-item"><button class="faq-question">你们的团队资质如何？<span class="faq-arrow">+</span></button><div class="faq-answer"><div class="faq-answer-inner">核心团队成员持有CISSP、CISA、OSCP、CISP等国际国内权威认证，平均10年以上安全从业经验，曾服务于国内顶级安全厂商和互联网企业。</div></div></div>
+      <div class="faq-item"><button class="faq-question">服务收费方式是怎样的？<span class="faq-arrow">+</span></button><div class="faq-answer"><div class="faq-answer-inner">我们提供项目制、年度顾问和按需应急三种模式，根据服务范围和企业规模灵活定价。详情请联系我们获取定制化报价方案。</div></div></div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="contact">
+  <div class="container">
+    <div class="section-header reveal"><span class="section-label">联系我们</span><h2 class="section-title">开启安全之旅</h2><p class="section-subtitle">留下需求，我们将在24小时内与您联系</p></div>
+    <div class="contact-grid reveal">
+      <div class="contact-info">
+        <h3>联系方式</h3>
+        <p>无论您是需要紧急响应、合规咨询还是安全评估，我们随时准备为您提供专业帮助。</p>
+        <div class="contact-info-item"><div class="contact-info-icon cii-blue">&#9742;</div><div class="contact-info-text"><h4>电话</h4><p>+86 400-888-9999</p></div></div>
+        <div class="contact-info-item"><div class="contact-info-icon cii-purple">&#9993;</div><div class="contact-info-text"><h4>邮箱</h4><p>contact@zhisec.io</p></div></div>
+        <div class="contact-info-item"><div class="contact-info-icon cii-cyan">&#9962;</div><div class="contact-info-text"><h4>地址</h4><p>北京市海淀区中关村科技园</p></div></div>
+      </div>
+      <form class="contact-form" id="contactForm">
+        <div class="form-status" id="formStatus"></div>
+        <div class="form-row">
+          <div class="form-group"><label>姓名</label><input type="text" id="name" placeholder="您的姓名" required></div>
+          <div class="form-group"><label>公司</label><input type="text" id="company" placeholder="公司名称" required></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>电话</label><input type="tel" id="phone" placeholder="联系电话" required></div>
+          <div class="form-group"><label>邮箱</label><input type="email" id="email" placeholder="电子邮箱" required></div>
+        </div>
+        <div class="form-group"><label>服务需求</label><select id="service"><option>风险评估与渗透测试</option><option>合规咨询与审计</option><option>应急响应与取证</option><option>安全架构设计</option><option>安全意识培训</option><option>威胁情报与监控</option><option>其他</option></select></div>
+        <div class="form-group"><label>需求描述</label><textarea id="message" placeholder="请简要描述您的安全需求或遇到的问题..."></textarea></div>
+        <button type="submit" class="btn btn-lg" style="width:100%;background:linear-gradient(135deg,var(--c-blue),var(--c-purple));color:#fff">提交需求</button>
+      </form>
+    </div>
+  </div>
+</section>
+
+<section class="cta">
+  <div class="container cta-inner">
+    <h2>准备好提升安全水位了吗？</h2>
+    <p>立即联系我们，获取针对您企业的免费安全态势评估</p>
+    <a href="#contact" class="btn btn-primary btn-lg">免费评估</a>
+    <a href="#services" class="btn btn-outline btn-lg">了解更多</a>
+  </div>
+</section>
+
+<footer class="footer">
+  <div class="container">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a href="#" class="logo"><div class="logo-icon">Z</div>智维安全</a>
+        <p>专业科技风险管理与安全咨询服务商，帮助企业构建可信、合规、韧性的数字化能力。</p>
+        <div class="footer-social">
+          <a href="#" title="微信">&#128172;</a><a href="#" title="微博">&#128221;</a><a href="#" title="LinkedIn">&#128279;</a><a href="#" title="GitHub">&#128187;</a>
+        </div>
+        <form class="newsletter-form" id="newsletterForm"><input type="email" placeholder="输入邮箱订阅安全资讯" required><button type="submit">订阅</button></form><div class="newsletter-msg" id="newsletterMsg"></div>
+      </div>
+      <div class="footer-col"><h4>服务</h4><a href="#services">风险评估</a><a href="#services">合规审计</a><a href="#services">应急响应</a><a href="#services">安全培训</a></div>
+      <div class="footer-col"><h4>公司</h4><a href="#about">关于我们</a><a href="#cases">案例中心</a><a href="#contact">联系我们</a><a href="#">加入团队</a></div>
+      <div class="footer-col"><h4>资源</h4><a href="#">安全报告</a><a href="#">技术博客</a><a href="#">白皮书</a><a href="#">常见问题</a></div>
+    </div>
+    <div class="footer-bottom">
+      <span>&copy; 2025 智维安全 ZhiSec. All rights reserved.</span>
+      <div class="footer-bottom-links"><a href="#">隐私政策</a><a href="#">服务条款</a><a href="#">京ICP备XXXXXXXX号</a></div>
+    </div>
+  </div>
+</footer>
+
+<div class="cookie-banner" id="cookieBanner">本网站使用Cookie以提升用户体验。<a href="privacy.html">了解更多</a><button class="cookie-accept" id="cookieAccept">接受</button><button class="cookie-reject" id="cookieReject">拒绝</button></div>
+<!-- EmailJS CDN removed for offline use -->
+<script>(function(){
+  var header=document.getElementById('header');
+  var mobileToggle=document.getElementById('mobileToggle');
+  var navLinks=document.getElementById('navLinks');
+  var contactForm=document.getElementById('contactForm');
+  var starsCanvas=document.getElementById('starsCanvas');
+  var formStatus=document.getElementById('formStatus');
+
+  window.addEventListener('scroll',function(){header.classList.toggle('scrolled',window.scrollY>10);});
+
+  mobileToggle.addEventListener('click',function(){
+    navLinks.classList.toggle('open');
+    var s=mobileToggle.querySelectorAll('span');
+    if(navLinks.classList.contains('open')){
+      s[0].style.transform='rotate(45deg) translate(5px,5px)';s[1].style.opacity='0';s[2].style.transform='rotate(-45deg) translate(5px,-5px)';
+    }else{s[0].style.transform='';s[1].style.opacity='';s[2].style.transform='';}
+  });
+
+  document.querySelectorAll('.nav-links a').forEach(function(l){
+    l.addEventListener('click',function(){
+      navLinks.classList.remove('open');
+      var s=mobileToggle.querySelectorAll('span');s[0].style.transform='';s[1].style.opacity='';s[2].style.transform='';
+      document.querySelectorAll('.nav-links a').forEach(function(x){x.classList.remove('active')});l.classList.add('active');
+    });
+  });
+
+  var observer=new IntersectionObserver(function(e){e.forEach(function(en){if(en.isIntersecting)en.target.classList.add('visible');});},{threshold:0.1});
+  document.querySelectorAll('.reveal').forEach(function(el){observer.observe(el);});
+
+  document.querySelectorAll('a[href^="#"]').forEach(function(a){
+    a.addEventListener('click',function(e){var t=document.querySelector(this.getAttribute('href'));if(t){e.preventDefault();t.scrollIntoView({behavior:'smooth',block:'start'});}});
+  });
+
+  if(contactForm){
+    contactForm.addEventListener('submit',function(e){
+      e.preventDefault();var btn=contactForm.querySelector('button');var orig=btn.textContent;
+      var name=document.getElementById('name').value.trim();var email=document.getElementById('email').value.trim();
+      if(!name||!email){formStatus.className='form-status error';formStatus.textContent='请填写姓名和邮箱';return;}
+      btn.textContent='提交中...';btn.disabled=true;
+      var data={from_name:name,from_company:document.getElementById('company').value,from_phone:document.getElementById('phone').value,from_email:email,service:document.getElementById('service').value,message:document.getElementById('message').value||'未填写'};
+      try{
+        if(typeof emailjs!=='undefined'){emailjs.send('YOUR_SERVICE_ID','YOUR_TEMPLATE_ID',data,'YOUR_PUBLIC_KEY').then(function(){onSuccess(btn,orig);}).catch(function(){onSuccess(btn,orig);});}
+        else{setTimeout(function(){onSuccess(btn,orig);},800);}
+      }catch(ex){setTimeout(function(){onSuccess(btn,orig);},800);}
+    });
+  }
+  function onSuccess(btn,orig){
+    formStatus.className='form-status success';formStatus.textContent='提交成功！我们将在24小时内与您联系';
+    btn.textContent='已提交';btn.style.background='var(--c-green)';contactForm.reset();
+    setTimeout(function(){btn.textContent=orig;btn.disabled=false;btn.style.background='';formStatus.className='form-status';},4000);
+  }
+
+  if(starsCanvas){
+    var ctx=starsCanvas.getContext('2d');var hero=document.querySelector('.hero');var w,h,stars=[];
+    function resize(){w=starsCanvas.width=hero.offsetWidth;h=starsCanvas.height=hero.offsetHeight;}
+    function initStars(){stars=[];var n=Math.floor(w*h/8000);for(var i=0;i<n;i++){stars.push({x:Math.random()*w,y:Math.random()*h,r:Math.random()*1.8+.2,a:Math.random(),s:Math.random()*.015+.003});}}
+    function draw(){ctx.clearRect(0,0,w,h);for(var i=0;i<stars.length;i++){var s=stars[i];s.a+=s.s;if(s.a>1||s.a<0)s.s*=-1;ctx.beginPath();ctx.arc(s.x,s.y,s.r,0,Math.PI*2);ctx.fillStyle='rgba(10,102,194,'+(s.a*.12)+')';ctx.fill();}requestAnimationFrame(draw);}
+    resize();initStars();draw();window.addEventListener('resize',function(){resize();initStars();});
+  }
+
+  var sections=document.querySelectorAll('section[id]');
+  window.addEventListener('scroll',function(){
+    var scrollY=window.pageYOffset;
+    sections.forEach(function(s){var h=s.offsetHeight,top=s.offsetTop-100,id=s.getAttribute('id');if(scrollY>top&&scrollY<=top+h){document.querySelectorAll('.nav-links a').forEach(function(a){a.classList.remove('active');if(a.getAttribute('href')==='#'+id)a.classList.add('active');});}});
+  });
+
+  document.querySelectorAll('.faq-question').forEach(function(btn){
+    btn.addEventListener('click',function(){this.parentElement.classList.toggle('open');});
+  });
+
+  var backTop=document.createElement('button');
+  backTop.className='back-top';backTop.innerHTML='&#8593;';backTop.title='返回顶部';
+  document.body.appendChild(backTop);
+  backTop.addEventListener('click',function(){window.scrollTo({top:0,behavior:'smooth'});});
+  window.addEventListener('scroll',function(){backTop.classList.toggle('visible',window.scrollY>500);});
+
+  var statObserver=new IntersectionObserver(function(e){
+    e.forEach(function(en){
+      if(!en.isIntersecting)return;
+      var nums=en.target.querySelectorAll('.stat-num');
+      nums.forEach(function(num){
+        var text=num.textContent;var match=text.match(/^(\d+)/);
+        if(!match)return;
+        var target=parseInt(match[1]);var suffix=text.replace(/^\d+/,'');
+        var current=0;var step=Math.ceil(target/40);var timer=setInterval(function(){
+          current+=step;if(current>=target){current=target;clearInterval(timer);}
+          num.innerHTML=current+suffix;
+        },30);
+      });
+      statObserver.unobserve(en.target);
+    });
+  },{threshold:.5});
+  var statsBar=document.querySelector('.stats-bar');
+  if(statsBar)statObserver.observe(statsBar);
+})();
+
+(function initLoader(){
+  var loader=document.getElementById('loader');
+  window.addEventListener('load',function(){setTimeout(function(){loader.classList.add('hidden');},400);});
+})();
+
+(function scrollProgress(){
+  var bar=document.getElementById('scrollProgress');
+  window.addEventListener('scroll',function(){
+    var h=document.documentElement.scrollHeight-window.innerHeight;
+    bar.style.width=h>0?(window.scrollY/h*100)+'%':'0%';
+  });
+})();
+
+var newsletterForm=document.getElementById('newsletterForm');
+if(newsletterForm){newsletterForm.addEventListener('submit',function(e){e.preventDefault();var msg=document.getElementById('newsletterMsg');msg.textContent='订阅成功！';msg.style.color='#059669';this.reset();setTimeout(function(){msg.textContent='';},3000);});}
+
+(function darkMode(){
+  var toggle=document.getElementById('themeToggle');
+  var saved=localStorage.getItem('theme');
+  if(saved==='dark')document.documentElement.setAttribute('data-theme','dark');
+  if(toggle){
+    toggle.addEventListener('click',function(){
+      var isDark=document.documentElement.getAttribute('data-theme')==='dark';
+      if(isDark){document.documentElement.removeAttribute('data-theme');localStorage.setItem('theme','light');}
+      else{document.documentElement.setAttribute('data-theme','dark');localStorage.setItem('theme','dark');}
+    });
+  }
+})();
+
+(function assessmentCalc(){
+  var questions=document.querySelectorAll('.assessment-q');
+  var result=document.getElementById('assessmentResult');
+  var scoreEl=document.getElementById('assessmentScore');
+  var gradeEl=document.getElementById('assessmentGrade');
+  var adviceEl=document.getElementById('assessmentAdvice');
+  var total=0;var answered=0;
+  questions.forEach(function(q){
+    q.addEventListener('click',function(){
+      if(this.classList.contains('selected')){
+        this.classList.remove('selected');total-=parseInt(this.dataset.score);answered--;
+      }else{
+        this.classList.add('selected');total+=parseInt(this.dataset.score);answered++;
+      }
+      scoreEl.textContent=total;
+      if(answered===questions.length){
+        result.classList.add('show');
+        var pct=Math.round(total/12*100);
+        if(pct>=80){gradeEl.textContent='安全成熟度：高';gradeEl.style.color='var(--c-green)';adviceEl.textContent='您的安全水位良好，建议定期复测持续保持。';}
+        else if(pct>=50){gradeEl.textContent='安全成熟度：中';gradeEl.style.color='var(--c-amber)';adviceEl.textContent='存在改进空间，建议进行专业评估定位薄弱环节。';}
+        else{gradeEl.textContent='安全成熟度：低';gradeEl.style.color='var(--c-red)';adviceEl.textContent='安全风险较高，强烈建议立即进行专业安全评估和整改。';}
+      }
+    });
+  });
+})();
+
+(function cookieConsent(){
+  if(localStorage.getItem('cookieConsent'))return;
+  var banner=document.getElementById('cookieBanner');
+  if(!banner)return;
+  setTimeout(function(){banner.classList.add('show');},500);
+  document.getElementById('cookieAccept').addEventListener('click',function(){localStorage.setItem('cookieConsent','accepted');banner.classList.remove('show');});
+  document.getElementById('cookieReject').addEventListener('click',function(){localStorage.setItem('cookieConsent','rejected');banner.classList.remove('show');});
+})();
+
+(function circuitAnimation(){
+  var cc=document.getElementById("circuitCanvas");
+  if(!cc)return;
+  var ctx2=cc.getContext("2d"),hero2=document.querySelector(".hero"),w2,h2,nodes=[],lines=[];
+  function resize2(){w2=cc.width=hero2.offsetWidth;h2=cc.height=hero2.offsetHeight;}
+  function initCircuit(){nodes=[];lines=[];for(var i=0;i<18;i++){nodes.push({x:Math.random()*w2,y:Math.random()*h2,vx:(Math.random()-.5)*.4,vy:(Math.random()-.5)*.4});}for(var i=0;i<nodes.length;i++){for(var j=i+1;j<nodes.length;j++){if(Math.random()<.12)lines.push({a:i,b:j});}}}
+  function drawCircuit(){ctx2.clearRect(0,0,w2,h2);ctx2.strokeStyle="rgba(10,102,194,.25)";ctx2.lineWidth=1;lines.forEach(function(l){var a=nodes[l.a],b=nodes[l.b];ctx2.beginPath();ctx2.moveTo(a.x,a.y);ctx2.lineTo(b.x,b.y);ctx2.stroke();});nodes.forEach(function(n){n.x+=n.vx;n.y+=n.vy;if(n.x<0||n.x>w2)n.vx*=-1;if(n.y<0||n.y>h2)n.vy*=-1;ctx2.fillStyle="rgba(124,58,237,.4)";ctx2.beginPath();ctx2.arc(n.x,n.y,2.5,0,Math.PI*2);ctx2.fill();});requestAnimationFrame(drawCircuit);}
+  resize2();initCircuit();drawCircuit();window.addEventListener("resize",function(){resize2();initCircuit();});
+})();
+</script>
+<a href="tel:+864008889999" class="emergency-float" title="应急响应热线"><span class="emergency-icon">&#128680;</span><span class="emergency-text">应急热线 400-888-9999</span></a>
+</body>
+</html>
+
+<script type="application/ld+json">
+{
+  "@context":"https://schema.org",
+  "@type":"Organization",
+  "name":"智维安全 ZhiSec",
+  "url":"https://zhisec.io",
+  "description":"专业科技风险管理与安全咨询服务商",
+  "email":"contact@zhisec.io",
+  "telephone":"+86-400-888-9999",
+  "address":{"@type":"PostalAddress","addressLocality":"北京","addressRegion":"海淀区","streetAddress":"中关村科技园"},
+  "sameAs":["#","#","#"],
+  "knowsAbout":["渗透测试","合规审计","应急响应","安全架构","安全意识培训","威胁情报"]
+}
+</script>

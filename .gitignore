@@ -58,6 +58,10 @@ yarn-error.log*
 
 # package
 *.tgz
+*.tar.gz
+
+# browser automation artifacts
+.playwright-cli/
 
 # ci
 .vercel/

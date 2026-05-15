@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="智维安全服务 - 渗透测试、合规审计、应急响应、安全架构、安全培训、威胁情报">
+<title>服务详情 — 智维安全 ZhiSec</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0a66c2">
+<link rel="stylesheet" href="css/style.css">
+<style>
+.service-detail{padding:80px 0;border-bottom:1px solid var(--c-g2)}
+.service-detail:last-child{border-bottom:none}
+.service-detail-inner{display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:start}
+.service-detail-icon{font-size:40px;margin-bottom:16px}
+.service-detail h2{font-size:26px;font-weight:800;color:var(--c-dark);margin-bottom:12px}
+.service-detail p{font-size:14px;color:var(--c-g6);line-height:1.8;margin-bottom:16px}
+.service-detail-list{list-style:none;display:grid;gap:8px}
+.service-detail-list li{font-size:13px;color:var(--c-g5);padding-left:16px;position:relative}
+.service-detail-list li::before{content:'';position:absolute;left:0;top:8px;width:6px;height:6px;border-radius:50%;background:var(--c-blue)}
+.service-detail-visual{background:var(--c-g1);border-radius:var(--r-xl);height:280px;display:flex;align-items:center;justify-content:center;font-size:64px;position:relative;overflow:hidden}
+.service-detail-visual::after{content:'';position:absolute;inset:0;background:linear-gradient(135deg,var(--c-blue-l),transparent)}
+.service-detail-visual span{position:relative;z-index:1}
+@media(max-width:768px){.service-detail-inner{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<header class="header" id="header">
+  <div class="container header-inner">
+    <a href="index.html" class="logo"><div class="logo-icon">Z</div>智维安全</a>
+    <nav class="nav-links"><a href="index.html">首页</a><a href="services.html" class="active">服务</a><a href="index.html#about">关于</a><a href="index.html#contact">联系</a><a href="index.html#contact" class="btn btn-sm" style="background:linear-gradient(135deg,var(--c-blue),var(--c-purple));color:#fff">免费咨询</a></nav>
+  </div>
+</header>
+
+<section class="page-header">
+  <div class="container"><h1>我们的服务</h1><p>覆盖评估、防护、检测、响应、恢复的完整安全闭环</p></div>
+</section>
+
+<div id="service-risk" class="service-detail">
+  <div class="container">
+    <div class="service-detail-inner">
+      <div><div class="service-detail-icon">&#128269;</div><h2>风险评估与渗透测试</h2><p>模拟真实攻击场景，对Web应用、移动APP、API接口、内网环境、云基础设施进行全方位深度安全评估。基于OWASP/PTES国际标准方法论，结合自动化扫描与人工渗透，精准定位安全漏洞并输出可落地的修复方案。</p><ul class="service-detail-list"><li>Web应用渗透测试（OWASP Top 10覆盖）</li><li>移动APP安全评估（iOS/Android）</li><li>API接口安全测试（REST/GraphQL/gRPC）</li><li>内网横向移动与权限提升测试</li><li>云环境安全评估（AWS/Azure/阿里云）</li><li>红队演练与APT模拟攻击</li></ul></div>
+      <div class="service-detail-visual"><span>&#128269;</span></div>
+    </div>
+  </div>
+</div>
+
+<div id="service-compliance" class="service-detail">
+  <div class="container">
+    <div class="service-detail-inner" style="direction:rtl">
+      <div style="direction:ltr"><div class="service-detail-icon">&#128220;</div><h2>合规咨询与审计</h2><p>帮助企业快速对接等保2.0、ISO 27001、GDPR、SOC 2、PCI DSS等国内外合规标准。提供从差距分析、体系建设、整改实施到认证辅导的全流程服务，确保企业高效通过合规审查。</p><ul class="service-detail-list"><li>等保2.0定级备案与测评辅导</li><li>ISO 27001 ISMS体系建设</li><li>GDPR数据保护合规评估</li><li>SOC 2 信任服务标准审计</li><li>PCI DSS支付卡行业合规</li><li>行业监管专项合规（金融/医疗/政务）</li></ul></div>
+      <div class="service-detail-visual" style="direction:ltr"><span>&#128220;</span></div>
+    </div>
+  </div>
+</div>
+
+<div id="service-ir" class="service-detail">
+  <div class="container">
+    <div class="service-detail-inner">
+      <div><div class="service-detail-icon">&#128680;</div><h2>应急响应与取证</h2><p>7×24小时全天候应急响应服务。线上15分钟响应、线下2小时到场，快速定位攻击来源、阻断威胁扩散、恢复受损业务。提供完整的事后溯源取证、攻击链还原和加固建议。</p><ul class="service-detail-list"><li>勒索软件应急响应与数据恢复</li><li>Web入侵事件应急处置</li><li>数据泄露事件调查与取证</li><li>恶意代码分析与逆向</li><li>攻击溯源与证据链固定</li><li>事后安全加固与改进建议</li></ul></div>
+      <div class="service-detail-visual"><span>&#128680;</span></div>
+    </div>
+  </div>
+</div>
+
+<div id="service-arch" class="service-detail">
+  <div class="container">
+    <div class="service-detail-inner" style="direction:rtl">
+      <div style="direction:ltr"><div class="service-detail-icon">&#128295;</div><h2>安全架构设计</h2><p>基于零信任理念，为企业设计定制化的纵深防御安全体系。覆盖网络边界、应用安全、数据安全、身份管理、终端安全等多个维度，构建可弹性扩展、可度量的安全架构。</p><ul class="service-detail-list"><li>零信任架构规划与实施</li><li>云安全策略与架构设计</li><li>安全运营中心（SOC）建设</li><li>身份与访问管理（IAM）设计</li><li>数据安全与隐私保护架构</li><li>DevSecOps安全集成咨询</li></ul></div>
+      <div class="service-detail-visual" style="direction:ltr"><span>&#128295;</span></div>
+    </div>
+  </div>
+</div>
+
+<div id="service-training" class="service-detail">
+  <div class="container">
+    <div class="service-detail-inner">
+      <div><div class="service-detail-icon">&#128218;</div><h2>安全意识培训</h2><p>面向不同层级的安全培训体系。全员安全意识教育降低社会工程攻击风险，技术团队攻防实训提升实战能力，管理层安全治理研讨帮助企业建立安全文化。</p><ul class="service-detail-list"><li>全员安全意识教育（钓鱼识别/密码安全）</li><li>技术团队CTF攻防实训</li><li>CISP/CISSP/OSCP认证辅导</li><li>管理层安全治理与风险管理研讨</li><li>定制化安全培训课程开发</li><li>安全应急演练与桌面推演</li></ul></div>
+      <div class="service-detail-visual"><span>&#128218;</span></div>
+    </div>
+  </div>
+</div>
+
+<div id="service-ti" class="service-detail">
+  <div class="container">
+    <div class="service-detail-inner" style="direction:rtl">
+      <div style="direction:ltr"><div class="service-detail-icon">&#128225;</div><h2>威胁情报与监控</h2><p>持续监控暗网、漏洞库、APT组织动态，为客户提供精准的定制化威胁情报。结合SIEM/SOAR技术，建立自动化安全事件监测与响应能力。</p><ul class="service-detail-list"><li>定制化威胁情报订阅</li><li>暗网数据泄露监控</li><li>漏洞预警与影响评估</li><li>SIEM日志分析与关联规则</li><li>SOAR自动化编排响应</li><li>攻击面管理与持续监控</li></ul></div>
+      <div class="service-detail-visual" style="direction:ltr"><span>&#128225;</span></div>
+    </div>
+  </div>
+</div>
+
+<section class="cta">
+  <div class="container cta-inner"><h2>需要定制化安全方案？</h2><p>立即联系我们，获取针对您企业的专属安全服务建议</p><a href="index.html#contact" class="btn btn-primary btn-lg">免费咨询</a></div>
+</section>
+
+<footer class="footer">
+  <div class="container">
+    <div class="footer-grid" style="display:flex;justify-content:space-between">
+      <div class="footer-brand"><a href="index.html" class="logo"><div class="logo-icon">Z</div>智维安全</a><p>专业科技风险管理与安全咨询服务商</p></div>
+      <div class="footer-col"><h4>服务</h4><a href="#service-risk">风险评估</a><a href="#service-compliance">合规审计</a><a href="#service-ir">应急响应</a><a href="#service-training">安全培训</a></div>
+      <div class="footer-col"><h4>公司</h4><a href="index.html#about">关于我们</a><a href="index.html#cases">案例中心</a><a href="index.html#contact">联系我们</a></div>
+    </div>
+    <div class="footer-bottom"><span>&copy; 2025 智维安全 ZhiSec.</span></div>
+  </div>
+</footer>
+</body>
+</html>
