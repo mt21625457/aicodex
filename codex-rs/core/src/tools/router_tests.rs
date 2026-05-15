@@ -7,11 +7,14 @@ use crate::tools::context::ToolPayload;
 use codex_mcp::ToolInfo;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::ResponseItem;
+use codex_tools::ClaudeMessagesToolOptions;
 use codex_tools::ClaudeToolCallKind;
+use codex_tools::ClaudeWebSearchToolKind;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use codex_tools::create_tools_json_for_claude_messages;
+use codex_tools::create_tools_json_for_claude_messages_with_options;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
@@ -291,17 +294,31 @@ async fn claude_model_visible_tools_have_registered_handlers() -> anyhow::Result
         .iter()
         .map(claude_tool_name)
         .collect::<Vec<_>>();
-    assert_eq!(claude_names.len(), claude_tools.tool_call_info.len());
+    let server_tool_count = claude_tools
+        .tools
+        .iter()
+        .filter(|tool| tool.get("type").is_some())
+        .count();
+    assert_eq!(
+        claude_names.len(),
+        claude_tools.tool_call_info.len() + server_tool_count
+    );
 
-    for claude_name in &claude_names {
+    for info in &claude_tools.tool_call_info {
+        assert!(
+            claude_names.iter().any(|name| name == &info.claude_name),
+            "Claude tool `{}` should be present in the tools payload",
+            info.claude_name
+        );
         let mapping_count = claude_tools
             .tool_call_info
             .iter()
-            .filter(|info| info.claude_name == *claude_name)
+            .filter(|candidate| candidate.claude_name == info.claude_name)
             .count();
         assert_eq!(
             mapping_count, 1,
-            "Claude tool `{claude_name}` should have exactly one reverse mapping"
+            "Claude tool `{}` should have exactly one reverse mapping",
+            info.claude_name
         );
     }
 
@@ -337,13 +354,52 @@ async fn claude_model_visible_tools_have_registered_handlers() -> anyhow::Result
         "deferred dynamic tools should advertise the special tool_search path"
     );
     assert!(
-        !claude_names.iter().any(|name| name == "web_search"),
-        "Claude must not advertise hosted web_search"
+        claude_names.iter().any(|name| name == "web_search"),
+        "Claude should advertise native web_search server tool"
+    );
+    assert!(
+        !claude_tools
+            .tool_call_info
+            .iter()
+            .any(|info| info.claude_name == "web_search"),
+        "Claude native web_search should not be routed to a local handler"
     );
     assert!(
         !claude_names.iter().any(|name| name == "image_generation"),
         "Claude must not advertise hosted image_generation"
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn claude_local_web_search_function_has_registered_handler() -> anyhow::Result<()> {
+    let (_, turn) = make_session_and_context().await;
+    let router = ToolRouter::from_config(
+        &turn.tools_config,
+        ToolRouterParams {
+            deferred_mcp_tools: None,
+            mcp_tools: None,
+            unavailable_called_tools: Vec::new(),
+            parallel_mcp_server_names: HashSet::new(),
+            discoverable_tools: None,
+            dynamic_tools: turn.dynamic_tools.as_slice(),
+        },
+    );
+
+    let claude_tools = create_tools_json_for_claude_messages_with_options(
+        &router.model_visible_specs(),
+        ClaudeMessagesToolOptions {
+            web_search_tool_kind: ClaudeWebSearchToolKind::LocalFunctionTool,
+        },
+    )?;
+    let web_search = claude_tools
+        .tool_call_info
+        .iter()
+        .find(|info| info.name == "web_search")
+        .expect("local web_search should be routed as a Claude function tool");
+    assert_eq!(web_search.kind, ClaudeToolCallKind::Function);
+    assert!(router.has_handler_for_test(&ToolName::plain("web_search")));
 
     Ok(())
 }

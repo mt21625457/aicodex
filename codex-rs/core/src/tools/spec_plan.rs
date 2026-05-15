@@ -24,6 +24,7 @@ use crate::tools::handlers::TestSyncHandler;
 use crate::tools::handlers::ToolSearchHandler;
 use crate::tools::handlers::UpdateGoalHandler;
 use crate::tools::handlers::ViewImageHandler;
+use crate::tools::handlers::WebSearchHandler;
 use crate::tools::handlers::WriteStdinHandler;
 use crate::tools::handlers::agent_jobs::ReportAgentJobResultHandler;
 use crate::tools::handlers::agent_jobs::SpawnAgentsOnCsvHandler;
@@ -274,7 +275,7 @@ pub fn build_tool_registry_builder(
         web_search_config: config.web_search_config.as_ref(),
         web_search_tool_type: config.web_search_tool_type,
     }) {
-        builder.push_spec(web_search_tool, /*supports_parallel_tool_calls*/ false);
+        builder.register_handler(Arc::new(WebSearchHandler::new(web_search_tool)));
     }
 
     if config.image_gen_tool {

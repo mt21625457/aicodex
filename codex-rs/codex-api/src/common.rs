@@ -484,12 +484,39 @@ pub enum ClaudeToolResultContent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ClaudeTool {
+#[serde(untagged)]
+pub enum ClaudeTool {
+    Function(ClaudeFunctionTool),
+    Server(ClaudeServerTool),
+}
+
+impl ClaudeTool {
+    pub fn set_cache_control(&mut self, cache_control: Option<ClaudeCacheControl>) {
+        match self {
+            Self::Function(tool) => tool.cache_control = cache_control,
+            Self::Server(tool) => tool.cache_control = cache_control,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ClaudeFunctionTool {
     pub name: String,
     pub description: String,
     pub input_schema: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<ClaudeCacheControl>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ClaudeServerTool {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<ClaudeCacheControl>,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -859,6 +886,59 @@ mod claude_wire_tests {
             json!({"effort": "max"}),
         );
         roundtrip(&ClaudeServiceTier::StandardOnly, json!("standard_only"));
+    }
+
+    #[test]
+    fn claude_tools_roundtrip_function_and_server_shapes() {
+        roundtrip(
+            &ClaudeTool::Function(ClaudeFunctionTool {
+                name: "get_weather".to_string(),
+                description: "Get weather".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "city": {"type": "string"}
+                    },
+                    "required": ["city"],
+                    "additionalProperties": false
+                }),
+                cache_control: None,
+            }),
+            json!({
+                "name": "get_weather",
+                "description": "Get weather",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "city": {"type": "string"}
+                    },
+                    "required": ["city"],
+                    "additionalProperties": false
+                }
+            }),
+        );
+
+        roundtrip(
+            &ClaudeTool::Server(ClaudeServerTool {
+                kind: "web_search_20250305".to_string(),
+                name: "web_search".to_string(),
+                cache_control: Some(ClaudeCacheControl::ephemeral(None)),
+                extra: serde_json::Map::from_iter([
+                    ("max_uses".to_string(), json!(5)),
+                    (
+                        "allowed_domains".to_string(),
+                        json!(["example.com", "docs.example.com"]),
+                    ),
+                ]),
+            }),
+            json!({
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "cache_control": {"type": "ephemeral"},
+                "max_uses": 5,
+                "allowed_domains": ["example.com", "docs.example.com"]
+            }),
+        );
     }
 
     #[test]

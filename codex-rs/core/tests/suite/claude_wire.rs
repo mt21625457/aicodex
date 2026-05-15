@@ -113,8 +113,16 @@ async fn claude_wire_tool_loop_posts_messages_and_tool_result() -> anyhow::Resul
         "first Claude request tools: {first_tool_names:?}"
     );
     assert!(
-        !first_tool_names.iter().any(|name| name == "web_search"),
-        "Claude requests must not advertise hosted web_search: {first_tool_names:?}"
+        first["tools"]
+            .as_array()
+            .is_some_and(|tools| tools
+                .iter()
+                .any(
+                    |tool| tool.get("name").and_then(Value::as_str) == Some("web_search")
+                        && tool.get("type").and_then(Value::as_str) == Some("web_search_20250305")
+                        && tool.get("input_schema").is_none()
+                )),
+        "Claude requests should advertise native web_search server tool: {first}"
     );
     assert!(
         !first_tool_names

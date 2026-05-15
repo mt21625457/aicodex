@@ -124,6 +124,12 @@ impl ToolRouter {
             {
                 Some(config.spec.clone())
             }
+            ToolSpec::WebSearch { .. }
+                if tool_name.namespace.is_none()
+                    && config.spec.name() == tool_name.name.as_str() =>
+            {
+                Some(config.spec.clone())
+            }
             ToolSpec::Namespace(namespace) => namespace.tools.iter().find_map(|tool| match tool {
                 ResponsesApiNamespaceTool::Function(tool)
                     if tool_name.namespace.as_deref() == Some(namespace.name.as_str())

@@ -9,6 +9,7 @@ use codex_client::StreamResponse;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::models::WebSearchAction;
 use codex_protocol::protocol::TokenUsage;
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
@@ -181,6 +182,12 @@ enum ClaudeStreamContentBlock {
         name: String,
         input: Value,
     },
+    ServerToolUse {
+        id: String,
+        name: String,
+        input: Value,
+        value: Value,
+    },
     Thinking {
         thinking: String,
         signature: Option<String>,
@@ -229,6 +236,23 @@ impl<'de> Deserialize<'de> for ClaudeStreamContentBlock {
                     .get("input")
                     .cloned()
                     .unwrap_or_else(empty_json_object),
+            }),
+            "server_tool_use" => Ok(Self::ServerToolUse {
+                id: object
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                name: object
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                input: object
+                    .get("input")
+                    .cloned()
+                    .unwrap_or_else(empty_json_object),
+                value,
             }),
             "thinking" => Ok(Self::Thinking {
                 thinking: object
@@ -352,6 +376,7 @@ struct ClaudeStreamState {
 enum ClaudeStreamBlockKind {
     Text,
     ToolUse,
+    ServerToolUse,
     Thinking,
     ProviderState,
 }
@@ -469,6 +494,20 @@ impl ClaudeStreamState {
                 self.maybe_send_custom_tool_input_delta(index, tx_event)
                     .await?;
             }
+            ClaudeStreamContentBlock::ServerToolUse {
+                id,
+                name,
+                input,
+                value,
+            } => {
+                self.block_kinds
+                    .insert(index, ClaudeStreamBlockKind::ServerToolUse);
+                let state = self.tool_blocks.entry(index).or_default();
+                state.id = Some(id);
+                state.name = Some(name);
+                state.input = Some(input);
+                self.provider_state_blocks.insert(index, value);
+            }
             ClaudeStreamContentBlock::Thinking {
                 thinking,
                 signature,
@@ -526,11 +565,7 @@ impl ClaudeStreamState {
                 }
             }
             ClaudeStreamDelta::InputJsonDelta { partial_json } => {
-                self.ensure_delta_matches(
-                    index,
-                    ClaudeStreamBlockKind::ToolUse,
-                    "input_json_delta",
-                )?;
+                self.ensure_input_json_delta_matches(index)?;
                 let state = self.tool_blocks.entry(index).or_default();
                 state.partial_json.push_str(&partial_json);
                 self.maybe_send_custom_tool_input_delta(index, tx_event)
@@ -583,6 +618,7 @@ impl ClaudeStreamState {
         };
         self.maybe_send_custom_tool_input_delta(index, tx_event)
             .await?;
+        self.update_server_tool_use_provider_state(index);
 
         self.emit_final_block(index, tx_event).await
     }
@@ -612,6 +648,23 @@ impl ClaudeStreamState {
         }
         Err(ApiError::Stream(format!(
             "Claude {delta_name} does not match content block {index} kind {actual:?}"
+        )))
+    }
+
+    fn ensure_input_json_delta_matches(&self, index: usize) -> Result<(), ApiError> {
+        let Some(actual) = self.block_kinds.get(&index).copied() else {
+            return Err(ApiError::Stream(format!(
+                "Claude input_json_delta received for unknown content block {index}"
+            )));
+        };
+        if matches!(
+            actual,
+            ClaudeStreamBlockKind::ToolUse | ClaudeStreamBlockKind::ServerToolUse
+        ) {
+            return Ok(());
+        }
+        Err(ApiError::Stream(format!(
+            "Claude input_json_delta does not match content block {index} kind {actual:?}"
         )))
     }
 
@@ -810,46 +863,53 @@ impl ClaudeStreamState {
         if !self.finalized_blocks.insert(index) {
             return Ok(());
         }
-        let Some(item) = self.final_response_item_for_block(index)? else {
-            return Ok(());
-        };
-        tx_event
-            .send(Ok(ResponseEvent::OutputItemDone(item)))
-            .await
-            .map_err(|err| ApiError::Stream(err.to_string()))
+        let items = self.final_response_items_for_block(index)?;
+        for item in items {
+            tx_event
+                .send(Ok(ResponseEvent::OutputItemDone(item)))
+                .await
+                .map_err(|err| ApiError::Stream(err.to_string()))?;
+        }
+        Ok(())
     }
 
-    fn final_response_item_for_block(
-        &self,
-        index: usize,
-    ) -> Result<Option<ResponseItem>, ApiError> {
+    fn final_response_items_for_block(&self, index: usize) -> Result<Vec<ResponseItem>, ApiError> {
         let Some(kind) = self.block_kinds.get(&index) else {
-            return Ok(None);
+            return Ok(Vec::new());
         };
         match kind {
             ClaudeStreamBlockKind::Text => {
                 if let Some(text) = self.text_blocks.get(&index)
                     && !text.is_empty()
                 {
-                    return Ok(Some(ResponseItem::Message {
+                    return Ok(vec![ResponseItem::Message {
                         id: self.message_id_for_block(index),
                         role: "assistant".to_string(),
                         content: vec![ContentItem::OutputText { text: text.clone() }],
                         phase: None,
-                    }));
+                    }]);
                 }
-                Ok(None)
+                Ok(Vec::new())
             }
-            ClaudeStreamBlockKind::Thinking => Ok(Some(self.reasoning_item_for_block(index))),
-            ClaudeStreamBlockKind::ToolUse => self.tool_call_item_for_block(index),
-            ClaudeStreamBlockKind::ProviderState => {
-                Ok(self
-                    .provider_state_blocks
-                    .get(&index)
-                    .map(|value| ResponseItem::Compaction {
-                        encrypted_content: value.to_string(),
-                    }))
+            ClaudeStreamBlockKind::Thinking => Ok(vec![self.reasoning_item_for_block(index)]),
+            ClaudeStreamBlockKind::ToolUse => Ok(self
+                .tool_call_item_for_block(index)?
+                .into_iter()
+                .collect::<Vec<_>>()),
+            ClaudeStreamBlockKind::ServerToolUse => {
+                let mut items = Vec::new();
+                if let Some(item) = self.server_tool_call_item_for_block(index)? {
+                    items.push(item);
+                }
+                if let Some(item) = self.provider_state_item_for_block(index) {
+                    items.push(item);
+                }
+                Ok(items)
             }
+            ClaudeStreamBlockKind::ProviderState => Ok(self
+                .provider_state_item_for_block(index)
+                .into_iter()
+                .collect()),
         }
     }
 
@@ -927,6 +987,56 @@ impl ClaudeStreamState {
         }))
     }
 
+    fn server_tool_call_item_for_block(
+        &self,
+        index: usize,
+    ) -> Result<Option<ResponseItem>, ApiError> {
+        let Some(state) = self.tool_blocks.get(&index) else {
+            return Ok(None);
+        };
+        let Some(name) = state.name.as_deref() else {
+            return Ok(None);
+        };
+        if name != "web_search" {
+            return Ok(None);
+        }
+        let call_id = state.id.clone().unwrap_or_else(|| name.to_string());
+        let input = state.input_value()?;
+        Ok(Some(ResponseItem::WebSearchCall {
+            id: Some(call_id),
+            status: None,
+            action: web_search_action_from_claude_input(&input),
+        }))
+    }
+
+    fn provider_state_item_for_block(&self, index: usize) -> Option<ResponseItem> {
+        self.provider_state_blocks
+            .get(&index)
+            .map(|value| ResponseItem::Compaction {
+                encrypted_content: value.to_string(),
+            })
+    }
+
+    fn update_server_tool_use_provider_state(&mut self, index: usize) {
+        if self.block_kinds.get(&index) != Some(&ClaudeStreamBlockKind::ServerToolUse) {
+            return;
+        }
+        let Some(input) = self
+            .tool_blocks
+            .get(&index)
+            .and_then(|state| state.input.clone())
+        else {
+            return;
+        };
+        let Some(value) = self.provider_state_blocks.get_mut(&index) else {
+            return;
+        };
+        let Some(object) = value.as_object_mut() else {
+            return;
+        };
+        object.insert("input".to_string(), input);
+    }
+
     fn response_id(&self) -> String {
         self.response_id
             .clone()
@@ -973,6 +1083,39 @@ impl ToolUseState {
 
 fn stringify_tool_input(input: &Value) -> String {
     serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string())
+}
+
+fn web_search_action_from_claude_input(input: &Value) -> Option<WebSearchAction> {
+    let object = input.as_object()?;
+    if let Some(query) = object
+        .get("query")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|query| !query.is_empty())
+    {
+        return Some(WebSearchAction::Search {
+            query: Some(query.to_string()),
+            queries: None,
+        });
+    }
+
+    let queries = object
+        .get("queries")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|query| !query.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .filter(|queries| !queries.is_empty());
+    queries.map(|queries| WebSearchAction::Search {
+        query: queries.first().cloned(),
+        queries: Some(queries),
+    })
 }
 
 fn custom_tool_input(tool_name: &str, input: &Value) -> Result<String, String> {
@@ -1918,6 +2061,95 @@ mod tests {
                 provider_stop_reason: Some(reason),
                 ..
             } if reason == "pause_turn"
+        )));
+    }
+
+    #[tokio::test]
+    async fn claude_stream_maps_web_search_server_tool_use_and_preserves_provider_state() {
+        let events = run_events(
+            vec![
+                json!({
+                    "type": "message_start",
+                    "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": []}
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {
+                        "type": "server_tool_use",
+                        "id": "srvtoolu_1",
+                        "name": "web_search"
+                    }
+                }),
+                json!({
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {
+                        "type": "input_json_delta",
+                        "partial_json": "{\"query\":\"latest rust release\"}"
+                    }
+                }),
+                json!({"type": "content_block_stop", "index": 0}),
+                json!({"type": "message_stop"}),
+            ],
+            HashMap::new(),
+        )
+        .await;
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ResponseEvent::OutputItemDone(ResponseItem::WebSearchCall {
+                id: Some(id),
+                action: Some(WebSearchAction::Search { query: Some(query), queries: None }),
+                ..
+            }) if id == "srvtoolu_1" && query == "latest rust release"
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ResponseEvent::OutputItemDone(ResponseItem::Compaction { encrypted_content })
+                if serde_json::from_str::<Value>(encrypted_content).ok() == Some(json!({
+                    "type": "server_tool_use",
+                    "id": "srvtoolu_1",
+                    "name": "web_search",
+                    "input": {"query": "latest rust release"}
+                }))
+        )));
+    }
+
+    #[tokio::test]
+    async fn claude_stream_preserves_web_search_tool_result_as_provider_state() {
+        let search_result = json!({
+            "type": "web_search_tool_result",
+            "tool_use_id": "srvtoolu_1",
+            "content": [{
+                "type": "web_search_result",
+                "title": "Rust Releases",
+                "url": "https://example.com/rust",
+                "encrypted_content": "opaque"
+            }]
+        });
+        let events = run_events(
+            vec![
+                json!({
+                    "type": "message_start",
+                    "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": []}
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": search_result.clone()
+                }),
+                json!({"type": "content_block_stop", "index": 0}),
+                json!({"type": "message_stop"}),
+            ],
+            HashMap::new(),
+        )
+        .await;
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ResponseEvent::OutputItemDone(ResponseItem::Compaction { encrypted_content })
+                if serde_json::from_str::<Value>(encrypted_content).ok().as_ref() == Some(&search_result)
         )));
     }
 

@@ -28,9 +28,11 @@ use codex_protocol::models::LocalShellAction;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
+use codex_tools::ClaudeMessagesToolOptions;
 use codex_tools::ClaudeToolCallKind;
+use codex_tools::ClaudeWebSearchToolKind;
 use codex_tools::claude_tool_name;
-use codex_tools::create_tools_json_for_claude_messages;
+use codex_tools::create_tools_json_for_claude_messages_with_options;
 use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
@@ -129,7 +131,15 @@ pub(crate) fn build_claude_messages_request(
     if let Some(output_schema) = &prompt.output_schema {
         system_segments.push(output_schema_instruction(output_schema));
     }
-    let tools_json = create_tools_json_for_claude_messages(&prompt.tools)?;
+    let tools_json = create_tools_json_for_claude_messages_with_options(
+        &prompt.tools,
+        ClaudeMessagesToolOptions {
+            web_search_tool_kind: match options.provider_compat {
+                ClaudeProviderCompat::Anthropic => ClaudeWebSearchToolKind::NativeServerTool,
+                ClaudeProviderCompat::DeepSeek => ClaudeWebSearchToolKind::LocalFunctionTool,
+            },
+        },
+    )?;
     let codex_tools::ClaudeToolsJson {
         tools,
         tool_call_info: tool_call_metadata,
@@ -412,7 +422,7 @@ fn apply_prompt_cache_policy(
     if !tools.is_empty()
         && let Some(last_tool) = tools.last_mut()
     {
-        last_tool.cache_control = cache_control.clone();
+        last_tool.set_cache_control(cache_control.clone());
     }
     if !system.trim().is_empty() && options.mode == ClaudePromptCacheMode::System {
         return;
@@ -1012,6 +1022,121 @@ mod tests {
             })
         );
         assert!(request.tool_call_info.contains_key("mcp__demo__search"));
+    }
+
+    #[test]
+    fn builds_claude_request_with_native_web_search_server_tool() {
+        let prompt = Prompt {
+            input: vec![ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "search".to_string(),
+                }],
+                phase: None,
+            }],
+            tools: vec![ToolSpec::WebSearch {
+                external_web_access: Some(true),
+                filters: Some(codex_tools::ResponsesApiWebSearchFilters {
+                    allowed_domains: Some(vec!["example.com".to_string()]),
+                }),
+                user_location: Some(codex_tools::ResponsesApiWebSearchUserLocation {
+                    r#type: codex_protocol::config_types::WebSearchUserLocationType::Approximate,
+                    country: Some("US".to_string()),
+                    region: None,
+                    city: Some("San Francisco".to_string()),
+                    timezone: Some("America/Los_Angeles".to_string()),
+                }),
+                search_context_size: None,
+                search_content_types: None,
+            }],
+            ..Default::default()
+        };
+
+        let request =
+            build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
+                .expect("request");
+
+        assert_eq!(
+            serde_json::to_value(&request.tools).expect("serialize tools"),
+            json!([{
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "allowed_domains": ["example.com"],
+                "user_location": {
+                    "type": "approximate",
+                    "country": "US",
+                    "city": "San Francisco",
+                    "timezone": "America/Los_Angeles"
+                }
+            }])
+        );
+        assert!(request.tool_call_info.is_empty());
+    }
+
+    #[test]
+    fn builds_deepseek_request_with_local_web_search_function_tool() {
+        let prompt = Prompt {
+            input: vec![ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "search".to_string(),
+                }],
+                phase: None,
+            }],
+            tools: vec![ToolSpec::WebSearch {
+                external_web_access: Some(true),
+                filters: Some(codex_tools::ResponsesApiWebSearchFilters {
+                    allowed_domains: Some(vec!["example.com".to_string()]),
+                }),
+                user_location: None,
+                search_context_size: None,
+                search_content_types: None,
+            }],
+            ..Default::default()
+        };
+
+        let request = build_claude_messages_request(
+            &prompt,
+            &model_info(),
+            ClaudeRequestOptions {
+                provider_compat: ClaudeProviderCompat::DeepSeek,
+                ..Default::default()
+            },
+        )
+        .expect("request");
+
+        assert_eq!(
+            serde_json::to_value(&request.tools).expect("serialize tools"),
+            json!([{
+                "name": "web_search",
+                "description": "Search the web using Codex's local web search handler and return relevant text results. Use `query` for one search or `queries` for a small batch.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query."
+                        },
+                        "queries": {
+                            "type": "array",
+                            "description": "Optional batch of search queries. Use only when several closely related searches are needed.",
+                            "items": { "type": "string" }
+                        }
+                    },
+                    "additionalProperties": false
+                }
+            }])
+        );
+        assert_eq!(
+            request.tool_call_info.get("web_search"),
+            Some(&ApiClaudeToolCallInfo {
+                name: "web_search".to_string(),
+                namespace: None,
+                kind: ApiClaudeToolCallKind::Function,
+            })
+        );
     }
 
     #[test]
