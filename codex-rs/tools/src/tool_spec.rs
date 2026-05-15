@@ -9,11 +9,13 @@ use codex_protocol::config_types::WebSearchFilters as ConfigWebSearchFilters;
 use codex_protocol::config_types::WebSearchUserLocation as ConfigWebSearchUserLocation;
 use codex_protocol::config_types::WebSearchUserLocationType;
 use serde::Serialize;
+use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::HashSet;
 
 const MAX_CLAUDE_TOOL_NAME_LEN: usize = 64;
+const CLAUDE_WEB_SEARCH_TOOL_TYPE: &str = "web_search_20250305";
 
 const APPLY_PATCH_CLAUDE_TOOL_DESCRIPTION: &str = r#"Use the `apply_patch` tool to edit files.
 Your patch language is a stripped-down, file-oriented diff format designed to be easy to parse and safe to apply:
@@ -163,6 +165,25 @@ pub struct ClaudeToolsJson {
     pub tool_call_info: Vec<ClaudeToolCallInfo>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaudeWebSearchToolKind {
+    NativeServerTool,
+    LocalFunctionTool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClaudeMessagesToolOptions {
+    pub web_search_tool_kind: ClaudeWebSearchToolKind,
+}
+
+impl Default for ClaudeMessagesToolOptions {
+    fn default() -> Self {
+        Self {
+            web_search_tool_kind: ClaudeWebSearchToolKind::NativeServerTool,
+        }
+    }
+}
+
 /// Returns JSON values compatible with Anthropic's Claude Messages API.
 ///
 /// Claude does not have Responses API namespaces or custom/freeform tools, so
@@ -171,6 +192,13 @@ pub struct ClaudeToolsJson {
 /// to Codex's internal `ResponseItem` shape.
 pub fn create_tools_json_for_claude_messages(
     tools: &[ToolSpec],
+) -> Result<ClaudeToolsJson, serde_json::Error> {
+    create_tools_json_for_claude_messages_with_options(tools, ClaudeMessagesToolOptions::default())
+}
+
+pub fn create_tools_json_for_claude_messages_with_options(
+    tools: &[ToolSpec],
+    options: ClaudeMessagesToolOptions,
 ) -> Result<ClaudeToolsJson, serde_json::Error> {
     let mut claude_tools = Vec::new();
     let mut tool_call_info = Vec::new();
@@ -291,7 +319,35 @@ pub fn create_tools_json_for_claude_messages(
                     kind: ClaudeToolCallKind::Function,
                 });
             }
-            ToolSpec::WebSearch { .. } => {}
+            ToolSpec::WebSearch {
+                filters,
+                user_location,
+                ..
+            } => {
+                match options.web_search_tool_kind {
+                    ClaudeWebSearchToolKind::NativeServerTool => {
+                        claude_tools.push(claude_web_search_tool_json(filters, user_location));
+                    }
+                    ClaudeWebSearchToolKind::LocalFunctionTool => {
+                        let claude_name = unique_claude_tool_name(
+                            &mut used_names,
+                            /*namespace*/ None,
+                            tool.name(),
+                        );
+                        claude_tools.push(claude_function_tool_json(
+                            &claude_name,
+                            "Search the web using Codex's local web search handler and return relevant text results. Use `query` for one search or `queries` for a small batch.",
+                            claude_web_search_function_schema_json(),
+                        ));
+                        tool_call_info.push(ClaudeToolCallInfo {
+                            claude_name,
+                            name: tool.name().to_string(),
+                            namespace: None,
+                            kind: ClaudeToolCallKind::Function,
+                        });
+                    }
+                }
+            }
             ToolSpec::ImageGeneration { .. } => {}
             ToolSpec::Freeform(tool) => {
                 let claude_name =
@@ -370,6 +426,44 @@ fn claude_function_tool_json(name: &str, description: &str, input_schema: Value)
         "name": name,
         "description": description,
         "input_schema": input_schema,
+    })
+}
+
+fn claude_web_search_tool_json(
+    filters: &Option<ResponsesApiWebSearchFilters>,
+    user_location: &Option<ResponsesApiWebSearchUserLocation>,
+) -> Value {
+    let mut tool = Map::new();
+    tool.insert("type".to_string(), json!(CLAUDE_WEB_SEARCH_TOOL_TYPE));
+    tool.insert("name".to_string(), json!("web_search"));
+    if let Some(allowed_domains) = filters
+        .as_ref()
+        .and_then(|filters| filters.allowed_domains.as_ref())
+        .filter(|domains| !domains.is_empty())
+    {
+        tool.insert("allowed_domains".to_string(), json!(allowed_domains));
+    }
+    if let Some(user_location) = user_location {
+        tool.insert("user_location".to_string(), json!(user_location));
+    }
+    Value::Object(tool)
+}
+
+fn claude_web_search_function_schema_json() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Search query."
+            },
+            "queries": {
+                "type": "array",
+                "description": "Optional batch of search queries. Use only when several closely related searches are needed.",
+                "items": { "type": "string" }
+            }
+        },
+        "additionalProperties": false
     })
 }
 

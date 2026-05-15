@@ -1,3 +1,5 @@
+use super::ClaudeMessagesToolOptions;
+use super::ClaudeWebSearchToolKind;
 use super::ConfiguredToolSpec;
 use super::ResponsesApiNamespace;
 use super::ResponsesApiWebSearchFilters;
@@ -639,14 +641,25 @@ fn create_tools_json_for_claude_messages_preserves_dynamic_tool_schema() {
 }
 
 #[test]
-fn create_tools_json_for_claude_messages_omits_hosted_tools() {
+fn create_tools_json_for_claude_messages_maps_web_search_and_omits_image_generation() {
     let result = create_tools_json_for_claude_messages(&[
         ToolSpec::WebSearch {
             external_web_access: Some(true),
-            filters: None,
-            user_location: None,
-            search_context_size: None,
-            search_content_types: None,
+            filters: Some(ResponsesApiWebSearchFilters {
+                allowed_domains: Some(vec![
+                    "example.com".to_string(),
+                    "docs.example.com".to_string(),
+                ]),
+            }),
+            user_location: Some(ResponsesApiWebSearchUserLocation {
+                r#type: WebSearchUserLocationType::Approximate,
+                country: Some("US".to_string()),
+                region: Some("California".to_string()),
+                city: Some("San Francisco".to_string()),
+                timezone: Some("America/Los_Angeles".to_string()),
+            }),
+            search_context_size: Some(WebSearchContextSize::Medium),
+            search_content_types: Some(vec!["text".to_string(), "image".to_string()]),
         },
         ToolSpec::ImageGeneration {
             output_format: "png".to_string(),
@@ -671,9 +684,73 @@ fn create_tools_json_for_claude_messages_omits_hosted_tools() {
         .iter()
         .map(|tool| tool["name"].as_str().expect("tool name"))
         .collect::<Vec<_>>();
-    assert_eq!(names, vec!["lookup_order"]);
+    assert_eq!(names, vec!["web_search", "lookup_order"]);
+    assert_eq!(
+        claude_tool(&result, "web_search"),
+        &json!({
+            "type": "web_search_20250305",
+            "name": "web_search",
+            "allowed_domains": ["example.com", "docs.example.com"],
+            "user_location": {
+                "type": "approximate",
+                "country": "US",
+                "region": "California",
+                "city": "San Francisco",
+                "timezone": "America/Los_Angeles"
+            }
+        })
+    );
     assert_eq!(result.tool_call_info.len(), 1);
     assert_eq!(result.tool_call_info[0].claude_name, "lookup_order");
+}
+
+#[test]
+fn create_tools_json_for_claude_messages_can_map_web_search_to_local_function() {
+    let result = crate::create_tools_json_for_claude_messages_with_options(
+        &[ToolSpec::WebSearch {
+            external_web_access: Some(true),
+            filters: None,
+            user_location: None,
+            search_context_size: None,
+            search_content_types: None,
+        }],
+        ClaudeMessagesToolOptions {
+            web_search_tool_kind: ClaudeWebSearchToolKind::LocalFunctionTool,
+        },
+    )
+    .expect("serialize claude tools");
+
+    assert_eq!(
+        result.tools,
+        vec![json!({
+            "name": "web_search",
+            "description": "Search the web using Codex's local web search handler and return relevant text results. Use `query` for one search or `queries` for a small batch.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query."
+                    },
+                    "queries": {
+                        "type": "array",
+                        "description": "Optional batch of search queries. Use only when several closely related searches are needed.",
+                        "items": { "type": "string" }
+                    }
+                },
+                "additionalProperties": false
+            }
+        })]
+    );
+    assert_eq!(
+        result.tool_call_info,
+        vec![crate::ClaudeToolCallInfo {
+            claude_name: "web_search".to_string(),
+            name: "web_search".to_string(),
+            namespace: None,
+            kind: crate::ClaudeToolCallKind::Function,
+        }]
+    );
 }
 
 #[test]

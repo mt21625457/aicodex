@@ -5,6 +5,7 @@ use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::ContextTokenUsageSource;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::SandboxPolicy;
@@ -112,8 +113,16 @@ async fn claude_wire_tool_loop_posts_messages_and_tool_result() -> anyhow::Resul
         "first Claude request tools: {first_tool_names:?}"
     );
     assert!(
-        !first_tool_names.iter().any(|name| name == "web_search"),
-        "Claude requests must not advertise hosted web_search: {first_tool_names:?}"
+        first["tools"]
+            .as_array()
+            .is_some_and(|tools| tools
+                .iter()
+                .any(
+                    |tool| tool.get("name").and_then(Value::as_str) == Some("web_search")
+                        && tool.get("type").and_then(Value::as_str) == Some("web_search_20250305")
+                        && tool.get("input_schema").is_none()
+                )),
+        "Claude requests should advertise native web_search server tool: {first}"
     );
     assert!(
         !first_tool_names
@@ -691,6 +700,86 @@ async fn claude_wire_allows_corrected_apply_patch_after_missing_add_prefix() -> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_wire_apply_patch_wrapper_streams_raw_patch_update() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let patch = "*** Begin Patch\n*** Add File: claude_streamed.txt\n+hello\n*** End Patch";
+    let partial_json = serde_json::to_string(&json!({ "input": patch }))?;
+    let responses = mount_claude_sse_sequence(
+        &server,
+        vec![
+            claude_custom_tool_use_delta_sse("toolu_stream", "apply_patch", &partial_json),
+            claude_text_sse("msg_2", "done"),
+        ],
+    )
+    .await;
+
+    let test = test_codex()
+        .with_config(configure_claude_provider_with_apply_patch_streaming)
+        .build(&server)
+        .await?;
+
+    test.codex
+        .submit(Op::UserTurn {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: "stream an apply_patch tool call".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            cwd: test.config.cwd.to_path_buf(),
+            approval_policy: AskForApproval::Never,
+            approvals_reviewer: None,
+            sandbox_policy: SandboxPolicy::DangerFullAccess,
+            permission_profile: Some(PermissionProfile::Disabled),
+            model: test.session_configured.model.clone(),
+            effort: None,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
+        })
+        .await?;
+
+    let mut updates = Vec::new();
+    wait_for_event(&test.codex, |event| match event {
+        EventMsg::PatchApplyUpdated(update) => {
+            updates.push(update.clone());
+            false
+        }
+        EventMsg::TurnComplete(_) => true,
+        _ => false,
+    })
+    .await;
+
+    assert_eq!(responses.requests().len(), 2);
+    assert!(
+        updates
+            .iter()
+            .any(|update| update.call_id == "toolu_stream"),
+        "Claude apply_patch stream should emit raw patch updates: {updates:?}"
+    );
+    let latest_change = updates
+        .iter()
+        .rev()
+        .find_map(|update| {
+            update
+                .changes
+                .get(&std::path::PathBuf::from("claude_streamed.txt"))
+        })
+        .expect("streamed apply_patch update for claude_streamed.txt");
+    assert_eq!(
+        latest_change,
+        &FileChange::Add {
+            content: "hello\n".to_string(),
+        }
+    );
+    let written = std::fs::read_to_string(test.config.cwd.join("claude_streamed.txt"))?;
+    assert_eq!(written, "hello\n");
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn claude_wire_exec_command_uses_existing_approval_flow() -> anyhow::Result<()> {
     let server = start_mock_server().await;
     let responses = mount_claude_sse_sequence(
@@ -1014,6 +1103,13 @@ fn configure_claude_provider_with_apply_patch(config: &mut Config) {
     config.include_apply_patch_tool = true;
 }
 
+fn configure_claude_provider_with_apply_patch_streaming(config: &mut Config) {
+    configure_claude_provider_with_apply_patch(config);
+    if let Err(error) = config.features.enable(Feature::ApplyPatchStreamingEvents) {
+        panic!("ApplyPatchStreamingEvents should be enableable in tests: {error:?}");
+    }
+}
+
 fn configure_claude_provider_with_code_mode(config: &mut Config) {
     configure_claude_provider(config);
     if let Err(error) = config.features.enable(Feature::CodeMode) {
@@ -1223,6 +1319,46 @@ fn claude_custom_tool_use_sse(tool_id: &str, name: &str, input: Value) -> String
                 "input": input
             }
         }),
+        json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": "tool_use"},
+            "usage": {"output_tokens": 5}
+        }),
+        claude_message_stop(),
+    ])
+}
+
+fn claude_custom_tool_use_delta_sse(tool_id: &str, name: &str, partial_json: &str) -> String {
+    sse(vec![
+        json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            }
+        }),
+        json!({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+                "type": "tool_use",
+                "id": tool_id,
+                "name": name,
+                "input": {}
+            }
+        }),
+        json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+                "type": "input_json_delta",
+                "partial_json": partial_json
+            }
+        }),
+        json!({"type": "content_block_stop", "index": 0}),
         json!({
             "type": "message_delta",
             "delta": {"stop_reason": "tool_use"},

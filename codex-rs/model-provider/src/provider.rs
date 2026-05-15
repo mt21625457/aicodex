@@ -174,7 +174,7 @@ impl ModelProvider for ConfiguredModelProvider {
             ProviderCapabilities {
                 namespace_tools: true,
                 image_generation: false,
-                web_search: false,
+                web_search: true,
             }
         } else {
             ProviderCapabilities::default()
@@ -364,7 +364,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_provider_disables_openai_server_side_tools() {
+    fn claude_provider_exposes_claude_native_capabilities() {
         let provider = create_model_provider(
             codex_model_provider_info::create_oss_provider_with_base_url(
                 "https://api.anthropic.com/v1",
@@ -378,7 +378,7 @@ mod tests {
             ProviderCapabilities {
                 namespace_tools: true,
                 image_generation: false,
-                web_search: false,
+                web_search: true,
             }
         );
     }
