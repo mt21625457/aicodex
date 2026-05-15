@@ -27,19 +27,24 @@ use crate::tools::runtimes::shell::ShellRequest;
 use crate::tools::runtimes::shell::ShellRuntime;
 use crate::tools::runtimes::shell::ShellRuntimeBackend;
 use crate::tools::sandboxing::ToolCtx;
+use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::protocol::ExecCommandSource;
+use codex_shell_command::is_safe_command::is_known_safe_command;
 use codex_tools::ToolName;
 
 mod container_exec;
 mod local_shell;
 mod shell_command;
+mod shell_file_changes;
 mod shell_handler;
 
 pub use container_exec::ContainerExecHandler;
 pub use local_shell::LocalShellHandler;
 pub use shell_command::ShellCommandHandler;
 pub(crate) use shell_command::ShellCommandHandlerOptions;
+use shell_file_changes::diff_shell_snapshots;
+use shell_file_changes::snapshot_shell_files;
 pub use shell_handler::ShellHandler;
 
 fn shell_function_payload_command(payload: &ToolPayload) -> Option<String> {
@@ -209,6 +214,21 @@ async fn run_exec_like(args: RunExecLikeArgs) -> Result<FunctionToolOutput, Func
         return Ok(output);
     }
 
+    let shell_file_change_sandbox = turn_environment
+        .environment
+        .is_remote()
+        .then(|| turn.file_system_sandbox_context(/*additional_permissions*/ None));
+    let shell_file_snapshot_before = if is_known_safe_command(&exec_params.command) {
+        None
+    } else {
+        snapshot_shell_files(
+            fs.as_ref(),
+            &exec_params.cwd,
+            shell_file_change_sandbox.as_ref(),
+        )
+        .await
+    };
+
     let source = ExecCommandSource::Agent;
     let emitter = ToolEmitter::shell(
         exec_params.command.clone(),
@@ -285,6 +305,21 @@ async fn run_exec_like(args: RunExecLikeArgs) -> Result<FunctionToolOutput, Func
         )
         .await
         .map(|result| result.output);
+    let shell_file_changes = match &shell_file_snapshot_before {
+        Some(before) => {
+            let after = snapshot_shell_files(
+                fs.as_ref(),
+                &exec_params.cwd,
+                shell_file_change_sandbox.as_ref(),
+            )
+            .await;
+            after
+                .as_ref()
+                .map(|after| diff_shell_snapshots(before, after))
+                .filter(|changes| !changes.is_empty())
+        }
+        None => None,
+    };
     let event_ctx = ToolEventCtx::new(
         session.as_ref(),
         turn.as_ref(),
@@ -298,7 +333,11 @@ async fn run_exec_like(args: RunExecLikeArgs) -> Result<FunctionToolOutput, Func
         .map(JsonValue::String);
     let content = emitter
         .finish(event_ctx, out, /*applied_patch_delta*/ None)
-        .await?;
+        .await;
+    if let Some(changes) = shell_file_changes {
+        emit_shell_file_changes(session.as_ref(), turn.as_ref(), &call_id, changes).await;
+    }
+    let content = content?;
     Ok(FunctionToolOutput {
         body: vec![
             codex_protocol::models::FunctionCallOutputContentItem::InputText { text: content },
@@ -306,6 +345,27 @@ async fn run_exec_like(args: RunExecLikeArgs) -> Result<FunctionToolOutput, Func
         success: Some(true),
         post_tool_use_response,
     })
+}
+
+async fn emit_shell_file_changes(
+    session: &crate::session::session::Session,
+    turn: &TurnContext,
+    shell_call_id: &str,
+    changes: std::collections::HashMap<std::path::PathBuf, codex_protocol::protocol::FileChange>,
+) {
+    let call_id = format!("{shell_call_id}-file-change");
+    let emitter = ToolEmitter::apply_patch(changes, /*auto_approved*/ true);
+    let event_ctx = ToolEventCtx::new(session, turn, &call_id, /*turn_diff_tracker*/ None);
+    emitter.begin(event_ctx).await;
+
+    let event_ctx = ToolEventCtx::new(session, turn, &call_id, /*turn_diff_tracker*/ None);
+    let output = ExecToolCallOutput {
+        exit_code: 0,
+        ..Default::default()
+    };
+    let _ = emitter
+        .finish(event_ctx, Ok(output), /*applied_patch_delta*/ None)
+        .await;
 }
 
 #[cfg(test)]

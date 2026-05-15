@@ -28,6 +28,8 @@ use tracing::trace;
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
 const INVALID_CLAUDE_CUSTOM_TOOL_INPUT_STATUS_PREFIX: &str = "invalid_claude_custom_tool_input: ";
+const APPLY_PATCH_TOOL_NAME: &str = "apply_patch";
+const APPLY_PATCH_COMPAT_INPUT_FIELDS: &[&str] = &["patch", "body", "content", "command"];
 
 pub fn spawn_claude_response_stream(
     stream_response: StreamResponse,
@@ -360,6 +362,7 @@ struct ToolUseState {
     name: Option<String>,
     input: Option<Value>,
     partial_json: String,
+    streamed_custom_tool_input: String,
     item_added: bool,
 }
 
@@ -463,6 +466,8 @@ impl ClaudeStreamState {
                 state.input = Some(input);
                 self.maybe_send_custom_tool_item_added(index, tx_event)
                     .await?;
+                self.maybe_send_custom_tool_input_delta(index, tx_event)
+                    .await?;
             }
             ClaudeStreamContentBlock::Thinking {
                 thinking,
@@ -528,7 +533,7 @@ impl ClaudeStreamState {
                 )?;
                 let state = self.tool_blocks.entry(index).or_default();
                 state.partial_json.push_str(&partial_json);
-                self.maybe_send_custom_tool_input_delta(index, &partial_json, tx_event)
+                self.maybe_send_custom_tool_input_delta(index, tx_event)
                     .await?;
             }
             ClaudeStreamDelta::ThinkingDelta { thinking } => {
@@ -576,6 +581,8 @@ impl ClaudeStreamState {
             state.input = Some(value);
             state.partial_json.clear();
         };
+        self.maybe_send_custom_tool_input_delta(index, tx_event)
+            .await?;
 
         self.emit_final_block(index, tx_event).await
     }
@@ -717,9 +724,8 @@ impl ClaudeStreamState {
     }
 
     async fn maybe_send_custom_tool_input_delta(
-        &self,
+        &mut self,
         index: usize,
-        partial_json: &str,
         tx_event: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
     ) -> Result<(), ApiError> {
         let Some(state) = self.tool_blocks.get(&index) else {
@@ -735,11 +741,27 @@ impl ClaudeStreamState {
             return Ok(());
         }
         let call_id = state.id.clone().unwrap_or_else(|| name.clone());
+        let Some(value) = state.complete_input_value_if_available() else {
+            return Ok(());
+        };
+        let Ok(input) = custom_tool_input(&info.name, &value) else {
+            return Ok(());
+        };
+        let Some(delta) = input.strip_prefix(&state.streamed_custom_tool_input) else {
+            return Ok(());
+        };
+        if delta.is_empty() {
+            return Ok(());
+        }
+        let delta = delta.to_string();
+        if let Some(state) = self.tool_blocks.get_mut(&index) {
+            state.streamed_custom_tool_input = input;
+        }
         tx_event
             .send(Ok(ResponseEvent::ToolCallInputDelta {
                 item_id: call_id.clone(),
                 call_id: Some(call_id),
-                delta: partial_json.to_string(),
+                delta,
             }))
             .await
             .map_err(|err| ApiError::Stream(err.to_string()))
@@ -877,7 +899,7 @@ impl ClaudeStreamState {
                 arguments: stringify_tool_input(&input),
                 call_id,
             },
-            ClaudeToolCallKind::Custom => match custom_tool_input(&input) {
+            ClaudeToolCallKind::Custom => match custom_tool_input(&info.name, &input) {
                 Ok(input) => ResponseItem::CustomToolCall {
                     id: Some(call_id.clone()),
                     status: None,
@@ -940,24 +962,82 @@ impl ToolUseState {
             .clone()
             .unwrap_or_else(|| Value::Object(Map::new())))
     }
+
+    fn complete_input_value_if_available(&self) -> Option<Value> {
+        if !self.partial_json.trim().is_empty() {
+            return serde_json::from_str::<Value>(&self.partial_json).ok();
+        }
+        self.input.clone()
+    }
 }
 
 fn stringify_tool_input(input: &Value) -> String {
     serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string())
 }
 
-fn custom_tool_input(input: &Value) -> Result<String, String> {
-    match input.get("input") {
-        Some(Value::String(input)) => Ok(input.clone()),
-        Some(_) => Err(
-            "Claude custom/freeform tool field `input` must be a string containing the raw tool body"
-                .to_string(),
-        ),
-        None => Err(
-            "Claude custom/freeform tool calls must include an `input` string containing the raw tool body"
+fn custom_tool_input(tool_name: &str, input: &Value) -> Result<String, String> {
+    match input {
+        Value::String(input) => Ok(input.clone()),
+        Value::Object(object) => custom_tool_input_from_object(tool_name, object),
+        _ => Err(
+            "Claude custom/freeform tool input must be either a raw string or an object with an `input` string containing the raw tool body"
                 .to_string(),
         ),
     }
+}
+
+fn custom_tool_input_from_object(
+    tool_name: &str,
+    object: &Map<String, Value>,
+) -> Result<String, String> {
+    match object.get("input") {
+        Some(Value::String(input)) => return Ok(input.clone()),
+        Some(_) => {
+            return Err(
+                "Claude custom/freeform tool field `input` must be a string containing the raw tool body"
+                    .to_string(),
+            );
+        }
+        None => {}
+    }
+
+    if tool_name == APPLY_PATCH_TOOL_NAME {
+        return apply_patch_compat_tool_input(object).ok_or_else(|| {
+            "Claude custom/freeform tool calls must include an `input` string containing the raw tool body"
+                .to_string()
+        });
+    }
+
+    Err(
+        "Claude custom/freeform tool calls must include an `input` string containing the raw tool body"
+            .to_string(),
+    )
+}
+
+fn apply_patch_compat_tool_input(object: &Map<String, Value>) -> Option<String> {
+    for field in APPLY_PATCH_COMPAT_INPUT_FIELDS {
+        let Some(Value::String(value)) = object.get(*field) else {
+            continue;
+        };
+        if looks_like_apply_patch(value) {
+            return Some(value.clone());
+        }
+    }
+
+    let mut patch_like_values = object
+        .values()
+        .filter_map(Value::as_str)
+        .filter(|value| looks_like_apply_patch(value));
+    let first = patch_like_values.next()?;
+    if patch_like_values.next().is_none() {
+        Some(first.to_string())
+    } else {
+        None
+    }
+}
+
+fn looks_like_apply_patch(input: &str) -> bool {
+    input.trim_start().starts_with("*** Begin Patch")
 }
 
 fn is_provider_state_block_type(kind: &str) -> bool {
@@ -1084,6 +1164,35 @@ mod tests {
                 kind: ClaudeToolCallKind::Custom,
             },
         )])
+    }
+
+    fn sample_apply_patch() -> &'static str {
+        "*** Begin Patch\n*** Add File: claude.txt\n+hello\n*** End Patch"
+    }
+
+    fn custom_tool_done_input(events: &[ResponseEvent], tool_name: &str) -> Option<String> {
+        events.iter().find_map(|event| match event {
+            ResponseEvent::OutputItemDone(ResponseItem::CustomToolCall { name, input, .. })
+                if name == tool_name =>
+            {
+                Some(input.clone())
+            }
+            _ => None,
+        })
+    }
+
+    fn custom_tool_input_deltas(events: &[ResponseEvent], call_id: &str) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                ResponseEvent::ToolCallInputDelta {
+                    call_id: Some(event_call_id),
+                    delta,
+                    ..
+                } if event_call_id == call_id => Some(delta.clone()),
+                _ => None,
+            })
+            .collect()
     }
 
     #[test]
@@ -1466,15 +1575,9 @@ mod tests {
 
     #[tokio::test]
     async fn claude_stream_maps_custom_tool_input() {
-        let mut tool_call_info = HashMap::new();
-        tool_call_info.insert(
-            "apply_patch".to_string(),
-            ClaudeToolCallInfo {
-                name: "apply_patch".to_string(),
-                namespace: None,
-                kind: ClaudeToolCallKind::Custom,
-            },
-        );
+        let patch = sample_apply_patch();
+        let partial_json =
+            serde_json::to_string(&json!({ "input": patch })).expect("serializes partial input");
 
         let events = run_events(
             vec![
@@ -1495,11 +1598,11 @@ mod tests {
                 json!({
                     "type": "content_block_delta",
                     "index": 0,
-                    "delta": {"type": "input_json_delta", "partial_json": "{\"input\":\"*** Begin Patch\"}"}
+                    "delta": {"type": "input_json_delta", "partial_json": partial_json}
                 }),
                 json!({"type": "message_stop"}),
             ],
-            tool_call_info,
+            custom_apply_patch_tool_call_info(),
         )
         .await;
 
@@ -1508,11 +1611,145 @@ mod tests {
             ResponseEvent::OutputItemAdded(ResponseItem::CustomToolCall { name, .. })
                 if name == "apply_patch"
         )));
-        assert!(events.iter().any(|event| matches!(
-            event,
-            ResponseEvent::OutputItemDone(ResponseItem::CustomToolCall { input, .. })
-                if input == "*** Begin Patch"
-        )));
+        assert_eq!(custom_tool_input_deltas(&events, "toolu_1"), vec![patch]);
+        assert_eq!(
+            custom_tool_done_input(&events, "apply_patch").as_deref(),
+            Some(patch)
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_stream_maps_custom_tool_raw_string_input() {
+        let patch = sample_apply_patch();
+        let events = run_events(
+            vec![
+                json!({
+                    "type": "message_start",
+                    "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": []}
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "apply_patch",
+                        "input": patch
+                    }
+                }),
+                json!({"type": "message_stop"}),
+            ],
+            custom_apply_patch_tool_call_info(),
+        )
+        .await;
+
+        assert_eq!(custom_tool_input_deltas(&events, "toolu_1"), vec![patch]);
+        assert_eq!(
+            custom_tool_done_input(&events, "apply_patch").as_deref(),
+            Some(patch)
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_stream_maps_custom_tool_streamed_raw_json_string() {
+        let patch = sample_apply_patch();
+        let partial_json = serde_json::to_string(patch).expect("serializes raw string input");
+        let events = run_events(
+            vec![
+                json!({
+                    "type": "message_start",
+                    "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": []}
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "apply_patch",
+                        "input": {}
+                    }
+                }),
+                json!({
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "input_json_delta", "partial_json": partial_json}
+                }),
+                json!({"type": "message_stop"}),
+            ],
+            custom_apply_patch_tool_call_info(),
+        )
+        .await;
+
+        assert_eq!(custom_tool_input_deltas(&events, "toolu_1"), vec![patch]);
+        assert_eq!(
+            custom_tool_done_input(&events, "apply_patch").as_deref(),
+            Some(patch)
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_stream_maps_apply_patch_compat_patch_field() {
+        let patch = sample_apply_patch();
+        let events = run_events(
+            vec![
+                json!({
+                    "type": "message_start",
+                    "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": []}
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "apply_patch",
+                        "input": {"patch": patch}
+                    }
+                }),
+                json!({"type": "message_stop"}),
+            ],
+            custom_apply_patch_tool_call_info(),
+        )
+        .await;
+
+        assert_eq!(custom_tool_input_deltas(&events, "toolu_1"), vec![patch]);
+        assert_eq!(
+            custom_tool_done_input(&events, "apply_patch").as_deref(),
+            Some(patch)
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_stream_maps_apply_patch_single_patch_like_field() {
+        let patch = sample_apply_patch();
+        let events = run_events(
+            vec![
+                json!({
+                    "type": "message_start",
+                    "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": []}
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "apply_patch",
+                        "input": {"command": patch}
+                    }
+                }),
+                json!({"type": "message_stop"}),
+            ],
+            custom_apply_patch_tool_call_info(),
+        )
+        .await;
+
+        assert_eq!(custom_tool_input_deltas(&events, "toolu_1"), vec![patch]);
+        assert_eq!(
+            custom_tool_done_input(&events, "apply_patch").as_deref(),
+            Some(patch)
+        );
     }
 
     #[tokio::test]

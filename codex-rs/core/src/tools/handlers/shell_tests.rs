@@ -1,7 +1,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ShellCommandToolCallParams;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::FileChange;
 use core_test_support::PathBufExt;
 use core_test_support::test_path_buf;
 use pretty_assertions::assert_eq;
@@ -9,6 +12,7 @@ use pretty_assertions::assert_eq;
 use crate::exec_env::create_env;
 use crate::sandboxing::SandboxPermissions;
 use crate::session::tests::make_session_and_context;
+use crate::session::tests::make_session_and_context_with_rx;
 use crate::shell::Shell;
 use crate::shell::ShellType;
 use crate::shell_snapshot::ShellSnapshot;
@@ -21,6 +25,7 @@ use crate::tools::handlers::ShellCommandHandler;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::ToolHandler;
 use crate::turn_diff_tracker::TurnDiffTracker;
+use codex_protocol::items::TurnItem;
 use codex_shell_command::is_safe_command::is_known_safe_command;
 use codex_shell_command::powershell::try_find_powershell_executable_blocking;
 use codex_shell_command::powershell::try_find_pwsh_executable_blocking;
@@ -188,6 +193,59 @@ async fn shell_command_handler_defaults_to_non_login_when_disallowed() {
             .user_shell()
             .derive_exec_args("echo hello", /*use_login_shell*/ false)
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn shell_command_handler_emits_file_change_for_generated_file() {
+    let workspace = tempfile::tempdir().expect("create workspace");
+    let (session, mut turn, rx) = make_session_and_context_with_rx().await;
+    Arc::get_mut(&mut turn)
+        .expect("unique turn context")
+        .permission_profile = PermissionProfile::Disabled;
+    let handler = ShellCommandHandler::from(codex_tools::ShellCommandBackendConfig::Classic);
+    let payload = ToolPayload::Function {
+        arguments: json!({
+            "command": "printf 'hello\\n' > generated.txt",
+            "workdir": workspace.path().to_string_lossy(),
+        })
+        .to_string(),
+    };
+    let invocation = ToolInvocation {
+        session: session.clone(),
+        turn: turn.clone(),
+        cancellation_token: tokio_util::sync::CancellationToken::new(),
+        tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
+        call_id: "call-generated".to_string(),
+        tool_name: codex_tools::ToolName::plain("shell_command"),
+        source: ToolCallSource::Direct,
+        payload,
+    };
+
+    handler
+        .handle(invocation)
+        .await
+        .expect("shell command should succeed");
+
+    let file_change = loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .expect("file change event should be emitted")
+            .expect("event channel should stay open");
+        if let EventMsg::ItemCompleted(completed) = event.msg
+            && let TurnItem::FileChange(file_change) = completed.item
+        {
+            break file_change;
+        }
+    };
+
+    assert_eq!(file_change.id, "call-generated-file-change");
+    assert!(matches!(
+        file_change
+            .changes
+            .get(PathBuf::from("generated.txt").as_path()),
+        Some(FileChange::Add { .. })
+    ));
 }
 
 #[test]
