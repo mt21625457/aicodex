@@ -39,6 +39,7 @@ pub(crate) struct Session {
 #[derive(Clone)]
 pub(crate) struct SessionConfiguration {
     /// Provider identifier ("openai", "openrouter", ...).
+    pub(super) provider_id: String,
     pub(super) provider: ModelProviderInfo,
 
     pub(super) collaboration_mode: CollaborationMode,
@@ -157,7 +158,7 @@ impl SessionConfiguration {
     pub(super) fn thread_config_snapshot(&self) -> ThreadConfigSnapshot {
         ThreadConfigSnapshot {
             model: self.collaboration_mode.model().to_string(),
-            model_provider_id: self.original_config_do_not_use.model_provider_id.clone(),
+            model_provider_id: self.provider_id.clone(),
             service_tier: self.service_tier.clone(),
             approval_policy: self.approval_policy.value(),
             approvals_reviewer: self.approvals_reviewer,
@@ -200,6 +201,28 @@ impl SessionConfiguration {
                 });
         if let Some(collaboration_mode) = updates.collaboration_mode.clone() {
             next_configuration.collaboration_mode = collaboration_mode;
+        }
+        if let Some(provider_id) = updates.model_provider.clone() {
+            let provider = next_configuration
+                .original_config_do_not_use
+                .model_providers
+                .get(&provider_id)
+                .cloned()
+                .ok_or_else(|| crate::config::ConstraintError::InvalidValue {
+                    field_name: "model_provider",
+                    candidate: provider_id.clone(),
+                    allowed: format!(
+                        "{:?}",
+                        next_configuration
+                            .original_config_do_not_use
+                            .model_providers
+                            .keys()
+                            .collect::<Vec<_>>()
+                    ),
+                    requirement_source: codex_config::RequirementSource::Unknown,
+                })?;
+            next_configuration.provider_id = provider_id;
+            next_configuration.provider = provider;
         }
         if let Some(summary) = updates.reasoning_summary {
             next_configuration.model_reasoning_summary = Some(summary);
@@ -343,6 +366,7 @@ pub(crate) struct SessionSettingsUpdate {
     pub(crate) permission_profile: Option<PermissionProfile>,
     pub(crate) active_permission_profile: Option<ActivePermissionProfile>,
     pub(crate) windows_sandbox_level: Option<WindowsSandboxLevel>,
+    pub(crate) model_provider: Option<String>,
     pub(crate) collaboration_mode: Option<CollaborationMode>,
     pub(crate) reasoning_summary: Option<ReasoningSummaryConfig>,
     pub(crate) service_tier: Option<Option<String>>,
@@ -453,7 +477,7 @@ impl Session {
                                 dynamic_tools: session_configuration.dynamic_tools.clone(),
                                 metadata: ThreadPersistenceMetadata {
                                     cwd: Some(config.cwd.to_path_buf()),
-                                    model_provider: config.model_provider_id.clone(),
+                                    model_provider: session_configuration.provider_id.clone(),
                                     memory_mode: if config.memories.generate_memories {
                                         ThreadMemoryMode::Enabled
                                     } else {
@@ -475,7 +499,7 @@ impl Session {
                                 include_archived: true,
                                 metadata: ThreadPersistenceMetadata {
                                     cwd: Some(config.cwd.to_path_buf()),
-                                    model_provider: config.model_provider_id.clone(),
+                                    model_provider: session_configuration.provider_id.clone(),
                                     memory_mode: if config.memories.generate_memories {
                                         ThreadMemoryMode::Enabled
                                     } else {
@@ -565,7 +589,7 @@ impl Session {
                 cwd: session_configuration.cwd.to_path_buf(),
                 rollout_path: rollout_path.clone(),
                 model: session_configuration.collaboration_mode.model().to_string(),
-                provider_name: config.model_provider_id.clone(),
+                provider_name: session_configuration.provider_id.clone(),
                 approval_policy: session_configuration.approval_policy.value().to_string(),
                 sandbox_policy: format!("{:?}", session_configuration.sandbox_policy()),
             };
@@ -945,7 +969,7 @@ impl Session {
                     thread_source: session_configuration.thread_source,
                     thread_name: session_configuration.thread_name.clone(),
                     model: session_configuration.collaboration_mode.model().to_string(),
-                    model_provider_id: config.model_provider_id.clone(),
+                    model_provider_id: session_configuration.provider_id.clone(),
                     service_tier: session_configuration.service_tier.clone(),
                     approval_policy: session_configuration.approval_policy.value(),
                     approvals_reviewer: session_configuration.approvals_reviewer,

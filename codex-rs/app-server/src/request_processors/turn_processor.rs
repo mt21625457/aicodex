@@ -362,6 +362,7 @@ impl TurnRequestProcessor {
             || params.sandbox_policy.is_some()
             || params.permissions.is_some()
             || params.model.is_some()
+            || params.model_provider.is_some()
             || params.service_tier.is_some()
             || params.effort.is_some()
             || params.summary.is_some()
@@ -420,6 +421,17 @@ impl TurnRequestProcessor {
                 (None, None)
             };
         let model = params.model;
+        let model_provider = if let Some(provider_id) = params.model_provider {
+            let config = thread.config().await;
+            if !config.model_providers.contains_key(&provider_id) {
+                return Err(invalid_request(format!(
+                    "invalid turn context override: model provider `{provider_id}` not found"
+                )));
+            }
+            Some(provider_id)
+        } else {
+            None
+        };
         let effort = params.effort.map(Some);
         let summary = params.summary;
         let service_tier = params.service_tier;
@@ -439,6 +451,7 @@ impl TurnRequestProcessor {
                     active_permission_profile: active_permission_profile.clone(),
                     windows_sandbox_level: None,
                     model: model.clone(),
+                    model_provider: model_provider.clone(),
                     effort,
                     summary,
                     service_tier: service_tier.clone(),
@@ -464,6 +477,7 @@ impl TurnRequestProcessor {
                 active_permission_profile,
                 windows_sandbox_level: None,
                 model,
+                model_provider,
                 effort,
                 summary,
                 service_tier,

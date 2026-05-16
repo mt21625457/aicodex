@@ -25,6 +25,7 @@ use codex_features::Feature;
 use codex_features::Features;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::WireApi;
 use codex_models_manager::bundled_models_response;
 use codex_models_manager::model_info;
 use codex_models_manager::test_support::construct_model_info_offline_for_tests;
@@ -2910,6 +2911,7 @@ async fn set_rate_limits_retains_previous_credits() {
         },
     };
     let session_configuration = SessionConfiguration {
+        provider_id: config.model_provider_id.clone(),
         provider: config.model_provider.clone(),
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
@@ -3013,6 +3015,7 @@ async fn set_rate_limits_updates_plan_type_when_present() {
         },
     };
     let session_configuration = SessionConfiguration {
+        provider_id: config.model_provider_id.clone(),
         provider: config.model_provider.clone(),
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
@@ -3485,6 +3488,7 @@ pub(crate) async fn make_session_configuration_for_tests() -> SessionConfigurati
     };
 
     SessionConfiguration {
+        provider_id: config.model_provider_id.clone(),
         provider: config.model_provider.clone(),
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
@@ -3516,6 +3520,57 @@ pub(crate) async fn make_session_configuration_for_tests() -> SessionConfigurati
         inherited_shell_snapshot: None,
         user_shell_override: None,
     }
+}
+
+#[tokio::test]
+async fn session_configuration_provider_update_changes_snapshot_and_turn_config() {
+    let session_configuration = make_session_configuration_for_tests().await;
+    let original_provider_id = session_configuration.provider_id.clone();
+    let mut alternate_provider = session_configuration.provider.clone();
+    alternate_provider.name = "Alternate provider".to_string();
+    alternate_provider.wire_api = WireApi::Claude;
+
+    let err = match session_configuration.apply(&SessionSettingsUpdate {
+        model_provider: Some("alternate_provider".to_string()),
+        ..Default::default()
+    }) {
+        Ok(_) => panic!("unknown provider should be rejected"),
+        Err(err) => err,
+    };
+    assert!(err.to_string().contains("alternate_provider"));
+
+    let mut config_with_alternate = (*session_configuration.original_config_do_not_use).clone();
+    config_with_alternate
+        .model_providers
+        .insert("alternate_provider".to_string(), alternate_provider.clone());
+    let session_configuration = SessionConfiguration {
+        original_config_do_not_use: Arc::new(config_with_alternate),
+        ..session_configuration
+    };
+
+    let updated = session_configuration
+        .apply(&SessionSettingsUpdate {
+            model_provider: Some("alternate_provider".to_string()),
+            ..Default::default()
+        })
+        .expect("provider update should validate");
+
+    assert_eq!(
+        updated.thread_config_snapshot().model_provider_id,
+        "alternate_provider"
+    );
+    assert_eq!(updated.provider_id, "alternate_provider");
+    assert_eq!(updated.provider, alternate_provider);
+
+    let per_turn_config = Session::build_per_turn_config(&updated, updated.cwd.clone());
+    assert_eq!(per_turn_config.model_provider_id, "alternate_provider");
+    assert_eq!(per_turn_config.model_provider, alternate_provider);
+    assert_eq!(
+        session_configuration
+            .thread_config_snapshot()
+            .model_provider_id,
+        original_provider_id
+    );
 }
 
 fn turn_environments_for_tests(
@@ -4025,6 +4080,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_zsh_path() {
         },
     };
     let session_configuration = SessionConfiguration {
+        provider_id: config.model_provider_id.clone(),
         provider: config.model_provider.clone(),
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
@@ -4133,6 +4189,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         cwd: config.cwd.clone(),
     }];
     let session_configuration = SessionConfiguration {
+        provider_id: config.model_provider_id.clone(),
         provider: config.model_provider.clone(),
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
@@ -4366,6 +4423,7 @@ async fn make_session_with_config_and_rx(
         cwd: config.cwd.clone(),
     }];
     let session_configuration = SessionConfiguration {
+        provider_id: config.model_provider_id.clone(),
         provider: config.model_provider.clone(),
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
@@ -4468,6 +4526,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
         cwd: config.cwd.clone(),
     }];
     let session_configuration = SessionConfiguration {
+        provider_id: config.model_provider_id.clone(),
         provider: config.model_provider.clone(),
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,
@@ -5141,6 +5200,7 @@ fn op_kind_distinguishes_turn_ops() {
             active_permission_profile: None,
             windows_sandbox_level: None,
             model: None,
+            model_provider: None,
             effort: None,
             summary: None,
             service_tier: None,
@@ -5984,6 +6044,7 @@ where
         cwd: config.cwd.clone(),
     }];
     let session_configuration = SessionConfiguration {
+        provider_id: config.model_provider_id.clone(),
         provider: config.model_provider.clone(),
         collaboration_mode,
         model_reasoning_summary: config.model_reasoning_summary,

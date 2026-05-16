@@ -164,7 +164,7 @@ pub(crate) struct CompactConversationRequestSettings {
     pub(crate) service_tier: Option<String>,
 }
 
-/// Session-scoped state shared by all [`ModelClient`] clones.
+/// Session-scoped state shared by compatible [`ModelClient`] clones.
 ///
 /// This is intentionally kept minimal so `ModelClient` does not need to hold a full `Config`. Most
 /// configuration is per turn and is passed explicitly to streaming/unary methods.
@@ -211,7 +211,7 @@ impl RequestRouteTelemetry {
 /// A session-scoped client for model-provider API calls.
 ///
 /// This holds configuration and state that should be shared across turns within a Codex session
-/// (auth, provider selection, thread id, and transport fallback state).
+/// (auth, default provider selection, thread id, and transport fallback state).
 ///
 /// WebSocket fallback is session-scoped: once a turn activates the HTTP fallback, subsequent turns
 /// will also use HTTP for the remainder of the session.
@@ -366,6 +366,64 @@ impl ModelClient {
         ModelClientSession {
             client: self.clone(),
             websocket_session: self.take_cached_websocket_session(),
+            turn_state: Arc::new(OnceLock::new()),
+        }
+    }
+
+    pub(crate) fn provider_info(&self) -> &ModelProviderInfo {
+        self.state.provider.info()
+    }
+
+    /// Creates a turn-scoped session for the provider selected by the current
+    /// turn context.
+    ///
+    /// When the selected provider is the session default, this reuses the
+    /// normal session cache. When it differs, the returned session gets an
+    /// isolated provider-bound client so sticky routing and websocket state
+    /// cannot leak across execution providers.
+    #[inline(never)]
+    pub(crate) fn new_session_for_provider(
+        &self,
+        provider: SharedModelProvider,
+    ) -> ModelClientSession {
+        if self.provider_info() == provider.info() {
+            return self.new_session();
+        }
+
+        let codex_api_key_env_enabled = provider
+            .auth_manager()
+            .as_ref()
+            .is_some_and(|manager| manager.codex_api_key_env_enabled());
+        let auth_env_telemetry =
+            collect_auth_env_telemetry(provider.info(), codex_api_key_env_enabled);
+        let include_attestation = provider.supports_attestation();
+        let scoped_client = ModelClient {
+            state: Arc::new(ModelClientState {
+                session_id: self.state.session_id,
+                thread_id: self.state.thread_id,
+                window_generation: AtomicU64::new(
+                    self.state.window_generation.load(Ordering::Relaxed),
+                ),
+                installation_id: self.state.installation_id.clone(),
+                provider,
+                auth_env_telemetry,
+                session_source: self.state.session_source.clone(),
+                model_verbosity: self.state.model_verbosity,
+                enable_request_compression: self.state.enable_request_compression,
+                include_timing_metrics: self.state.include_timing_metrics,
+                beta_features_header: self.state.beta_features_header.clone(),
+                include_attestation,
+                attestation_provider: self.state.attestation_provider.clone(),
+                disable_websockets: AtomicBool::new(
+                    self.state.disable_websockets.load(Ordering::Relaxed),
+                ),
+                cached_websocket_session: StdMutex::new(WebsocketSession::default()),
+            }),
+        };
+
+        ModelClientSession {
+            client: scoped_client,
+            websocket_session: WebsocketSession::default(),
             turn_state: Arc::new(OnceLock::new()),
         }
     }
@@ -969,6 +1027,10 @@ impl Drop for ModelClientSession {
 }
 
 impl ModelClientSession {
+    pub(crate) fn provider_info(&self) -> &ModelProviderInfo {
+        self.client.state.provider.info()
+    }
+
     pub(crate) fn reset_websocket_session(&mut self) {
         self.websocket_session.connection = None;
         self.websocket_session.last_request = None;
