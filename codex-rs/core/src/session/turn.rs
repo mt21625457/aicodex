@@ -156,8 +156,21 @@ pub(crate) async fn run_turn(
 
     let model_info = turn_context.model_info.clone();
     let auto_compact_limit = model_info.auto_compact_token_limit().unwrap_or(i64::MAX);
-    let mut client_session =
-        prewarmed_client_session.unwrap_or_else(|| sess.services.model_client.new_session());
+    let selected_provider = Arc::clone(&turn_context.provider);
+    let mut client_session = match prewarmed_client_session {
+        Some(client_session) if client_session.provider_info() == turn_context.provider.info() => {
+            client_session
+        }
+        Some(_) | None
+            if sess.services.model_client.provider_info() == selected_provider.info() =>
+        {
+            sess.services.model_client.new_session()
+        }
+        Some(_) | None => sess
+            .services
+            .model_client
+            .new_session_for_provider(selected_provider),
+    };
     // TODO(ccunningham): Pre-turn compaction runs before context updates and the
     // new user message are recorded. Estimate pending incoming items (context
     // diffs/full reinjection + user input) and trigger compaction preemptively

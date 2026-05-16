@@ -190,7 +190,14 @@ async fn run_remote_compact_task_inner_impl(
     let client_session = match client_session {
         Some(client_session) => client_session,
         None => {
-            owned_client_session = sess.services.model_client.new_session();
+            owned_client_session =
+                if sess.services.model_client.provider_info() == turn_context.provider.info() {
+                    sess.services.model_client.new_session()
+                } else {
+                    sess.services
+                        .model_client
+                        .new_session_for_provider(Arc::clone(&turn_context.provider))
+                };
             &mut owned_client_session
         }
     };

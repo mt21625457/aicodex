@@ -432,6 +432,8 @@ impl Session {
         let config = session_configuration.original_config_do_not_use.clone();
         let mut per_turn_config = (*config).clone();
         per_turn_config.cwd = cwd;
+        per_turn_config.model_provider_id = session_configuration.provider_id.clone();
+        per_turn_config.model_provider = session_configuration.provider.clone();
         per_turn_config.model_reasoning_effort =
             session_configuration.collaboration_mode.reasoning_effort();
         per_turn_config.model_reasoning_summary = session_configuration.model_reasoning_summary;
@@ -663,6 +665,10 @@ impl Session {
                     });
                     let new_config = notify_config_contributors
                         .then(|| Self::build_effective_session_config(&next));
+                    let metadata_patch = Self::thread_metadata_patch_for_configuration_update(
+                        &state.session_configuration,
+                        &next,
+                    );
                     state.session_configuration = next.clone();
                     Ok((
                         next,
@@ -673,6 +679,7 @@ impl Session {
                         session_source,
                         previous_config,
                         new_config,
+                        metadata_patch,
                     ))
                 }
                 Err(err) => Err(CodexErr::InvalidRequest(err.to_string())),
@@ -688,6 +695,7 @@ impl Session {
             session_source,
             previous_config,
             new_config,
+            metadata_patch,
         ) = match update_result {
             Ok(update) => update,
             Err(err) => {
@@ -714,6 +722,10 @@ impl Session {
 
         if permission_profile_changed {
             self.refresh_managed_network_proxy_for_current_permission_profile()
+                .await;
+        }
+        if let Some(patch) = metadata_patch {
+            self.update_live_thread_metadata_best_effort(patch, "turn context update")
                 .await;
         }
 

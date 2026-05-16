@@ -493,6 +493,11 @@ pub enum Op {
         #[serde(skip_serializing_if = "Option::is_none")]
         model: Option<String>,
 
+        /// Updated model provider id. When set, future turns use this provider
+        /// together with the selected model.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        model_provider: Option<String>,
+
         /// Updated reasoning effort (honored only for reasoning-capable models).
         ///
         /// Use `Some(Some(_))` to set a specific effort, `Some(None)` to clear

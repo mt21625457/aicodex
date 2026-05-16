@@ -146,11 +146,17 @@ async fn turn_start_sends_originator_header() -> Result<()> {
     )
     .await??;
 
-    timeout(
+    let completed_notif = timeout(
         DEFAULT_READ_TIMEOUT,
         mcp.read_stream_until_notification_message("turn/completed"),
     )
     .await??;
+    let completed: TurnCompletedNotification = serde_json::from_value(
+        completed_notif
+            .params
+            .expect("turn/completed params must be present"),
+    )?;
+    assert_eq!(completed.turn.status, TurnStatus::Completed);
 
     let requests = server
         .received_requests()
@@ -246,11 +252,17 @@ async fn turn_start_emits_user_message_item_with_text_elements() -> Result<()> {
         other => panic!("expected user message item, got {other:?}"),
     }
 
-    timeout(
+    let completed_notif = timeout(
         DEFAULT_READ_TIMEOUT,
         mcp.read_stream_until_notification_message("turn/completed"),
     )
     .await??;
+    let completed: TurnCompletedNotification = serde_json::from_value(
+        completed_notif
+            .params
+            .expect("turn/completed params must be present"),
+    )?;
+    assert_eq!(completed.turn.status, TurnStatus::Completed);
 
     Ok(())
 }
@@ -879,6 +891,180 @@ async fn turn_start_rejects_unknown_environment_before_starting_turn() -> Result
     assert!(
         turn_started.is_err(),
         "did not expect a turn/started notification after rejected environments"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn turn_start_model_provider_override_routes_to_claude_provider() -> Result<()> {
+    let responses_server = create_mock_responses_server_repeating_assistant("Wrong provider").await;
+    let claude_server = wiremock::MockServer::start().await;
+    let claude_messages = responses::mount_claude_sse_sequence(
+        &claude_server,
+        vec![claude_text_sse("msg_1", "Done")],
+    )
+    .await;
+    let claude_count_tokens = responses::mount_claude_count_tokens_response(
+        &claude_server,
+        wiremock::ResponseTemplate::new(200).set_body_json(json!({ "input_tokens": 123 })),
+        1,
+    )
+    .await;
+
+    let codex_home = TempDir::new()?;
+    create_dual_provider_config_toml(
+        codex_home.path(),
+        &responses_server.uri(),
+        &claude_server.uri(),
+    )?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let thread_req = mcp
+        .send_thread_start_request(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            model_provider: Some("responses_provider".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let thread_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
+
+    let turn_req = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id,
+            model: Some("deepseek-v4-pro".to_string()),
+            model_provider: Some("claude_provider".to_string()),
+            input: vec![V2UserInput::Text {
+                text: "Hello from DeepSeek".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turn_req)),
+    )
+    .await??;
+    let completed_notif = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+    let completed: TurnCompletedNotification = serde_json::from_value(
+        completed_notif
+            .params
+            .expect("turn/completed params must be present"),
+    )?;
+    assert_eq!(completed.turn.status, TurnStatus::Completed);
+
+    let responses_requests = responses_server
+        .received_requests()
+        .await
+        .expect("failed to fetch responses requests");
+    assert!(
+        responses_requests.is_empty(),
+        "turn should not hit the startup/default Responses provider"
+    );
+    let claude_requests = claude_messages.requests();
+    assert_eq!(claude_requests.len(), 1);
+    assert_eq!(claude_count_tokens.requests().len(), 1);
+    let claude_wire_requests = claude_server
+        .received_requests()
+        .await
+        .expect("failed to fetch Claude requests");
+    assert!(
+        claude_wire_requests
+            .iter()
+            .any(|request| request.url.path() == "/v1/messages"),
+        "turn should use the Claude Messages wire endpoint"
+    );
+    assert!(
+        claude_wire_requests
+            .iter()
+            .any(|request| body_contains(request, r#""model":"deepseek-v4-pro""#)),
+        "Claude request should carry the selected model"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn turn_start_rejects_unknown_model_provider_before_starting_turn() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(
+        codex_home.path(),
+        &server.uri(),
+        "never",
+        &BTreeMap::default(),
+    )?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let thread_req = mcp
+        .send_thread_start_request(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let thread_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
+
+    let turn_req = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id,
+            model_provider: Some("missing_provider".to_string()),
+            input: vec![V2UserInput::Text {
+                text: "Hello".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let err: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(turn_req)),
+    )
+    .await??;
+
+    assert_eq!(err.id, RequestId::Integer(turn_req));
+    assert_eq!(err.error.code, INVALID_REQUEST_ERROR_CODE);
+    assert!(
+        err.error
+            .message
+            .contains("model provider `missing_provider` not found"),
+        "unexpected error message: {}",
+        err.error.message
+    );
+    let turn_started = tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        mcp.read_stream_until_notification_message("turn/started"),
+    )
+    .await;
+    assert!(
+        turn_started.is_err(),
+        "did not expect a turn/started notification after rejected model provider"
+    );
+    let requests = server
+        .received_requests()
+        .await
+        .expect("failed to fetch received requests");
+    assert!(
+        requests.is_empty(),
+        "rejected turn should not hit the model server"
     );
 
     Ok(())
@@ -1909,6 +2095,7 @@ async fn turn_start_updates_sandbox_and_cwd_between_turns_v2() -> Result<()> {
             }),
             permissions: None,
             model: Some("mock-model".to_string()),
+            model_provider: None,
             effort: Some(ReasoningEffort::Medium),
             summary: Some(ReasoningSummary::Auto),
             service_tier: None,
@@ -1945,6 +2132,7 @@ async fn turn_start_updates_sandbox_and_cwd_between_turns_v2() -> Result<()> {
             sandbox_policy: Some(codex_app_server_protocol::SandboxPolicy::DangerFullAccess),
             permissions: None,
             model: Some("mock-model".to_string()),
+            model_provider: None,
             effort: Some(ReasoningEffort::Medium),
             summary: Some(ReasoningSummary::Auto),
             service_tier: None,
@@ -3546,6 +3734,72 @@ stream_max_retries = 0
 "#
         ),
     )
+}
+
+fn create_dual_provider_config_toml(
+    codex_home: &Path,
+    responses_server_uri: &str,
+    claude_server_uri: &str,
+) -> std::io::Result<()> {
+    let config_toml = codex_home.join("config.toml");
+    std::fs::write(
+        config_toml,
+        format!(
+            r#"
+model = "mock-model"
+approval_policy = "never"
+sandbox_mode = "read-only"
+
+model_provider = "responses_provider"
+
+[model_providers.responses_provider]
+name = "Responses provider for test"
+base_url = "{responses_server_uri}/v1"
+wire_api = "responses"
+request_max_retries = 0
+stream_max_retries = 0
+
+[model_providers.claude_provider]
+name = "Claude provider for test"
+base_url = "{claude_server_uri}/v1"
+wire_api = "claude"
+request_max_retries = 0
+stream_max_retries = 0
+"#
+        ),
+    )
+}
+
+fn claude_text_sse(message_id: &str, text: &str) -> String {
+    responses::sse(vec![
+        json!({
+            "type": "message_start",
+            "message": {
+                "id": message_id,
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            }
+        }),
+        json!({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "text", "text": ""}
+        }),
+        json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": text}
+        }),
+        json!({"type": "content_block_stop", "index": 0}),
+        json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn", "stop_sequence": null},
+            "usage": {"output_tokens": 1}
+        }),
+        json!({"type": "message_stop", "message": null}),
+    ])
 }
 
 fn write_test_skill(codex_home: &Path, name: &str) -> std::io::Result<()> {

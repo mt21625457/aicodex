@@ -17,6 +17,7 @@ use codex_app_server_protocol::AuthMode;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider::BearerAuthProvider;
+use codex_model_provider::create_model_provider;
 use codex_model_provider_info::CHATGPT_CODEX_BASE_URL;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::WireApi;
@@ -416,6 +417,28 @@ fn build_ws_client_metadata_includes_window_lineage_and_turn_metadata() {
                 r#"{"turn_id":"turn-123"}"#.to_string(),
             ),
         ])
+    );
+}
+
+#[test]
+fn new_session_for_provider_uses_turn_provider_without_mutating_default_client() {
+    let client = test_model_client(SessionSource::Cli);
+    let claude_provider_info =
+        create_oss_provider_with_base_url("https://claude.example.com/v1", WireApi::Claude);
+    let claude_provider = create_model_provider(claude_provider_info, /*auth_manager*/ None);
+
+    let claude_session = client.new_session_for_provider(claude_provider);
+    assert_eq!(claude_session.provider_info().wire_api, WireApi::Claude);
+    assert_eq!(
+        claude_session.provider_info().base_url.as_deref(),
+        Some("https://claude.example.com/v1")
+    );
+
+    let default_session = client.new_session();
+    assert_eq!(default_session.provider_info().wire_api, WireApi::Responses);
+    assert_eq!(
+        default_session.provider_info().base_url.as_deref(),
+        Some("https://example.com/v1")
     );
 }
 

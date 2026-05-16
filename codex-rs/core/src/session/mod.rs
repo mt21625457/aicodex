@@ -135,6 +135,7 @@ use codex_thread_store::LocalThreadStore;
 use codex_thread_store::ReadThreadParams;
 use codex_thread_store::ResumeThreadParams;
 use codex_thread_store::ThreadEventPersistenceMode;
+use codex_thread_store::ThreadMetadataPatch;
 use codex_thread_store::ThreadPersistenceMetadata;
 use codex_thread_store::ThreadStore;
 use codex_utils_output_truncation::TruncationPolicy;
@@ -608,6 +609,7 @@ impl Codex {
             config.features.enabled(Feature::FastMode),
         );
         let session_configuration = SessionConfiguration {
+            provider_id: config.model_provider_id.clone(),
             provider: config.model_provider.clone(),
             collaboration_mode,
             model_reasoning_summary: config.model_reasoning_summary,
@@ -1351,6 +1353,7 @@ impl Session {
             next_cwd,
             codex_home,
             session_source,
+            metadata_patch,
         ) = {
             let mut state = self.state.lock().await;
             let updated = match state.session_configuration.apply(&updates) {
@@ -1373,6 +1376,10 @@ impl Session {
             let next_cwd = updated.cwd.clone();
             let codex_home = updated.codex_home.clone();
             let session_source = updated.session_source.clone();
+            let metadata_patch = Self::thread_metadata_patch_for_configuration_update(
+                &state.session_configuration,
+                &updated,
+            );
             state.session_configuration = updated;
             (
                 previous_config,
@@ -1382,6 +1389,7 @@ impl Session {
                 next_cwd,
                 codex_home,
                 session_source,
+                metadata_patch,
             )
         };
 
@@ -1396,8 +1404,44 @@ impl Session {
             self.refresh_managed_network_proxy_for_current_permission_profile()
                 .await;
         }
+        if let Some(patch) = metadata_patch {
+            self.update_live_thread_metadata_best_effort(patch, "session settings update")
+                .await;
+        }
 
         Ok(())
+    }
+
+    pub(super) fn thread_metadata_patch_for_configuration_update(
+        previous: &SessionConfiguration,
+        updated: &SessionConfiguration,
+    ) -> Option<ThreadMetadataPatch> {
+        let provider_changed = previous.provider_id != updated.provider_id;
+        let model_changed =
+            previous.collaboration_mode.model() != updated.collaboration_mode.model();
+        let effort_changed = previous.collaboration_mode.reasoning_effort()
+            != updated.collaboration_mode.reasoning_effort();
+
+        (provider_changed || model_changed || effort_changed).then(|| ThreadMetadataPatch {
+            model_provider: Some(updated.provider_id.clone()),
+            model: Some(updated.collaboration_mode.model().to_string()),
+            reasoning_effort: updated.collaboration_mode.reasoning_effort(),
+            updated_at: Some(Utc::now()),
+            ..Default::default()
+        })
+    }
+
+    pub(super) async fn update_live_thread_metadata_best_effort(
+        &self,
+        patch: ThreadMetadataPatch,
+        operation: &str,
+    ) {
+        let Some(live_thread) = self.live_thread() else {
+            return;
+        };
+        if let Err(err) = live_thread.update_metadata(patch, true).await {
+            warn!("failed to update live thread metadata after {operation}: {err}");
+        }
     }
 
     pub(crate) async fn validate_settings(

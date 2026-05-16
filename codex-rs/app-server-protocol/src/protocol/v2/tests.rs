@@ -3534,6 +3534,7 @@ fn turn_start_params_preserve_explicit_null_service_tier() {
         sandbox_policy: None,
         permissions: None,
         model: None,
+        model_provider: None,
         service_tier: None,
         effort: None,
         summary: None,
@@ -3544,6 +3545,29 @@ fn turn_start_params_preserve_explicit_null_service_tier() {
     let serialized_without_override =
         serde_json::to_value(&without_override).expect("params should serialize");
     assert_eq!(serialized_without_override.get("serviceTier"), None);
+}
+
+#[test]
+fn turn_start_params_round_trip_model_provider() {
+    let params: TurnStartParams = serde_json::from_value(json!({
+        "threadId": "thread_123",
+        "input": [],
+        "model": "deepseek-v4-pro",
+        "modelProvider": "aicodex_gateway_claude"
+    }))
+    .expect("params should deserialize");
+
+    assert_eq!(params.model.as_deref(), Some("deepseek-v4-pro"));
+    assert_eq!(
+        params.model_provider.as_deref(),
+        Some("aicodex_gateway_claude")
+    );
+
+    let serialized = serde_json::to_value(&params).expect("params should serialize");
+    assert_eq!(
+        serialized.get("modelProvider"),
+        Some(&json!("aicodex_gateway_claude"))
+    );
 }
 
 #[test]
