@@ -1128,6 +1128,20 @@ async fn update_claude_token_usage_after_completion(
     .await;
 }
 
+async fn update_responses_token_usage_context_estimate(sess: &Session, turn_context: &TurnContext) {
+    let Some(context_tokens) = sess.get_estimated_context_token_count().await else {
+        return;
+    };
+
+    sess.update_token_usage_info_with_context_count(
+        turn_context,
+        None,
+        Some(context_tokens),
+        Some(ContextTokenUsageSource::LocalEstimate),
+    )
+    .await;
+}
+
 #[allow(clippy::too_many_arguments)]
 #[allow(deprecated)]
 #[instrument(level = "trace",
@@ -2448,6 +2462,10 @@ async fn try_run_sampling_request(
         // counts only after pending tools resolve so clients do not see progress events while the
         // turn is waiting on the user. This also needs to happen before returning cancellation so
         // token usage already recorded from the completed response is still persisted.
+        if turn_context.provider.info().wire_api == WireApi::Responses {
+            update_responses_token_usage_context_estimate(sess.as_ref(), turn_context.as_ref())
+                .await;
+        }
         sess.send_token_count_event(&turn_context).await;
     }
 
