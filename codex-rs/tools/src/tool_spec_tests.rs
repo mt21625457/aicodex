@@ -746,6 +746,14 @@ fn claude_tool_name_sanitizes_and_bounds_names() {
         claude_tool_name(Some("test/server/"), "do.something"),
         "test_server_do_something"
     );
+    assert_eq!(
+        claude_tool_name(Some("codex_app"), "lookup_order"),
+        "codex_app_lookup_order"
+    );
+    assert_eq!(
+        claude_tool_name(Some("mcp__demo__"), "search"),
+        "mcp__demo__search"
+    );
 
     let long = claude_tool_name(
         Some("mcp__very_long_server_name_that_will_exceed_the_anthropic_limit__"),

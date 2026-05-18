@@ -103,6 +103,8 @@ impl ClaudeStreamEvent {
 struct ClaudeMessageStart {
     id: String,
     #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
     usage: Option<ClaudeUsage>,
 }
 
@@ -292,6 +294,9 @@ enum ClaudeStreamDelta {
         #[serde(default)]
         signature: String,
     },
+    CitationsDelta {
+        citation: Value,
+    },
     #[serde(other)]
     Unknown,
 }
@@ -408,6 +413,12 @@ impl ClaudeStreamState {
             ClaudeStreamEvent::MessageStart { message } => {
                 self.message_started = true;
                 self.block_kinds.clear();
+                if let Some(model) = message.model.filter(|model| !model.trim().is_empty()) {
+                    tx_event
+                        .send(Ok(ResponseEvent::ServerModel(model)))
+                        .await
+                        .map_err(|err| ApiError::Stream(err.to_string()))?;
+                }
                 self.response_id = Some(message.id.clone());
                 self.message_id = Some(message.id);
                 if let Some(usage) = message.usage {
@@ -593,6 +604,13 @@ impl ClaudeStreamState {
                     .entry(index)
                     .or_default()
                     .push_str(&signature);
+            }
+            ClaudeStreamDelta::CitationsDelta { citation } => {
+                self.ensure_delta_matches(index, ClaudeStreamBlockKind::Text, "citations_delta")?;
+                if let Some(marker) = citation_marker(&citation) {
+                    self.ensure_text_item_started(index, tx_event).await?;
+                    self.push_text_delta(index, &marker, tx_event).await?;
+                }
             }
             ClaudeStreamDelta::Unknown => {}
         }
@@ -1118,6 +1136,39 @@ fn web_search_action_from_claude_input(input: &Value) -> Option<WebSearchAction>
     })
 }
 
+fn citation_marker(citation: &Value) -> Option<String> {
+    let object = citation.as_object()?;
+    let kind = object
+        .get("type")
+        .and_then(Value::as_str)
+        .filter(|kind| !kind.trim().is_empty())
+        .unwrap_or("citation");
+    let title = object
+        .get("title")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .map(clean_citation_part);
+    let url = object
+        .get("url")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .map(clean_citation_part);
+
+    match (title, url) {
+        (Some(title), Some(url)) => Some(format!(" [source: {title} ({url})]")),
+        (Some(title), None) => Some(format!(" [source: {title}]")),
+        (None, Some(url)) => Some(format!(" [source: {url}]")),
+        (None, None) if kind != "citation" => Some(format!(" [source: {kind}]")),
+        (None, None) => None,
+    }
+}
+
+fn clean_citation_part(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 fn custom_tool_input(tool_name: &str, input: &Value) -> Result<String, String> {
     match input {
         Value::String(input) => Ok(input.clone()),
@@ -1342,6 +1393,36 @@ mod tests {
     fn claude_stream_parses_event_name_only_sse() {
         let event = parse_claude_stream_event("message_stop", "").expect("event parses");
         assert!(matches!(event, ClaudeStreamEvent::MessageStop));
+    }
+
+    #[tokio::test]
+    async fn claude_stream_emits_server_model_from_message_start() {
+        let events = run_events(
+            vec![
+                json!({
+                    "type": "message_start",
+                    "message": {
+                        "id": "msg_1",
+                        "type": "message",
+                        "role": "assistant",
+                        "model": "claude-sonnet-4-5",
+                        "content": []
+                    }
+                }),
+                json!({"type": "message_stop"}),
+            ],
+            HashMap::new(),
+        )
+        .await;
+
+        assert!(matches!(
+            events.as_slice(),
+            [
+                ResponseEvent::ServerModel(model),
+                ResponseEvent::Created,
+                ResponseEvent::Completed { .. }
+            ] if model == "claude-sonnet-4-5"
+        ));
     }
 
     #[tokio::test]
@@ -2019,6 +2100,58 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, ResponseEvent::OutputTextDelta(_)))
         );
+    }
+
+    #[tokio::test]
+    async fn claude_stream_maps_citations_delta_to_visible_source_marker() {
+        let events = run_events(
+            vec![
+                json!({
+                    "type": "message_start",
+                    "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": []}
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": "Rust 1.90 shipped"}
+                }),
+                json!({
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {
+                        "type": "citations_delta",
+                        "citation": {
+                            "type": "web_search_result_location",
+                            "title": "Rust Releases",
+                            "url": "https://example.com/rust"
+                        }
+                    }
+                }),
+                json!({"type": "message_stop"}),
+            ],
+            HashMap::new(),
+        )
+        .await;
+
+        let text = events
+            .iter()
+            .filter_map(|event| match event {
+                ResponseEvent::OutputTextDelta(delta) => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        assert_eq!(
+            text,
+            "Rust 1.90 shipped [source: Rust Releases (https://example.com/rust)]"
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ResponseEvent::OutputItemDone(ResponseItem::Message { content, .. })
+                if content == &vec![ContentItem::OutputText {
+                    text: "Rust 1.90 shipped [source: Rust Releases (https://example.com/rust)]"
+                        .to_string()
+                }]
+        )));
     }
 
     #[tokio::test]

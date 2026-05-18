@@ -346,7 +346,17 @@ fn unique_claude_tool_name(
 
 fn claude_tool_raw_name(namespace: Option<&str>, name: &str) -> String {
     match namespace {
-        Some(namespace) => format!("{namespace}{name}"),
+        Some(namespace)
+            if namespace.ends_with('_')
+                || name.starts_with('_')
+                || namespace
+                    .chars()
+                    .last()
+                    .is_some_and(|ch| !ch.is_ascii_alphanumeric()) =>
+        {
+            format!("{namespace}{name}")
+        }
+        Some(namespace) => format!("{namespace}_{name}"),
         None => name.to_string(),
     }
 }
