@@ -10,6 +10,7 @@ use codex_api::AuthError;
 use codex_api::AuthProvider;
 use codex_api::ClaudeContentBlock;
 use codex_api::ClaudeCountTokensRequest;
+use codex_api::ClaudeMcpServer;
 use codex_api::ClaudeMessage;
 use codex_api::ClaudeMessageRole;
 use codex_api::ClaudeMessagesApiRequest;
@@ -347,6 +348,7 @@ fn claude_request() -> ClaudeMessagesApiRequest {
         }],
         system: None,
         tools: Vec::new(),
+        mcp_servers: Vec::new(),
         tool_choice: None,
         thinking: None,
         output_config: None,
@@ -354,6 +356,7 @@ fn claude_request() -> ClaudeMessagesApiRequest {
         context_management: None,
         stream: true,
         tool_call_info: Default::default(),
+        beta_headers: Vec::new(),
     }
 }
 
@@ -422,6 +425,60 @@ async fn claude_messages_client_uses_messages_path_and_version_header() -> Resul
             "messages": [{
                 "role": "user",
                 "content": [{"type": "text", "text": "hi"}]
+            }],
+            "stream": true
+        }))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn claude_messages_client_adds_beta_headers_from_request() -> Result<()> {
+    let state = RecordingState::default();
+    let transport = RecordingTransport::new(state.clone());
+    let client = ClaudeMessagesClient::new(
+        transport,
+        provider("anthropic"),
+        Arc::new(StaticApiKeyAuth::new("test-key")),
+    );
+    let mut request = claude_request();
+    request.mcp_servers = vec![ClaudeMcpServer {
+        kind: "url".to_string(),
+        name: "docs".to_string(),
+        url: "https://example.com/sse".to_string(),
+        authorization_token: Some("secret".to_string()),
+    }];
+    request.beta_headers = vec![
+        "mcp-client-2025-11-20".to_string(),
+        "advisor-tool-2026-03-01".to_string(),
+    ];
+
+    let _stream = client
+        .stream_request(request, ClaudeMessagesOptions::default())
+        .await?;
+
+    let requests = state.take_stream_requests();
+    let req = &requests[0];
+    assert_eq!(
+        req.headers
+            .get("anthropic-beta")
+            .and_then(|value| value.to_str().ok()),
+        Some("mcp-client-2025-11-20,advisor-tool-2026-03-01")
+    );
+    assert_eq!(
+        req.body.as_ref().and_then(RequestBody::json),
+        Some(&serde_json::json!({
+            "model": "claude-sonnet-4-5",
+            "max_tokens": 1024,
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "text", "text": "hi"}]
+            }],
+            "mcp_servers": [{
+                "type": "url",
+                "name": "docs",
+                "url": "https://example.com/sse",
+                "authorization_token": "secret"
             }],
             "stream": true
         }))

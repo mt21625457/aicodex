@@ -98,6 +98,9 @@ fn parse_user_message(message: &[ContentItem]) -> Option<UserMessageItem> {
             ContentItem::OutputText { text } => {
                 warn!("Output text in user message: {}", text);
             }
+            ContentItem::OutputTextWithCitations { text, .. } => {
+                warn!("Output text with citations in user message: {}", text);
+            }
         }
     }
 
@@ -112,7 +115,9 @@ fn parse_agent_message(
     let mut content: Vec<AgentMessageContent> = Vec::new();
     for content_item in message.iter() {
         match content_item {
-            ContentItem::InputText { text } | ContentItem::OutputText { text } => {
+            ContentItem::InputText { text }
+            | ContentItem::OutputText { text }
+            | ContentItem::OutputTextWithCitations { text, .. } => {
                 content.push(AgentMessageContent::Text { text: text.clone() });
             }
             _ => {

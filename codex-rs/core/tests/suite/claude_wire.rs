@@ -903,6 +903,20 @@ async fn deepseek_claude_wire_exposes_apply_patch_for_fallback_model() -> anyhow
         first_tool_names.iter().any(|name| name == "apply_patch"),
         "DeepSeek Claude request should advertise apply_patch for fallback model metadata: {first_tool_names:?}"
     );
+    assert!(
+        !first["tools"]
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .any(|tool| {
+                tool.get("type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|tool_type| {
+                        tool_type.starts_with("text_editor_") || tool_type == "bash_20250124"
+                    })
+            }),
+        "DeepSeek Claude request must stay on fallback tools: {first}"
+    );
     let apply_patch_tool = first["tools"]
         .as_array()
         .expect("tools array")
@@ -919,6 +933,226 @@ async fn deepseek_claude_wire_exposes_apply_patch_for_fallback_model() -> anyhow
     assert_ne!(tool_result["is_error"].as_bool(), Some(true));
     let written = std::fs::read_to_string(test.config.cwd.join("deepseek_patch.txt"))?;
     assert_eq!(written, "hello from deepseek\n");
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_wire_exposes_and_executes_native_text_editor() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let responses = mount_claude_sse_sequence(
+        &server,
+        vec![
+            claude_custom_tool_use_sse(
+                "toolu_native_edit",
+                "str_replace_based_edit_tool",
+                json!({
+                    "command": "create",
+                    "path": "native_text_editor.txt",
+                    "file_text": "hello from native text editor\n"
+                }),
+            ),
+            claude_text_sse("msg_2", "done"),
+        ],
+    )
+    .await;
+
+    let test = test_codex()
+        .with_config(configure_claude_provider_with_apply_patch)
+        .build(&server)
+        .await?;
+
+    test.submit_turn("edit through Claude native text editor")
+        .await?;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 2);
+    let first = requests[0].body_json();
+    assert!(
+        first["tools"]
+            .as_array()
+            .expect("tools array")
+            .iter()
+            .any(|tool| {
+                tool.get("name").and_then(Value::as_str) == Some("str_replace_based_edit_tool")
+                    && tool
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .is_some_and(|tool_type| tool_type.starts_with("text_editor_"))
+            }),
+        "Claude request should advertise native text editor: {first}"
+    );
+
+    let second = requests[1].body_json();
+    let tool_result = tool_result_block(&second, "toolu_native_edit");
+    assert_ne!(tool_result["is_error"].as_bool(), Some(true));
+    let written = std::fs::read_to_string(test.config.cwd.join("native_text_editor.txt"))?;
+    assert_eq!(written, "hello from native text editor\n");
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_wire_native_text_editor_rejects_outside_workspace() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let outside = tempfile::tempdir()?;
+    let outside_file = outside.path().join("outside.txt");
+    let responses = mount_claude_sse_sequence(
+        &server,
+        vec![
+            claude_custom_tool_use_sse(
+                "toolu_native_edit_outside",
+                "str_replace_based_edit_tool",
+                json!({
+                    "command": "create",
+                    "path": outside_file.to_string_lossy(),
+                    "file_text": "should not write\n"
+                }),
+            ),
+            claude_text_sse("msg_2", "handled"),
+        ],
+    )
+    .await;
+
+    let test = test_codex()
+        .with_config(configure_claude_provider_with_apply_patch)
+        .build(&server)
+        .await?;
+
+    test.submit_turn("try an unsafe native text editor path")
+        .await?;
+
+    let second = responses.requests()[1].body_json();
+    let tool_result = tool_result_block(&second, "toolu_native_edit_outside");
+    assert_eq!(tool_result["is_error"].as_bool(), Some(true));
+    assert!(!outside_file.exists());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_wire_native_bash_uses_existing_shell_executor() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let responses = mount_claude_sse_sequence(
+        &server,
+        vec![
+            claude_custom_tool_use_sse(
+                "toolu_native_bash",
+                "bash",
+                json!({"command": "printf native-bash"}),
+            ),
+            claude_text_sse("msg_2", "done"),
+        ],
+    )
+    .await;
+
+    let test = test_codex()
+        .with_config(configure_claude_provider)
+        .build(&server)
+        .await?;
+
+    test.submit_turn("run Claude native bash").await?;
+
+    let second = responses.requests()[1].body_json();
+    let tool_result = tool_result_block(&second, "toolu_native_bash");
+    assert!(
+        tool_result["content"]
+            .as_str()
+            .expect("tool_result content")
+            .contains("native-bash")
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_wire_native_bash_uses_existing_approval_denial_flow() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let responses = mount_claude_sse_sequence(
+        &server,
+        vec![
+            claude_custom_tool_use_sse(
+                "toolu_native_bash_approval",
+                "bash",
+                json!({
+                    "command": "printf native-approval",
+                    "sandbox_permissions": "require_escalated",
+                    "justification": "Need full access for native bash approval test"
+                }),
+            ),
+            claude_text_sse("msg_2", "handled denial"),
+        ],
+    )
+    .await;
+
+    let test = test_codex()
+        .with_config(configure_claude_provider)
+        .build(&server)
+        .await?;
+
+    let sandbox_policy = SandboxPolicy::WorkspaceWrite {
+        writable_roots: Vec::new(),
+        network_access: false,
+        exclude_tmpdir_env_var: false,
+        exclude_slash_tmp: false,
+    };
+    let permission_profile = PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+        &sandbox_policy,
+        test.config.cwd.as_path(),
+    );
+    test.codex
+        .submit(Op::UserTurn {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: "run an escalated Claude native bash command".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            cwd: test.config.cwd.to_path_buf(),
+            approval_policy: AskForApproval::OnRequest,
+            approvals_reviewer: None,
+            sandbox_policy,
+            permission_profile: Some(permission_profile),
+            model: test.session_configured.model.clone(),
+            effort: None,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: None,
+            personality: None,
+        })
+        .await?;
+
+    let approval = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::ExecApprovalRequest(approval) => Some(approval.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(approval.call_id, "toolu_native_bash_approval");
+    assert!(
+        approval
+            .command
+            .iter()
+            .any(|part| part.contains("printf native-approval")),
+        "unexpected approval command: {:?}",
+        approval.command
+    );
+
+    test.codex
+        .submit(Op::ExecApproval {
+            id: approval.effective_approval_id(),
+            turn_id: None,
+            decision: ReviewDecision::Denied,
+        })
+        .await?;
+
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let second = responses.requests()[1].body_json();
+    let tool_result = tool_result_block(&second, "toolu_native_bash_approval");
+    assert_eq!(tool_result["is_error"].as_bool(), Some(true));
 
     Ok(())
 }

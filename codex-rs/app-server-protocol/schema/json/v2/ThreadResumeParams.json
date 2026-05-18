@@ -64,6 +64,81 @@
         }
       ]
     },
+    "Citation": {
+      "properties": {
+        "citedText": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "documentIndex": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "encryptedIndex": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "endCharIndex": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "endPageNumber": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "provider": {
+          "type": "string"
+        },
+        "raw": true,
+        "startCharIndex": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "startPageNumber": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "type": "string"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "provider",
+        "type"
+      ],
+      "type": "object"
+    },
     "ContentItem": {
       "oneOf": [
         {
@@ -134,6 +209,33 @@
             "type"
           ],
           "title": "OutputTextContentItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "citations": {
+              "items": {
+                "$ref": "#/definitions/Citation"
+              },
+              "type": "array"
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "output_text_with_citations"
+              ],
+              "title": "OutputTextWithCitationsContentItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "citations",
+            "text",
+            "type"
+          ],
+          "title": "OutputTextWithCitationsContentItem",
           "type": "object"
         }
       ]

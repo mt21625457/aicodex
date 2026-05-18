@@ -217,6 +217,8 @@ pub struct ClaudeMessagesApiRequest {
     pub system: Option<ClaudeSystemPrompt>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ClaudeTool>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mcp_servers: Vec<ClaudeMcpServer>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ClaudeToolChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -230,6 +232,8 @@ pub struct ClaudeMessagesApiRequest {
     pub stream: bool,
     #[serde(skip)]
     pub tool_call_info: HashMap<String, ClaudeToolCallInfo>,
+    #[serde(skip)]
+    pub beta_headers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -240,6 +244,8 @@ pub struct ClaudeCountTokensRequest {
     pub system: Option<ClaudeSystemPrompt>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ClaudeTool>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mcp_servers: Vec<ClaudeMcpServer>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ClaudeToolChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -248,6 +254,8 @@ pub struct ClaudeCountTokensRequest {
     pub output_config: Option<ClaudeOutputConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<ClaudeServiceTier>,
+    #[serde(skip)]
+    pub beta_headers: Vec<String>,
 }
 
 impl From<&ClaudeMessagesApiRequest> for ClaudeCountTokensRequest {
@@ -257,12 +265,24 @@ impl From<&ClaudeMessagesApiRequest> for ClaudeCountTokensRequest {
             messages: request.messages.clone(),
             system: request.system.clone(),
             tools: request.tools.clone(),
+            mcp_servers: request.mcp_servers.clone(),
             tool_choice: request.tool_choice.clone(),
             thinking: request.thinking.clone(),
             output_config: request.output_config,
             service_tier: request.service_tier,
+            beta_headers: request.beta_headers.clone(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClaudeMcpServer {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub name: String,
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authorization_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -964,6 +984,7 @@ mod claude_wire_tests {
             }],
             system: None,
             tools: Vec::new(),
+            mcp_servers: Vec::new(),
             tool_choice: None,
             thinking: None,
             output_config: None,
@@ -971,6 +992,7 @@ mod claude_wire_tests {
             context_management: None,
             stream: true,
             tool_call_info,
+            beta_headers: Vec::new(),
         };
 
         assert_eq!(
@@ -981,6 +1003,56 @@ mod claude_wire_tests {
                 "messages": [{
                     "role": "user",
                     "content": [{"type": "text", "text": "hi"}]
+                }],
+                "stream": true
+            })
+        );
+    }
+
+    #[test]
+    fn claude_messages_request_serializes_mcp_servers_and_skips_beta_headers() {
+        let request = ClaudeMessagesApiRequest {
+            model: "claude-sonnet-4-5".to_string(),
+            max_tokens: 128,
+            messages: vec![ClaudeMessage {
+                role: ClaudeMessageRole::User,
+                content: vec![ClaudeContentBlock::Text {
+                    text: "hi".to_string(),
+                    cache_control: None,
+                }],
+            }],
+            system: None,
+            tools: Vec::new(),
+            mcp_servers: vec![ClaudeMcpServer {
+                kind: "url".to_string(),
+                name: "docs".to_string(),
+                url: "https://example.com/sse".to_string(),
+                authorization_token: Some("secret".to_string()),
+            }],
+            tool_choice: None,
+            thinking: None,
+            output_config: None,
+            service_tier: None,
+            context_management: None,
+            stream: true,
+            tool_call_info: HashMap::new(),
+            beta_headers: vec!["mcp-client-2025-11-20".to_string()],
+        };
+
+        assert_eq!(
+            serde_json::to_value(&request).expect("serialize request"),
+            json!({
+                "model": "claude-sonnet-4-5",
+                "max_tokens": 128,
+                "messages": [{
+                    "role": "user",
+                    "content": [{"type": "text", "text": "hi"}]
+                }],
+                "mcp_servers": [{
+                    "type": "url",
+                    "name": "docs",
+                    "url": "https://example.com/sse",
+                    "authorization_token": "secret"
                 }],
                 "stream": true
             })

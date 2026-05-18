@@ -2096,8 +2096,10 @@ mod tests {
 
         let writable_roots = file_system_policy.get_writable_roots_with_cwd(cwd.path());
         assert_eq!(writable_roots.len(), 1);
+        let mut protected_metadata_names = writable_roots[0].protected_metadata_names.clone();
+        protected_metadata_names.sort();
         assert_eq!(
-            writable_roots[0].protected_metadata_names,
+            protected_metadata_names,
             vec![
                 ".agents".to_string(),
                 ".aicodex".to_string(),

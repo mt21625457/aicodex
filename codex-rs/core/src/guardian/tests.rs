@@ -243,7 +243,9 @@ fn response_item_contains_message_text(item: &ResponseItem, needle: &str) -> boo
         return false;
     };
     content.iter().any(|item| match item {
-        ContentItem::InputText { text } | ContentItem::OutputText { text } => text.contains(needle),
+        ContentItem::InputText { text }
+        | ContentItem::OutputText { text }
+        | ContentItem::OutputTextWithCitations { text, .. } => text.contains(needle),
         ContentItem::InputImage { .. } => false,
     })
 }

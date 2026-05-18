@@ -716,6 +716,49 @@ pub enum ContentItem {
     OutputText {
         text: String,
     },
+    OutputTextWithCitations {
+        text: String,
+        citations: Vec<Citation>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct Citation {
+    pub provider: String,
+    #[serde(rename = "type")]
+    pub citation_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub cited_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub encrypted_index: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub document_index: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub start_page_number: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub end_page_number: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub start_char_index: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub end_char_index: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "unknown")]
+    #[ts(optional)]
+    pub raw: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]

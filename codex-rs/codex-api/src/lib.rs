@@ -30,6 +30,7 @@ pub use crate::common::ClaudeContextManagementEdit;
 pub use crate::common::ClaudeCountTokensRequest;
 pub use crate::common::ClaudeCountTokensResponse;
 pub use crate::common::ClaudeImageSource;
+pub use crate::common::ClaudeMcpServer;
 pub use crate::common::ClaudeMessage;
 pub use crate::common::ClaudeMessageRole;
 pub use crate::common::ClaudeMessagesApiRequest;

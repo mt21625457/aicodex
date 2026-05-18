@@ -5,6 +5,16 @@ use super::ResponsesApiWebSearchFilters;
 use super::ResponsesApiWebSearchUserLocation;
 use super::ToolSpec;
 use crate::AdditionalProperties;
+use crate::ClaudeBetaFeature;
+use crate::ClaudeLocalExecutorCapability;
+use crate::ClaudeMcpServer;
+use crate::ClaudeMcpToolsetConfig;
+use crate::ClaudeNativeToolDecisionOutcome;
+use crate::ClaudeNativeToolExecution;
+use crate::ClaudeNativeToolKind;
+use crate::ClaudeNativeToolSelection;
+use crate::ClaudeProviderPlatform;
+use crate::ClaudeServerCapability;
 use crate::FreeformTool;
 use crate::FreeformToolFormat;
 use crate::JsonSchema;
@@ -23,6 +33,7 @@ use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 #[test]
 fn tool_spec_name_covers_all_variants() {
@@ -659,6 +670,20 @@ fn create_tools_json_for_claude_messages_maps_web_search_and_omits_image_generat
     );
     assert_eq!(result.tool_call_info.len(), 1);
     assert_eq!(result.tool_call_info[0].claude_name, "lookup_order");
+    assert!(result.mcp_servers.is_empty());
+    assert!(result.beta_headers.is_empty());
+    assert!(
+        result
+            .native_tool_policy
+            .enabled_tools
+            .contains(&ClaudeNativeToolKind::WebSearch20250305)
+    );
+    assert!(result.native_tool_policy.fallback_tools.is_empty());
+    assert_eq!(
+        result.native_tool_policy.decisions[0].outcome,
+        ClaudeNativeToolDecisionOutcome::Enabled
+    );
+    assert!(result.history_requirements.preserve_server_tool_results);
 }
 
 #[test]
@@ -673,6 +698,7 @@ fn create_tools_json_for_claude_messages_can_map_web_search_to_local_function() 
         }],
         ClaudeMessagesToolOptions {
             web_search_tool_kind: ClaudeWebSearchToolKind::LocalFunctionTool,
+            ..ClaudeMessagesToolOptions::default()
         },
     )
     .expect("serialize claude tools");
@@ -708,6 +734,611 @@ fn create_tools_json_for_claude_messages_can_map_web_search_to_local_function() 
             kind: crate::ClaudeToolCallKind::Function,
         }]
     );
+    assert!(
+        result
+            .native_tool_policy
+            .fallback_tools
+            .contains(&ClaudeNativeToolKind::WebSearch20250305)
+    );
+    assert_eq!(
+        result.native_tool_policy.decisions[0].outcome,
+        ClaudeNativeToolDecisionOutcome::Fallback
+    );
+    assert!(!result.history_requirements.preserve_server_tool_results);
+}
+
+#[test]
+fn claude_native_tool_capability_table_records_current_tool_types() {
+    assert_eq!(
+        ClaudeNativeToolKind::WebSearch20250305.tool_type(),
+        "web_search_20250305"
+    );
+    assert_eq!(
+        ClaudeNativeToolKind::WebSearch20260209.tool_type(),
+        "web_search_20260209"
+    );
+    assert_eq!(
+        ClaudeNativeToolKind::WebFetch20260209.tool_type(),
+        "web_fetch_20260209"
+    );
+    assert_eq!(
+        ClaudeNativeToolKind::CodeExecution20260120.tool_type(),
+        "code_execution_20260120"
+    );
+    assert_eq!(
+        ClaudeNativeToolKind::Advisor20260301.tool_type(),
+        "advisor_20260301"
+    );
+    assert_eq!(ClaudeNativeToolKind::McpToolset.tool_type(), "mcp_toolset");
+    assert_eq!(
+        ClaudeNativeToolKind::TextEditor20250728.execution(),
+        ClaudeNativeToolExecution::Client
+    );
+    assert_eq!(
+        ClaudeNativeToolKind::ToolSearchRegex20251119.execution(),
+        ClaudeNativeToolExecution::Server
+    );
+    assert_eq!(
+        ClaudeNativeToolKind::Advisor20260301
+            .beta_feature()
+            .map(ClaudeBetaFeature::header_value),
+        Some("advisor-tool-2026-03-01")
+    );
+    assert_eq!(
+        ClaudeNativeToolKind::McpToolset
+            .beta_feature()
+            .map(ClaudeBetaFeature::header_value),
+        Some("mcp-client-2025-11-20")
+    );
+}
+
+#[test]
+fn create_tools_json_for_claude_messages_records_disabled_native_tool_policy() {
+    let result = crate::create_tools_json_for_claude_messages_with_options(
+        &[],
+        ClaudeMessagesToolOptions {
+            native_tool_selection: ClaudeNativeToolSelection {
+                provider_platform: ClaudeProviderPlatform::DeepSeekCompatible,
+                allowed_tools: BTreeSet::from([
+                    ClaudeNativeToolKind::TextEditor20250728,
+                    ClaudeNativeToolKind::McpToolset,
+                    ClaudeNativeToolKind::WebSearch20260209,
+                ]),
+                server_dynamic_filtering: ClaudeServerCapability::Enabled,
+                remote_mcp_connector: ClaudeServerCapability::Enabled,
+                ..ClaudeNativeToolSelection::default()
+            },
+            ..ClaudeMessagesToolOptions::default()
+        },
+    )
+    .expect("serialize claude tools");
+
+    assert!(result.tools.is_empty());
+    assert!(
+        result
+            .native_tool_policy
+            .disabled_tools
+            .contains(&ClaudeNativeToolKind::TextEditor20250728)
+    );
+    assert!(
+        result
+            .native_tool_policy
+            .disabled_tools
+            .contains(&ClaudeNativeToolKind::McpToolset)
+    );
+    assert!(
+        result
+            .native_tool_policy
+            .disabled_tools
+            .contains(&ClaudeNativeToolKind::WebSearch20260209)
+    );
+    assert!(result.native_tool_policy.decisions.iter().any(|decision| {
+        decision.tool == ClaudeNativeToolKind::TextEditor20250728
+            && decision.outcome == ClaudeNativeToolDecisionOutcome::Disabled
+            && decision.reason.contains("provider platform")
+    }));
+    assert!(result.native_tool_policy.decisions.iter().any(|decision| {
+        decision.tool == ClaudeNativeToolKind::McpToolset
+            && decision.outcome == ClaudeNativeToolDecisionOutcome::Disabled
+            && decision.reason.contains("requires Anthropic API")
+    }));
+}
+
+#[test]
+fn create_tools_json_for_claude_messages_emits_enabled_native_tools() {
+    let result = crate::create_tools_json_for_claude_messages_with_options(
+        &[],
+        ClaudeMessagesToolOptions {
+            native_tool_selection: ClaudeNativeToolSelection {
+                provider_platform: ClaudeProviderPlatform::AnthropicApi,
+                allowed_tools: BTreeSet::from([
+                    ClaudeNativeToolKind::TextEditor20250728,
+                    ClaudeNativeToolKind::Bash20250124,
+                    ClaudeNativeToolKind::WebFetch20260209,
+                    ClaudeNativeToolKind::Advisor20260301,
+                ]),
+                text_editor_executor: ClaudeLocalExecutorCapability::Available,
+                bash_executor: ClaudeLocalExecutorCapability::Available,
+                server_dynamic_filtering: ClaudeServerCapability::Enabled,
+                advisor_model: Some("claude-opus-4-7".to_string()),
+                ..ClaudeNativeToolSelection::default()
+            },
+            ..ClaudeMessagesToolOptions::default()
+        },
+    )
+    .expect("serialize claude tools");
+
+    assert_eq!(
+        result.tools,
+        vec![
+            json!({
+                "type": "web_fetch_20260209",
+                "name": "web_fetch"
+            }),
+            json!({
+                "type": "advisor_20260301",
+                "name": "advisor",
+                "model": "claude-opus-4-7"
+            }),
+            json!({
+                "type": "bash_20250124",
+                "name": "bash"
+            }),
+            json!({
+                "type": "text_editor_20250728",
+                "name": "str_replace_based_edit_tool",
+                "max_characters": 20000
+            }),
+        ]
+    );
+    assert_eq!(
+        result
+            .beta_headers
+            .iter()
+            .copied()
+            .map(ClaudeBetaFeature::header_value)
+            .collect::<Vec<_>>(),
+        vec!["advisor-tool-2026-03-01"]
+    );
+    assert!(result.history_requirements.preserve_server_tool_results);
+    assert_eq!(
+        result
+            .tool_call_info
+            .iter()
+            .map(|info| info.claude_name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["bash", "str_replace_based_edit_tool"]
+    );
+    assert!(result.native_tool_policy.disabled_tools.is_empty());
+}
+
+#[test]
+fn create_tools_json_for_claude_messages_emits_native_remote_mcp_toolsets() {
+    let result = crate::create_tools_json_for_claude_messages_with_options(
+        &[],
+        ClaudeMessagesToolOptions {
+            native_tool_selection: ClaudeNativeToolSelection {
+                provider_platform: ClaudeProviderPlatform::AnthropicApi,
+                allowed_tools: BTreeSet::from([ClaudeNativeToolKind::McpToolset]),
+                remote_mcp_connector: ClaudeServerCapability::Enabled,
+                remote_mcp_servers: vec![ClaudeMcpServer {
+                    name: "docs".to_string(),
+                    url: "https://example.com/sse".to_string(),
+                    authorization_token: Some("secret".to_string()),
+                    toolset_config: ClaudeMcpToolsetConfig::default(),
+                }],
+                ..ClaudeNativeToolSelection::default()
+            },
+            ..ClaudeMessagesToolOptions::default()
+        },
+    )
+    .expect("serialize claude tools");
+
+    assert_eq!(
+        result.tools,
+        vec![json!({
+            "type": "mcp_toolset",
+            "mcp_server_name": "docs"
+        })]
+    );
+    assert_eq!(
+        result.mcp_servers,
+        vec![ClaudeMcpServer {
+            name: "docs".to_string(),
+            url: "https://example.com/sse".to_string(),
+            authorization_token: Some("secret".to_string()),
+            toolset_config: ClaudeMcpToolsetConfig::default(),
+        }]
+    );
+    assert_eq!(
+        result
+            .beta_headers
+            .iter()
+            .copied()
+            .map(ClaudeBetaFeature::header_value)
+            .collect::<Vec<_>>(),
+        vec!["mcp-client-2025-11-20"]
+    );
+    assert!(result.history_requirements.preserve_mcp_tool_results);
+    assert!(result.history_requirements.preserve_server_tool_results);
+    assert!(
+        result
+            .native_tool_policy
+            .enabled_tools
+            .contains(&ClaudeNativeToolKind::McpToolset)
+    );
+}
+
+#[test]
+fn create_tools_json_for_claude_messages_emits_remote_mcp_toolset_configuration() {
+    let result = crate::create_tools_json_for_claude_messages_with_options(
+        &[],
+        ClaudeMessagesToolOptions {
+            native_tool_selection: ClaudeNativeToolSelection {
+                provider_platform: ClaudeProviderPlatform::AnthropicApi,
+                allowed_tools: BTreeSet::from([ClaudeNativeToolKind::McpToolset]),
+                remote_mcp_connector: ClaudeServerCapability::Enabled,
+                remote_mcp_servers: vec![ClaudeMcpServer {
+                    name: "docs".to_string(),
+                    url: "https://example.com/sse".to_string(),
+                    authorization_token: None,
+                    toolset_config: ClaudeMcpToolsetConfig {
+                        default_config: Some(json!({"enabled": false})),
+                        configs: Some(json!({
+                            "search": {"enabled": true, "defer_loading": false}
+                        })),
+                        allowed_tools: Some(vec!["search".to_string()]),
+                        denied_tools: Some(vec!["delete".to_string()]),
+                        defer_loading: Some(true),
+                        cache_control: Some(json!({"type": "ephemeral"})),
+                    },
+                }],
+                ..ClaudeNativeToolSelection::default()
+            },
+            ..ClaudeMessagesToolOptions::default()
+        },
+    )
+    .expect("serialize claude tools");
+
+    assert_eq!(
+        result.tools,
+        vec![json!({
+            "type": "mcp_toolset",
+            "mcp_server_name": "docs",
+            "default_config": {"enabled": false},
+            "configs": {
+                "search": {"enabled": true, "defer_loading": false}
+            },
+            "allowed_tools": ["search"],
+            "denied_tools": ["delete"],
+            "defer_loading": true,
+            "cache_control": {"type": "ephemeral"}
+        })]
+    );
+}
+
+#[test]
+fn create_tools_json_for_claude_messages_rejects_invalid_remote_mcp_servers() {
+    let result = crate::create_tools_json_for_claude_messages_with_options(
+        &[],
+        ClaudeMessagesToolOptions {
+            native_tool_selection: ClaudeNativeToolSelection {
+                provider_platform: ClaudeProviderPlatform::AnthropicApi,
+                allowed_tools: BTreeSet::from([ClaudeNativeToolKind::McpToolset]),
+                remote_mcp_connector: ClaudeServerCapability::Enabled,
+                remote_mcp_servers: vec![
+                    ClaudeMcpServer {
+                        name: "docs".to_string(),
+                        url: "http://example.com/sse".to_string(),
+                        authorization_token: None,
+                        toolset_config: ClaudeMcpToolsetConfig::default(),
+                    },
+                    ClaudeMcpServer {
+                        name: "docs".to_string(),
+                        url: "https://example.com/other".to_string(),
+                        authorization_token: None,
+                        toolset_config: ClaudeMcpToolsetConfig::default(),
+                    },
+                ],
+                ..ClaudeNativeToolSelection::default()
+            },
+            ..ClaudeMessagesToolOptions::default()
+        },
+    )
+    .expect("serialize claude tools");
+
+    assert!(result.tools.is_empty());
+    assert!(result.mcp_servers.is_empty());
+    assert!(result.beta_headers.is_empty());
+    assert!(
+        result
+            .native_tool_policy
+            .disabled_tools
+            .contains(&ClaudeNativeToolKind::McpToolset)
+    );
+    assert!(result.native_tool_policy.decisions.iter().any(|decision| {
+        decision.tool == ClaudeNativeToolKind::McpToolset
+            && decision.reason.contains("unique HTTPS remote servers")
+    }));
+}
+
+#[test]
+fn create_tools_json_for_claude_messages_emits_native_tool_search_names() {
+    let result = crate::create_tools_json_for_claude_messages_with_options(
+        &[],
+        ClaudeMessagesToolOptions {
+            native_tool_selection: ClaudeNativeToolSelection {
+                provider_platform: ClaudeProviderPlatform::AnthropicApi,
+                model: Some("claude-sonnet-4-6".to_string()),
+                allowed_tools: BTreeSet::from([
+                    ClaudeNativeToolKind::ToolSearchRegex20251119,
+                    ClaudeNativeToolKind::ToolSearchBm25V20251119,
+                ]),
+                tool_search: ClaudeServerCapability::Enabled,
+                ..ClaudeNativeToolSelection::default()
+            },
+            ..ClaudeMessagesToolOptions::default()
+        },
+    )
+    .expect("serialize claude tools");
+
+    assert_eq!(
+        result.tools,
+        vec![
+            json!({
+                "type": "tool_search_tool_regex_20251119",
+                "name": "tool_search_tool_regex"
+            }),
+            json!({
+                "type": "tool_search_tool_bm25_20251119",
+                "name": "tool_search_tool_bm25"
+            }),
+        ]
+    );
+    assert!(result.history_requirements.preserve_server_tool_results);
+}
+
+#[test]
+fn create_tools_json_for_claude_messages_defers_large_catalog_with_native_tool_search() {
+    let tools = (0..6)
+        .map(|index| {
+            test_function_tool(
+                &format!("lookup_{index}"),
+                "Lookup a catalog item",
+                &["id"],
+                &[("id", "Item id")],
+            )
+        })
+        .collect::<Vec<_>>();
+    let result = crate::create_tools_json_for_claude_messages_with_options(
+        &tools,
+        ClaudeMessagesToolOptions {
+            native_tool_selection: ClaudeNativeToolSelection {
+                provider_platform: ClaudeProviderPlatform::AnthropicApi,
+                model: Some("claude-sonnet-4-6".to_string()),
+                allowed_tools: BTreeSet::from([ClaudeNativeToolKind::ToolSearchRegex20251119]),
+                tool_search: ClaudeServerCapability::Enabled,
+                ..ClaudeNativeToolSelection::default()
+            },
+            ..ClaudeMessagesToolOptions::default()
+        },
+    )
+    .expect("serialize claude tools");
+
+    assert_ne!(
+        claude_tool(&result, "tool_search_tool_regex")["defer_loading"].as_bool(),
+        Some(true)
+    );
+    assert_ne!(
+        claude_tool(&result, "lookup_0")["defer_loading"].as_bool(),
+        Some(true)
+    );
+    assert_ne!(
+        claude_tool(&result, "lookup_1")["defer_loading"].as_bool(),
+        Some(true)
+    );
+    assert_ne!(
+        claude_tool(&result, "lookup_2")["defer_loading"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        claude_tool(&result, "lookup_3")["defer_loading"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        claude_tool(&result, "lookup_5")["defer_loading"].as_bool(),
+        Some(true)
+    );
+}
+
+#[test]
+fn claude_native_tool_planning_gates_by_model_platform_and_zdr_policy() {
+    let result = crate::create_tools_json_for_claude_messages_with_options(
+        &[],
+        ClaudeMessagesToolOptions {
+            native_tool_selection: ClaudeNativeToolSelection {
+                provider_platform: ClaudeProviderPlatform::AnthropicApi,
+                model: Some("claude-3-7-sonnet-20250219".to_string()),
+                allowed_tools: BTreeSet::from([
+                    ClaudeNativeToolKind::WebSearch20250305,
+                    ClaudeNativeToolKind::WebSearch20260209,
+                    ClaudeNativeToolKind::TextEditor20250728,
+                    ClaudeNativeToolKind::TextEditor20250124,
+                ]),
+                require_zero_data_retention: true,
+                text_editor_executor: ClaudeLocalExecutorCapability::Available,
+                server_dynamic_filtering: ClaudeServerCapability::Enabled,
+                ..ClaudeNativeToolSelection::default()
+            },
+            ..ClaudeMessagesToolOptions::default()
+        },
+    )
+    .expect("serialize claude tools");
+
+    assert_eq!(
+        result.tools,
+        vec![json!({
+            "type": "text_editor_20250124",
+            "name": "str_replace_based_edit_tool"
+        })]
+    );
+    assert!(
+        result
+            .native_tool_policy
+            .disabled_tools
+            .contains(&ClaudeNativeToolKind::WebSearch20250305)
+    );
+    assert!(
+        result
+            .native_tool_policy
+            .disabled_tools
+            .contains(&ClaudeNativeToolKind::WebSearch20260209)
+    );
+    assert!(
+        result
+            .native_tool_policy
+            .disabled_tools
+            .contains(&ClaudeNativeToolKind::TextEditor20250728)
+    );
+    assert!(result.native_tool_policy.decisions.iter().any(|decision| {
+        decision.tool == ClaudeNativeToolKind::WebSearch20250305
+            && decision.reason.contains("zero data retention")
+    }));
+    assert!(result.native_tool_policy.decisions.iter().any(|decision| {
+        decision.tool == ClaudeNativeToolKind::TextEditor20250728
+            && decision.reason.contains("model does not support")
+    }));
+}
+
+#[test]
+fn claude_native_tool_planning_covers_platform_and_server_tool_versions() {
+    let vertex = crate::create_tools_json_for_claude_messages_with_options(
+        &[],
+        ClaudeMessagesToolOptions {
+            native_tool_selection: ClaudeNativeToolSelection {
+                provider_platform: ClaudeProviderPlatform::Vertex,
+                model: Some("claude-sonnet-4-6".to_string()),
+                allowed_tools: BTreeSet::from([
+                    ClaudeNativeToolKind::WebSearch20250305,
+                    ClaudeNativeToolKind::WebFetch20260209,
+                ]),
+                server_dynamic_filtering: ClaudeServerCapability::Enabled,
+                ..ClaudeNativeToolSelection::default()
+            },
+            ..ClaudeMessagesToolOptions::default()
+        },
+    )
+    .expect("serialize claude tools");
+
+    assert_eq!(
+        vertex.tools,
+        vec![json!({
+            "type": "web_search_20250305",
+            "name": "web_search"
+        })]
+    );
+    assert!(
+        vertex
+            .native_tool_policy
+            .disabled_tools
+            .contains(&ClaudeNativeToolKind::WebFetch20260209)
+    );
+
+    let bedrock = crate::create_tools_json_for_claude_messages_with_options(
+        &[],
+        ClaudeMessagesToolOptions {
+            native_tool_selection: ClaudeNativeToolSelection {
+                provider_platform: ClaudeProviderPlatform::Bedrock,
+                model: Some("claude-sonnet-4-6".to_string()),
+                allowed_tools: BTreeSet::from([
+                    ClaudeNativeToolKind::WebSearch20250305,
+                    ClaudeNativeToolKind::CodeExecution20260120,
+                ]),
+                server_dynamic_filtering: ClaudeServerCapability::Enabled,
+                ..ClaudeNativeToolSelection::default()
+            },
+            ..ClaudeMessagesToolOptions::default()
+        },
+    )
+    .expect("serialize claude tools");
+
+    assert!(bedrock.tools.is_empty());
+    assert!(
+        bedrock
+            .native_tool_policy
+            .disabled_tools
+            .contains(&ClaudeNativeToolKind::WebSearch20250305)
+    );
+    assert!(
+        bedrock
+            .native_tool_policy
+            .disabled_tools
+            .contains(&ClaudeNativeToolKind::CodeExecution20260120)
+    );
+}
+
+#[test]
+fn claude_native_tool_planning_emits_newer_server_tools_when_allowed() {
+    let result = crate::create_tools_json_for_claude_messages_with_options(
+        &[],
+        ClaudeMessagesToolOptions {
+            native_tool_selection: ClaudeNativeToolSelection {
+                provider_platform: ClaudeProviderPlatform::AnthropicApi,
+                model: Some("claude-opus-4-7".to_string()),
+                allowed_tools: BTreeSet::from([
+                    ClaudeNativeToolKind::WebSearch20260209,
+                    ClaudeNativeToolKind::WebFetch20260209,
+                    ClaudeNativeToolKind::CodeExecution20260120,
+                    ClaudeNativeToolKind::Advisor20260301,
+                ]),
+                server_dynamic_filtering: ClaudeServerCapability::Enabled,
+                advisor_model: Some("claude-opus-4-7".to_string()),
+                advisor_max_uses: Some(2),
+                ..ClaudeNativeToolSelection::default()
+            },
+            ..ClaudeMessagesToolOptions::default()
+        },
+    )
+    .expect("serialize claude tools");
+
+    assert_eq!(
+        result.tools,
+        vec![
+            json!({
+                "type": "web_search_20260209",
+                "name": "web_search"
+            }),
+            json!({
+                "type": "web_fetch_20260209",
+                "name": "web_fetch"
+            }),
+            json!({
+                "type": "code_execution_20260120",
+                "name": "code_execution"
+            }),
+            json!({
+                "type": "advisor_20260301",
+                "name": "advisor",
+                "model": "claude-opus-4-7",
+                "max_uses": 2
+            }),
+        ]
+    );
+    assert!(result.history_requirements.preserve_server_tool_results);
+}
+
+#[test]
+fn claude_mcp_server_debug_redacts_authorization_token() {
+    let server = ClaudeMcpServer {
+        name: "docs".to_string(),
+        url: "https://example.com/sse".to_string(),
+        authorization_token: Some("secret-token".to_string()),
+        toolset_config: ClaudeMcpToolsetConfig::default(),
+    };
+
+    let debug = format!("{server:?}");
+    assert!(debug.contains("[redacted]"));
+    assert!(!debug.contains("secret-token"));
 }
 
 #[test]

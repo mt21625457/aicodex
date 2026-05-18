@@ -31,6 +31,7 @@ use codex_tools::ToolName;
 mod shell_command;
 mod shell_file_changes;
 
+pub(crate) use shell_command::ClaudeBashHandler;
 pub use shell_command::ShellCommandHandler;
 pub(crate) use shell_command::ShellCommandHandlerOptions;
 use shell_file_changes::diff_shell_snapshots;

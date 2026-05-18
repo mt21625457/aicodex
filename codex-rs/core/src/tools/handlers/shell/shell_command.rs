@@ -1,5 +1,7 @@
 use codex_protocol::ThreadId;
+use codex_protocol::models::SandboxPermissions;
 use codex_protocol::models::ShellCommandToolCallParams;
+use codex_tools::CLAUDE_BASH_TOOL_NAME;
 use codex_tools::ShellCommandBackendConfig;
 use codex_tools::ToolName;
 
@@ -14,6 +16,7 @@ use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
+use crate::tools::handlers::parse_arguments;
 use crate::tools::handlers::parse_arguments_with_base_path;
 use crate::tools::handlers::resolve_workdir_base_path;
 use crate::tools::handlers::rewrite_function_string_argument;
@@ -25,6 +28,7 @@ use crate::tools::registry::ToolExecutor;
 use crate::tools::registry::ToolHandler;
 use crate::tools::runtimes::shell::ShellRuntimeBackend;
 use codex_tools::ToolSpec;
+use serde::Deserialize;
 
 use super::super::shell_spec::CommandToolOptions;
 use super::super::shell_spec::create_shell_command_tool;
@@ -43,11 +47,29 @@ pub struct ShellCommandHandler {
     options: Option<ShellCommandHandlerOptions>,
 }
 
+pub(crate) struct ClaudeBashHandler {
+    inner: ShellCommandHandler,
+    options: ShellCommandHandlerOptions,
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct ShellCommandHandlerOptions {
     pub(crate) backend_config: ShellCommandBackendConfig,
     pub(crate) allow_login_shell: bool,
     pub(crate) exec_permission_approvals_enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClaudeBashToolCallParams {
+    command: String,
+    #[serde(default)]
+    workdir: Option<String>,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+    #[serde(default)]
+    sandbox_permissions: Option<SandboxPermissions>,
+    #[serde(default)]
+    justification: Option<String>,
 }
 
 impl ShellCommandHandler {
@@ -201,6 +223,96 @@ impl ToolExecutor<ToolInvocation> for ShellCommandHandler {
             shell_runtime_backend: self.shell_runtime_backend(),
         })
         .await
+    }
+}
+
+#[async_trait::async_trait]
+impl ToolExecutor<ToolInvocation> for ClaudeBashHandler {
+    type Output = FunctionToolOutput;
+
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain(CLAUDE_BASH_TOOL_NAME)
+    }
+
+    fn spec(&self) -> Option<ToolSpec> {
+        None
+    }
+
+    async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
+        let ToolInvocation {
+            session,
+            turn,
+            tracker,
+            call_id,
+            payload,
+            ..
+        } = invocation;
+
+        let ToolPayload::Function { arguments } = payload else {
+            return Err(FunctionCallError::RespondToModel(format!(
+                "unsupported payload for Claude bash handler: {}",
+                self.tool_name()
+            )));
+        };
+        let params: ClaudeBashToolCallParams = parse_arguments(&arguments)?;
+        let shell_params = ShellCommandToolCallParams {
+            command: params.command,
+            workdir: params.workdir,
+            timeout_ms: params.timeout_ms,
+            sandbox_permissions: params
+                .sandbox_permissions
+                .or(Some(SandboxPermissions::UseDefault)),
+            additional_permissions: None,
+            justification: params.justification,
+            login: Some(false),
+            prefix_rule: None,
+        };
+        #[allow(deprecated)]
+        let workdir = turn.resolve_path(shell_params.workdir.clone());
+        maybe_emit_implicit_skill_invocation(
+            session.as_ref(),
+            turn.as_ref(),
+            &shell_params.command,
+            &workdir,
+        )
+        .await;
+        let exec_params = ShellCommandHandler::to_exec_params(
+            &shell_params,
+            session.as_ref(),
+            turn.as_ref(),
+            session.conversation_id,
+            self.options.allow_login_shell,
+        )?;
+        run_exec_like(RunExecLikeArgs {
+            tool_name: self.tool_name(),
+            exec_params,
+            hook_command: shell_params.command,
+            shell_type: Some(session.user_shell().shell_type.clone()),
+            additional_permissions: None,
+            prefix_rule: None,
+            session,
+            turn,
+            tracker,
+            call_id,
+            freeform: false,
+            shell_runtime_backend: self.inner.shell_runtime_backend(),
+        })
+        .await
+    }
+}
+
+impl ClaudeBashHandler {
+    pub(crate) fn new(options: ShellCommandHandlerOptions) -> Self {
+        Self {
+            inner: ShellCommandHandler::from(options.backend_config),
+            options,
+        }
+    }
+}
+
+impl ToolHandler for ClaudeBashHandler {
+    fn matches_kind(&self, payload: &ToolPayload) -> bool {
+        matches!(payload, ToolPayload::Function { .. })
     }
 }
 

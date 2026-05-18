@@ -80,6 +80,7 @@ impl<T: HttpTransport> ClaudeMessagesClient<T> {
                 HeaderValue::from_static(ANTHROPIC_VERSION),
             );
         }
+        insert_beta_headers(&mut headers, &request.beta_headers)?;
 
         let tool_call_info = request.tool_call_info.clone();
         let body = serde_json::to_value(&request)
@@ -112,6 +113,7 @@ impl<T: HttpTransport> ClaudeMessagesClient<T> {
                 HeaderValue::from_static(ANTHROPIC_VERSION),
             );
         }
+        insert_beta_headers(&mut headers, &request.beta_headers)?;
 
         let body = serde_json::to_value(&request).map_err(|e| {
             ApiError::Stream(format!("failed to encode claude count_tokens request: {e}"))
@@ -196,6 +198,17 @@ impl<T: HttpTransport> ClaudeMessagesClient<T> {
         serde_json::from_slice::<ClaudeCountTokensResponse>(&response.body)
             .map_err(|e| ApiError::Stream(format!("failed to parse claude count_tokens: {e}")))
     }
+}
+
+fn insert_beta_headers(headers: &mut HeaderMap, beta_headers: &[String]) -> Result<(), ApiError> {
+    if beta_headers.is_empty() || headers.contains_key("anthropic-beta") {
+        return Ok(());
+    }
+    let value = beta_headers.join(",");
+    let value = HeaderValue::from_str(&value)
+        .map_err(|err| ApiError::Stream(format!("invalid Claude beta header value: {err}")))?;
+    headers.insert("anthropic-beta", value);
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]

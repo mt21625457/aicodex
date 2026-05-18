@@ -6,6 +6,7 @@ use crate::error::ApiError;
 use crate::telemetry::SseTelemetry;
 use codex_client::ByteStream;
 use codex_client::StreamResponse;
+use codex_protocol::models::Citation;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ResponseItem;
@@ -315,6 +316,10 @@ struct ClaudeUsage {
     cache_read_input_tokens: Option<i64>,
     #[serde(default)]
     cache_creation_input_tokens: Option<i64>,
+    #[serde(default)]
+    server_tool_use: Option<Value>,
+    #[serde(default)]
+    iterations: Option<i64>,
 }
 
 impl ClaudeUsage {
@@ -327,6 +332,8 @@ impl ClaudeUsage {
         self.cache_creation_input_tokens = usage
             .cache_creation_input_tokens
             .or(self.cache_creation_input_tokens);
+        self.server_tool_use = usage.server_tool_use.or(self.server_tool_use.take());
+        self.iterations = usage.iterations.or(self.iterations);
     }
 
     fn token_usage(&self) -> Option<TokenUsage> {
@@ -368,6 +375,7 @@ struct ClaudeStreamState {
     finalized_blocks: BTreeSet<usize>,
     block_kinds: BTreeMap<usize, ClaudeStreamBlockKind>,
     text_blocks: BTreeMap<usize, String>,
+    text_citations: BTreeMap<usize, Vec<Citation>>,
     reasoning_blocks: BTreeMap<usize, String>,
     reasoning_signatures: BTreeMap<usize, String>,
     tool_blocks: BTreeMap<usize, ToolUseState>,
@@ -607,6 +615,9 @@ impl ClaudeStreamState {
             }
             ClaudeStreamDelta::CitationsDelta { citation } => {
                 self.ensure_delta_matches(index, ClaudeStreamBlockKind::Text, "citations_delta")?;
+                if let Some(citation) = citation_from_claude(&citation) {
+                    self.text_citations.entry(index).or_default().push(citation);
+                }
                 if let Some(marker) = citation_marker(&citation) {
                     self.ensure_text_item_started(index, tx_event).await?;
                     self.push_text_delta(index, &marker, tx_event).await?;
@@ -900,10 +911,19 @@ impl ClaudeStreamState {
                 if let Some(text) = self.text_blocks.get(&index)
                     && !text.is_empty()
                 {
+                    let citations = self.text_citations.get(&index).cloned().unwrap_or_default();
+                    let content = if citations.is_empty() {
+                        vec![ContentItem::OutputText { text: text.clone() }]
+                    } else {
+                        vec![ContentItem::OutputTextWithCitations {
+                            text: text.clone(),
+                            citations,
+                        }]
+                    };
                     return Ok(vec![ResponseItem::Message {
                         id: self.message_id_for_block(index),
                         role: "assistant".to_string(),
-                        content: vec![ContentItem::OutputText { text: text.clone() }],
+                        content,
                         phase: None,
                     }]);
                 }
@@ -1165,6 +1185,42 @@ fn citation_marker(citation: &Value) -> Option<String> {
     }
 }
 
+fn citation_from_claude(citation: &Value) -> Option<Citation> {
+    let object = citation.as_object()?;
+    let citation_type = object
+        .get("type")
+        .and_then(Value::as_str)
+        .filter(|kind| !kind.trim().is_empty())
+        .unwrap_or("citation")
+        .to_string();
+    Some(Citation {
+        provider: "claude".to_string(),
+        citation_type,
+        title: object
+            .get("title")
+            .and_then(Value::as_str)
+            .map(clean_citation_part),
+        url: object
+            .get("url")
+            .and_then(Value::as_str)
+            .map(clean_citation_part),
+        cited_text: object
+            .get("cited_text")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        encrypted_index: object
+            .get("encrypted_index")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        document_index: object.get("document_index").and_then(Value::as_i64),
+        start_page_number: object.get("start_page_number").and_then(Value::as_i64),
+        end_page_number: object.get("end_page_number").and_then(Value::as_i64),
+        start_char_index: object.get("start_char_index").and_then(Value::as_i64),
+        end_char_index: object.get("end_char_index").and_then(Value::as_i64),
+        raw: Some(citation.clone()),
+    })
+}
+
 fn clean_citation_part(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -1238,6 +1294,7 @@ fn is_provider_state_block_type(kind: &str) -> bool {
     kind == "compaction"
         || kind == "redacted_thinking"
         || kind == "server_tool_use"
+        || kind == "tool_reference"
         || kind.ends_with("_tool_use")
         || kind.ends_with("_tool_result")
 }
@@ -1691,6 +1748,7 @@ mod tests {
             output_tokens: Some(2),
             cache_read_input_tokens: None,
             cache_creation_input_tokens: Some(6),
+            ..ClaudeUsage::default()
         };
 
         assert_eq!(
@@ -1712,6 +1770,7 @@ mod tests {
             output_tokens: Some(1),
             cache_read_input_tokens: Some(10),
             cache_creation_input_tokens: Some(7),
+            ..ClaudeUsage::default()
         };
 
         assert_eq!(
@@ -1722,6 +1781,33 @@ mod tests {
                 output_tokens: 1,
                 reasoning_output_tokens: 0,
                 total_tokens: 4,
+            })
+        );
+    }
+
+    #[test]
+    fn claude_usage_preserves_server_and_advisor_accounting_without_token_pollution() {
+        let usage = serde_json::from_value::<ClaudeUsage>(json!({
+            "input_tokens": 11,
+            "output_tokens": 5,
+            "server_tool_use": {"web_search_requests": 2},
+            "iterations": 3
+        }))
+        .expect("usage parses");
+
+        assert_eq!(
+            usage.server_tool_use,
+            Some(json!({"web_search_requests": 2}))
+        );
+        assert_eq!(usage.iterations, Some(3));
+        assert_eq!(
+            usage.token_usage(),
+            Some(TokenUsage {
+                input_tokens: 11,
+                cached_input_tokens: 0,
+                output_tokens: 5,
+                reasoning_output_tokens: 0,
+                total_tokens: 16,
             })
         );
     }
@@ -2123,7 +2209,9 @@ mod tests {
                         "citation": {
                             "type": "web_search_result_location",
                             "title": "Rust Releases",
-                            "url": "https://example.com/rust"
+                            "url": "https://example.com/rust",
+                            "encrypted_index": "enc-1",
+                            "cited_text": "Rust 1.90 shipped"
                         }
                     }
                 }),
@@ -2147,10 +2235,83 @@ mod tests {
         assert!(events.iter().any(|event| matches!(
             event,
             ResponseEvent::OutputItemDone(ResponseItem::Message { content, .. })
-                if content == &vec![ContentItem::OutputText {
-                    text: "Rust 1.90 shipped [source: Rust Releases (https://example.com/rust)]"
-                        .to_string()
-                }]
+                if matches!(
+                    content.as_slice(),
+                    [ContentItem::OutputTextWithCitations { text, citations }]
+                        if text == "Rust 1.90 shipped [source: Rust Releases (https://example.com/rust)]"
+                            && citations.len() == 1
+                            && citations[0].citation_type == "web_search_result_location"
+                            && citations[0].title.as_deref() == Some("Rust Releases")
+                            && citations[0].url.as_deref() == Some("https://example.com/rust")
+                            && citations[0].encrypted_index.as_deref() == Some("enc-1")
+                            && citations[0].cited_text.as_deref() == Some("Rust 1.90 shipped")
+                )
+        )));
+    }
+
+    #[tokio::test]
+    async fn claude_stream_preserves_document_citation_locations() {
+        let events = run_events(
+            vec![
+                json!({
+                    "type": "message_start",
+                    "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": []}
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": "The contract says so"}
+                }),
+                json!({
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {
+                        "type": "citations_delta",
+                        "citation": {
+                            "type": "page_location",
+                            "document_index": 2,
+                            "start_page_number": 3,
+                            "end_page_number": 4,
+                            "cited_text": "contract"
+                        }
+                    }
+                }),
+                json!({
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {
+                        "type": "citations_delta",
+                        "citation": {
+                            "type": "char_location",
+                            "document_index": 2,
+                            "start_char_index": 14,
+                            "end_char_index": 22
+                        }
+                    }
+                }),
+                json!({"type": "message_stop"}),
+            ],
+            HashMap::new(),
+        )
+        .await;
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ResponseEvent::OutputItemDone(ResponseItem::Message { content, .. })
+                if matches!(
+                    content.as_slice(),
+                    [ContentItem::OutputTextWithCitations { citations, .. }]
+                        if citations.len() == 2
+                            && citations[0].citation_type == "page_location"
+                            && citations[0].document_index == Some(2)
+                            && citations[0].start_page_number == Some(3)
+                            && citations[0].end_page_number == Some(4)
+                            && citations[0].cited_text.as_deref() == Some("contract")
+                            && citations[1].citation_type == "char_location"
+                            && citations[1].document_index == Some(2)
+                            && citations[1].start_char_index == Some(14)
+                            && citations[1].end_char_index == Some(22)
+                )
         )));
     }
 
@@ -2284,6 +2445,83 @@ mod tests {
             ResponseEvent::OutputItemDone(ResponseItem::Compaction { encrypted_content })
                 if serde_json::from_str::<Value>(encrypted_content).ok().as_ref() == Some(&search_result)
         )));
+    }
+
+    #[tokio::test]
+    async fn claude_stream_preserves_native_server_mcp_and_tool_search_blocks_as_provider_state() {
+        let provider_blocks = vec![
+            json!({
+                "type": "web_fetch_tool_result",
+                "tool_use_id": "srvtoolu_fetch",
+                "content": [{"type": "web_fetch_result", "url": "https://example.com"}]
+            }),
+            json!({
+                "type": "bash_code_execution_tool_result",
+                "tool_use_id": "srvtoolu_code",
+                "content": [{"type": "code_execution_result", "stdout": "ok"}]
+            }),
+            json!({
+                "type": "text_editor_code_execution_tool_result",
+                "tool_use_id": "srvtoolu_edit",
+                "content": [{"type": "text_editor_result", "path": "/tmp/out.txt"}]
+            }),
+            json!({
+                "type": "advisor_tool_result",
+                "tool_use_id": "srvtoolu_advisor",
+                "content": [{"type": "advisor_result", "text": "reviewed"}],
+                "usage": {"iterations": 2}
+            }),
+            json!({
+                "type": "mcp_tool_use",
+                "id": "mcptoolu_1",
+                "server_name": "docs",
+                "name": "search",
+                "input": {"query": "claude"}
+            }),
+            json!({
+                "type": "mcp_tool_result",
+                "tool_use_id": "mcptoolu_1",
+                "content": [{"type": "text", "text": "found"}]
+            }),
+            json!({
+                "type": "tool_search_tool_result",
+                "tool_use_id": "srvtoolu_tool_search",
+                "content": [{"type": "tool_reference", "name": "lookup_order"}]
+            }),
+            json!({
+                "type": "tool_reference",
+                "name": "lookup_order"
+            }),
+        ];
+        let mut stream_events = vec![json!({
+            "type": "message_start",
+            "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": []}
+        })];
+        for (index, block) in provider_blocks.iter().enumerate() {
+            stream_events.push(json!({
+                "type": "content_block_start",
+                "index": index,
+                "content_block": block
+            }));
+            stream_events.push(json!({
+                "type": "content_block_stop",
+                "index": index
+            }));
+        }
+        stream_events.push(json!({"type": "message_stop"}));
+
+        let events = run_events(stream_events, HashMap::new()).await;
+        let preserved = events
+            .iter()
+            .filter_map(|event| match event {
+                ResponseEvent::OutputItemDone(ResponseItem::Compaction { encrypted_content }) => {
+                    serde_json::from_str::<Value>(encrypted_content).ok()
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(preserved, provider_blocks);
     }
 
     #[tokio::test]

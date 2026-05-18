@@ -1,6 +1,7 @@
 //! Shared tool definitions and Responses API tool primitives that can live
 //! outside `codex-core`.
 
+mod claude_native;
 mod code_mode;
 mod dynamic_tool;
 mod function_call_error;
@@ -18,6 +19,47 @@ mod tool_output;
 mod tool_payload;
 mod tool_spec;
 
+pub use claude_native::CLAUDE_ADVISOR_20260301_TOOL_TYPE;
+pub use claude_native::CLAUDE_ADVISOR_TOOL_NAME;
+pub use claude_native::CLAUDE_BASH_20250124_TOOL_TYPE;
+pub use claude_native::CLAUDE_BASH_TOOL_NAME;
+pub use claude_native::CLAUDE_CODE_EXECUTION_20250825_TOOL_TYPE;
+pub use claude_native::CLAUDE_CODE_EXECUTION_20260120_TOOL_TYPE;
+pub use claude_native::CLAUDE_CODE_EXECUTION_TOOL_NAME;
+pub use claude_native::CLAUDE_COMPUTER_20250124_TOOL_TYPE;
+pub use claude_native::CLAUDE_COMPUTER_20251124_TOOL_TYPE;
+pub use claude_native::CLAUDE_COMPUTER_TOOL_NAME;
+pub use claude_native::CLAUDE_MCP_TOOLSET_TOOL_TYPE;
+pub use claude_native::CLAUDE_MEMORY_20250818_TOOL_TYPE;
+pub use claude_native::CLAUDE_MEMORY_TOOL_NAME;
+pub use claude_native::CLAUDE_TEXT_EDITOR_20250124_TOOL_TYPE;
+pub use claude_native::CLAUDE_TEXT_EDITOR_20250728_TOOL_TYPE;
+pub use claude_native::CLAUDE_TEXT_EDITOR_TOOL_NAME;
+pub use claude_native::CLAUDE_TOOL_SEARCH_BM25_20251119_TOOL_TYPE;
+pub use claude_native::CLAUDE_TOOL_SEARCH_BM25_TOOL_NAME;
+pub use claude_native::CLAUDE_TOOL_SEARCH_REGEX_20251119_TOOL_TYPE;
+pub use claude_native::CLAUDE_TOOL_SEARCH_REGEX_TOOL_NAME;
+pub use claude_native::CLAUDE_TOOL_SEARCH_TOOL_NAME;
+pub use claude_native::CLAUDE_WEB_FETCH_20250910_TOOL_TYPE;
+pub use claude_native::CLAUDE_WEB_FETCH_20260209_TOOL_TYPE;
+pub use claude_native::CLAUDE_WEB_FETCH_TOOL_NAME;
+pub use claude_native::CLAUDE_WEB_SEARCH_20250305_TOOL_TYPE;
+pub use claude_native::CLAUDE_WEB_SEARCH_20260209_TOOL_TYPE;
+pub use claude_native::CLAUDE_WEB_SEARCH_TOOL_NAME;
+pub use claude_native::ClaudeBetaFeature;
+pub use claude_native::ClaudeHistoryRequirements;
+pub use claude_native::ClaudeLocalExecutorCapability;
+pub use claude_native::ClaudeMcpServer;
+pub use claude_native::ClaudeMcpToolsetConfig;
+pub use claude_native::ClaudeNativeToolDecision;
+pub use claude_native::ClaudeNativeToolDecisionOutcome;
+pub use claude_native::ClaudeNativeToolExecution;
+pub use claude_native::ClaudeNativeToolKind;
+pub use claude_native::ClaudeNativeToolPolicy;
+pub use claude_native::ClaudeNativeToolSelection;
+pub use claude_native::ClaudeProviderPlatform;
+pub use claude_native::ClaudeServerCapability;
+pub use claude_native::evaluate_native_tool;
 pub use code_mode::augment_tool_spec_for_code_mode;
 pub use code_mode::code_mode_name_for_tool_name;
 pub use code_mode::collect_code_mode_exec_prompt_tool_definitions;

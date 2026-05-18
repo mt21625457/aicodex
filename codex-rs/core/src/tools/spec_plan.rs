@@ -1,5 +1,7 @@
 use crate::tools::code_mode::execute_spec::create_code_mode_tool;
 use crate::tools::handlers::ApplyPatchHandler;
+use crate::tools::handlers::ClaudeBashHandler;
+use crate::tools::handlers::ClaudeTextEditorHandler;
 use crate::tools::handlers::CodeModeExecuteHandler;
 use crate::tools::handlers::CodeModeWaitHandler;
 use crate::tools::handlers::CreateGoalHandler;
@@ -291,13 +293,13 @@ pub(crate) fn collect_tool_executors(
             ConfigShellToolType::Default
             | ConfigShellToolType::Local
             | ConfigShellToolType::ShellCommand => {
-                executors.push(Arc::new(ShellCommandHandler::new(
-                    ShellCommandHandlerOptions {
-                        backend_config: config.shell_command_backend,
-                        allow_login_shell: config.allow_login_shell,
-                        exec_permission_approvals_enabled,
-                    },
-                )));
+                let options = ShellCommandHandlerOptions {
+                    backend_config: config.shell_command_backend,
+                    allow_login_shell: config.allow_login_shell,
+                    exec_permission_approvals_enabled,
+                };
+                executors.push(Arc::new(ShellCommandHandler::new(options)));
+                executors.push(Arc::new(ClaudeBashHandler::new(options)));
             }
         }
     }
@@ -309,6 +311,13 @@ pub(crate) fn collect_tool_executors(
             ConfigShellToolType::UnifiedExec => {
                 executors.push(Arc::new(ShellCommandHandler::from(
                     config.shell_command_backend,
+                )));
+                executors.push(Arc::new(ClaudeBashHandler::new(
+                    ShellCommandHandlerOptions {
+                        backend_config: config.shell_command_backend,
+                        allow_login_shell: config.allow_login_shell,
+                        exec_permission_approvals_enabled,
+                    },
                 )));
             }
             ConfigShellToolType::Default
@@ -352,6 +361,9 @@ pub(crate) fn collect_tool_executors(
         let include_environment_id =
             matches!(config.environment_mode, ToolEnvironmentMode::Multiple);
         executors.push(Arc::new(ApplyPatchHandler::new(include_environment_id)));
+        executors.push(Arc::new(ClaudeTextEditorHandler::new(
+            include_environment_id,
+        )));
     }
 
     if config

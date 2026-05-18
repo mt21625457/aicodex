@@ -5,6 +5,7 @@ use codex_api::ClaudeCacheTtl;
 use codex_api::ClaudeContentBlock;
 use codex_api::ClaudeContextManagement;
 use codex_api::ClaudeImageSource;
+use codex_api::ClaudeMcpServer as ApiClaudeMcpServer;
 use codex_api::ClaudeMessage;
 use codex_api::ClaudeMessageRole;
 use codex_api::ClaudeMessagesApiRequest;
@@ -28,7 +29,11 @@ use codex_protocol::models::LocalShellAction;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
+use codex_tools::ClaudeLocalExecutorCapability;
 use codex_tools::ClaudeMessagesToolOptions;
+use codex_tools::ClaudeNativeToolKind;
+use codex_tools::ClaudeNativeToolSelection;
+use codex_tools::ClaudeProviderPlatform;
 use codex_tools::ClaudeToolCallKind;
 use codex_tools::ClaudeWebSearchToolKind;
 use codex_tools::claude_tool_name;
@@ -138,11 +143,19 @@ pub(crate) fn build_claude_messages_request(
                 ClaudeProviderCompat::Anthropic => ClaudeWebSearchToolKind::NativeServerTool,
                 ClaudeProviderCompat::DeepSeek => ClaudeWebSearchToolKind::LocalFunctionTool,
             },
+            native_tool_selection: native_tool_selection_for_prompt(
+                &prompt.tools,
+                model_info,
+                options.provider_compat,
+            ),
         },
     )?;
     let codex_tools::ClaudeToolsJson {
         tools,
         tool_call_info: tool_call_metadata,
+        mcp_servers,
+        beta_headers,
+        ..
     } = tools_json;
     let mut tools = tools
         .into_iter()
@@ -399,6 +412,7 @@ pub(crate) fn build_claude_messages_request(
         messages,
         system: system_prompt(system, options.prompt_cache),
         tools,
+        mcp_servers: mcp_servers.into_iter().map(api_claude_mcp_server).collect(),
         tool_choice,
         thinking,
         output_config,
@@ -406,7 +420,62 @@ pub(crate) fn build_claude_messages_request(
         context_management: options.context_management,
         stream: true,
         tool_call_info,
+        beta_headers: beta_headers
+            .into_iter()
+            .map(|feature| feature.header_value().to_string())
+            .collect(),
     })
+}
+
+fn native_tool_selection_for_prompt(
+    tools: &[codex_tools::ToolSpec],
+    model_info: &ModelInfo,
+    provider_compat: ClaudeProviderCompat,
+) -> ClaudeNativeToolSelection {
+    let provider_platform = match provider_compat {
+        ClaudeProviderCompat::Anthropic => ClaudeProviderPlatform::AnthropicApi,
+        ClaudeProviderCompat::DeepSeek => ClaudeProviderPlatform::DeepSeekCompatible,
+    };
+    let mut selection = ClaudeNativeToolSelection {
+        provider_platform,
+        model: Some(model_info.slug.clone()),
+        ..ClaudeNativeToolSelection::default()
+    };
+
+    if provider_compat == ClaudeProviderCompat::Anthropic && has_tool_spec(tools, "apply_patch") {
+        selection.allowed_tools.extend([
+            ClaudeNativeToolKind::TextEditor20250728,
+            ClaudeNativeToolKind::TextEditor20250124,
+        ]);
+        selection.text_editor_executor = ClaudeLocalExecutorCapability::Available;
+    }
+
+    selection
+}
+
+fn has_tool_spec(tools: &[codex_tools::ToolSpec], name: &str) -> bool {
+    tools.iter().any(|tool| match tool {
+        codex_tools::ToolSpec::Function(tool) => tool.name == name,
+        codex_tools::ToolSpec::Freeform(tool) => tool.name == name,
+        codex_tools::ToolSpec::ToolSearch { .. } => name == "tool_search",
+        codex_tools::ToolSpec::WebSearch { .. } | codex_tools::ToolSpec::ImageGeneration { .. } => {
+            false
+        }
+        codex_tools::ToolSpec::Namespace(namespace) => {
+            namespace.tools.iter().any(|tool| match tool {
+                codex_tools::ResponsesApiNamespaceTool::Function(tool) => tool.name == name,
+            })
+        }
+    })
+}
+
+fn api_claude_mcp_server(server: codex_tools::ClaudeMcpServer) -> ApiClaudeMcpServer {
+    ApiClaudeMcpServer {
+        kind: "url".to_string(),
+        name: server.name,
+        url: server.url,
+        authorization_token: server.authorization_token,
+    }
 }
 
 fn apply_prompt_cache_policy(
@@ -656,7 +725,9 @@ fn content_text(content: &[ContentItem]) -> String {
     content
         .iter()
         .map(|item| match item {
-            ContentItem::InputText { text } | ContentItem::OutputText { text } => text.clone(),
+            ContentItem::InputText { text }
+            | ContentItem::OutputText { text }
+            | ContentItem::OutputTextWithCitations { text, .. } => text.clone(),
             ContentItem::InputImage { image_url, .. }
                 if parse_base64_data_url(image_url).is_some() =>
             {
@@ -672,13 +743,17 @@ fn content_blocks(content: &[ContentItem]) -> Vec<ClaudeContentBlock> {
     content
         .iter()
         .filter_map(|item| match item {
-            ContentItem::InputText { text } | ContentItem::OutputText { text }
+            ContentItem::InputText { text }
+            | ContentItem::OutputText { text }
+            | ContentItem::OutputTextWithCitations { text, .. }
                 if !text.is_empty() =>
             {
                 Some(text_block(text))
             }
             ContentItem::InputImage { image_url, .. } => Some(image_content_block(image_url)),
-            ContentItem::InputText { .. } | ContentItem::OutputText { .. } => None,
+            ContentItem::InputText { .. }
+            | ContentItem::OutputText { .. }
+            | ContentItem::OutputTextWithCitations { .. } => None,
         })
         .collect()
 }

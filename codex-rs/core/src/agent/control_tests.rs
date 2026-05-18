@@ -131,7 +131,9 @@ fn has_subagent_notification(history_items: &[ResponseItem]) -> bool {
             return false;
         }
         content.iter().any(|content_item| match content_item {
-            ContentItem::InputText { text } | ContentItem::OutputText { text } => {
+            ContentItem::InputText { text }
+            | ContentItem::OutputText { text }
+            | ContentItem::OutputTextWithCitations { text, .. } => {
                 SubagentNotification::matches_text(text)
             }
             ContentItem::InputImage { .. } => false,
@@ -146,9 +148,9 @@ fn history_contains_text(history_items: &[ResponseItem], needle: &str) -> bool {
             return false;
         };
         content.iter().any(|content_item| match content_item {
-            ContentItem::InputText { text } | ContentItem::OutputText { text } => {
-                text.contains(needle)
-            }
+            ContentItem::InputText { text }
+            | ContentItem::OutputText { text }
+            | ContentItem::OutputTextWithCitations { text, .. } => text.contains(needle),
             ContentItem::InputImage { .. } => false,
         })
     })
@@ -166,7 +168,8 @@ fn history_contains_assistant_inter_agent_communication(
             return false;
         }
         content.iter().any(|content_item| match content_item {
-            ContentItem::OutputText { text } => {
+            ContentItem::OutputText { text }
+            | ContentItem::OutputTextWithCitations { text, .. } => {
                 serde_json::from_str::<InterAgentCommunication>(text)
                     .ok()
                     .as_ref()
