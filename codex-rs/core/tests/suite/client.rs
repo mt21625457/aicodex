@@ -40,6 +40,7 @@ use codex_protocol::models::ReasoningItemReasoningSummary;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::models::WebSearchAction;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::ContextTokenUsageSource;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RolloutItem;
@@ -2543,7 +2544,7 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn token_count_includes_rate_limits_snapshot() {
+async fn token_count_includes_rate_limits_snapshot_and_responses_context_estimate() {
     skip_if_no_network!();
     let server = MockServer::start().await;
 
@@ -2607,32 +2608,10 @@ async fn token_count_includes_rate_limits_snapshot() {
         EventMsg::TokenCount(ev) => ev,
         _ => unreachable!(),
     };
-    // Assert full JSON for the final token count event (usage + rate limits)
-    let final_json = serde_json::to_value(&final_payload).unwrap();
+    let rate_limits_json = serde_json::to_value(&final_payload.rate_limits).unwrap();
     pretty_assertions::assert_eq!(
-        final_json,
+        rate_limits_json,
         json!({
-            "info": {
-                "total_token_usage": {
-                    "input_tokens": 123,
-                    "cached_input_tokens": 0,
-                    "output_tokens": 0,
-                    "reasoning_output_tokens": 0,
-                    "total_tokens": 123
-                },
-                "last_token_usage": {
-                    "input_tokens": 123,
-                    "cached_input_tokens": 0,
-                    "output_tokens": 0,
-                    "reasoning_output_tokens": 0,
-                    "total_tokens": 123
-                },
-                "context_tokens": null,
-                "context_source": null,
-                // Default model is gpt-5.4 in tests → 95% usable context window
-                "model_context_window": 258400
-            },
-            "rate_limits": {
                 "limit_id": "codex",
                 "limit_name": null,
                 "primary": {
@@ -2648,13 +2627,25 @@ async fn token_count_includes_rate_limits_snapshot() {
                 "credits": null,
                 "plan_type": null,
                 "rate_limit_reached_type": null
-            }
         })
     );
     let usage = final_payload
         .info
         .expect("token usage info should be recorded after completion");
     assert_eq!(usage.total_token_usage.total_tokens, 123);
+    assert_eq!(usage.model_context_window, Some(258400));
+    assert_eq!(
+        usage.context_source,
+        Some(ContextTokenUsageSource::LocalEstimate)
+    );
+    let context_tokens = usage
+        .context_tokens
+        .expect("Responses token usage should include model-visible context estimate");
+    assert!(
+        context_tokens >= 123,
+        "context estimate should include at least the provider usage, got {context_tokens}"
+    );
+    assert_eq!(usage.last_token_usage.total_tokens, context_tokens);
     let final_snapshot = final_payload
         .rate_limits
         .expect("latest rate limit snapshot should be retained");
