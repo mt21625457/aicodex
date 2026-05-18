@@ -60,6 +60,7 @@ impl ModelProvider for AmazonBedrockModelProvider {
             namespace_tools: false,
             image_generation: false,
             web_search: false,
+            default_apply_patch_tool_type: None,
         }
     }
 
@@ -142,6 +143,7 @@ mod tests {
                 namespace_tools: false,
                 image_generation: false,
                 web_search: false,
+                default_apply_patch_tool_type: None,
             }
         );
     }

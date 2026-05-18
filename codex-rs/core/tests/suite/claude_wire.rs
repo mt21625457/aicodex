@@ -868,6 +868,62 @@ async fn claude_wire_apply_patch_wrapper_streams_raw_patch_update() -> anyhow::R
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deepseek_claude_wire_exposes_apply_patch_for_fallback_model() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let responses = mount_claude_sse_sequence(
+        &server,
+        vec![
+            claude_custom_tool_use_sse(
+                "toolu_deepseek_patch",
+                "apply_patch",
+                json!({
+                    "input": "*** Begin Patch\n*** Add File: deepseek_patch.txt\n+hello from deepseek\n*** End Patch"
+                }),
+            ),
+            claude_text_sse("msg_2", "done"),
+        ],
+    )
+    .await;
+
+    let test = test_codex()
+        .with_config(configure_deepseek_claude_provider_with_fallback_model)
+        .build(&server)
+        .await?;
+
+    test.submit_turn("edit a file through DeepSeek Claude")
+        .await?;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 2);
+
+    let first = requests[0].body_json();
+    assert_eq!(first["model"].as_str(), Some("deepseek-v4-pro"));
+    let first_tool_names = tool_names(&first);
+    assert!(
+        first_tool_names.iter().any(|name| name == "apply_patch"),
+        "DeepSeek Claude request should advertise apply_patch for fallback model metadata: {first_tool_names:?}"
+    );
+    let apply_patch_tool = first["tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .find(|tool| tool.get("name").and_then(Value::as_str) == Some("apply_patch"))
+        .unwrap_or_else(|| panic!("DeepSeek Claude request should include apply_patch: {first}"));
+    assert_eq!(
+        apply_patch_tool["input_schema"]["required"],
+        json!(["input"])
+    );
+
+    let second = requests[1].body_json();
+    let tool_result = tool_result_block(&second, "toolu_deepseek_patch");
+    assert_ne!(tool_result["is_error"].as_bool(), Some(true));
+    let written = std::fs::read_to_string(test.config.cwd.join("deepseek_patch.txt"))?;
+    assert_eq!(written, "hello from deepseek\n");
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn claude_wire_exec_command_uses_existing_approval_flow() -> anyhow::Result<()> {
     let server = start_mock_server().await;
     let responses = mount_claude_sse_sequence(
@@ -1184,6 +1240,11 @@ fn configure_claude_provider(config: &mut Config) {
 fn configure_deepseek_claude_provider(config: &mut Config) {
     configure_claude_provider(config);
     config.model_provider.name = "DeepSeek".to_string();
+}
+
+fn configure_deepseek_claude_provider_with_fallback_model(config: &mut Config) {
+    configure_deepseek_claude_provider(config);
+    config.model = Some("deepseek-v4-pro".to_string());
 }
 
 fn configure_claude_provider_with_apply_patch(config: &mut Config) {

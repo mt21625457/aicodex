@@ -284,6 +284,16 @@ impl ToolsConfig {
         self
     }
 
+    pub fn with_default_apply_patch_tool_type(
+        mut self,
+        default_apply_patch_tool_type: Option<ApplyPatchToolType>,
+    ) -> Self {
+        if self.apply_patch_tool_type.is_none() {
+            self.apply_patch_tool_type = default_apply_patch_tool_type;
+        }
+        self
+    }
+
     pub fn with_image_generation_capability(mut self, image_generation: bool) -> Self {
         if !image_generation {
             self.image_gen_tool = false;

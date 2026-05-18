@@ -211,6 +211,7 @@ impl TurnContext {
             windows_sandbox_level: self.windows_sandbox_level,
         })
         .with_namespace_tools_capability(provider_capabilities.namespace_tools)
+        .with_default_apply_patch_tool_type(provider_capabilities.default_apply_patch_tool_type)
         .with_image_generation_capability(provider_capabilities.image_generation)
         .with_web_search_capability(provider_capabilities.web_search)
         .with_unified_exec_shell_mode(self.tools_config.unified_exec_shell_mode.clone())
@@ -518,6 +519,7 @@ impl Session {
             windows_sandbox_level: session_configuration.windows_sandbox_level,
         })
         .with_namespace_tools_capability(provider_capabilities.namespace_tools)
+        .with_default_apply_patch_tool_type(provider_capabilities.default_apply_patch_tool_type)
         .with_image_generation_capability(provider_capabilities.image_generation)
         .with_web_search_capability(provider_capabilities.web_search)
         .with_unified_exec_shell_mode_for_session(

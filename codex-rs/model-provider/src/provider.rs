@@ -12,6 +12,7 @@ use codex_models_manager::manager::OpenAiModelsManager;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_models_manager::manager::StaticModelsManager;
 use codex_protocol::account::ProviderAccount;
+use codex_protocol::openai_models::ApplyPatchToolType;
 use codex_protocol::openai_models::ModelsResponse;
 
 use crate::amazon_bedrock::AmazonBedrockModelProvider;
@@ -24,11 +25,12 @@ use crate::models_endpoint::OpenAiModelsEndpoint;
 /// These capabilities are a provider-owned upper bound. Callers can disable
 /// more functionality through normal config, but should not expose a feature
 /// that the active provider marks unsupported here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderCapabilities {
     pub namespace_tools: bool,
     pub image_generation: bool,
     pub web_search: bool,
+    pub default_apply_patch_tool_type: Option<ApplyPatchToolType>,
 }
 
 impl Default for ProviderCapabilities {
@@ -37,6 +39,7 @@ impl Default for ProviderCapabilities {
             namespace_tools: true,
             image_generation: true,
             web_search: true,
+            default_apply_patch_tool_type: None,
         }
     }
 }
@@ -186,6 +189,7 @@ impl ModelProvider for ConfiguredModelProvider {
                 namespace_tools: true,
                 image_generation: false,
                 web_search: true,
+                default_apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
             }
         } else {
             ProviderCapabilities::default()
@@ -390,6 +394,7 @@ mod tests {
                 namespace_tools: true,
                 image_generation: false,
                 web_search: true,
+                default_apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
             }
         );
     }
