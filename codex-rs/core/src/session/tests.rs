@@ -36,6 +36,7 @@ use codex_protocol::account::PlanType as AccountPlanType;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::TrustLevel;
 use codex_protocol::exec_output::ExecToolCallOutput;
+use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 use codex_protocol::models::FileSystemPermissions;
 use codex_protocol::models::FunctionCallOutputBody;
@@ -170,10 +171,6 @@ use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
 mod guardian_tests;
-
-fn permission_profile_for_sandbox_policy(sandbox_policy: &SandboxPolicy) -> PermissionProfile {
-    PermissionProfile::from_legacy_sandbox_policy(sandbox_policy)
-}
 
 struct InstructionsTestCase {
     slug: &'static str,
@@ -669,10 +666,11 @@ fn validated_network_policy_amendment_host_rejects_mismatch() {
 
 #[tokio::test]
 async fn start_managed_network_proxy_applies_execpolicy_network_rules() -> anyhow::Result<()> {
+    let permission_profile = PermissionProfile::workspace_write();
     let spec = crate::config::NetworkProxySpec::from_config_and_constraints(
         NetworkProxyConfig::default(),
         /*requirements*/ None,
-        &permission_profile_for_sandbox_policy(&SandboxPolicy::new_workspace_write_policy()),
+        &permission_profile,
     )?;
     let mut exec_policy = Policy::empty();
     exec_policy.add_network_rule(
@@ -685,7 +683,7 @@ async fn start_managed_network_proxy_applies_execpolicy_network_rules() -> anyho
     let (started_proxy, _) = Session::start_managed_network_proxy(
         &spec,
         &exec_policy,
-        &permission_profile_for_sandbox_policy(&SandboxPolicy::new_workspace_write_policy()),
+        &permission_profile,
         /*network_policy_decider*/ None,
         /*blocked_request_observer*/ None,
         /*managed_network_requirements_enabled*/ false,
@@ -704,6 +702,7 @@ async fn start_managed_network_proxy_applies_execpolicy_network_rules() -> anyho
 #[tokio::test]
 async fn start_managed_network_proxy_ignores_invalid_execpolicy_network_rules() -> anyhow::Result<()>
 {
+    let permission_profile = PermissionProfile::workspace_write();
     let spec = crate::config::NetworkProxySpec::from_config_and_constraints(
         NetworkProxyConfig::default(),
         Some(NetworkConstraints {
@@ -716,7 +715,7 @@ async fn start_managed_network_proxy_ignores_invalid_execpolicy_network_rules() 
             managed_allowed_domains_only: Some(true),
             ..Default::default()
         }),
-        &permission_profile_for_sandbox_policy(&SandboxPolicy::new_workspace_write_policy()),
+        &permission_profile,
     )?;
     let mut exec_policy = Policy::empty();
     exec_policy.add_network_rule(
@@ -729,7 +728,7 @@ async fn start_managed_network_proxy_ignores_invalid_execpolicy_network_rules() 
     let (started_proxy, _) = Session::start_managed_network_proxy(
         &spec,
         &exec_policy,
-        &permission_profile_for_sandbox_policy(&SandboxPolicy::new_workspace_write_policy()),
+        &permission_profile,
         /*network_policy_decider*/ None,
         /*blocked_request_observer*/ None,
         /*managed_network_requirements_enabled*/ false,
@@ -747,13 +746,14 @@ async fn start_managed_network_proxy_ignores_invalid_execpolicy_network_rules() 
 
 #[tokio::test]
 async fn managed_network_proxy_decider_survives_full_access_start() -> anyhow::Result<()> {
+    let full_access_permission_profile = PermissionProfile::Disabled;
     let spec = crate::config::NetworkProxySpec::from_config_and_constraints(
         NetworkProxyConfig::default(),
         Some(NetworkConstraints {
             enabled: Some(true),
             ..Default::default()
         }),
-        &permission_profile_for_sandbox_policy(&SandboxPolicy::DangerFullAccess),
+        &full_access_permission_profile,
     )?;
     let exec_policy = Policy::empty();
     let decider_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -768,7 +768,7 @@ async fn managed_network_proxy_decider_survives_full_access_start() -> anyhow::R
     let (started_proxy, _) = Session::start_managed_network_proxy(
         &spec,
         &exec_policy,
-        &permission_profile_for_sandbox_policy(&SandboxPolicy::DangerFullAccess),
+        &full_access_permission_profile,
         Some(network_policy_decider),
         /*blocked_request_observer*/ None,
         /*managed_network_requirements_enabled*/ true,
@@ -776,9 +776,7 @@ async fn managed_network_proxy_decider_survives_full_access_start() -> anyhow::R
     )
     .await?;
 
-    let spec = spec.recompute_for_permission_profile(&permission_profile_for_sandbox_policy(
-        &SandboxPolicy::new_workspace_write_policy(),
-    ))?;
+    let spec = spec.recompute_for_permission_profile(&PermissionProfile::workspace_write())?;
     spec.apply_to_started_proxy(&started_proxy).await?;
     let current_cfg = started_proxy.proxy().current_cfg().await?;
     assert_eq!(current_cfg.network.allowed_domains(), None);
@@ -817,7 +815,7 @@ async fn managed_network_proxy_decider_survives_full_access_start() -> anyhow::R
 #[tokio::test]
 async fn new_turn_refreshes_managed_network_proxy_for_sandbox_change() -> anyhow::Result<()> {
     let (mut session, _turn_context) = make_session_and_context().await;
-    let initial_policy = SandboxPolicy::new_workspace_write_policy();
+    let initial_permission_profile = PermissionProfile::workspace_write();
 
     let mut network_config = NetworkProxyConfig::default();
     network_config
@@ -835,12 +833,12 @@ async fn new_turn_refreshes_managed_network_proxy_for_sandbox_change() -> anyhow
     let spec = crate::config::NetworkProxySpec::from_config_and_constraints(
         network_config,
         Some(requirements),
-        &permission_profile_for_sandbox_policy(&initial_policy),
+        &initial_permission_profile,
     )?;
     let (started_proxy, _) = Session::start_managed_network_proxy(
         &spec,
         &Policy::empty(),
-        &permission_profile_for_sandbox_policy(&initial_policy),
+        &initial_permission_profile,
         /*network_policy_decider*/ None,
         /*blocked_request_observer*/ None,
         /*managed_network_requirements_enabled*/ false,
@@ -861,17 +859,14 @@ async fn new_turn_refreshes_managed_network_proxy_for_sandbox_change() -> anyhow
         let mut state = session.state.lock().await;
         let mut config = (*state.session_configuration.original_config_do_not_use).clone();
         config.permissions.network = Some(spec);
-        let cwd = config.cwd.clone();
         config
             .permissions
-            .set_legacy_sandbox_policy(initial_policy.clone(), cwd.as_path())
-            .expect("test setup should allow sandbox policy");
+            .set_permission_profile(initial_permission_profile.clone())
+            .expect("test setup should allow permission profile");
         state.session_configuration.original_config_do_not_use = Arc::new(config);
         state
             .session_configuration
-            .set_permission_profile_for_tests(PermissionProfile::from_legacy_sandbox_policy(
-                &initial_policy,
-            ))
+            .set_permission_profile_for_tests(initial_permission_profile)
             .expect("test setup should allow permission profile");
     }
     session.services.network_proxy = Some(started_proxy);
@@ -912,15 +907,14 @@ async fn danger_full_access_turns_do_not_expose_managed_network_proxy() -> anyho
             enabled: Some(true),
             ..Default::default()
         }),
-        &permission_profile_for_sandbox_policy(&SandboxPolicy::DangerFullAccess),
+        &PermissionProfile::Disabled,
     )?;
 
     let session = make_session_with_config(move |config| {
-        let cwd = config.cwd.clone();
         config
             .permissions
-            .set_legacy_sandbox_policy(SandboxPolicy::DangerFullAccess, cwd.as_path())
-            .expect("test setup should allow sandbox policy");
+            .set_permission_profile(PermissionProfile::Disabled)
+            .expect("test setup should allow permission profile");
         config.permissions.network = Some(network_spec);
     })
     .await?;
@@ -978,15 +972,14 @@ async fn danger_full_access_tool_attempts_do_not_enforce_managed_network() -> an
             enabled: Some(true),
             ..Default::default()
         }),
-        &permission_profile_for_sandbox_policy(&SandboxPolicy::DangerFullAccess),
+        &PermissionProfile::Disabled,
     )?;
 
     let session = make_session_with_config(move |config| {
-        let cwd = config.cwd.clone();
         config
             .permissions
-            .set_legacy_sandbox_policy(SandboxPolicy::DangerFullAccess, cwd.as_path())
-            .expect("test setup should allow sandbox policy");
+            .set_permission_profile(PermissionProfile::Disabled)
+            .expect("test setup should allow permission profile");
         config.permissions.network = Some(network_spec);
 
         let layers = config
@@ -1046,22 +1039,21 @@ async fn danger_full_access_tool_attempts_do_not_enforce_managed_network() -> an
 
 #[tokio::test]
 async fn workspace_write_turns_continue_to_expose_managed_network_proxy() -> anyhow::Result<()> {
-    let sandbox_policy = SandboxPolicy::new_workspace_write_policy();
+    let permission_profile = PermissionProfile::workspace_write();
     let network_spec = crate::config::NetworkProxySpec::from_config_and_constraints(
         NetworkProxyConfig::default(),
         Some(NetworkConstraints {
             enabled: Some(true),
             ..Default::default()
         }),
-        &permission_profile_for_sandbox_policy(&sandbox_policy),
+        &permission_profile,
     )?;
 
     let session = make_session_with_config(move |config| {
-        let cwd = config.cwd.clone();
         config
             .permissions
-            .set_legacy_sandbox_policy(sandbox_policy, cwd.as_path())
-            .expect("test setup should allow sandbox policy");
+            .set_permission_profile(permission_profile)
+            .expect("test setup should allow permission profile");
         config.permissions.network = Some(network_spec);
     })
     .await?;
@@ -1073,22 +1065,21 @@ async fn workspace_write_turns_continue_to_expose_managed_network_proxy() -> any
 
 #[tokio::test]
 async fn user_shell_commands_do_not_inherit_managed_network_proxy() -> anyhow::Result<()> {
-    let sandbox_policy = SandboxPolicy::new_workspace_write_policy();
+    let permission_profile = PermissionProfile::workspace_write();
     let network_spec = crate::config::NetworkProxySpec::from_config_and_constraints(
         NetworkProxyConfig::default(),
         Some(NetworkConstraints {
             enabled: Some(true),
             ..Default::default()
         }),
-        &permission_profile_for_sandbox_policy(&sandbox_policy),
+        &permission_profile,
     )?;
 
     let (session, rx) = make_session_with_config_and_rx(move |config| {
-        let cwd = config.cwd.clone();
         config
             .permissions
-            .set_legacy_sandbox_policy(sandbox_policy, cwd.as_path())
-            .expect("test setup should allow sandbox policy");
+            .set_permission_profile(permission_profile)
+            .expect("test setup should allow permission profile");
         config.permissions.network = Some(network_spec);
     })
     .await?;
@@ -1883,8 +1874,9 @@ async fn record_token_usage_info_notifies_extension_contributors() {
         records: Arc<std::sync::Mutex<Vec<RecordedTokenUsage>>>,
     }
 
+    #[async_trait::async_trait]
     impl codex_extension_api::TokenUsageContributor for TokenUsageRecorder {
-        fn on_token_usage(
+        async fn on_token_usage(
             &self,
             session_store: &codex_extension_api::ExtensionData,
             thread_store: &codex_extension_api::ExtensionData,
@@ -2126,13 +2118,14 @@ async fn session_configured_reports_permission_profile_for_external_sandbox() ->
     let sandbox_policy = SandboxPolicy::ExternalSandbox {
         network_access: codex_protocol::protocol::NetworkAccess::Restricted,
     };
-    let expected_sandbox_policy = sandbox_policy.clone();
+    let permission_profile = PermissionProfile::External {
+        network: NetworkSandboxPolicy::Restricted,
+    };
+    let expected_permission_profile = permission_profile.clone();
     let mut builder = test_codex().with_config(move |config| {
         config
             .permissions
-            .set_permission_profile(PermissionProfile::from_legacy_sandbox_policy(
-                &sandbox_policy,
-            ))
+            .set_permission_profile(permission_profile.clone())
             .expect("set permission profile");
         config
             .set_legacy_sandbox_policy(sandbox_policy)
@@ -2141,10 +2134,6 @@ async fn session_configured_reports_permission_profile_for_external_sandbox() ->
 
     let test = builder.build(&server).await?;
 
-    let expected_permission_profile =
-        codex_protocol::models::PermissionProfile::from_legacy_sandbox_policy(
-            &expected_sandbox_policy,
-        );
     assert_eq!(
         test.session_configured.permission_profile, expected_permission_profile,
         "ExternalSandbox is represented explicitly instead of as a lossy root-write profile"
@@ -2153,29 +2142,47 @@ async fn session_configured_reports_permission_profile_for_external_sandbox() ->
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn session_permission_profile_materializes_runtime_workspace_roots() -> anyhow::Result<()> {
+async fn session_permission_profile_rebinds_runtime_workspace_roots() -> anyhow::Result<()> {
     let codex_home = tempfile::TempDir::new()?;
     let cwd = tempfile::TempDir::new()?;
-    let extra_root = tempfile::TempDir::new()?;
+    let old_root = test_path_buf("/workspace/old").abs();
+    let new_root = test_path_buf("/workspace/new").abs();
     let config = ConfigBuilder::default()
         .codex_home(codex_home.path().to_path_buf())
         .harness_overrides(crate::config::ConfigOverrides {
             cwd: Some(cwd.path().to_path_buf()),
             default_permissions: Some(BUILT_IN_PERMISSION_PROFILE_WORKSPACE.to_string()),
-            additional_writable_roots: vec![extra_root.path().to_path_buf()],
+            additional_writable_roots: vec![old_root.to_path_buf()],
             ..Default::default()
         })
         .build()
         .await?;
+
     let session_permission_profile_state = session_permission_profile_state_from_config(&config)?;
-    let file_system_policy = session_permission_profile_state
+    let stored_file_system_policy = session_permission_profile_state
         .permission_profile()
         .file_system_sandbox_policy();
-
     assert!(
-        file_system_policy.can_write_path_with_cwd(extra_root.path(), config.cwd.as_path()),
-        "session permission profile should carry materialized runtime workspace roots"
+        !stored_file_system_policy
+            .can_write_path_with_cwd(old_root.as_path(), config.cwd.as_path()),
+        "session permission profile state should keep runtime workspace roots symbolic"
     );
+
+    let mut session_configuration = make_session_configuration_for_tests().await;
+    session_configuration.cwd = config.cwd.clone();
+    session_configuration.workspace_roots = config.workspace_roots.clone();
+    session_configuration.permission_profile_state = session_permission_profile_state;
+
+    let initial_policy = session_configuration.file_system_sandbox_policy();
+    assert!(initial_policy.can_write_path_with_cwd(old_root.as_path(), config.cwd.as_path()));
+
+    let updated = session_configuration.apply(&SessionSettingsUpdate {
+        workspace_roots: Some(vec![new_root.clone()]),
+        ..Default::default()
+    })?;
+    let updated_policy = updated.file_system_sandbox_policy();
+    assert!(updated_policy.can_write_path_with_cwd(new_root.as_path(), updated.cwd.as_path()));
+    assert!(!updated_policy.can_write_path_with_cwd(old_root.as_path(), updated.cwd.as_path()));
     Ok(())
 }
 
@@ -2310,7 +2317,6 @@ async fn record_initial_history_forked_hydrates_previous_turn_settings() {
     let previous_model = "forked-rollout-model";
     let previous_context_item = TurnContextItem {
         turn_id: Some(turn_context.sub_id.clone()),
-        trace_id: turn_context.trace_id.clone(),
         #[allow(deprecated)]
         cwd: turn_context.cwd.to_path_buf(),
         current_date: turn_context.current_date.clone(),
@@ -2325,11 +2331,7 @@ async fn record_initial_history_forked_hydrates_previous_turn_settings() {
         collaboration_mode: Some(turn_context.collaboration_mode.clone()),
         realtime_active: Some(turn_context.realtime_active),
         effort: turn_context.reasoning_effort,
-        summary: turn_context.reasoning_summary,
-        user_instructions: None,
-        developer_instructions: None,
-        final_output_json_schema: None,
-        truncation_policy: Some(turn_context.truncation_policy),
+        summary: codex_protocol::config_types::ReasoningSummary::Auto,
     };
     let turn_id = previous_context_item
         .turn_id
@@ -2350,6 +2352,7 @@ async fn record_initial_history_forked_hydrates_previous_turn_settings() {
                 images: None,
                 local_images: Vec::new(),
                 text_elements: Vec::new(),
+                ..Default::default()
             },
         )),
         RolloutItem::TurnContext(previous_context_item.clone()),
@@ -2544,6 +2547,7 @@ async fn thread_rollback_recomputes_previous_turn_settings_and_reference_context
                 images: None,
                 local_images: Vec::new(),
                 text_elements: Vec::new(),
+                ..Default::default()
             },
         )),
         RolloutItem::TurnContext(first_context_item.clone()),
@@ -2570,6 +2574,7 @@ async fn thread_rollback_recomputes_previous_turn_settings_and_reference_context
                 images: None,
                 local_images: Vec::new(),
                 text_elements: Vec::new(),
+                ..Default::default()
             },
         )),
         RolloutItem::TurnContext(rolled_back_context_item),
@@ -2652,6 +2657,7 @@ async fn thread_rollback_restores_cleared_reference_context_item_after_compactio
             images: None,
             local_images: Vec::new(),
             text_elements: Vec::new(),
+            ..Default::default()
         })),
         RolloutItem::TurnContext(first_context_item.clone()),
         RolloutItem::ResponseItem(user_message("turn 1 user")),
@@ -2695,6 +2701,7 @@ async fn thread_rollback_restores_cleared_reference_context_item_after_compactio
             images: None,
             local_images: Vec::new(),
             text_elements: Vec::new(),
+            ..Default::default()
         })),
         RolloutItem::TurnContext(TurnContextItem {
             turn_id: Some(rolled_back_turn_id.clone()),
@@ -2749,6 +2756,7 @@ async fn thread_rollback_persists_marker_and_replays_cumulatively() {
             images: None,
             local_images: Vec::new(),
             text_elements: Vec::new(),
+            ..Default::default()
         })),
         RolloutItem::TurnContext(turn_context_item.clone()),
         RolloutItem::ResponseItem(user_message("turn 1 user")),
@@ -2773,6 +2781,7 @@ async fn thread_rollback_persists_marker_and_replays_cumulatively() {
             images: None,
             local_images: Vec::new(),
             text_elements: Vec::new(),
+            ..Default::default()
         })),
         RolloutItem::TurnContext(turn_context_item.clone()),
         RolloutItem::ResponseItem(user_message("turn 2 user")),
@@ -2797,6 +2806,7 @@ async fn thread_rollback_persists_marker_and_replays_cumulatively() {
             images: None,
             local_images: Vec::new(),
             text_elements: Vec::new(),
+            ..Default::default()
         })),
         RolloutItem::TurnContext(turn_context_item),
         RolloutItem::ResponseItem(user_message("turn 3 user")),
@@ -2917,6 +2927,7 @@ async fn set_rate_limits_retains_previous_credits() {
         permission_profile_state: config.permissions.permission_profile_state().clone(),
         windows_sandbox_level: WindowsSandboxLevel::from_config(&config),
         cwd: config.cwd.clone(),
+        workspace_roots: config.workspace_roots.clone(),
         codex_home: config.codex_home.clone(),
         thread_name: None,
         environments: Vec::new(),
@@ -3020,6 +3031,7 @@ async fn set_rate_limits_updates_plan_type_when_present() {
         permission_profile_state: config.permissions.permission_profile_state().clone(),
         windows_sandbox_level: WindowsSandboxLevel::from_config(&config),
         cwd: config.cwd.clone(),
+        workspace_roots: config.workspace_roots.clone(),
         codex_home: config.codex_home.clone(),
         thread_name: None,
         environments: Vec::new(),
@@ -3492,6 +3504,7 @@ pub(crate) async fn make_session_configuration_for_tests() -> SessionConfigurati
         permission_profile_state: config.permissions.permission_profile_state().clone(),
         windows_sandbox_level: WindowsSandboxLevel::from_config(&config),
         cwd: config.cwd.clone(),
+        workspace_roots: config.workspace_roots.clone(),
         codex_home: config.codex_home.clone(),
         thread_name: None,
         environments: Vec::new(),
@@ -3561,6 +3574,8 @@ async fn session_configuration_apply_preserves_profile_file_system_policy_on_cwd
             ),
         )
         .expect("set permission profile");
+    let expected_file_system_sandbox_policy = file_system_sandbox_policy
+        .materialize_project_roots_with_workspace_roots(&session_configuration.workspace_roots);
 
     let updated = session_configuration
         .apply(&SessionSettingsUpdate {
@@ -3571,7 +3586,7 @@ async fn session_configuration_apply_preserves_profile_file_system_policy_on_cwd
 
     assert_eq!(
         updated.file_system_sandbox_policy(),
-        file_system_sandbox_policy
+        expected_file_system_sandbox_policy
     );
 }
 
@@ -3620,7 +3635,8 @@ async fn session_configuration_apply_permission_profile_preserves_existing_deny_
         })
         .expect("permission profile update should succeed");
 
-    let mut expected_file_system_policy = requested_file_system_policy;
+    let mut expected_file_system_policy = requested_file_system_policy
+        .materialize_project_roots_with_workspace_roots(&session_configuration.workspace_roots);
     expected_file_system_policy.glob_scan_max_depth = Some(2);
     expected_file_system_policy.entries.push(deny_entry);
     assert_eq!(
@@ -3673,6 +3689,93 @@ async fn session_configuration_apply_permission_profile_accepts_direct_write_roo
             exclude_slash_tmp: true,
         }
     );
+}
+
+#[tokio::test]
+async fn session_configuration_apply_rebinds_symbolic_profile_to_updated_workspace_roots() {
+    let mut session_configuration = make_session_configuration_for_tests().await;
+    let old_root = tempfile::tempdir().expect("create old root");
+    let new_root = tempfile::tempdir().expect("create new root");
+    let profile_root = tempfile::tempdir().expect("create profile root");
+    let old_root = old_root.path().abs();
+    let new_root = new_root.path().abs();
+    let profile_root = profile_root.path().abs();
+    session_configuration.workspace_roots = vec![old_root.clone()];
+
+    let file_system_sandbox_policy =
+        FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
+            path: FileSystemPath::Special {
+                value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
+            },
+            access: FileSystemAccessMode::Write,
+        }]);
+    let permission_profile = PermissionProfile::from_runtime_permissions(
+        &file_system_sandbox_policy,
+        NetworkSandboxPolicy::Restricted,
+    );
+
+    let updated = session_configuration
+        .apply(&SessionSettingsUpdate {
+            workspace_roots: Some(vec![new_root.clone()]),
+            permission_profile: Some(permission_profile),
+            active_permission_profile: Some(ActivePermissionProfile::new("dev")),
+            profile_workspace_roots: Some(vec![profile_root.clone()]),
+            ..Default::default()
+        })
+        .expect("permission profile update should succeed");
+
+    let updated_policy = updated.file_system_sandbox_policy();
+    assert!(updated_policy.can_write_path_with_cwd(new_root.as_path(), updated.cwd.as_path()));
+    assert!(!updated_policy.can_write_path_with_cwd(old_root.as_path(), updated.cwd.as_path()));
+    assert_eq!(
+        updated.active_permission_profile(),
+        Some(ActivePermissionProfile::new("dev"))
+    );
+    assert_eq!(updated.profile_workspace_roots(), &[profile_root]);
+}
+
+#[tokio::test]
+async fn session_configuration_apply_retargets_implicit_workspace_root_on_cwd_update() {
+    let mut session_configuration = make_session_configuration_for_tests().await;
+    let old_root = tempfile::tempdir().expect("create old root");
+    let new_root = tempfile::tempdir().expect("create new root");
+    let extra_root = tempfile::tempdir().expect("create extra root");
+    let old_root = old_root.path().abs();
+    let new_root = new_root.path().abs();
+    let extra_root = extra_root.path().abs();
+    session_configuration.cwd = old_root.clone();
+    session_configuration.workspace_roots = vec![old_root.clone(), extra_root.clone()];
+
+    let file_system_sandbox_policy =
+        FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
+            path: FileSystemPath::Special {
+                value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
+            },
+            access: FileSystemAccessMode::Write,
+        }]);
+    let permission_profile = PermissionProfile::from_runtime_permissions(
+        &file_system_sandbox_policy,
+        NetworkSandboxPolicy::Restricted,
+    );
+    session_configuration
+        .set_permission_profile_for_tests(permission_profile)
+        .expect("set permission profile");
+
+    let updated = session_configuration
+        .apply(&SessionSettingsUpdate {
+            cwd: Some(new_root.to_path_buf()),
+            ..Default::default()
+        })
+        .expect("cwd-only update should succeed");
+
+    assert_eq!(
+        updated.workspace_roots,
+        vec![new_root.clone(), extra_root.clone()]
+    );
+    let updated_policy = updated.file_system_sandbox_policy();
+    assert!(updated_policy.can_write_path_with_cwd(new_root.as_path(), updated.cwd.as_path()));
+    assert!(updated_policy.can_write_path_with_cwd(extra_root.as_path(), updated.cwd.as_path()));
+    assert!(!updated_policy.can_write_path_with_cwd(old_root.as_path(), updated.cwd.as_path()));
 }
 
 #[cfg_attr(windows, ignore)]
@@ -3762,12 +3865,13 @@ enabled = false
 }
 
 #[tokio::test]
-async fn session_configuration_apply_rederives_legacy_file_system_policy_on_cwd_update() {
+async fn session_configuration_apply_retargets_legacy_workspace_root_on_cwd_update() {
     let mut session_configuration = make_session_configuration_for_tests().await;
     let workspace = tempfile::tempdir().expect("create temp dir");
-    let project_root = workspace.path().join("project");
-    let original_cwd = project_root.join("subdir");
-    session_configuration.cwd = original_cwd.abs();
+    let original_cwd = workspace.path().join("repo-a").abs();
+    let project_root = workspace.path().join("repo-b").abs();
+    session_configuration.cwd = original_cwd.clone();
+    session_configuration.workspace_roots = vec![session_configuration.cwd.clone()];
     let sandbox_policy = SandboxPolicy::WorkspaceWrite {
         writable_roots: Vec::new(),
         network_access: false,
@@ -3790,20 +3894,23 @@ async fn session_configuration_apply_rederives_legacy_file_system_policy_on_cwd_
 
     let updated = session_configuration
         .apply(&SessionSettingsUpdate {
-            cwd: Some(project_root.clone()),
+            cwd: Some(project_root.to_path_buf()),
             ..Default::default()
         })
         .expect("cwd-only update should succeed");
 
-    let expected_file_system_policy = FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd(
-        &updated.sandbox_policy(),
-        &project_root,
-    );
+    assert_eq!(updated.workspace_roots, vec![project_root.clone()]);
     assert!(
         updated
             .file_system_sandbox_policy()
-            .is_semantically_equivalent_to(&expected_file_system_policy, &project_root),
-        "cwd-only update should rederive the legacy filesystem policy for the new cwd"
+            .can_write_path_with_cwd(project_root.as_path(), updated.cwd.as_path()),
+        "cwd-only update should keep the new cwd writable"
+    );
+    assert!(
+        !updated
+            .file_system_sandbox_policy()
+            .can_write_path_with_cwd(original_cwd.as_path(), updated.cwd.as_path()),
+        "cwd-only update should not keep the old implicit cwd writable"
     );
 }
 
@@ -4032,6 +4139,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_zsh_path() {
         permission_profile_state: config.permissions.permission_profile_state().clone(),
         windows_sandbox_level: WindowsSandboxLevel::from_config(&config),
         cwd: config.cwd.clone(),
+        workspace_roots: config.workspace_roots.clone(),
         codex_home: config.codex_home.clone(),
         thread_name: None,
         environments: Vec::new(),
@@ -4140,6 +4248,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         permission_profile_state: config.permissions.permission_profile_state().clone(),
         windows_sandbox_level: WindowsSandboxLevel::from_config(&config),
         cwd: config.cwd.clone(),
+        workspace_roots: config.workspace_roots.clone(),
         codex_home: config.codex_home.clone(),
         thread_name: None,
         environments: default_environments,
@@ -4285,7 +4394,6 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         /*goal_tools_supported*/ true,
     );
 
-    let (mailbox, mailbox_rx) = crate::agent::Mailbox::new();
     let session = Session {
         conversation_id: thread_id,
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
@@ -4298,9 +4406,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         pending_mcp_server_refresh_config: Mutex::new(None),
         conversation: Arc::new(RealtimeConversationManager::new()),
         active_turn: Mutex::new(None),
-        mailbox,
-        mailbox_rx: Mutex::new(mailbox_rx),
-        idle_pending_input: Mutex::new(Vec::new()),
+        input_queue: super::input_queue::InputQueue::new(),
         goal_runtime: crate::goals::GoalRuntimeState::new(),
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
         services,
@@ -4373,6 +4479,7 @@ async fn make_session_with_config_and_rx(
         permission_profile_state: config.permissions.permission_profile_state().clone(),
         windows_sandbox_level: WindowsSandboxLevel::from_config(&config),
         cwd: config.cwd.clone(),
+        workspace_roots: config.workspace_roots.clone(),
         codex_home: config.codex_home.clone(),
         thread_name: None,
         environments: default_environments,
@@ -4475,6 +4582,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
         permission_profile_state: config.permissions.permission_profile_state().clone(),
         windows_sandbox_level: WindowsSandboxLevel::from_config(&config),
         cwd: config.cwd.clone(),
+        workspace_roots: config.workspace_roots.clone(),
         codex_home: config.codex_home.clone(),
         thread_name: None,
         environments: default_environments,
@@ -5009,7 +5117,7 @@ async fn new_default_turn_captures_current_span_trace_id() {
         &request_parent
     ));
 
-    let turn_context_item = async {
+    let turn_trace_id = async {
         let expected_trace_id = Span::current()
             .context()
             .span()
@@ -5017,15 +5125,14 @@ async fn new_default_turn_captures_current_span_trace_id() {
             .trace_id()
             .to_string();
         let turn_context = session.new_default_turn().await;
-        let turn_context_item = turn_context.to_turn_context_item();
-        assert_eq!(turn_context_item.trace_id, Some(expected_trace_id));
-        turn_context_item
+        assert_eq!(turn_context.trace_id, Some(expected_trace_id));
+        turn_context.trace_id.clone()
     }
     .instrument(request_span)
     .await;
 
     assert_eq!(
-        turn_context_item.trace_id.as_deref(),
+        turn_trace_id.as_deref(),
         Some("00000000000000000000000000000011")
     );
 }
@@ -5124,6 +5231,8 @@ fn op_kind_distinguishes_turn_ops() {
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
             cwd: None,
+            workspace_roots: None,
+            profile_workspace_roots: None,
             approval_policy: None,
             approvals_reviewer: None,
             sandbox_policy: None,
@@ -5566,8 +5675,9 @@ async fn submission_loop_channel_close_emits_thread_stop_lifecycle() {
         expected_thread_id: ThreadId,
     }
 
+    #[async_trait::async_trait]
     impl codex_extension_api::ThreadLifecycleContributor<crate::config::Config> for ThreadStopRecorder {
-        fn on_thread_stop(&self, input: codex_extension_api::ThreadStopInput<'_>) {
+        async fn on_thread_stop(&self, input: codex_extension_api::ThreadStopInput<'_>) {
             assert_eq!(
                 self.expected_thread_id.to_string(),
                 input.thread_store.level_id()
@@ -5611,8 +5721,9 @@ async fn submission_loop_channel_close_aborts_active_turn_before_thread_stop_lif
         expected_turn_id: String,
     }
 
+    #[async_trait::async_trait]
     impl codex_extension_api::ThreadLifecycleContributor<crate::config::Config> for LifecycleRecorder {
-        fn on_thread_stop(&self, input: codex_extension_api::ThreadStopInput<'_>) {
+        async fn on_thread_stop(&self, input: codex_extension_api::ThreadStopInput<'_>) {
             assert_eq!(
                 self.expected_thread_id.to_string(),
                 input.thread_store.level_id()
@@ -5624,8 +5735,9 @@ async fn submission_loop_channel_close_aborts_active_turn_before_thread_stop_lif
         }
     }
 
+    #[async_trait::async_trait]
     impl codex_extension_api::TurnLifecycleContributor for LifecycleRecorder {
-        fn on_turn_abort(&self, input: codex_extension_api::TurnAbortInput<'_>) {
+        async fn on_turn_abort(&self, input: codex_extension_api::TurnAbortInput<'_>) {
             assert_eq!(
                 self.expected_thread_id.to_string(),
                 input.thread_store.level_id()
@@ -5991,6 +6103,7 @@ where
         permission_profile_state: config.permissions.permission_profile_state().clone(),
         windows_sandbox_level: WindowsSandboxLevel::from_config(&config),
         cwd: config.cwd.clone(),
+        workspace_roots: config.workspace_roots.clone(),
         codex_home: config.codex_home.clone(),
         thread_name: None,
         environments: default_environments,
@@ -6136,7 +6249,6 @@ where
         /*goal_tools_supported*/ true,
     ));
 
-    let (mailbox, mailbox_rx) = crate::agent::Mailbox::new();
     let session = Arc::new(Session {
         conversation_id: thread_id,
         installation_id: "11111111-1111-4111-8111-111111111111".to_string(),
@@ -6149,9 +6261,7 @@ where
         pending_mcp_server_refresh_config: Mutex::new(None),
         conversation: Arc::new(RealtimeConversationManager::new()),
         active_turn: Mutex::new(None),
-        mailbox,
-        mailbox_rx: Mutex::new(mailbox_rx),
-        idle_pending_input: Mutex::new(Vec::new()),
+        input_queue: super::input_queue::InputQueue::new(),
         goal_runtime: crate::goals::GoalRuntimeState::new(),
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
         services,
@@ -7403,6 +7513,7 @@ async fn record_context_updates_and_set_reference_context_item_persists_full_rei
                 images: None,
                 local_images: Vec::new(),
                 text_elements: Vec::new(),
+                ..Default::default()
             },
         ))])
         .await;
@@ -7828,6 +7939,7 @@ async fn task_finish_emits_turn_item_lifecycle_for_leftover_pending_user_input()
             images,
             text_elements,
             local_images,
+            ..
         }) if message == "late pending input"
             && images == Some(Vec::new())
             && text_elements.is_empty()
@@ -7980,7 +8092,7 @@ async fn steer_input_returns_active_turn_id() {
         .expect("steering with matching expected turn id should succeed");
 
     assert_eq!(turn_id, tc.sub_id);
-    assert!(sess.has_pending_input().await);
+    assert!(sess.input_queue.has_pending_input(&sess.active_turn).await);
 }
 
 #[tokio::test]
@@ -8026,7 +8138,7 @@ async fn prepend_pending_input_keeps_older_tail_ahead_of_newer_input() {
         .await
         .expect("inject initial pending input into active turn");
 
-    let drained = sess.get_pending_input().await;
+    let drained = sess.input_queue.get_pending_input(&sess.active_turn).await;
     assert_eq!(drained, vec![blocked, later.clone()]);
 
     sess.inject_response_items(vec![newer.clone()])
@@ -8035,11 +8147,15 @@ async fn prepend_pending_input_keeps_older_tail_ahead_of_newer_input() {
 
     let mut drained_iter = drained.into_iter();
     let _blocked = drained_iter.next().expect("blocked prompt should exist");
-    sess.prepend_pending_input(drained_iter.collect())
+    sess.input_queue
+        .prepend_pending_input(&sess.active_turn, drained_iter.collect())
         .await
         .expect("requeue later pending input at the front of the queue");
 
-    assert_eq!(sess.get_pending_input().await, vec![later, newer]);
+    assert_eq!(
+        sess.input_queue.get_pending_input(&sess.active_turn).await,
+        vec![later, newer]
+    );
 }
 
 #[tokio::test]
@@ -8053,7 +8169,8 @@ async fn queued_response_items_for_next_turn_move_into_next_active_turn() {
         phase: None,
     };
 
-    sess.queue_response_items_for_next_turn(vec![queued_item.clone()])
+    sess.input_queue
+        .queue_response_items_for_next_turn(vec![queued_item.clone()])
         .await;
 
     sess.spawn_task(
@@ -8066,7 +8183,10 @@ async fn queued_response_items_for_next_turn_move_into_next_active_turn() {
     )
     .await;
 
-    assert_eq!(sess.get_pending_input().await, vec![queued_item]);
+    assert_eq!(
+        sess.input_queue.get_pending_input(&sess.active_turn).await,
+        vec![queued_item]
+    );
 }
 
 #[tokio::test]
@@ -8080,13 +8200,18 @@ async fn idle_interrupt_does_not_wake_queued_next_turn_items() {
         phase: None,
     };
 
-    sess.queue_response_items_for_next_turn(vec![queued_item])
+    sess.input_queue
+        .queue_response_items_for_next_turn(vec![queued_item])
         .await;
 
     sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
 
     assert!(sess.active_turn.lock().await.is_none());
-    assert!(sess.has_queued_response_items_for_next_turn().await);
+    assert!(
+        sess.input_queue
+            .has_queued_response_items_for_next_turn()
+            .await
+    );
 }
 
 #[tokio::test]
@@ -8104,22 +8229,23 @@ async fn abort_empty_active_turn_preserves_pending_input() {
         let active_turn = active.get_or_insert_with(ActiveTurn::default);
         Arc::clone(&active_turn.turn_state)
     };
-    turn_state
-        .lock()
-        .await
-        .push_pending_input(pending_item.clone());
+    sess.input_queue
+        .extend_pending_input_for_turn_state(turn_state.as_ref(), vec![pending_item.clone()])
+        .await;
 
     sess.abort_all_tasks(TurnAbortReason::Replaced).await;
 
     assert!(sess.active_turn.lock().await.is_none());
     assert_eq!(
-        turn_state.lock().await.take_pending_input(),
+        sess.input_queue
+            .take_pending_input_for_turn_state(turn_state.as_ref())
+            .await,
         vec![pending_item]
     );
 }
 
 #[tokio::test]
-async fn interrupt_accounts_active_goal_before_pausing() -> anyhow::Result<()> {
+async fn interrupt_accounts_active_goal_without_pausing() -> anyhow::Result<()> {
     let (sess, tc, _rx, _codex_home) = make_goal_session_and_context_with_rx().await;
     sess.set_thread_goal(
         tc.as_ref(),
@@ -8149,12 +8275,40 @@ async fn interrupt_accounts_active_goal_before_pausing() -> anyhow::Result<()> {
         .await?
         .expect("goal should remain persisted after interrupt");
     assert_eq!(
-        codex_protocol::protocol::ThreadGoalStatus::Paused,
+        codex_protocol::protocol::ThreadGoalStatus::Active,
         goal.status
     );
     assert_eq!(70, goal.tokens_used);
 
     assert!(sess.active_turn.lock().await.is_none());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn shutdown_without_active_turn_keeps_active_goal_active() -> anyhow::Result<()> {
+    let (sess, tc, _rx, _codex_home) = make_goal_session_and_context_with_rx().await;
+    sess.set_thread_goal(
+        tc.as_ref(),
+        SetGoalRequest {
+            objective: Some("Keep improving the benchmark".to_string()),
+            status: None,
+            token_budget: None,
+        },
+    )
+    .await?;
+
+    assert!(sess.active_turn.lock().await.is_none());
+    assert!(handlers::shutdown(&sess, "shutdown".to_string()).await);
+
+    let goal = sess
+        .get_thread_goal()
+        .await?
+        .expect("goal should remain persisted after shutdown");
+    assert_eq!(
+        codex_protocol::protocol::ThreadGoalStatus::Active,
+        goal.status
+    );
 
     Ok(())
 }
@@ -8447,7 +8601,7 @@ async fn budget_limited_accounting_steers_active_turn_without_aborting() -> anyh
     })
     .await?;
 
-    let pending_input = sess.get_pending_input().await;
+    let pending_input = sess.input_queue.get_pending_input(&sess.active_turn).await;
     let [ResponseInputItem::Message { role, content, .. }] = pending_input.as_slice() else {
         panic!("expected one budget-limit steering message, got {pending_input:#?}");
     };
@@ -8469,6 +8623,7 @@ async fn budget_limited_accounting_steers_active_turn_without_aborting() -> anyh
 
     let state_db = goal_test_state_db(sess.as_ref()).await?;
     let goal = state_db
+        .thread_goals()
         .get_thread_goal(sess.conversation_id)
         .await?
         .expect("goal should remain persisted after accounting");
@@ -8492,6 +8647,7 @@ async fn budget_limited_accounting_steers_active_turn_without_aborting() -> anyh
     .await?;
 
     let goal = state_db
+        .thread_goals()
         .get_thread_goal(sess.conversation_id)
         .await?
         .expect("goal should remain persisted after follow-up accounting");
@@ -8499,6 +8655,57 @@ async fn budget_limited_accounting_steers_active_turn_without_aborting() -> anyh
     assert_eq!(40, goal.tokens_used);
 
     sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn usage_limit_runtime_stops_active_goal_and_prevents_idle_continuation() -> anyhow::Result<()>
+{
+    let (sess, tc, _rx, _codex_home) = make_goal_session_and_context_with_rx().await;
+    sess.set_thread_goal(
+        tc.as_ref(),
+        SetGoalRequest {
+            objective: Some("Keep improving the benchmark".to_string()),
+            status: None,
+            token_budget: Some(Some(50)),
+        },
+    )
+    .await?;
+    sess.goal_runtime_apply(GoalRuntimeEvent::TurnStarted {
+        turn_context: tc.as_ref(),
+        token_usage: TokenUsage::default(),
+    })
+    .await?;
+    sess.spawn_task(
+        Arc::clone(&tc),
+        Vec::new(),
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: false,
+        },
+    )
+    .await;
+    set_total_token_usage(&sess, post_goal_token_usage()).await;
+
+    sess.goal_runtime_apply(GoalRuntimeEvent::UsageLimitReached {
+        turn_context: tc.as_ref(),
+    })
+    .await?;
+
+    let state_db = goal_test_state_db(sess.as_ref()).await?;
+    let goal = state_db
+        .thread_goals()
+        .get_thread_goal(sess.conversation_id)
+        .await?
+        .expect("goal should remain persisted after usage limiting");
+    assert_eq!(codex_state::ThreadGoalStatus::UsageLimited, goal.status);
+    assert_eq!(70, goal.tokens_used);
+
+    sess.abort_all_tasks(TurnAbortReason::Replaced).await;
+    sess.goal_runtime_apply(GoalRuntimeEvent::MaybeContinueIfIdle)
+        .await?;
+    assert!(sess.active_turn.lock().await.is_none());
 
     Ok(())
 }
@@ -8531,6 +8738,7 @@ async fn external_goal_mutation_accounts_active_turn_before_status_change() -> a
 
     let state_db = goal_test_state_db(sess.as_ref()).await?;
     let goal = state_db
+        .thread_goals()
         .get_thread_goal(sess.conversation_id)
         .await?
         .expect("goal should remain persisted");
@@ -8539,6 +8747,7 @@ async fn external_goal_mutation_accounts_active_turn_before_status_change() -> a
     let previous_goal = goal.clone();
     let goal_id = goal.goal_id.clone();
     let updated_goal = state_db
+        .thread_goals()
         .update_thread_goal(
             sess.conversation_id,
             codex_state::ThreadGoalUpdate {
@@ -8560,6 +8769,7 @@ async fn external_goal_mutation_accounts_active_turn_before_status_change() -> a
 
     assert!(sess.active_turn.lock().await.is_some());
     let goal = state_db
+        .thread_goals()
         .get_thread_goal(sess.conversation_id)
         .await?
         .expect("goal should remain persisted");
@@ -8586,6 +8796,7 @@ async fn external_objective_change_steers_active_turn() -> anyhow::Result<()> {
 
     let state_db = goal_test_state_db(sess.as_ref()).await?;
     let old_goal = state_db
+        .thread_goals()
         .replace_thread_goal(
             sess.conversation_id,
             "Keep improving the benchmark",
@@ -8594,6 +8805,7 @@ async fn external_objective_change_steers_active_turn() -> anyhow::Result<()> {
         )
         .await?;
     let new_goal = state_db
+        .thread_goals()
         .replace_thread_goal(
             sess.conversation_id,
             "Write a concise benchmark summary",
@@ -8610,7 +8822,7 @@ async fn external_objective_change_steers_active_turn() -> anyhow::Result<()> {
     })
     .await?;
 
-    let pending_input = sess.get_pending_input().await;
+    let pending_input = sess.input_queue.get_pending_input(&sess.active_turn).await;
     assert!(
         pending_input.iter().any(|item| {
             matches!(
@@ -8651,6 +8863,7 @@ async fn external_active_goal_set_marks_current_turn_for_accounting() -> anyhow:
 
     let state_db = goal_test_state_db(sess.as_ref()).await?;
     let goal = state_db
+        .thread_goals()
         .replace_thread_goal(
             sess.conversation_id,
             "Keep improving the benchmark",
@@ -8684,6 +8897,7 @@ async fn external_active_goal_set_marks_current_turn_for_accounting() -> anyhow:
     .await?;
 
     let goal = state_db
+        .thread_goals()
         .get_thread_goal(sess.conversation_id)
         .await?
         .expect("goal should remain persisted");
@@ -8765,7 +8979,7 @@ async fn completed_goal_accounts_current_turn_tokens_before_tool_response() -> a
     assert_eq!(complete_output["remainingTokens"], 0);
     assert_eq!(
         complete_output["completionBudgetReport"],
-        "Goal achieved. Report final budget usage to the user: tokens used: 580 of 500."
+        "Goal achieved. Report final usage from this tool result's structured goal fields. If `goal.tokenBudget` is present, include token usage from `goal.tokensUsed` and `goal.tokenBudget`. If `goal.timeUsedSeconds` is greater than 0, summarize elapsed time in a concise, human-friendly form appropriate to the response language."
     );
     let requests = responses.requests();
     let completion_followup_request = requests
@@ -8782,6 +8996,7 @@ async fn completed_goal_accounts_current_turn_tokens_before_tool_response() -> a
     )
     .await?;
     let persisted_goal = state_db
+        .thread_goals()
         .get_thread_goal(test.session_configured.thread_id)
         .await?
         .expect("goal should be persisted");
@@ -8814,19 +9029,26 @@ async fn queue_only_mailbox_mail_waits_for_next_turn_after_answer_boundary() {
     )
     .await;
 
-    sess.defer_mailbox_delivery_to_next_turn(&tc.sub_id).await;
-    sess.enqueue_mailbox_communication(communication.clone());
+    sess.input_queue
+        .defer_mailbox_delivery_to_next_turn(&sess.active_turn, &tc.sub_id)
+        .await;
+    sess.input_queue
+        .enqueue_mailbox_communication(communication.clone())
+        .await;
 
     assert!(
-        !sess.has_pending_input().await,
+        !sess.input_queue.has_pending_input(&sess.active_turn).await,
         "queue-only mailbox mail should stay buffered once the current turn emitted its answer"
     );
-    assert_eq!(sess.get_pending_input().await, Vec::new());
+    assert_eq!(
+        sess.input_queue.get_pending_input(&sess.active_turn).await,
+        Vec::new()
+    );
 
     sess.abort_all_tasks(TurnAbortReason::Replaced).await;
 
     assert_eq!(
-        sess.get_pending_input().await,
+        sess.input_queue.get_pending_input(&sess.active_turn).await,
         vec![communication.to_response_input_item()],
     );
 }
@@ -8844,23 +9066,27 @@ async fn trigger_turn_mailbox_mail_waits_for_next_turn_after_answer_boundary() {
     )
     .await;
 
-    sess.defer_mailbox_delivery_to_next_turn(&tc.sub_id).await;
-    sess.enqueue_mailbox_communication(InterAgentCommunication::new(
-        AgentPath::try_from("/root/worker").expect("worker path should parse"),
-        AgentPath::root(),
-        Vec::new(),
-        "late trigger update".to_string(),
-        /*trigger_turn*/ true,
-    ));
+    sess.input_queue
+        .defer_mailbox_delivery_to_next_turn(&sess.active_turn, &tc.sub_id)
+        .await;
+    sess.input_queue
+        .enqueue_mailbox_communication(InterAgentCommunication::new(
+            AgentPath::try_from("/root/worker").expect("worker path should parse"),
+            AgentPath::root(),
+            Vec::new(),
+            "late trigger update".to_string(),
+            /*trigger_turn*/ true,
+        ))
+        .await;
 
     assert!(
-        !sess.has_pending_input().await,
+        !sess.input_queue.has_pending_input(&sess.active_turn).await,
         "trigger-turn mailbox mail should not extend the current turn after its answer boundary"
     );
 
     sess.abort_all_tasks(TurnAbortReason::Replaced).await;
 
-    assert!(sess.has_trigger_turn_mailbox_items().await);
+    assert!(sess.input_queue.has_trigger_turn_mailbox_items().await);
 }
 
 #[tokio::test]
@@ -8883,8 +9109,12 @@ async fn steered_input_reopens_mailbox_delivery_for_current_turn() {
     )
     .await;
 
-    sess.defer_mailbox_delivery_to_next_turn(&tc.sub_id).await;
-    sess.enqueue_mailbox_communication(communication.clone());
+    sess.input_queue
+        .defer_mailbox_delivery_to_next_turn(&sess.active_turn, &tc.sub_id)
+        .await;
+    sess.input_queue
+        .enqueue_mailbox_communication(communication.clone())
+        .await;
     sess.steer_input(
         vec![UserInput::Text {
             text: "follow up".to_string(),
@@ -8897,7 +9127,7 @@ async fn steered_input_reopens_mailbox_delivery_for_current_turn() {
     .expect("steered input should be accepted");
 
     assert_eq!(
-        sess.get_pending_input().await,
+        sess.input_queue.get_pending_input(&sess.active_turn).await,
         vec![
             ResponseInputItem::from(vec![UserInput::Text {
                 text: "follow up".to_string(),
@@ -8928,8 +9158,12 @@ async fn stale_defer_mailbox_delivery_does_not_override_steered_input() {
     )
     .await;
 
-    sess.defer_mailbox_delivery_to_next_turn(&tc.sub_id).await;
-    sess.enqueue_mailbox_communication(communication.clone());
+    sess.input_queue
+        .defer_mailbox_delivery_to_next_turn(&sess.active_turn, &tc.sub_id)
+        .await;
+    sess.input_queue
+        .enqueue_mailbox_communication(communication.clone())
+        .await;
     sess.steer_input(
         vec![UserInput::Text {
             text: "follow up".to_string(),
@@ -8941,10 +9175,12 @@ async fn stale_defer_mailbox_delivery_does_not_override_steered_input() {
     .await
     .expect("steered input should be accepted");
 
-    sess.defer_mailbox_delivery_to_next_turn(&tc.sub_id).await;
+    sess.input_queue
+        .defer_mailbox_delivery_to_next_turn(&sess.active_turn, &tc.sub_id)
+        .await;
 
     assert_eq!(
-        sess.get_pending_input().await,
+        sess.input_queue.get_pending_input(&sess.active_turn).await,
         vec![
             ResponseInputItem::from(vec![UserInput::Text {
                 text: "follow up".to_string(),
@@ -8975,8 +9211,12 @@ async fn tool_calls_reopen_mailbox_delivery_for_current_turn() {
     )
     .await;
 
-    sess.defer_mailbox_delivery_to_next_turn(&tc.sub_id).await;
-    sess.enqueue_mailbox_communication(communication.clone());
+    sess.input_queue
+        .defer_mailbox_delivery_to_next_turn(&sess.active_turn, &tc.sub_id)
+        .await;
+    sess.input_queue
+        .enqueue_mailbox_communication(communication.clone())
+        .await;
 
     let item = ResponseItem::FunctionCall {
         id: None,
@@ -9000,7 +9240,7 @@ async fn tool_calls_reopen_mailbox_delivery_for_current_turn() {
     assert!(output.needs_follow_up);
     assert!(output.tool_future.is_some());
     assert_eq!(
-        sess.get_pending_input().await,
+        sess.input_queue.get_pending_input(&sess.active_turn).await,
         vec![communication.to_response_input_item()],
     );
 }
@@ -9416,7 +9656,121 @@ async fn update_goal_tool_rejects_pausing_goal() {
     };
     assert_eq!(
         output,
-        "update_goal can only mark the existing goal complete; pause, resume, and budget-limited status changes are controlled by the user or system"
+        "update_goal can only mark the existing goal complete or blocked; pause, resume, budget-limited, and usage-limited status changes are controlled by the user or system"
+    );
+
+    let goal = session
+        .get_thread_goal()
+        .await
+        .expect("read thread goal")
+        .expect("goal should still exist");
+    assert_eq!(goal.status, ThreadGoalStatus::Active);
+}
+
+#[tokio::test]
+async fn update_goal_tool_marks_goal_blocked() {
+    let (session, turn_context, _rx, _codex_home) = make_goal_session_and_context_with_rx().await;
+    let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+    let create_handler = CreateGoalHandler;
+    let update_handler = UpdateGoalHandler;
+
+    create_handler
+        .handle(ToolInvocation {
+            session: Arc::clone(&session),
+            turn: Arc::clone(&turn_context),
+            cancellation_token: CancellationToken::new(),
+            tracker: Arc::clone(&tracker),
+            call_id: "create-goal".to_string(),
+            tool_name: codex_tools::ToolName::plain("create_goal"),
+            source: ToolCallSource::Direct,
+            payload: ToolPayload::Function {
+                arguments: serde_json::json!({
+                    "objective": "Keep the watcher alive",
+                    "token_budget": 123,
+                })
+                .to_string(),
+            },
+        })
+        .await
+        .expect("initial create_goal should succeed");
+
+    update_handler
+        .handle(ToolInvocation {
+            session: Arc::clone(&session),
+            turn: Arc::clone(&turn_context),
+            cancellation_token: CancellationToken::new(),
+            tracker,
+            call_id: "block-goal".to_string(),
+            tool_name: codex_tools::ToolName::plain("update_goal"),
+            source: ToolCallSource::Direct,
+            payload: ToolPayload::Function {
+                arguments: serde_json::json!({
+                    "status": "blocked",
+                })
+                .to_string(),
+            },
+        })
+        .await
+        .expect("update_goal should mark the goal blocked");
+
+    let goal = session
+        .get_thread_goal()
+        .await
+        .expect("read thread goal")
+        .expect("goal should still exist");
+    assert_eq!(goal.status, ThreadGoalStatus::Blocked);
+}
+
+#[tokio::test]
+async fn update_goal_tool_rejects_usage_limited_goal() {
+    let (session, turn_context, _rx, _codex_home) = make_goal_session_and_context_with_rx().await;
+    let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+    let create_handler = CreateGoalHandler;
+    let update_handler = UpdateGoalHandler;
+
+    create_handler
+        .handle(ToolInvocation {
+            session: Arc::clone(&session),
+            turn: Arc::clone(&turn_context),
+            cancellation_token: CancellationToken::new(),
+            tracker: Arc::clone(&tracker),
+            call_id: "create-goal".to_string(),
+            tool_name: codex_tools::ToolName::plain("create_goal"),
+            source: ToolCallSource::Direct,
+            payload: ToolPayload::Function {
+                arguments: serde_json::json!({
+                    "objective": "Keep the watcher alive",
+                })
+                .to_string(),
+            },
+        })
+        .await
+        .expect("initial create_goal should succeed");
+
+    let response = update_handler
+        .handle(ToolInvocation {
+            session: Arc::clone(&session),
+            turn: Arc::clone(&turn_context),
+            cancellation_token: CancellationToken::new(),
+            tracker,
+            call_id: "usage-limit-goal".to_string(),
+            tool_name: codex_tools::ToolName::plain("update_goal"),
+            source: ToolCallSource::Direct,
+            payload: ToolPayload::Function {
+                arguments: serde_json::json!({
+                    "status": "usageLimited",
+                })
+                .to_string(),
+            },
+        })
+        .await;
+
+    let Err(FunctionCallError::RespondToModel(output)) = response else {
+        panic!("expected update_goal to reject usage-limiting a goal");
+    };
+    assert_eq!(
+        output,
+        "update_goal can only mark the existing goal complete or blocked; pause, resume, budget-limited, and usage-limited status changes are controlled by the user or system"
     );
 
     let goal = session
