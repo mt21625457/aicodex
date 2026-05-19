@@ -668,6 +668,7 @@ async fn turn_start_jsonrpc_span_parents_core_turn_spans_inner() -> Result<()> {
                     }],
                     responsesapi_client_metadata: None,
                     cwd: None,
+                    runtime_workspace_roots: None,
                     approval_policy: None,
                     sandbox_policy: None,
                     permissions: None,

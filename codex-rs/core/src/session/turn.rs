@@ -20,6 +20,7 @@ use crate::compact_remote_v2::run_inline_remote_auto_compact_task as run_inline_
 use crate::connectors;
 use crate::context::ContextualUserFragment;
 use crate::feedback_tags;
+use crate::goals::GoalRuntimeEvent;
 use crate::hook_runtime::PendingInputHookDisposition;
 use crate::hook_runtime::emit_hook_completed_events;
 use crate::hook_runtime::inspect_pending_input;
@@ -71,6 +72,7 @@ use codex_analytics::build_track_events_context;
 use codex_async_utils::OrCancelExt;
 use codex_features::Feature;
 use codex_git_utils::get_git_repo_root;
+use codex_git_utils::get_git_repo_root_with_fs;
 use codex_hooks::HookEvent;
 use codex_hooks::HookEventAfterAgent;
 use codex_hooks::HookPayload;
@@ -99,6 +101,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::PlanDeltaEvent;
 use codex_protocol::protocol::ReasoningContentDeltaEvent;
 use codex_protocol::protocol::ReasoningRawContentDeltaEvent;
+use codex_protocol::protocol::TokenUsageInfo;
 use codex_protocol::protocol::TurnDiffEvent;
 use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
@@ -150,7 +153,7 @@ pub(crate) async fn run_turn(
     prewarmed_client_session: Option<ModelClientSession>,
     cancellation_token: CancellationToken,
 ) -> Option<String> {
-    if input.is_empty() && !sess.has_pending_input().await {
+    if input.is_empty() && !sess.input_queue.has_pending_input(&sess.active_turn).await {
         return None;
     }
 
@@ -178,7 +181,16 @@ pub(crate) async fn run_turn(
     let pre_sampling_compact =
         match run_pre_sampling_compact(&sess, &turn_context, &mut client_session).await {
             Ok(pre_sampling_compact) => pre_sampling_compact,
-            Err(_) => {
+            Err(err) => {
+                if err.to_codex_protocol_error() == CodexErrorInfo::UsageLimitExceeded
+                    && let Err(err) = sess
+                        .goal_runtime_apply(GoalRuntimeEvent::UsageLimitReached {
+                            turn_context: turn_context.as_ref(),
+                        })
+                        .await
+                {
+                    warn!("failed to usage-limit active goal after usage-limit error: {err}");
+                }
                 error!("Failed to run pre-sampling compact");
                 return None;
             }
@@ -387,8 +399,17 @@ pub(crate) async fn run_turn(
     // Although from the perspective of codex.rs, TurnDiffTracker has the lifecycle of a Task which contains
     // many turns, from the perspective of the user, it is a single turn.
     #[allow(deprecated)]
-    let display_root = get_git_repo_root(turn_context.cwd.as_path())
-        .unwrap_or_else(|| turn_context.cwd.clone().into_path_buf());
+    let display_root = match turn_context.environments.primary() {
+        Some(turn_environment) => get_git_repo_root_with_fs(
+            turn_environment.environment.get_filesystem().as_ref(),
+            &turn_environment.cwd,
+        )
+        .await
+        .unwrap_or_else(|| turn_environment.cwd.clone())
+        .into_path_buf(),
+        None => get_git_repo_root(turn_context.cwd.as_path())
+            .unwrap_or_else(|| turn_context.cwd.clone().into_path_buf()),
+    };
     let turn_diff_tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::with_display_root(
         display_root,
     )));
@@ -411,7 +432,7 @@ pub(crate) async fn run_turn(
         // submitted through the UI while the model was running. Though the UI
         // may support this, the model might not.
         let pending_input = if can_drain_pending_input {
-            sess.get_pending_input().await
+            sess.input_queue.get_pending_input(&sess.active_turn).await
         } else {
             Vec::new()
         };
@@ -432,7 +453,10 @@ pub(crate) async fn run_turn(
                     } => {
                         let remaining_pending_input = pending_input_iter.collect::<Vec<_>>();
                         if !remaining_pending_input.is_empty() {
-                            let _ = sess.prepend_pending_input(remaining_pending_input).await;
+                            let _ = sess
+                                .input_queue
+                                .prepend_pending_input(&sess.active_turn, remaining_pending_input)
+                                .await;
                             requeued_pending_input = true;
                         }
                         blocked_pending_input_contexts = additional_contexts;
@@ -493,7 +517,7 @@ pub(crate) async fn run_turn(
                     last_agent_message: sampling_request_last_agent_message,
                 } = sampling_request_output;
                 can_drain_pending_input = true;
-                let has_pending_input = sess.has_pending_input().await;
+                let has_pending_input = sess.input_queue.has_pending_input(&sess.active_turn).await;
                 let needs_follow_up = model_needs_follow_up || has_pending_input;
                 if model_needs_follow_up && provider_stop_reason.as_deref() == Some("pause_turn") {
                     claude_pause_turn_continuations += 1;
@@ -544,7 +568,20 @@ pub(crate) async fn run_turn(
                     .await
                     {
                         Ok(reset_client_session) => reset_client_session,
-                        Err(_) => return None,
+                        Err(err) => {
+                            if err.to_codex_protocol_error() == CodexErrorInfo::UsageLimitExceeded
+                                && let Err(err) = sess
+                                    .goal_runtime_apply(GoalRuntimeEvent::UsageLimitReached {
+                                        turn_context: turn_context.as_ref(),
+                                    })
+                                    .await
+                            {
+                                warn!(
+                                    "failed to usage-limit active goal after usage-limit error: {err}"
+                                );
+                            }
+                            return None;
+                        }
                     };
                     if reset_client_session {
                         client_session.reset_websocket_session();
@@ -700,6 +737,15 @@ pub(crate) async fn run_turn(
             }
             Err(e) => {
                 info!("Turn error: {e:#}");
+                if e.to_codex_protocol_error() == CodexErrorInfo::UsageLimitExceeded
+                    && let Err(err) = sess
+                        .goal_runtime_apply(GoalRuntimeEvent::UsageLimitReached {
+                            turn_context: turn_context.as_ref(),
+                        })
+                        .await
+                {
+                    warn!("failed to usage-limit active goal after usage-limit error: {err}");
+                }
                 let event = EventMsg::Error(e.to_error_event(/*message_prefix*/ None));
                 sess.send_event(&turn_context, event).await;
                 // let the user continue the conversation
@@ -1129,17 +1175,31 @@ async fn update_claude_token_usage_after_completion(
 }
 
 async fn update_responses_token_usage_context_estimate(sess: &Session, turn_context: &TurnContext) {
-    let Some(context_tokens) = sess.get_estimated_context_token_count().await else {
+    let Some(estimated_context_tokens) = sess.get_estimated_context_token_count().await else {
         return;
     };
+    let context_tokens = sess
+        .token_usage_info()
+        .await
+        .map(|info| info.last_token_usage.total_tokens)
+        .unwrap_or_default()
+        .max(estimated_context_tokens);
 
-    sess.update_token_usage_info_with_context_count(
-        turn_context,
-        None,
-        Some(context_tokens),
-        Some(ContextTokenUsageSource::LocalEstimate),
-    )
-    .await;
+    let token_info = {
+        let mut state = sess.state.lock().await;
+        let mut info = state
+            .token_info()
+            .unwrap_or_else(|| TokenUsageInfo::empty(turn_context.model_context_window()));
+        info.context_tokens = Some(context_tokens.max(0));
+        info.context_source = Some(ContextTokenUsageSource::LocalEstimate);
+        if let Some(model_context_window) = turn_context.model_context_window() {
+            info.model_context_window = Some(model_context_window);
+        }
+        state.set_token_info(Some(info));
+        state.token_info()
+    };
+    sess.notify_token_usage_contributors(turn_context, token_info.as_ref())
+        .await;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2150,6 +2210,7 @@ async fn try_run_sampling_request(
                     | ResponseItem::WebSearchCall { .. }
                     | ResponseItem::ImageGenerationCall { .. }
                     | ResponseItem::Compaction { .. }
+                    | ResponseItem::CompactionTrigger
                     | ResponseItem::ContextCompaction { .. }
                     | ResponseItem::Other => false,
                 };
@@ -2170,7 +2231,7 @@ async fn try_run_sampling_request(
                 }
                 needs_follow_up |= output_result.needs_follow_up;
                 // todo: remove before stabilizing multi-agent v2
-                if preempt_for_mailbox_mail && sess.mailbox_rx.lock().await.has_pending() {
+                if preempt_for_mailbox_mail && sess.input_queue.has_pending_mailbox_items().await {
                     break Ok(SamplingRequestResult {
                         needs_follow_up: true,
                         provider_stop_reason: None,

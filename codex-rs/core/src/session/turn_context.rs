@@ -221,6 +221,7 @@ impl TurnContext {
         .with_spawn_agent_usage_hint(config.multi_agent_v2.usage_hint_enabled)
         .with_spawn_agent_usage_hint_text(config.multi_agent_v2.usage_hint_text.clone())
         .with_hide_spawn_agent_metadata(config.multi_agent_v2.hide_spawn_agent_metadata)
+        .with_multi_agent_v2_tool_namespace(config.multi_agent_v2.tool_namespace.clone())
         .with_multi_agent_v2_non_code_mode_only(config.multi_agent_v2.non_code_mode_only)
         .with_goal_tools_allowed(self.tools_config.goal_tools)
         .with_max_concurrent_threads_per_session(
@@ -368,7 +369,6 @@ impl TurnContext {
     pub(crate) fn to_turn_context_item(&self) -> TurnContextItem {
         TurnContextItem {
             turn_id: Some(self.sub_id.clone()),
-            trace_id: self.trace_id.clone(),
             #[allow(deprecated)]
             cwd: self.cwd.to_path_buf(),
             current_date: self.current_date.clone(),
@@ -383,11 +383,7 @@ impl TurnContext {
             collaboration_mode: Some(self.collaboration_mode.clone()),
             realtime_active: Some(self.realtime_active),
             effort: self.reasoning_effort,
-            summary: self.reasoning_summary,
-            user_instructions: self.user_instructions.clone(),
-            developer_instructions: self.developer_instructions.clone(),
-            final_output_json_schema: self.final_output_json_schema.clone(),
-            truncation_policy: Some(self.truncation_policy),
+            summary: ReasoningSummaryConfig::Auto,
         }
     }
 
@@ -435,6 +431,10 @@ impl Session {
         per_turn_config.cwd = cwd;
         per_turn_config.model_provider_id = session_configuration.provider_id.clone();
         per_turn_config.model_provider = session_configuration.provider.clone();
+        per_turn_config.workspace_roots = session_configuration.workspace_roots.clone();
+        per_turn_config
+            .permissions
+            .set_workspace_roots(session_configuration.workspace_roots.clone());
         per_turn_config.model_reasoning_effort =
             session_configuration.collaboration_mode.reasoning_effort();
         per_turn_config.model_reasoning_summary = session_configuration.model_reasoning_summary;
@@ -469,6 +469,10 @@ impl Session {
             Self::build_per_turn_config(session_configuration, session_configuration.cwd.clone());
         config.model = Some(session_configuration.collaboration_mode.model().to_string());
         config.permissions.approval_policy = session_configuration.approval_policy.clone();
+        config.workspace_roots = session_configuration.workspace_roots.clone();
+        config
+            .permissions
+            .set_workspace_roots(session_configuration.workspace_roots.clone());
         config
     }
 
@@ -523,7 +527,7 @@ impl Session {
         .with_image_generation_capability(provider_capabilities.image_generation)
         .with_web_search_capability(provider_capabilities.web_search)
         .with_unified_exec_shell_mode_for_session(
-            crate::tools::spec::tool_user_shell_type(user_shell),
+            crate::tools::tool_user_shell_type(user_shell),
             shell_zsh_path,
             main_execve_wrapper_exe,
         )
@@ -535,6 +539,7 @@ impl Session {
         .with_spawn_agent_usage_hint(per_turn_config.multi_agent_v2.usage_hint_enabled)
         .with_spawn_agent_usage_hint_text(per_turn_config.multi_agent_v2.usage_hint_text.clone())
         .with_hide_spawn_agent_metadata(per_turn_config.multi_agent_v2.hide_spawn_agent_metadata)
+        .with_multi_agent_v2_tool_namespace(per_turn_config.multi_agent_v2.tool_namespace.clone())
         .with_multi_agent_v2_non_code_mode_only(per_turn_config.multi_agent_v2.non_code_mode_only)
         .with_goal_tools_allowed(goal_tools_supported)
         .with_max_concurrent_threads_per_session(

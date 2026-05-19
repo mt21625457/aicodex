@@ -12,11 +12,13 @@ use crate::function_tool::FunctionCallError;
 use crate::session::turn_context::TurnEnvironment;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
+use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
+use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::ApplyPatchHandler;
 use crate::tools::handlers::parse_arguments;
+use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
-use crate::tools::registry::ToolHandler;
 
 /// Executes Anthropic's native `text_editor` schema through Codex-controlled
 /// file reads and apply_patch mutations.
@@ -63,8 +65,6 @@ struct ResolvedTextEditorPath {
 
 #[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for ClaudeTextEditorHandler {
-    type Output = FunctionToolOutput;
-
     fn tool_name(&self) -> ToolName {
         ToolName::plain(CLAUDE_TEXT_EDITOR_TOOL_NAME)
     }
@@ -73,7 +73,10 @@ impl ToolExecutor<ToolInvocation> for ClaudeTextEditorHandler {
         None
     }
 
-    async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
+    async fn handle(
+        &self,
+        invocation: ToolInvocation,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let turn = invocation.turn.clone();
         let arguments = match &invocation.payload {
             ToolPayload::Function { arguments } => arguments.clone(),
@@ -155,10 +158,11 @@ impl ToolExecutor<ToolInvocation> for ClaudeTextEditorHandler {
                     .to_string(),
             )),
         }
+        .map(boxed_tool_output)
     }
 }
 
-impl ToolHandler for ClaudeTextEditorHandler {
+impl CoreToolRuntime for ClaudeTextEditorHandler {
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Function { .. })
     }
@@ -286,11 +290,17 @@ async fn apply_generated_patch(
     let mut invocation = invocation;
     invocation.tool_name = ToolName::plain("apply_patch");
     invocation.payload = ToolPayload::Custom { input: patch };
+    let call_id = invocation.call_id.clone();
+    let payload = invocation.payload.clone();
     let output = ApplyPatchHandler::new(multi_environment)
         .handle(invocation)
         .await?;
+    let text = output
+        .post_tool_use_response(&call_id, &payload)
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| output.log_preview());
     Ok(FunctionToolOutput {
-        body: vec![FunctionCallOutputContentItem::InputText { text: output.text }],
+        body: vec![FunctionCallOutputContentItem::InputText { text }],
         success: Some(true),
         post_tool_use_response: None,
     })

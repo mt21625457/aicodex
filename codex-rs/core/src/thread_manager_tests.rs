@@ -1145,6 +1145,7 @@ fn completed_legacy_event_history_is_not_mid_turn() {
             images: None,
             text_elements: Vec::new(),
             local_images: Vec::new(),
+            ..Default::default()
         })),
         RolloutItem::EventMsg(EventMsg::AgentMessage(AgentMessageEvent {
             message: "done".to_string(),
@@ -1172,6 +1173,7 @@ fn mixed_response_and_legacy_user_event_history_is_mid_turn() {
             images: None,
             text_elements: Vec::new(),
             local_images: Vec::new(),
+            ..Default::default()
         })),
     ]);
 
@@ -1577,6 +1579,7 @@ async fn resumed_thread_keeps_paused_goal_paused() -> anyhow::Result<()> {
         .state_db()
         .expect("source thread should have a state db");
     state_db
+        .thread_goals()
         .replace_thread_goal(
             source.thread_id,
             "Keep working until the task is done",
@@ -1597,6 +1600,7 @@ async fn resumed_thread_keeps_paused_goal_paused() -> anyhow::Result<()> {
         .await
         .expect("resume source thread");
     let goal = state_db
+        .thread_goals()
         .get_thread_goal(resumed.thread_id)
         .await?
         .expect("goal should still exist after resume");
