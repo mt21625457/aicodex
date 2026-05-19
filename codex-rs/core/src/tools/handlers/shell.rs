@@ -58,7 +58,6 @@ struct RunExecLikeArgs {
     turn: Arc<TurnContext>,
     tracker: crate::tools::context::SharedTurnDiffTracker,
     call_id: String,
-    freeform: bool,
     shell_runtime_backend: ShellRuntimeBackend,
 }
 
@@ -74,7 +73,6 @@ async fn run_exec_like(args: RunExecLikeArgs) -> Result<FunctionToolOutput, Func
         turn,
         tracker,
         call_id,
-        freeform,
         shell_runtime_backend,
     } = args;
 
@@ -182,12 +180,7 @@ async fn run_exec_like(args: RunExecLikeArgs) -> Result<FunctionToolOutput, Func
     };
 
     let source = ExecCommandSource::Agent;
-    let emitter = ToolEmitter::shell(
-        exec_params.command.clone(),
-        exec_params.cwd.clone(),
-        source,
-        freeform,
-    );
+    let emitter = ToolEmitter::shell(exec_params.command.clone(), exec_params.cwd.clone(), source);
     let event_ctx = ToolEventCtx::new(
         session.as_ref(),
         turn.as_ref(),

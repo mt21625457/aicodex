@@ -2645,7 +2645,7 @@ async fn token_count_includes_rate_limits_snapshot_and_responses_context_estimat
         context_tokens >= 123,
         "context estimate should include at least the provider usage, got {context_tokens}"
     );
-    assert_eq!(usage.last_token_usage.total_tokens, context_tokens);
+    assert_eq!(usage.last_token_usage.total_tokens, 123);
     let final_snapshot = final_payload
         .rate_limits
         .expect("latest rate limit snapshot should be retained");

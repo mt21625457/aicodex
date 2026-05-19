@@ -497,7 +497,9 @@ async fn responses_provider_does_not_call_claude_count_tokens() -> anyhow::Resul
                 event,
                 EventMsg::TokenCount(payload)
                     if payload.info.as_ref().is_some_and(|info| {
-                        info.last_token_usage.total_tokens == 321
+                        info.total_token_usage.total_tokens == 321
+                            && info.context_source == Some(ContextTokenUsageSource::LocalEstimate)
+                            && info.context_tokens.is_some_and(|tokens| tokens >= 321)
                     })
             )
         },
@@ -510,7 +512,7 @@ async fn responses_provider_does_not_call_claude_count_tokens() -> anyhow::Resul
         payload
             .info
             .expect("token usage info")
-            .last_token_usage
+            .total_token_usage
             .total_tokens,
         321
     );

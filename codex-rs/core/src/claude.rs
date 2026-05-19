@@ -340,6 +340,7 @@ pub(crate) fn build_claude_messages_request(
             | ResponseItem::ToolSearchOutput { .. }
             | ResponseItem::WebSearchCall { .. }
             | ResponseItem::ImageGenerationCall { .. }
+            | ResponseItem::CompactionTrigger
             | ResponseItem::Other => {}
         }
     }

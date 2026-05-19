@@ -1,10 +1,12 @@
 use crate::function_tool::FunctionCallError;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
+use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
+use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::parse_arguments;
+use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
-use crate::tools::registry::ToolHandler;
 use crate::web_search::web_search_action_detail;
 use codex_login::default_client::build_reqwest_client;
 use codex_protocol::items::TurnItem;
@@ -86,13 +88,14 @@ struct WebSearchResult {
 
 #[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for WebSearchHandler {
-    type Output = FunctionToolOutput;
-
     fn tool_name(&self) -> ToolName {
         ToolName::plain(WEB_SEARCH_TOOL_NAME)
     }
 
-    async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
+    async fn handle(
+        &self,
+        invocation: ToolInvocation,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let ToolInvocation {
             session,
             turn,
@@ -132,11 +135,18 @@ impl ToolExecutor<ToolInvocation> for WebSearchHandler {
         let text = serde_json::to_string_pretty(&response).unwrap_or_else(|err| {
             format!(r#"{{"error":"failed to serialize web search results: {err}"}}"#)
         });
-        Ok(FunctionToolOutput::from_text(text, Some(true)))
+        Ok(boxed_tool_output(FunctionToolOutput::from_text(
+            text,
+            Some(true),
+        )))
     }
 }
 
-impl ToolHandler for WebSearchHandler {}
+impl CoreToolRuntime for WebSearchHandler {
+    fn matches_kind(&self, payload: &ToolPayload) -> bool {
+        matches!(payload, ToolPayload::Function { .. })
+    }
+}
 
 fn allowed_domains_from_spec(spec: &ToolSpec) -> Vec<String> {
     let ToolSpec::WebSearch { filters, .. } = spec else {
