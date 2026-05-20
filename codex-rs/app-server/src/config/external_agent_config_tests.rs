@@ -422,7 +422,7 @@ async fn detect_repo_skips_hooks_when_only_unsupported_hooks_exist() {
     fs::create_dir_all(repo_root.join(EXTERNAL_AGENT_DIR)).expect("create external agent dir");
     fs::write(
         repo_root.join(EXTERNAL_AGENT_DIR).join("settings.json"),
-        r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","if":"Bash(rm *)","command":"echo blocked"}]}],"SubagentStart":[{"matcher":"worker","hooks":[{"type":"command","command":"echo started"}]}]}}"#,
+        r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","if":"Bash(rm *)","command":"echo blocked"}]}],"UnsupportedEvent":[{"matcher":"worker","hooks":[{"type":"command","command":"echo started"}]}]}}"#,
     )
     .expect("write hooks");
 
@@ -2232,6 +2232,32 @@ async fn import_plugins_infers_external_official_marketplace_when_missing_from_s
     let (_root, external_agent_home, codex_home) = fixture_paths();
     fs::create_dir_all(&external_agent_home).expect("create external agent home");
     fs::create_dir_all(&codex_home).expect("create codex home");
+    let cached_marketplace_root = codex_home
+        .join(codex_core_plugins::installed_marketplaces::INSTALLED_MARKETPLACES_DIR)
+        .join(EXTERNAL_OFFICIAL_MARKETPLACE_NAME);
+    fs::create_dir_all(cached_marketplace_root.join(EXTERNAL_AGENT_PLUGIN_MANIFEST_DIR))
+        .expect("create cached official marketplace manifest dir");
+    fs::write(
+        cached_marketplace_root
+            .join(EXTERNAL_AGENT_PLUGIN_MANIFEST_DIR)
+            .join("marketplace.json"),
+        format!(
+            r#"{{
+              "name": "{EXTERNAL_OFFICIAL_MARKETPLACE_NAME}",
+              "plugins": []
+            }}"#
+        ),
+    )
+    .expect("write cached official marketplace manifest");
+    fs::write(
+        codex_home.join("config.toml"),
+        r#"[marketplaces.claude-plugins-official]
+source_type = "git"
+source = "https://github.com/anthropics/claude-plugins-official.git"
+last_updated = "2024-01-01T00:00:00Z"
+"#,
+    )
+    .expect("write cached official marketplace config");
 
     fs::write(
         external_agent_home.join("settings.json"),

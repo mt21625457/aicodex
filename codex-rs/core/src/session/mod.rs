@@ -78,6 +78,7 @@ use codex_protocol::approvals::ExecPolicyAmendment;
 use codex_protocol::approvals::NetworkPolicyAmendment;
 use codex_protocol::approvals::NetworkPolicyRuleAction;
 use codex_protocol::config_types::ApprovalsReviewer;
+use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
 use codex_protocol::config_types::WebSearchMode;
@@ -93,6 +94,7 @@ use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::SandboxEnforcement;
 use codex_protocol::models::format_allow_prefixes;
 use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::FileChange;
@@ -206,6 +208,7 @@ use self::config_lock::validate_config_lock_if_configured;
 #[cfg(test)]
 use self::handlers::submission_dispatch_span;
 use self::handlers::submission_loop;
+pub(crate) use self::input_queue::TurnInput;
 pub(crate) use self::input_queue::TurnInputQueue;
 use self::review::spawn_review_thread;
 use self::session::AppServerClientMetadata;
@@ -216,8 +219,6 @@ pub(crate) use self::session::SessionSettingsUpdate;
 use self::turn::AssistantMessageStreamParsers;
 #[cfg(test)]
 use self::turn::collect_explicit_app_ids_from_skill_items;
-#[cfg(test)]
-use self::turn::filter_connectors_for_input;
 use self::turn::realtime_text_for_event;
 use self::turn_context::TurnContext;
 use self::turn_context::TurnSkillsContext;
@@ -290,6 +291,7 @@ use crate::rollout::map_session_init_error;
 use crate::session_startup_prewarm::SessionStartupPrewarmHandle;
 use crate::shell;
 use crate::shell_snapshot::ShellSnapshot;
+use crate::state::AutoCompactWindowSnapshot;
 use crate::state::PendingRequestPermissions;
 use crate::state::SessionServices;
 use crate::state::SessionState;
@@ -359,8 +361,8 @@ use codex_protocol::protocol::TokenUsageInfo;
 use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
 use codex_tools::ToolEnvironmentMode;
-use codex_tools::ToolsConfig;
-use codex_tools::ToolsConfigParams;
+use codex_tools::UnifiedExecShellMode;
+use codex_tools::shell_command_backend_for_features;
 use codex_utils_absolute_path::AbsolutePathBuf;
 #[cfg(test)]
 use codex_utils_stream_parser::ProposedPlanSegment;
@@ -889,22 +891,6 @@ impl Session {
         }
     }
 
-    pub(crate) async fn configured_multi_agent_v2_usage_hint_texts(&self) -> Vec<String> {
-        if !self.features.enabled(Feature::MultiAgentV2) {
-            return Vec::new();
-        }
-
-        let state = self.state.lock().await;
-        let config = &state.session_configuration.original_config_do_not_use;
-        [
-            config.multi_agent_v2.root_agent_usage_hint_text.clone(),
-            config.multi_agent_v2.subagent_usage_hint_text.clone(),
-        ]
-        .into_iter()
-        .flatten()
-        .collect()
-    }
-
     fn managed_network_proxy_active_for_permission_profile(
         permission_profile: &PermissionProfile,
     ) -> bool {
@@ -1097,6 +1083,7 @@ impl Session {
                 }],
                 final_output_json_schema: None,
                 responsesapi_client_metadata: None,
+                thread_settings: Default::default(),
             },
             /*mirror_user_text_to_realtime*/ None,
         )
@@ -1106,6 +1093,11 @@ impl Session {
     pub(crate) async fn get_total_token_usage(&self) -> i64 {
         let state = self.state.lock().await;
         state.get_total_token_usage(state.server_reasoning_included())
+    }
+
+    pub(crate) async fn auto_compact_window_snapshot(&self) -> AutoCompactWindowSnapshot {
+        let state = self.state.lock().await;
+        state.auto_compact_window_snapshot()
     }
 
     pub(crate) async fn get_total_token_usage_breakdown(&self) -> TotalTokenUsageBreakdown {
@@ -1274,9 +1266,39 @@ impl Session {
             reconstructed_rollout.reference_context_item,
         )
         .await;
+        let prefix_tokens = if matches!(
+            turn_context.config.model_auto_compact_token_limit_scope,
+            AutoCompactTokenLimitScope::BodyAfterPrefix
+        ) {
+            let history = self.clone_history().await;
+            let base_instructions = self.get_base_instructions().await;
+            history.estimate_token_count_with_base_instructions(&base_instructions)
+        } else {
+            None
+        };
+        if let Some(prefix_tokens) = prefix_tokens {
+            self.set_auto_compact_window_estimated_prefill_for_scope(turn_context, prefix_tokens)
+                .await;
+        }
         self.set_previous_turn_settings(previous_turn_settings.clone())
             .await;
         previous_turn_settings
+    }
+
+    async fn set_auto_compact_window_estimated_prefill_for_scope(
+        &self,
+        turn_context: &TurnContext,
+        tokens: i64,
+    ) {
+        if !matches!(
+            turn_context.config.model_auto_compact_token_limit_scope,
+            AutoCompactTokenLimitScope::BodyAfterPrefix
+        ) {
+            return;
+        }
+
+        let mut state = self.state.lock().await;
+        state.set_auto_compact_window_estimated_prefill(tokens);
     }
 
     fn last_token_info_from_rollout(rollout_items: &[RolloutItem]) -> Option<TokenUsageInfo> {
@@ -1436,12 +1458,15 @@ impl Session {
         }
     }
 
-    pub(crate) async fn validate_settings(
+    pub(crate) async fn preview_settings(
         &self,
         updates: &SessionSettingsUpdate,
-    ) -> ConstraintResult<()> {
+    ) -> ConstraintResult<ThreadConfigSnapshot> {
         let state = self.state.lock().await;
-        state.session_configuration.apply(updates).map(|_| ())
+        state
+            .session_configuration
+            .apply(updates)
+            .map(|configuration| configuration.thread_config_snapshot())
     }
 
     pub(crate) async fn set_session_startup_prewarm(
@@ -2634,8 +2659,11 @@ impl Session {
         reference_context_item: Option<TurnContextItem>,
         compacted_item: CompactedItem,
     ) {
-        self.replace_history(items, reference_context_item.clone())
-            .await;
+        {
+            let mut state = self.state.lock().await;
+            state.replace_history(items, reference_context_item.clone());
+            state.start_next_auto_compact_window();
+        }
 
         self.persist_rollout_items(&[RolloutItem::Compacted(compacted_item)])
             .await;
@@ -3065,6 +3093,12 @@ impl Session {
                 let mut state = self.state.lock().await;
                 state
                     .update_token_info_from_usage(token_usage, turn_context.model_context_window());
+                if matches!(
+                    turn_context.config.model_auto_compact_token_limit_scope,
+                    AutoCompactTokenLimitScope::BodyAfterPrefix
+                ) {
+                    state.ensure_auto_compact_window_server_prefill_from_usage(token_usage);
+                }
                 state.token_info()
             };
             self.notify_token_usage_contributors(turn_context, token_info.as_ref())
@@ -3112,6 +3146,11 @@ impl Session {
 
             state.set_token_info(Some(info));
         }
+        self.set_auto_compact_window_estimated_prefill_for_scope(
+            turn_context,
+            estimated_total_tokens,
+        )
+        .await;
         self.send_token_count_event(turn_context).await;
     }
 
@@ -3142,16 +3181,6 @@ impl Session {
     {
         let mut state = self.state.lock().await;
         state.record_mcp_dependency_prompted(names);
-    }
-
-    pub async fn dependency_env(&self) -> HashMap<String, String> {
-        let state = self.state.lock().await;
-        state.dependency_env()
-    }
-
-    pub async fn set_dependency_env(&self, values: HashMap<String, String>) {
-        let mut state = self.state.lock().await;
-        state.set_dependency_env(values);
     }
 
     pub(crate) async fn set_server_reasoning_included(&self, included: bool) {
@@ -3196,11 +3225,11 @@ impl Session {
         &self,
         turn_context: &TurnContext,
         input: &[UserInput],
-        response_item: ResponseItem,
     ) {
         // Persist the user message to history, but emit the turn item from `UserInput` so
         // UI-only `text_elements` are preserved. `ResponseItem::Message` does not carry
         // those spans, and `record_response_item_and_emit_turn_item` would drop them.
+        let response_item = ResponseItem::from(ResponseInputItem::from(input.to_vec()));
         self.record_conversation_items(turn_context, std::slice::from_ref(&response_item))
             .await;
         let turn_item = TurnItem::UserMessage(UserMessageItem::new(input));
@@ -3240,10 +3269,6 @@ impl Session {
         expected_turn_id: Option<&str>,
         responsesapi_client_metadata: Option<HashMap<String, String>>,
     ) -> Result<String, SteerInputError> {
-        if input.is_empty() {
-            return Err(SteerInputError::EmptyInput);
-        }
-
         let mut active = self.active_turn.lock().await;
         let Some(active_turn) = active.as_mut() else {
             return Err(SteerInputError::NoActiveTurn(input));
@@ -3277,6 +3302,10 @@ impl Session {
             None => return Err(SteerInputError::NoActiveTurn(input)),
         }
 
+        if input.is_empty() {
+            return Err(SteerInputError::EmptyInput);
+        }
+
         if let Some(responsesapi_client_metadata) = responsesapi_client_metadata
             && let Some((_, active_task)) = active_turn.tasks.first()
         {
@@ -3289,7 +3318,7 @@ impl Session {
         self.input_queue
             .push_pending_input_and_accept_mailbox_delivery_for_turn_state(
                 active_turn.turn_state.as_ref(),
-                input.into(),
+                TurnInput::UserInput(input),
             )
             .await;
         Ok(active_turn_id.clone())
