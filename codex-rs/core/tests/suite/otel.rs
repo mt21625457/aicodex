@@ -72,6 +72,18 @@ fn assert_empty_mcp_tool_fields(line: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn find_tool_result_log_line<'a>(lines: &'a [&str], call_id: &str) -> Result<&'a str, String> {
+    lines
+        .iter()
+        .copied()
+        .find(|line| {
+            line.contains("codex.tool_result")
+                && line.contains(&format!("call_id={call_id}"))
+                && line.contains("arguments=")
+        })
+        .ok_or_else(|| "missing codex.tool_result event".to_string())
+}
+
 fn shell_command_call(call_id: &str, command: &str) -> serde_json::Value {
     let args = serde_json::json!({ "command": command }).to_string();
     ev_function_call(call_id, "shell_command", &args)
@@ -123,6 +135,7 @@ async fn responses_api_emits_api_request_event() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -168,6 +181,7 @@ async fn process_sse_emits_tracing_for_output_item() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -213,6 +227,7 @@ async fn process_sse_emits_failed_event_on_parse_error() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -259,6 +274,7 @@ async fn process_sse_records_failed_event_when_stream_closes_without_completed()
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -325,6 +341,7 @@ async fn process_sse_failed_event_records_response_error_message() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -389,6 +406,7 @@ async fn process_sse_failed_event_logs_parse_error() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -440,6 +458,7 @@ async fn process_sse_failed_event_logs_missing_error() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -500,6 +519,7 @@ async fn process_sse_failed_event_logs_response_completed_parse_error() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -554,6 +574,7 @@ async fn process_sse_emits_completed_telemetry() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -632,6 +653,7 @@ async fn turn_and_completed_response_spans_record_token_usage() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -719,6 +741,7 @@ async fn handle_responses_span_records_response_kind_and_tool_name() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -812,6 +835,7 @@ async fn record_responses_sets_span_fields_for_response_events() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -900,6 +924,7 @@ async fn handle_response_item_records_tool_result_for_custom_tool_call() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -907,12 +932,7 @@ async fn handle_response_item_records_tool_result_for_custom_tool_call() {
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     logs_assert(|lines: &[&str]| {
-        let line = lines
-            .iter()
-            .find(|line| {
-                line.contains("codex.tool_result") && line.contains("call_id=custom-tool-call")
-            })
-            .ok_or_else(|| "missing codex.tool_result event".to_string())?;
+        let line = find_tool_result_log_line(lines, "custom-tool-call")?;
 
         if !line.contains("tool_name=unsupported_tool") {
             return Err("missing tool_name field".to_string());
@@ -975,6 +995,7 @@ async fn handle_response_item_records_tool_result_for_function_call() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -982,12 +1003,7 @@ async fn handle_response_item_records_tool_result_for_function_call() {
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     logs_assert(|lines: &[&str]| {
-        let line = lines
-            .iter()
-            .find(|line| {
-                line.contains("codex.tool_result") && line.contains("call_id=function-call")
-            })
-            .ok_or_else(|| "missing codex.tool_result event".to_string())?;
+        let line = find_tool_result_log_line(lines, "function-call")?;
 
         if !line.contains("tool_name=nonexistent") {
             return Err("missing tool_name field".to_string());
@@ -1051,6 +1067,7 @@ async fn handle_response_item_records_tool_result_for_shell_command_call() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -1058,10 +1075,7 @@ async fn handle_response_item_records_tool_result_for_shell_command_call() {
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     logs_assert(|lines: &[&str]| {
-        let line = lines
-            .iter()
-            .find(|line| line.contains("codex.tool_result") && line.contains("call_id=shell-call"))
-            .ok_or_else(|| "missing codex.tool_result event".to_string())?;
+        let line = find_tool_result_log_line(lines, "shell-call")?;
 
         if !line.contains("tool_name=shell_command") {
             return Err("missing tool_name field".to_string());
@@ -1137,6 +1151,7 @@ async fn handle_response_item_records_tool_result_for_local_shell_missing_ids() 
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -1207,6 +1222,7 @@ async fn handle_response_item_records_tool_result_for_local_shell_call() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -1214,10 +1230,7 @@ async fn handle_response_item_records_tool_result_for_local_shell_call() {
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     logs_assert(|lines: &[&str]| {
-        let line = lines
-            .iter()
-            .find(|line| line.contains("codex.tool_result") && line.contains("call_id=shell-call"))
-            .ok_or_else(|| "missing codex.tool_result event".to_string())?;
+        let line = find_tool_result_log_line(lines, "shell-call")?;
 
         if !line.contains("tool_name=shell_command") {
             return Err("missing tool_name field".to_string());
@@ -1317,6 +1330,7 @@ async fn handle_shell_command_autoapprove_from_config_records_tool_decision() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -1371,6 +1385,7 @@ async fn handle_shell_command_user_approved_records_tool_decision() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -1440,6 +1455,7 @@ async fn handle_shell_command_user_approved_for_session_records_tool_decision() 
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -1509,6 +1525,7 @@ async fn handle_sandbox_error_user_approves_retry_records_tool_decision() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -1578,6 +1595,7 @@ async fn handle_shell_command_user_denies_records_tool_decision() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -1647,6 +1665,7 @@ async fn handle_sandbox_error_user_approves_for_session_records_tool_decision() 
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();
@@ -1717,6 +1736,7 @@ async fn handle_sandbox_error_user_denies_records_tool_decision() {
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await
         .unwrap();

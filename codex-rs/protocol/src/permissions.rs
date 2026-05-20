@@ -98,7 +98,7 @@ impl NetworkSandboxPolicy {
 /// Access mode for a filesystem entry.
 ///
 /// When two equally specific entries target the same path, we compare these by
-/// conflict precedence rather than by capability breadth: `none` beats
+/// conflict precedence rather than by capability breadth: `deny` beats
 /// `write`, and `write` beats `read`.
 #[derive(
     Debug,
@@ -120,12 +120,14 @@ impl NetworkSandboxPolicy {
 pub enum FileSystemAccessMode {
     Read,
     Write,
-    None,
+    /// `none` is a legacy input alias retained temporarily for compatibility.
+    #[serde(alias = "none")]
+    Deny,
 }
 
 impl FileSystemAccessMode {
     pub fn can_read(self) -> bool {
-        !matches!(self, FileSystemAccessMode::None)
+        !matches!(self, FileSystemAccessMode::Deny)
     }
 
     pub fn can_write(self) -> bool {
@@ -344,7 +346,7 @@ pub enum FileSystemPath {
         path: AbsolutePathBuf,
     },
     /// A git-style glob pattern. Pattern entries currently support
-    /// FileSystemAccessMode::None only.
+    /// FileSystemAccessMode::Deny only.
     GlobPattern {
         pattern: String,
     },
@@ -415,7 +417,7 @@ impl FileSystemSandboxPolicy {
             && self
                 .entries
                 .iter()
-                .any(|entry| entry.access == FileSystemAccessMode::None)
+                .any(|entry| entry.access == FileSystemAccessMode::Deny)
     }
 
     pub fn from_legacy_sandbox_policy_preserving_deny_entries(
@@ -432,7 +434,7 @@ impl FileSystemSandboxPolicy {
         for deny_entry in existing
             .entries
             .iter()
-            .filter(|entry| entry.access == FileSystemAccessMode::None)
+            .filter(|entry| entry.access == FileSystemAccessMode::Deny)
         {
             if !rebuilt.entries.iter().any(|entry| entry == deny_entry) {
                 rebuilt.entries.push(deny_entry.clone());
@@ -448,7 +450,7 @@ impl FileSystemSandboxPolicy {
         let has_deny_read_entries = existing
             .entries
             .iter()
-            .any(|entry| entry.access == FileSystemAccessMode::None);
+            .any(|entry| entry.access == FileSystemAccessMode::Deny);
         if matches!(self.kind, FileSystemSandboxKind::Unrestricted) && has_deny_read_entries {
             *self = Self::restricted(vec![FileSystemSandboxEntry {
                 path: FileSystemPath::Special {
@@ -469,7 +471,7 @@ impl FileSystemSandboxPolicy {
         for deny_entry in existing
             .entries
             .iter()
-            .filter(|entry| entry.access == FileSystemAccessMode::None)
+            .filter(|entry| entry.access == FileSystemAccessMode::Deny)
         {
             if !self.entries.iter().any(|entry| entry == deny_entry) {
                 self.entries.push(deny_entry.clone());
@@ -495,7 +497,7 @@ impl FileSystemSandboxPolicy {
                     FileSystemPath::Path { .. } => !self.has_same_target_write_override(entry),
                     FileSystemPath::GlobPattern { .. } => true,
                     FileSystemPath::Special { value } => match value {
-                        FileSystemSpecialPath::Root => entry.access == FileSystemAccessMode::None,
+                        FileSystemSpecialPath::Root => entry.access == FileSystemAccessMode::Deny,
                         FileSystemSpecialPath::Minimal | FileSystemSpecialPath::Unknown { .. } => {
                             false
                         }
@@ -658,7 +660,7 @@ impl FileSystemSandboxPolicy {
         }
 
         let Some(path) = resolve_candidate_path(path, cwd) else {
-            return FileSystemAccessMode::None;
+            return FileSystemAccessMode::Deny;
         };
 
         self.resolved_entries_with_cwd(cwd)
@@ -666,7 +668,7 @@ impl FileSystemSandboxPolicy {
             .filter(|entry| path.as_path().starts_with(entry.path.as_path()))
             .max_by_key(resolved_entry_precedence)
             .map(|entry| entry.access)
-            .unwrap_or(FileSystemAccessMode::None)
+            .unwrap_or(FileSystemAccessMode::Deny)
     }
 
     pub fn can_read_path_with_cwd(&self, path: &Path, cwd: &Path) -> bool {
@@ -1066,7 +1068,7 @@ impl FileSystemSandboxPolicy {
         dedup_absolute_paths(
             self.resolved_entries_with_cwd(cwd)
                 .iter()
-                .filter(|entry| entry.access == FileSystemAccessMode::None)
+                .filter(|entry| entry.access == FileSystemAccessMode::Deny)
                 .filter(|entry| !self.can_read_path_with_cwd(entry.path.as_path(), cwd))
                 // Restricted policies already deny reads outside explicit allow roots,
                 // so materializing the filesystem root here would erase narrower
@@ -1087,7 +1089,7 @@ impl FileSystemSandboxPolicy {
         let mut patterns = self
             .entries
             .iter()
-            .filter(|entry| entry.access == FileSystemAccessMode::None)
+            .filter(|entry| entry.access == FileSystemAccessMode::Deny)
             .filter_map(|entry| match &entry.path {
                 FileSystemPath::GlobPattern { pattern } => {
                     Some(AbsolutePathBuf::resolve_path_against_base(pattern, cwd))
@@ -1146,7 +1148,7 @@ impl FileSystemSandboxPolicy {
                         }
                         FileSystemPath::Special { value } => match value {
                             FileSystemSpecialPath::Root => match entry.access {
-                                FileSystemAccessMode::None => {}
+                                FileSystemAccessMode::Deny => {}
                                 FileSystemAccessMode::Read => {}
                                 FileSystemAccessMode::Write => {
                                     unbridgeable_root_write = true;
@@ -2221,7 +2223,7 @@ mod tests {
             },
             FileSystemSandboxEntry {
                 path: FileSystemPath::Path { path: link_blocked },
-                access: FileSystemAccessMode::None,
+                access: FileSystemAccessMode::Deny,
             },
         ]);
 
@@ -2283,7 +2285,7 @@ mod tests {
             },
             FileSystemSandboxEntry {
                 path: FileSystemPath::Path { path: link_blocked },
-                access: FileSystemAccessMode::None,
+                access: FileSystemAccessMode::Deny,
             },
         ]);
 
@@ -2384,7 +2386,7 @@ mod tests {
             },
             FileSystemSandboxEntry {
                 path: FileSystemPath::Path { path: link_private },
-                access: FileSystemAccessMode::None,
+                access: FileSystemAccessMode::Deny,
             },
         ]);
 
@@ -2431,7 +2433,7 @@ mod tests {
             },
             FileSystemSandboxEntry {
                 path: FileSystemPath::Path { path: link_private },
-                access: FileSystemAccessMode::None,
+                access: FileSystemAccessMode::Deny,
             },
         ]);
 
@@ -2473,7 +2475,7 @@ mod tests {
             },
             FileSystemSandboxEntry {
                 path: FileSystemPath::Path { path: alias },
-                access: FileSystemAccessMode::None,
+                access: FileSystemAccessMode::Deny,
             },
         ]);
 
@@ -2533,7 +2535,7 @@ mod tests {
             },
             FileSystemSandboxEntry {
                 path: FileSystemPath::Path { path: link_blocked },
-                access: FileSystemAccessMode::None,
+                access: FileSystemAccessMode::Deny,
             },
         ]);
 
@@ -2579,7 +2581,7 @@ mod tests {
                 path: FileSystemPath::Path {
                     path: docs_private.clone(),
                 },
-                access: FileSystemAccessMode::None,
+                access: FileSystemAccessMode::Deny,
             },
             FileSystemSandboxEntry {
                 path: FileSystemPath::Path {
@@ -2599,7 +2601,7 @@ mod tests {
         );
         assert_eq!(
             policy.resolve_access_with_cwd(docs_private.as_path(), cwd.path()),
-            FileSystemAccessMode::None
+            FileSystemAccessMode::Deny
         );
         assert_eq!(
             policy.resolve_access_with_cwd(docs_private_public.as_path(), cwd.path()),
@@ -2740,7 +2742,7 @@ mod tests {
                 path: FileSystemPath::Special {
                     value: FileSystemSpecialPath::Root,
                 },
-                access: FileSystemAccessMode::None,
+                access: FileSystemAccessMode::Deny,
             },
             FileSystemSandboxEntry {
                 path: FileSystemPath::Path { path: docs.clone() },
@@ -2776,14 +2778,14 @@ mod tests {
                 path: FileSystemPath::Special {
                     value: FileSystemSpecialPath::Root,
                 },
-                access: FileSystemAccessMode::None,
+                access: FileSystemAccessMode::Deny,
             },
         ]);
 
         assert!(!policy.has_full_disk_write_access());
         assert_eq!(
             policy.resolve_access_with_cwd(root.as_path(), cwd.path()),
-            FileSystemAccessMode::None
+            FileSystemAccessMode::Deny
         );
     }
 
@@ -2907,7 +2909,7 @@ mod tests {
                 path: FileSystemPath::GlobPattern {
                     pattern: project_roots_glob_pattern(Path::new("**/*.env")),
                 },
-                access: FileSystemAccessMode::None,
+                access: FileSystemAccessMode::Deny,
             },
         ]);
 
@@ -2950,7 +2952,7 @@ mod tests {
                         .to_string_lossy()
                         .into_owned(),
                     },
-                    access: FileSystemAccessMode::None,
+                    access: FileSystemAccessMode::Deny,
                 },
                 FileSystemSandboxEntry {
                     path: FileSystemPath::GlobPattern {
@@ -2961,7 +2963,7 @@ mod tests {
                         .to_string_lossy()
                         .into_owned(),
                     },
-                    access: FileSystemAccessMode::None,
+                    access: FileSystemAccessMode::Deny,
                 },
             ])
         );
@@ -2974,7 +2976,7 @@ mod tests {
             path: FileSystemPath::GlobPattern {
                 pattern: project_roots_glob_pattern(Path::new("**/*.env")),
             },
-            access: FileSystemAccessMode::None,
+            access: FileSystemAccessMode::Deny,
         }]);
 
         let actual = policy.materialize_project_roots_with_cwd(cwd.path());
@@ -2987,7 +2989,7 @@ mod tests {
                         .to_string_lossy()
                         .into_owned(),
                 },
-                access: FileSystemAccessMode::None,
+                access: FileSystemAccessMode::Deny,
             }])
         );
     }
@@ -3036,7 +3038,7 @@ mod tests {
     #[test]
     fn file_system_access_mode_orders_by_conflict_precedence() {
         assert!(FileSystemAccessMode::Write > FileSystemAccessMode::Read);
-        assert!(FileSystemAccessMode::None > FileSystemAccessMode::Write);
+        assert!(FileSystemAccessMode::Deny > FileSystemAccessMode::Write);
     }
 
     #[test]
@@ -3046,7 +3048,7 @@ mod tests {
             path: FileSystemPath::Path {
                 path: denied.clone(),
             },
-            access: FileSystemAccessMode::None,
+            access: FileSystemAccessMode::Deny,
         }]);
 
         let rebuilt = FileSystemSandboxPolicy::from_legacy_sandbox_policy_preserving_deny_entries(
@@ -3061,7 +3063,7 @@ mod tests {
                     == FileSystemPath::Path {
                         path: denied.clone(),
                     }
-                    && entry.access == FileSystemAccessMode::None
+                    && entry.access == FileSystemAccessMode::Deny
             }),
             "expected explicit deny entry to be preserved"
         );
@@ -3094,14 +3096,14 @@ mod tests {
             path: FileSystemPath::Path {
                 path: AbsolutePathBuf::try_from(path).expect("absolute deny path"),
             },
-            access: FileSystemAccessMode::None,
+            access: FileSystemAccessMode::Deny,
         }])
     }
 
     fn unreadable_glob_entry(pattern: String) -> FileSystemSandboxEntry {
         FileSystemSandboxEntry {
             path: FileSystemPath::GlobPattern { pattern },
-            access: FileSystemAccessMode::None,
+            access: FileSystemAccessMode::Deny,
         }
     }
 
