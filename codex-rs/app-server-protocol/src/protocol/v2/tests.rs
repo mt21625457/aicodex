@@ -421,7 +421,7 @@ fn additional_file_system_permissions_preserves_canonical_entries() {
                 path: CoreFileSystemPath::GlobPattern {
                     pattern: "**/*.env".to_string(),
                 },
-                access: CoreFileSystemAccessMode::None,
+                access: CoreFileSystemAccessMode::Deny,
             },
         ],
         glob_scan_max_depth: NonZeroUsize::new(2),
@@ -445,7 +445,7 @@ fn additional_file_system_permissions_preserves_canonical_entries() {
                     path: FileSystemPath::GlobPattern {
                         pattern: "**/*.env".to_string(),
                     },
-                    access: FileSystemAccessMode::None,
+                    access: FileSystemAccessMode::Deny,
                 },
             ]),
         }
@@ -658,6 +658,33 @@ fn permission_profile_selection_uses_id_string() {
     assert_eq!(
         fork.permissions,
         Some(BUILT_IN_PERMISSION_PROFILE_WORKSPACE.to_string())
+    );
+}
+
+#[test]
+fn thread_path_params_deserialize_empty_path_as_none() {
+    let resume: ThreadResumeParams = serde_json::from_value(json!({
+        "threadId": "thread-1",
+        "path": "",
+    }))
+    .expect("thread/resume params deserialize");
+    assert_eq!(resume.path, None);
+
+    let fork: ThreadForkParams = serde_json::from_value(json!({
+        "threadId": "thread-1",
+        "path": "",
+    }))
+    .expect("thread/fork params deserialize");
+    assert_eq!(fork.path, None);
+
+    let resume_with_path: ThreadResumeParams = serde_json::from_value(json!({
+        "threadId": "thread-1",
+        "path": "/tmp/resume-thread.jsonl",
+    }))
+    .expect("thread/resume params deserialize");
+    assert_eq!(
+        resume_with_path.path,
+        Some(PathBuf::from("/tmp/resume-thread.jsonl"))
     );
 }
 
@@ -1511,6 +1538,7 @@ fn config_granular_approval_policy_is_marked_experimental() {
         review_model: None,
         model_context_window: None,
         model_auto_compact_token_limit: None,
+        model_auto_compact_token_limit_scope: None,
         model_provider: None,
         approval_policy: Some(AskForApproval::Granular {
             sandbox_approval: false,
@@ -1551,6 +1579,7 @@ fn config_approvals_reviewer_is_marked_experimental() {
         review_model: None,
         model_context_window: None,
         model_auto_compact_token_limit: None,
+        model_auto_compact_token_limit_scope: None,
         model_provider: None,
         approval_policy: None,
         approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
@@ -1585,6 +1614,7 @@ fn config_nested_profile_granular_approval_policy_is_marked_experimental() {
         review_model: None,
         model_context_window: None,
         model_auto_compact_token_limit: None,
+        model_auto_compact_token_limit_scope: None,
         model_provider: None,
         approval_policy: None,
         approvals_reviewer: None,
@@ -1641,6 +1671,7 @@ fn config_nested_profile_approvals_reviewer_is_marked_experimental() {
         review_model: None,
         model_context_window: None,
         model_auto_compact_token_limit: None,
+        model_auto_compact_token_limit_scope: None,
         model_provider: None,
         approval_policy: None,
         approvals_reviewer: None,
@@ -1699,6 +1730,7 @@ fn config_requirements_granular_allowed_approval_policy_is_marked_experimental()
             allowed_sandbox_modes: None,
             allowed_web_search_modes: None,
             allow_managed_hooks_only: None,
+            computer_use: None,
             feature_requirements: None,
             hooks: None,
             enforce_residency: None,

@@ -178,7 +178,9 @@ impl SessionConfiguration {
             profile_workspace_roots: self.profile_workspace_roots().to_vec(),
             ephemeral: self.original_config_do_not_use.ephemeral,
             reasoning_effort: self.collaboration_mode.reasoning_effort(),
+            reasoning_summary: self.model_reasoning_summary,
             personality: self.personality,
+            collaboration_mode: self.collaboration_mode.clone(),
             session_source: self.session_source.clone(),
             thread_source: self.thread_source,
         }
@@ -1048,14 +1050,13 @@ impl Session {
             .cloned();
             let mcp_runtime_environment = match turn_environment {
                 Some(turn_environment) => McpRuntimeEnvironment::new(
-                    Arc::clone(&turn_environment.environment),
+                    Some(Arc::clone(&turn_environment.environment)),
+                    sess.services.environment_manager.try_local_environment(),
                     turn_environment.cwd.to_path_buf(),
                 ),
                 None => McpRuntimeEnvironment::new(
-                    sess.services
-                        .environment_manager
-                        .default_environment()
-                        .unwrap_or_else(|| sess.services.environment_manager.local_environment()),
+                    sess.services.environment_manager.default_or_local_environment(),
+                    sess.services.environment_manager.try_local_environment(),
                     session_configuration.cwd.to_path_buf(),
                 ),
             };
