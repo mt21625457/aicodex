@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
+use crate::session::turn::EmptyInputTurnPolicy;
 use crate::session::turn::run_turn;
 use crate::session::turn_context::TurnContext;
 use crate::session_startup_prewarm::SessionStartupPrewarmResolution;
@@ -69,17 +70,20 @@ impl SessionTask for RegularTask {
         };
         let mut next_input = input;
         let mut prewarmed_client_session = prewarmed_client_session;
+        let mut empty_input_policy = EmptyInputTurnPolicy::AllowModelRequest;
         loop {
             let last_agent_message = run_turn(
                 Arc::clone(&sess),
                 Arc::clone(&ctx),
                 Arc::clone(&turn_extension_data),
                 next_input,
+                empty_input_policy,
                 prewarmed_client_session.take(),
                 cancellation_token.child_token(),
             )
             .instrument(run_turn_span.clone())
             .await;
+            empty_input_policy = EmptyInputTurnPolicy::RequirePendingInput;
             if !sess.input_queue.has_pending_input(&sess.active_turn).await {
                 return last_agent_message;
             }

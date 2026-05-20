@@ -4,6 +4,7 @@ use codex_protocol::openai_models::ConfigShellToolType;
 use codex_tools::ShellCommandBackendConfig;
 use codex_tools::ToolEnvironmentMode;
 
+use crate::tools::handlers::ClaudeBashHandler;
 use crate::tools::handlers::ExecCommandHandler;
 use crate::tools::handlers::ExecCommandHandlerOptions;
 use crate::tools::handlers::ShellCommandHandler;
@@ -45,19 +46,26 @@ pub(crate) fn build_shell_tools(options: ShellToolsOptions) -> Vec<Arc<dyn CoreT
                 &mut runtimes,
                 ShellCommandHandler::from(options.shell_command_backend),
             );
-        }
-        ConfigShellToolType::Disabled => {}
-        ConfigShellToolType::Default
-        | ConfigShellToolType::Local
-        | ConfigShellToolType::ShellCommand => {
             add_runtime(
                 &mut runtimes,
-                ShellCommandHandler::new(ShellCommandHandlerOptions {
+                ClaudeBashHandler::new(ShellCommandHandlerOptions {
                     backend_config: options.shell_command_backend,
                     allow_login_shell: options.allow_login_shell,
                     exec_permission_approvals_enabled: options.exec_permission_approvals_enabled,
                 }),
             );
+        }
+        ConfigShellToolType::Disabled => {}
+        ConfigShellToolType::Default
+        | ConfigShellToolType::Local
+        | ConfigShellToolType::ShellCommand => {
+            let shell_options = ShellCommandHandlerOptions {
+                backend_config: options.shell_command_backend,
+                allow_login_shell: options.allow_login_shell,
+                exec_permission_approvals_enabled: options.exec_permission_approvals_enabled,
+            };
+            add_runtime(&mut runtimes, ShellCommandHandler::new(shell_options));
+            add_runtime(&mut runtimes, ClaudeBashHandler::new(shell_options));
         }
     }
 

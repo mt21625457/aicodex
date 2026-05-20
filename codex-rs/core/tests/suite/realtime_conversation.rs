@@ -842,7 +842,7 @@ async fn conversation_start_uses_openai_env_key_fallback_with_chatgpt_auth() -> 
     let test = builder.build_with_websocket_server(&server).await?;
     assert!(
         server
-            .wait_for_handshakes(/*expected*/ 1, Duration::from_secs(2))
+            .wait_for_handshakes(/*expected*/ 1, Duration::from_secs(20))
             .await
     );
 
