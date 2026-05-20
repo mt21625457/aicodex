@@ -221,13 +221,13 @@ def _resolve_windows_command(cmd: list[str], env: dict[str, str]) -> list[str]:
 
 
 def detect_cli_target() -> str:
-    """Detect the target triple used by the npm aicodex launcher."""
+    """Detect the default target triple for local CLI builds."""
     system = platform.system().lower()
     machine = platform.machine().lower()
 
     mapping = {
-        ("linux", "x86_64"): "x86_64-unknown-linux-musl",
-        ("linux", "aarch64"): "aarch64-unknown-linux-musl",
+        ("linux", "x86_64"): "x86_64-unknown-linux-gnu",
+        ("linux", "aarch64"): "aarch64-unknown-linux-gnu",
         ("darwin", "x86_64"): "x86_64-apple-darwin",
         ("darwin", "arm64"): "aarch64-apple-darwin",
         ("windows", "amd64"): "x86_64-pc-windows-msvc",
@@ -239,7 +239,7 @@ def detect_cli_target() -> str:
     if key in mapping:
         return mapping[key]
 
-    raise RuntimeError(f"Unsupported platform for aicodex npm package: {system} ({machine})")
+    raise RuntimeError(f"Unsupported platform for local aicodex builds: {system} ({machine})")
 
 
 def executable_name(base_name: str, target: str) -> str:
