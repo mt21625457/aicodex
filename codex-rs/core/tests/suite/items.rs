@@ -1186,3 +1186,68 @@ async fn reasoning_raw_content_delta_respects_flag() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reasoning_raw_content_delta_precedes_assistant_text_delta() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+
+    let TestCodex { codex, .. } = test_codex()
+        .with_config(|config| {
+            config.show_raw_agent_reasoning = true;
+        })
+        .build(&server)
+        .await?;
+
+    let stream = sse(vec![
+        ev_response_created("resp-1"),
+        ev_reasoning_item_added("reasoning-raw", &[""]),
+        ev_reasoning_text_delta("raw detail"),
+        ev_message_item_added("msg-1", ""),
+        ev_output_text_delta("final answer"),
+        ev_assistant_message("msg-1", "final answer"),
+        ev_reasoning_item("reasoning-raw", &["complete"], &["raw detail"]),
+        ev_completed("resp-1"),
+    ]);
+    mount_sse_once(&server, stream).await;
+
+    codex
+        .submit(Op::UserInput {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: "show reasoning before text".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
+        })
+        .await?;
+
+    let reasoning_item = wait_for_event_match(&codex, |ev| match ev {
+        EventMsg::ItemStarted(ItemStartedEvent {
+            item: TurnItem::Reasoning(item),
+            ..
+        }) => Some(item.clone()),
+        _ => None,
+    })
+    .await;
+
+    let raw_delta = wait_for_event_match(&codex, |ev| match ev {
+        EventMsg::ReasoningRawContentDelta(event) => Some(event.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(raw_delta.item_id, reasoning_item.id);
+    assert_eq!(raw_delta.delta, "raw detail");
+
+    let assistant_delta = wait_for_event_match(&codex, |ev| match ev {
+        EventMsg::AgentMessageContentDelta(event) => Some(event.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(assistant_delta.delta, "final answer");
+
+    Ok(())
+}

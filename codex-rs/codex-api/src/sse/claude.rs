@@ -2189,6 +2189,98 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn claude_stream_emits_reasoning_item_for_empty_thinking_start() {
+        let events = run_events(
+            vec![
+                json!({
+                    "type": "message_start",
+                    "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": []}
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "thinking", "thinking": ""}
+                }),
+                json!({"type": "message_stop"}),
+            ],
+            HashMap::new(),
+        )
+        .await;
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ResponseEvent::OutputItemAdded(ResponseItem::Reasoning {
+                id,
+                summary,
+                content: Some(content),
+                encrypted_content: None,
+            }) if id == "msg_1_reasoning_0" && summary.is_empty() && content.is_empty()
+        )));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, ResponseEvent::OutputTextDelta(_)))
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_stream_keeps_thinking_delta_separate_from_delayed_text_delta() {
+        let events = run_events(
+            vec![
+                json!({
+                    "type": "message_start",
+                    "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": []}
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "thinking", "thinking": ""}
+                }),
+                json!({
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": "one-line thinking"}
+                }),
+                json!({
+                    "type": "content_block_stop",
+                    "index": 0
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 1,
+                    "content_block": {"type": "text", "text": ""}
+                }),
+                json!({
+                    "type": "content_block_delta",
+                    "index": 1,
+                    "delta": {"type": "text_delta", "text": "final answer"}
+                }),
+                json!({"type": "message_stop"}),
+            ],
+            HashMap::new(),
+        )
+        .await;
+
+        let reasoning_deltas: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match event {
+                ResponseEvent::ReasoningContentDelta { delta, .. } => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect();
+        let text_deltas: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match event {
+                ResponseEvent::OutputTextDelta(delta) => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(reasoning_deltas, vec!["one-line thinking"]);
+        assert_eq!(text_deltas, vec!["final answer"]);
+    }
+
+    #[tokio::test]
     async fn claude_stream_maps_citations_delta_to_visible_source_marker() {
         let events = run_events(
             vec![
