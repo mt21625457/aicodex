@@ -21,7 +21,7 @@
 - [x] 3.1 Add a deterministic Claude message normalization pass after
   `Prompt` conversion and before cache marking/validation.
 - [x] 3.2 Normalize whitespace-only assistant messages and empty text blocks.
-- [ ] 3.3 Normalize orphan/trailing thinking-only assistant content after
+- [x] 3.3 Normalize orphan/trailing thinking-only assistant content after
   validating the interaction with existing Claude signature replay tests.
 - [x] 3.4 Sanitize error `tool_result` content so nested content is text-only.
 - [x] 3.5 Preserve valid ordinary user content after required `tool_result`

@@ -80,6 +80,8 @@ struct ClaudeNormalizationStats {
     error_tool_result_empty_text_replaced: usize,
     error_tool_result_blocks_flattened: usize,
     error_tool_result_nested_blocks_dropped: usize,
+    unsigned_trailing_thinking_blocks_dropped: usize,
+    unsigned_orphan_thinking_messages_dropped: usize,
     provider_state_dropped: usize,
 }
 
@@ -910,6 +912,33 @@ fn normalize_claude_messages_with_stats(
                     stats.provider_state_dropped += 1;
                 }
                 block => content.push(block),
+            }
+        }
+        if message.role == ClaudeMessageRole::Assistant {
+            let only_unsigned_thinking = !content.is_empty()
+                && content.iter().all(|block| {
+                    matches!(
+                        block,
+                        ClaudeContentBlock::Thinking {
+                            signature: None,
+                            ..
+                        }
+                    )
+                });
+
+            while matches!(
+                content.last(),
+                Some(ClaudeContentBlock::Thinking {
+                    signature: None,
+                    ..
+                })
+            ) {
+                content.pop();
+                stats.unsigned_trailing_thinking_blocks_dropped += 1;
+            }
+
+            if only_unsigned_thinking {
+                stats.unsigned_orphan_thinking_messages_dropped += 1;
             }
         }
 
@@ -2732,6 +2761,86 @@ mod tests {
                 content: vec![ClaudeContentBlock::Thinking {
                     thinking: String::new(),
                     signature: Some("claude-thinking-signature".to_string()),
+                }],
+            }]
+        );
+    }
+
+    #[test]
+    fn drops_unsigned_orphan_thinking_only_assistant_message() {
+        let prompt = Prompt {
+            input: vec![
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "continue".to_string(),
+                    }],
+                    phase: None,
+                },
+                ResponseItem::Reasoning {
+                    id: "msg_1_reasoning_0".to_string(),
+                    summary: Vec::new(),
+                    content: Some(vec![ReasoningItemContent::ReasoningText {
+                        text: "stale thinking".to_string(),
+                    }]),
+                    encrypted_content: None,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let request =
+            build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
+                .expect("request");
+
+        assert_eq!(
+            request.messages,
+            vec![ClaudeMessage {
+                role: ClaudeMessageRole::User,
+                content: vec![ClaudeContentBlock::Text {
+                    text: "continue".to_string(),
+                    cache_control: None,
+                }],
+            }]
+        );
+    }
+
+    #[test]
+    fn strips_unsigned_trailing_thinking_from_assistant_message() {
+        let prompt = Prompt {
+            input: vec![
+                ResponseItem::Message {
+                    id: None,
+                    role: "assistant".to_string(),
+                    content: vec![ContentItem::OutputText {
+                        text: "answer".to_string(),
+                    }],
+                    phase: None,
+                },
+                ResponseItem::Reasoning {
+                    id: "msg_1_reasoning_0".to_string(),
+                    summary: Vec::new(),
+                    content: Some(vec![ReasoningItemContent::ReasoningText {
+                        text: "trailing thinking".to_string(),
+                    }]),
+                    encrypted_content: None,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let request =
+            build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
+                .expect("request");
+
+        assert_eq!(
+            request.messages,
+            vec![ClaudeMessage {
+                role: ClaudeMessageRole::Assistant,
+                content: vec![ClaudeContentBlock::Text {
+                    text: "answer".to_string(),
+                    cache_control: None,
                 }],
             }]
         );
