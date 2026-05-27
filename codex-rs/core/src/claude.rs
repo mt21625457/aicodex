@@ -1532,6 +1532,7 @@ fn function_output_content_blocks(
                 Some(image_content_block(image_url))
             }
             FunctionCallOutputContentItem::InputText { .. } => None,
+            FunctionCallOutputContentItem::EncryptedContent { .. } => None,
         })
         .collect()
 }

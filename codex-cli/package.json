@@ -1,6 +1,7 @@
 {
   "name": "@leagsoft/aicodex",
   "version": "0.1.2",
+  "description": "AICodex CLI is a coding agent that runs locally on your computer.",
   "license": "Apache-2.0",
   "bin": {
     "aicodex": "bin/aicodex.js"
@@ -10,8 +11,7 @@
     "node": ">=16"
   },
   "files": [
-    "bin",
-    "vendor"
+    "bin/aicodex.js"
   ],
   "repository": {
     "type": "git",

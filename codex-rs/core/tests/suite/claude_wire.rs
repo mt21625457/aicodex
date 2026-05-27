@@ -1566,6 +1566,7 @@ async fn claude_wire_caps_repeated_pause_turn_continuations() -> anyhow::Result<
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
             thread_settings: Default::default(),
         })
         .await?;

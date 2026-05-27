@@ -31,6 +31,7 @@ const MAX_WEB_SEARCH_QUERIES: usize = 5;
 const MAX_RESULTS_PER_QUERY: usize = 5;
 
 pub struct WebSearchHandler {
+    spec: ToolSpec,
     endpoint: Url,
     client: reqwest::Client,
     allowed_domains: Vec<String>,
@@ -42,6 +43,7 @@ impl WebSearchHandler {
             .expect("built-in DuckDuckGo HTML endpoint must parse");
         let allowed_domains = allowed_domains_from_spec(&spec);
         Self {
+            spec,
             endpoint,
             client: build_reqwest_client(),
             allowed_domains,
@@ -52,6 +54,7 @@ impl WebSearchHandler {
     fn new_for_test(spec: ToolSpec, endpoint: Url, client: reqwest::Client) -> Self {
         let allowed_domains = allowed_domains_from_spec(&spec);
         Self {
+            spec,
             endpoint,
             client,
             allowed_domains,
@@ -90,6 +93,10 @@ struct WebSearchResult {
 impl ToolExecutor<ToolInvocation> for WebSearchHandler {
     fn tool_name(&self) -> ToolName {
         ToolName::plain(WEB_SEARCH_TOOL_NAME)
+    }
+
+    fn spec(&self) -> ToolSpec {
+        self.spec.clone()
     }
 
     async fn handle(
