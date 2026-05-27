@@ -2103,6 +2103,7 @@ mod tests {
     use codex_protocol::plan_tool::StepStatus;
     use codex_protocol::protocol::AgentMessageEvent;
     use codex_protocol::protocol::AskForApproval;
+    use codex_protocol::protocol::ContextTokenUsageSource as CoreContextTokenUsageSource;
     use codex_protocol::protocol::CreditsSnapshot;
     use codex_protocol::protocol::EventMsg;
     use codex_protocol::protocol::GuardianAssessmentEvent;
@@ -3527,8 +3528,8 @@ mod tests {
                 reasoning_output_tokens: 1,
                 total_tokens: 23,
             },
-            context_tokens: None,
-            context_source: None,
+            context_tokens: Some(321),
+            context_source: Some(CoreContextTokenUsageSource::ClaudeCountTokens),
             model_context_window: Some(4096),
         };
         let rate_limits = RateLimitSnapshot {
@@ -3571,6 +3572,11 @@ mod tests {
                 assert_eq!(usage.total.total_tokens, 200);
                 assert_eq!(usage.total.cached_input_tokens, 25);
                 assert_eq!(usage.last.output_tokens, 7);
+                assert_eq!(usage.context_tokens, Some(321));
+                assert_eq!(
+                    usage.context_source,
+                    Some(codex_app_server_protocol::ContextTokenUsageSource::ClaudeCountTokens)
+                );
                 assert_eq!(usage.model_context_window, Some(4096));
             }
             other => bail!("unexpected notification: {other:?}"),

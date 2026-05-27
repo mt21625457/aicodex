@@ -330,7 +330,10 @@ impl ContextManager {
         let last_tokens = self
             .token_info
             .as_ref()
-            .map(|info| info.last_token_usage.total_tokens)
+            .map(|info| {
+                info.context_tokens
+                    .unwrap_or(info.last_token_usage.total_tokens)
+            })
             .unwrap_or(0);
         let items_after_last_model_generated_tokens = self
             .items_after_last_model_generated_item()

@@ -16,6 +16,7 @@ use chrono::Duration as ChronoDuration;
 use chrono::TimeZone;
 use chrono::Utc;
 use codex_app_server_protocol::AskForApproval;
+use codex_app_server_protocol::ContextTokenUsageSource;
 use codex_app_server_protocol::CreditsSnapshot;
 use codex_app_server_protocol::RateLimitSnapshot;
 use codex_app_server_protocol::RateLimitWindow;
@@ -116,6 +117,8 @@ fn token_info_for(model_slug: &str, config: &Config, usage: &TokenUsage) -> Toke
     TokenUsageInfo {
         total_token_usage: usage.clone(),
         last_token_usage: usage.clone(),
+        context_tokens: None,
+        context_source: None,
         model_context_window: context_window,
     }
 }
@@ -1780,6 +1783,8 @@ async fn status_context_window_uses_last_usage() {
     let token_info = TokenUsageInfo {
         total_token_usage: total_usage.clone(),
         last_token_usage: last_usage,
+        context_tokens: None,
+        context_source: None,
         model_context_window: config.model_context_window,
     };
     let composite = new_status_output(
@@ -1810,5 +1815,71 @@ async fn status_context_window_uses_last_usage() {
     assert!(
         !context_line.contains("102K"),
         "context line should not use total aggregated tokens, got: {context_line}"
+    );
+}
+
+#[tokio::test]
+async fn status_context_window_prefers_context_tokens() {
+    let temp_home = TempDir::new().expect("temp home");
+    let mut config = test_config(&temp_home).await;
+    config.model_context_window = Some(272_000);
+
+    let account_display = test_status_account_display();
+    let total_usage = TokenUsage {
+        input_tokens: 12_800,
+        cached_input_tokens: 0,
+        output_tokens: 879,
+        reasoning_output_tokens: 0,
+        total_tokens: 102_000,
+    };
+    let last_usage = TokenUsage {
+        input_tokens: 12_800,
+        cached_input_tokens: 0,
+        output_tokens: 879,
+        reasoning_output_tokens: 0,
+        total_tokens: 13_679,
+    };
+
+    let now = chrono::Local
+        .with_ymd_and_hms(2024, 6, 1, 12, 0, 0)
+        .single()
+        .expect("timestamp");
+
+    let model_slug = crate::legacy_core::test_support::get_model_offline(config.model.as_deref());
+    let token_info = TokenUsageInfo {
+        total_token_usage: total_usage.clone(),
+        last_token_usage: last_usage,
+        context_tokens: Some(16_000),
+        context_source: Some(ContextTokenUsageSource::ClaudeCountTokens),
+        model_context_window: config.model_context_window,
+    };
+    let composite = new_status_output(
+        &config,
+        account_display.as_ref(),
+        Some(&token_info),
+        &total_usage,
+        &None,
+        /*thread_name*/ None,
+        /*forked_from*/ None,
+        /*rate_limits*/ None,
+        None,
+        now,
+        &model_slug,
+        /*collaboration_mode*/ None,
+        /*reasoning_effort_override*/ None,
+    );
+    let rendered_lines = render_lines(&composite.display_lines(/*width*/ 80));
+    let context_line = rendered_lines
+        .into_iter()
+        .find(|line| line.contains("Context window"))
+        .expect("context line");
+
+    assert!(
+        context_line.contains("16K used / 272K"),
+        "expected context line to reflect context_tokens, got: {context_line}"
+    );
+    assert!(
+        !context_line.contains("13.7K") && !context_line.contains("102K"),
+        "context line should not use last or total usage, got: {context_line}"
     );
 }

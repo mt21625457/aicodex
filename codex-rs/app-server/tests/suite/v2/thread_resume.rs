@@ -18,6 +18,7 @@ use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::CommandExecutionApprovalDecision;
 use codex_app_server_protocol::CommandExecutionRequestApprovalResponse;
+use codex_app_server_protocol::ContextTokenUsageSource;
 use codex_app_server_protocol::FileChangeApprovalDecision;
 use codex_app_server_protocol::FileChangeRequestApprovalResponse;
 use codex_app_server_protocol::ItemStartedNotification;
@@ -1333,6 +1334,11 @@ async fn thread_resume_emits_restored_token_usage_before_next_turn() -> Result<(
     assert_eq!(notification.token_usage.total.output_tokens, 30);
     assert_eq!(notification.token_usage.total.reasoning_output_tokens, 10);
     assert_eq!(notification.token_usage.last.total_tokens, 90);
+    assert_eq!(notification.token_usage.context_tokens, Some(80));
+    assert_eq!(
+        notification.token_usage.context_source,
+        Some(ContextTokenUsageSource::Replay)
+    );
     assert_eq!(notification.token_usage.model_context_window, Some(200_000));
 
     Ok(())

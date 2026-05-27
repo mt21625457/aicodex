@@ -358,6 +358,8 @@ pub(super) fn make_token_info(total_tokens: i64, context_window: i64) -> TokenUs
     TokenUsageInfo {
         total_token_usage: usage(total_tokens),
         last_token_usage: usage(total_tokens),
+        context_tokens: None,
+        context_source: None,
         model_context_window: Some(context_window),
     }
 }
@@ -391,8 +393,8 @@ pub(super) fn handle_token_count(chat: &mut ChatWidget, info: Option<TokenUsageI
                         token_usage: codex_app_server_protocol::ThreadTokenUsage {
                             total: token_usage_breakdown(info.total_token_usage),
                             last: token_usage_breakdown(info.last_token_usage),
-                            context_tokens: None,
-                            context_source: None,
+                            context_tokens: info.context_tokens,
+                            context_source: info.context_source,
                             model_context_window: info.model_context_window,
                         },
                     },

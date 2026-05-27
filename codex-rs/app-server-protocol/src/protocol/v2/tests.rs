@@ -81,17 +81,72 @@ fn thread_token_usage_from_core_preserves_context_fields() {
         model_context_window: Some(200_000),
     });
 
-    assert_eq!(usage.context_tokens, Some(777));
     assert_eq!(
-        usage.context_source,
-        Some(ContextTokenUsageSource::ClaudeCountTokens)
+        usage,
+        ThreadTokenUsage {
+            total: TokenUsageBreakdown {
+                total_tokens: 1350,
+                input_tokens: 1000,
+                cached_input_tokens: 100,
+                output_tokens: 200,
+                reasoning_output_tokens: 50,
+            },
+            last: TokenUsageBreakdown {
+                total_tokens: 920,
+                input_tokens: 700,
+                cached_input_tokens: 70,
+                output_tokens: 120,
+                reasoning_output_tokens: 30,
+            },
+            context_tokens: Some(777),
+            context_source: Some(ContextTokenUsageSource::ClaudeCountTokens),
+            model_context_window: Some(200_000),
+        }
     );
-    assert_eq!(usage.model_context_window, Some(200_000));
 
     let json = serde_json::to_value(&usage).expect("token usage should serialize");
     assert_eq!(json["contextTokens"], json!(777));
     assert_eq!(json["contextSource"], json!("claudeCountTokens"));
     assert_eq!(json["modelContextWindow"], json!(200_000));
+}
+
+#[test]
+fn thread_token_usage_from_core_serializes_null_context_fields() {
+    let usage = ThreadTokenUsage::from(CoreTokenUsageInfo {
+        total_token_usage: CoreTokenUsage::default(),
+        last_token_usage: CoreTokenUsage::default(),
+        context_tokens: None,
+        context_source: None,
+        model_context_window: None,
+    });
+
+    assert_eq!(
+        usage,
+        ThreadTokenUsage {
+            total: TokenUsageBreakdown {
+                total_tokens: 0,
+                input_tokens: 0,
+                cached_input_tokens: 0,
+                output_tokens: 0,
+                reasoning_output_tokens: 0,
+            },
+            last: TokenUsageBreakdown {
+                total_tokens: 0,
+                input_tokens: 0,
+                cached_input_tokens: 0,
+                output_tokens: 0,
+                reasoning_output_tokens: 0,
+            },
+            context_tokens: None,
+            context_source: None,
+            model_context_window: None,
+        }
+    );
+
+    let json = serde_json::to_value(&usage).expect("token usage should serialize");
+    assert_eq!(json["contextTokens"], serde_json::Value::Null);
+    assert_eq!(json["contextSource"], serde_json::Value::Null);
+    assert_eq!(json["modelContextWindow"], serde_json::Value::Null);
 }
 
 #[test]
@@ -110,6 +165,61 @@ fn context_token_usage_source_serializes_in_flight_estimate() {
     );
     let json = serde_json::to_value(&usage).expect("token usage should serialize");
     assert_eq!(json["contextSource"], json!("inFlightEstimate"));
+}
+
+#[test]
+fn context_token_usage_source_serializes_all_sources() {
+    let cases = [
+        (
+            CoreContextTokenUsageSource::ProviderUsage,
+            ContextTokenUsageSource::ProviderUsage,
+            "providerUsage",
+        ),
+        (
+            CoreContextTokenUsageSource::ClaudeCountTokens,
+            ContextTokenUsageSource::ClaudeCountTokens,
+            "claudeCountTokens",
+        ),
+        (
+            CoreContextTokenUsageSource::DeepseekStreamUsage,
+            ContextTokenUsageSource::DeepseekStreamUsage,
+            "deepseekStreamUsage",
+        ),
+        (
+            CoreContextTokenUsageSource::LocalEstimate,
+            ContextTokenUsageSource::LocalEstimate,
+            "localEstimate",
+        ),
+        (
+            CoreContextTokenUsageSource::InFlightEstimate,
+            ContextTokenUsageSource::InFlightEstimate,
+            "inFlightEstimate",
+        ),
+        (
+            CoreContextTokenUsageSource::ContextWindowFull,
+            ContextTokenUsageSource::ContextWindowFull,
+            "contextWindowFull",
+        ),
+        (
+            CoreContextTokenUsageSource::Replay,
+            ContextTokenUsageSource::Replay,
+            "replay",
+        ),
+    ];
+
+    for (core_source, api_source, expected_json) in cases {
+        let usage = ThreadTokenUsage::from(CoreTokenUsageInfo {
+            total_token_usage: CoreTokenUsage::default(),
+            last_token_usage: CoreTokenUsage::default(),
+            context_tokens: Some(123),
+            context_source: Some(core_source),
+            model_context_window: Some(200_000),
+        });
+
+        assert_eq!(usage.context_source, Some(api_source));
+        let json = serde_json::to_value(&usage).expect("token usage should serialize");
+        assert_eq!(json["contextSource"], json!(expected_json));
+    }
 }
 
 #[test]

@@ -872,6 +872,8 @@ fn token_usage_info_from_app_server(token_usage: ThreadTokenUsage) -> TokenUsage
             output_tokens: token_usage.last.output_tokens,
             reasoning_output_tokens: token_usage.last.reasoning_output_tokens,
         },
+        context_tokens: token_usage.context_tokens,
+        context_source: token_usage.context_source,
         model_context_window: token_usage.model_context_window,
     }
 }
@@ -1106,10 +1108,8 @@ impl ChatWidget {
     }
 
     fn context_remaining_percent(&self, info: &TokenUsageInfo) -> Option<i64> {
-        info.model_context_window.map(|window| {
-            info.last_token_usage
-                .percent_of_context_window_remaining(window)
-        })
+        info.model_context_window
+            .map(|window| info.percent_of_context_window_remaining(window))
     }
 
     fn context_used_tokens(&self, info: &TokenUsageInfo, percent_known: bool) -> Option<i64> {
@@ -1117,7 +1117,7 @@ impl ChatWidget {
             return None;
         }
 
-        Some(info.total_token_usage.tokens_in_context_window())
+        Some(info.tokens_in_context_window())
     }
 
     fn restore_pre_review_token_info(&mut self) {

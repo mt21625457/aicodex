@@ -2,6 +2,7 @@ use super::*;
 use crate::bottom_pane::goal_status_indicator_line;
 use crate::chatwidget::rate_limits::NUDGE_MODEL_SLUG;
 use crate::chatwidget::rate_limits::get_limits_duration;
+use codex_app_server_protocol::ContextTokenUsageSource;
 use pretty_assertions::assert_eq;
 use ratatui::backend::TestBackend;
 use serial_test::serial;
@@ -84,6 +85,8 @@ async fn context_indicator_shows_used_tokens_when_window_unknown() {
     let token_info = TokenUsageInfo {
         total_token_usage: token_usage.clone(),
         last_token_usage: token_usage,
+        context_tokens: None,
+        context_source: None,
         model_context_window: None,
     };
 
@@ -93,6 +96,37 @@ async fn context_indicator_shows_used_tokens_when_window_unknown() {
     assert_eq!(
         chat.bottom_pane.context_window_used_tokens(),
         Some(total_tokens)
+    );
+}
+
+#[tokio::test]
+async fn context_indicator_prefers_context_tokens_when_window_unknown() {
+    let (mut chat, _rx, _ops) = make_chatwidget_manual(Some("unknown-model")).await;
+
+    chat.config.model_context_window = None;
+    let token_info = TokenUsageInfo {
+        total_token_usage: TokenUsage {
+            total_tokens: 106_000,
+            ..TokenUsage::default()
+        },
+        last_token_usage: TokenUsage {
+            total_tokens: 12_000,
+            ..TokenUsage::default()
+        },
+        context_tokens: Some(88_000),
+        context_source: Some(ContextTokenUsageSource::ClaudeCountTokens),
+        model_context_window: None,
+    };
+
+    handle_token_count(&mut chat, Some(token_info));
+
+    assert_eq!(chat.bottom_pane.context_window_percent(), None);
+    assert_eq!(chat.bottom_pane.context_window_used_tokens(), Some(88_000));
+    assert_eq!(
+        chat.token_info
+            .as_ref()
+            .and_then(|info| info.context_source),
+        Some(ContextTokenUsageSource::ClaudeCountTokens)
     );
 }
 
@@ -2024,6 +2058,41 @@ async fn status_line_legacy_context_usage_renders_context_used_percent() {
         drain_insert_history(&mut rx).is_empty(),
         "legacy context-usage should remain a valid status line item"
     );
+}
+
+#[tokio::test]
+async fn status_line_context_items_prefer_context_tokens() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config.tui_status_line = Some(vec![
+        "context-used".to_string(),
+        "context-remaining".to_string(),
+        "context-usage".to_string(),
+    ]);
+
+    handle_token_count(
+        &mut chat,
+        Some(TokenUsageInfo {
+            total_token_usage: TokenUsage {
+                total_tokens: 106_000,
+                ..TokenUsage::default()
+            },
+            last_token_usage: TokenUsage {
+                total_tokens: 12_000,
+                ..TokenUsage::default()
+            },
+            context_tokens: Some(16_000),
+            context_source: Some(ContextTokenUsageSource::ClaudeCountTokens),
+            model_context_window: Some(20_000),
+        }),
+    );
+    chat.refresh_status_line();
+
+    assert_eq!(
+        status_line_text(&chat),
+        Some("Context 50% used · Context 50% left · Context 50% used".to_string())
+    );
+    assert!(drain_insert_history(&mut rx).is_empty());
 }
 
 #[tokio::test]

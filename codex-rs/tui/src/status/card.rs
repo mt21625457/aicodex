@@ -6,6 +6,7 @@ use crate::history_cell::with_border_with_inner_width;
 use crate::legacy_core::config::Config;
 use crate::token_usage::TokenUsage;
 use crate::token_usage::TokenUsageInfo;
+use crate::token_usage::percent_of_context_window_remaining_for_tokens;
 use crate::version::CODEX_CLI_VERSION;
 use chrono::DateTime;
 use chrono::Local;
@@ -320,14 +321,19 @@ impl StatusHistoryCell {
         let account = compose_account_display(account_display);
         let session_id = session_id.as_ref().map(std::string::ToString::to_string);
         let forked_from = forked_from.map(|id| id.to_string());
-        let default_usage = TokenUsage::default();
-        let (context_usage, context_window) = match token_info {
-            Some(info) => (&info.last_token_usage, info.model_context_window),
-            None => (&default_usage, config.model_context_window),
+        let (tokens_in_context, context_window) = match token_info {
+            Some(info) => (info.tokens_in_context_window(), info.model_context_window),
+            None => (
+                TokenUsage::default().tokens_in_context_window(),
+                config.model_context_window,
+            ),
         };
         let context_window = context_window.map(|window| StatusContextWindowData {
-            percent_remaining: context_usage.percent_of_context_window_remaining(window),
-            tokens_in_context: context_usage.tokens_in_context_window(),
+            percent_remaining: percent_of_context_window_remaining_for_tokens(
+                tokens_in_context,
+                window,
+            ),
+            tokens_in_context,
             window,
         });
 

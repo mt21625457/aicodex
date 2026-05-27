@@ -346,15 +346,13 @@ impl ChatWidget {
         let Some(context_window) = self.status_line_context_window_size() else {
             return Some(100);
         };
-        let default_usage = TokenUsage::default();
-        let usage = self
-            .token_info
-            .as_ref()
-            .map(|info| &info.last_token_usage)
-            .unwrap_or(&default_usage);
         Some(
-            usage
-                .percent_of_context_window_remaining(context_window)
+            self.token_info
+                .as_ref()
+                .map(|info| info.percent_of_context_window_remaining(context_window))
+                .unwrap_or_else(|| {
+                    TokenUsage::default().percent_of_context_window_remaining(context_window)
+                })
                 .clamp(0, 100),
         )
     }

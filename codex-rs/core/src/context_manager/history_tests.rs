@@ -358,6 +358,34 @@ fn total_token_usage_includes_all_items_after_last_model_generated_item() {
 }
 
 #[test]
+fn total_token_usage_prefers_context_tokens_when_available() {
+    let mut history = create_history_with_items(vec![assistant_msg("already counted by API")]);
+    history.update_token_info(
+        &TokenUsage {
+            total_tokens: 100,
+            ..Default::default()
+        },
+        /*model_context_window*/ None,
+    );
+    let info = history.token_info.as_mut().expect("token info");
+    info.context_tokens = Some(250);
+    info.context_source = Some(ContextTokenUsageSource::ClaudeCountTokens);
+
+    let added_user = user_msg("new user message");
+    let added_tool_output = custom_tool_call_output("tool-tail", "new tool output");
+    history.record_items(
+        [&added_user, &added_tool_output],
+        TruncationPolicy::Tokens(10_000),
+    );
+
+    assert_eq!(
+        history.get_total_token_usage(/*server_reasoning_included*/ true),
+        250 + estimate_item_token_count(&added_user)
+            + estimate_item_token_count(&added_tool_output)
+    );
+}
+
+#[test]
 fn for_prompt_strips_images_when_model_does_not_support_images() {
     let items = vec![
         ResponseItem::Message {

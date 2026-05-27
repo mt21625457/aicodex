@@ -1,5 +1,6 @@
 use anyhow::Result;
 use codex_protocol::ThreadId;
+use codex_protocol::protocol::ContextTokenUsageSource;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::GitInfo;
 use codex_protocol::protocol::SessionMeta;
@@ -91,8 +92,8 @@ pub fn create_fake_rollout_with_token_usage(
                 reasoning_output_tokens: 5,
                 total_tokens: 90,
             },
-            context_tokens: None,
-            context_source: None,
+            context_tokens: Some(80),
+            context_source: Some(ContextTokenUsageSource::Replay),
             model_context_window: Some(200_000),
         }),
         rate_limits: None,

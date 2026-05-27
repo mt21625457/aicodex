@@ -12,6 +12,7 @@ use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::ContextTokenUsageSource;
 use codex_protocol::protocol::ConversationStartParams;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
@@ -1176,13 +1177,32 @@ async fn remote_compact_runs_automatically() -> Result<()> {
         })
         .await?;
 
-    let message = wait_for_event_match(&codex, |event| match event {
-        EventMsg::ContextCompacted(_) => Some(true),
-        _ => None,
-    })
-    .await;
-    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
-    assert!(message);
+    let mut saw_context_compacted = false;
+    let mut post_compact_usage = None;
+    loop {
+        let event = wait_for_event(&codex, |_| true).await;
+        match event {
+            EventMsg::ContextCompacted(_) => {
+                saw_context_compacted = true;
+            }
+            EventMsg::TokenCount(payload)
+                if payload.info.as_ref().is_some_and(|info| {
+                    info.context_source == Some(ContextTokenUsageSource::LocalEstimate)
+                }) =>
+            {
+                post_compact_usage = payload.info;
+            }
+            EventMsg::TurnComplete(_) => break,
+            _ => {}
+        }
+    }
+    assert!(saw_context_compacted);
+    assert!(
+        post_compact_usage
+            .and_then(|info| info.context_tokens)
+            .is_some_and(|tokens| tokens > 0),
+        "remote compaction should emit a recomputed positive context occupancy"
+    );
     assert_eq!(compact_mock.requests().len(), 1);
     assert_eq!(
         compact_mock
