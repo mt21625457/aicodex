@@ -328,6 +328,10 @@ pub enum ClaudeContentBlock {
         tool_use_id: String,
         content: ClaudeToolResultContent,
         is_error: bool,
+        cache_reference: Option<String>,
+    },
+    CacheEdits {
+        edits: Vec<ClaudeCacheEdit>,
     },
     Thinking {
         thinking: String,
@@ -374,6 +378,7 @@ impl Serialize for ClaudeContentBlock {
                 tool_use_id,
                 content,
                 is_error,
+                cache_reference,
             } => {
                 let mut map = serializer.serialize_map(None)?;
                 map.serialize_entry("type", "tool_result")?;
@@ -382,6 +387,15 @@ impl Serialize for ClaudeContentBlock {
                 if *is_error {
                     map.serialize_entry("is_error", is_error)?;
                 }
+                if let Some(cache_reference) = cache_reference {
+                    map.serialize_entry("cache_reference", cache_reference)?;
+                }
+                map.end()
+            }
+            ClaudeContentBlock::CacheEdits { edits } => {
+                let mut map = serializer.serialize_map(Some(2))?;
+                map.serialize_entry("type", "cache_edits")?;
+                map.serialize_entry("edits", edits)?;
                 map.end()
             }
             ClaudeContentBlock::Thinking {
@@ -473,6 +487,19 @@ fn deserialize_claude_content_block(value: Value) -> Result<ClaudeContentBlock, 
                 .get("is_error")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            cache_reference: object
+                .get("cache_reference")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        }),
+        "cache_edits" => Ok(ClaudeContentBlock::CacheEdits {
+            edits: object
+                .get("edits")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|err| err.to_string())?
+                .unwrap_or_default(),
         }),
         "thinking" => Ok(ClaudeContentBlock::Thinking {
             thinking: object
@@ -501,6 +528,28 @@ pub enum ClaudeImageSource {
 pub enum ClaudeToolResultContent {
     Text(String),
     Blocks(Vec<ClaudeContentBlock>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClaudeCacheEdit {
+    #[serde(rename = "type")]
+    pub kind: ClaudeCacheEditKind,
+    pub cache_reference: String,
+}
+
+impl ClaudeCacheEdit {
+    pub fn delete(cache_reference: String) -> Self {
+        Self {
+            kind: ClaudeCacheEditKind::Delete,
+            cache_reference,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaudeCacheEditKind {
+    Delete,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -822,6 +871,7 @@ mod claude_wire_tests {
                 tool_use_id: "toolu_1".to_string(),
                 content: ClaudeToolResultContent::Text("sunny".to_string()),
                 is_error: false,
+                cache_reference: None,
             },
             json!({
                 "type": "tool_result",
@@ -834,6 +884,7 @@ mod claude_wire_tests {
                 tool_use_id: "toolu_1".to_string(),
                 content: ClaudeToolResultContent::Text("boom".to_string()),
                 is_error: true,
+                cache_reference: None,
             },
             json!({
                 "type": "tool_result",
@@ -850,11 +901,25 @@ mod claude_wire_tests {
                     cache_control: None,
                 }]),
                 is_error: false,
+                cache_reference: Some("toolu_1".to_string()),
             },
             json!({
                 "type": "tool_result",
                 "tool_use_id": "toolu_1",
+                "cache_reference": "toolu_1",
                 "content": [{"type": "text", "text": "inner"}]
+            }),
+        );
+        roundtrip(
+            &ClaudeContentBlock::CacheEdits {
+                edits: vec![ClaudeCacheEdit::delete("toolu_1".to_string())],
+            },
+            json!({
+                "type": "cache_edits",
+                "edits": [{
+                    "type": "delete",
+                    "cache_reference": "toolu_1"
+                }]
             }),
         );
         roundtrip(

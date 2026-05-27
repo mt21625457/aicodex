@@ -68,11 +68,11 @@
   tests.
 - [x] 7.2 Add a provider capability design for cache references and cache edits
   before emitting new fields.
-- [ ] 7.3 Implement `cache_reference` on cached-prefix tool results only behind
+- [x] 7.3 Implement `cache_reference` on cached-prefix tool results only behind
   an explicit provider capability.
-- [ ] 7.4 Implement `cache_edits` insertion, dedupe, and pinning only after
+- [x] 7.4 Implement `cache_edits` insertion, dedupe, and pinning only after
   request-shape tests prove valid placement.
-- [ ] 7.5 Add tests proving unsupported Claude-compatible providers do not
+- [x] 7.5 Add tests proving unsupported Claude-compatible providers do not
   receive cache-edit fields.
 
 ## 8. Tool Input Normalization

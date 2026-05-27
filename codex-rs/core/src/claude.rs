@@ -1,6 +1,7 @@
 use crate::client_common::Prompt;
 use crate::client_common::is_claude_reasoning_item_id;
 use codex_api::ClaudeCacheControl;
+use codex_api::ClaudeCacheEdit;
 use codex_api::ClaudeCacheTtl;
 use codex_api::ClaudeContentBlock;
 use codex_api::ClaudeContextManagement;
@@ -66,6 +67,7 @@ pub(crate) struct ClaudeRequestOptions {
     pub(crate) reasoning_effort: Option<ReasoningEffortConfig>,
     pub(crate) service_tier: Option<ServiceTier>,
     pub(crate) prompt_cache: ClaudePromptCacheOptions,
+    pub(crate) cache_editing: ClaudeCacheEditingOptions,
     pub(crate) context_management: Option<ClaudeContextManagement>,
     pub(crate) provider_compat: ClaudeProviderCompat,
 }
@@ -113,6 +115,18 @@ pub(crate) fn provider_compat_for_provider(
     }
 }
 
+pub(crate) fn cache_editing_options_for_provider(
+    provider_compat: ClaudeProviderCompat,
+) -> ClaudeCacheEditingOptions {
+    ClaudeCacheEditingOptions {
+        capability: match provider_compat {
+            ClaudeProviderCompat::Anthropic => ClaudeCacheEditingCapability::Enabled,
+            ClaudeProviderCompat::DeepSeek => ClaudeCacheEditingCapability::Disabled,
+        },
+        ..Default::default()
+    }
+}
+
 fn looks_like_deepseek_identifier(value: &str) -> bool {
     value
         .to_ascii_lowercase()
@@ -132,6 +146,26 @@ pub(crate) enum ClaudePromptCacheMode {
     Off,
     System,
     Conversation,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ClaudeCacheEditingOptions {
+    pub(crate) capability: ClaudeCacheEditingCapability,
+    pub(crate) new_delete_references: Vec<String>,
+    pub(crate) pinned_deletes: Vec<ClaudePinnedCacheEdits>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum ClaudeCacheEditingCapability {
+    #[default]
+    Disabled,
+    Enabled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ClaudePinnedCacheEdits {
+    pub(crate) user_message_index: usize,
+    pub(crate) delete_references: Vec<String>,
 }
 
 pub(crate) fn build_claude_messages_request(
@@ -394,6 +428,7 @@ pub(crate) fn build_claude_messages_request(
         .collect::<Vec<_>>()
         .join("\n\n");
     apply_prompt_cache_policy(options.prompt_cache, &mut tools, &system, &mut messages);
+    apply_cache_editing_policy(options.cache_editing, &mut messages);
     validate_tool_result_history(&messages)?;
     let (thinking, output_config) = match options.provider_compat {
         ClaudeProviderCompat::Anthropic => (claude_thinking_config(options.reasoning_effort), None),
@@ -516,6 +551,94 @@ fn apply_prompt_cache_policy(
     }
 }
 
+fn apply_cache_editing_policy(options: ClaudeCacheEditingOptions, messages: &mut [ClaudeMessage]) {
+    if options.capability == ClaudeCacheEditingCapability::Disabled {
+        return;
+    }
+
+    let mut seen_delete_references = HashSet::new();
+    for pinned in options.pinned_deletes {
+        let edits = cache_delete_edits(pinned.delete_references, &mut seen_delete_references);
+        if edits.is_empty() {
+            continue;
+        }
+        if let Some(message) = messages.get_mut(pinned.user_message_index)
+            && message.role == ClaudeMessageRole::User
+        {
+            insert_cache_edits_after_tool_results(&mut message.content, edits);
+        }
+    }
+
+    let edits = cache_delete_edits(options.new_delete_references, &mut seen_delete_references);
+    if !edits.is_empty()
+        && let Some(message) = messages
+            .iter_mut()
+            .rev()
+            .find(|message| message.role == ClaudeMessageRole::User)
+    {
+        insert_cache_edits_after_tool_results(&mut message.content, edits);
+    }
+
+    mark_cached_prefix_tool_results(messages);
+}
+
+fn cache_delete_edits(references: Vec<String>, seen: &mut HashSet<String>) -> Vec<ClaudeCacheEdit> {
+    references
+        .into_iter()
+        .map(|reference| reference.trim().to_string())
+        .filter(|reference| !reference.is_empty())
+        .filter(|reference| seen.insert(reference.clone()))
+        .map(ClaudeCacheEdit::delete)
+        .collect()
+}
+
+fn insert_cache_edits_after_tool_results(
+    content: &mut Vec<ClaudeContentBlock>,
+    edits: Vec<ClaudeCacheEdit>,
+) {
+    let insert_at = content
+        .iter()
+        .position(|block| !is_tool_result_block(block))
+        .unwrap_or(content.len());
+    content.insert(insert_at, ClaudeContentBlock::CacheEdits { edits });
+}
+
+fn mark_cached_prefix_tool_results(messages: &mut [ClaudeMessage]) {
+    let Some(last_cache_control_message_index) = messages
+        .iter()
+        .rposition(|message| message.content.iter().any(has_cache_control))
+    else {
+        return;
+    };
+
+    for message in messages.iter_mut().take(last_cache_control_message_index) {
+        if message.role != ClaudeMessageRole::User {
+            continue;
+        }
+        for block in &mut message.content {
+            if let ClaudeContentBlock::ToolResult {
+                tool_use_id,
+                cache_reference,
+                ..
+            } = block
+                && cache_reference.is_none()
+            {
+                *cache_reference = Some(tool_use_id.clone());
+            }
+        }
+    }
+}
+
+fn has_cache_control(block: &ClaudeContentBlock) -> bool {
+    matches!(
+        block,
+        ClaudeContentBlock::Text {
+            cache_control: Some(_),
+            ..
+        }
+    )
+}
+
 fn mark_latest_stable_prior_text_block(
     messages: &mut [ClaudeMessage],
     cache_control: Option<ClaudeCacheControl>,
@@ -619,6 +742,7 @@ fn normalize_claude_messages(
                     tool_use_id,
                     content: result_content,
                     is_error: true,
+                    cache_reference,
                 } => content.push(ClaudeContentBlock::ToolResult {
                     tool_use_id,
                     content: match result_content {
@@ -641,6 +765,7 @@ fn normalize_claude_messages(
                                     | ClaudeContentBlock::Image { .. }
                                     | ClaudeContentBlock::ToolUse { .. }
                                     | ClaudeContentBlock::ToolResult { .. }
+                                    | ClaudeContentBlock::CacheEdits { .. }
                                     | ClaudeContentBlock::Thinking { .. }
                                     | ClaudeContentBlock::ProviderState { .. } => None,
                                 })
@@ -654,6 +779,7 @@ fn normalize_claude_messages(
                         }
                     },
                     is_error: true,
+                    cache_reference,
                 }),
                 ClaudeContentBlock::ProviderState { value }
                     if !should_preserve_provider_state(&value, history_requirements) => {}
@@ -724,6 +850,7 @@ fn prune_excess_claude_media(messages: &mut [ClaudeMessage], limit: usize) {
                     tool_use_id,
                     content: ClaudeToolResultContent::Blocks(blocks),
                     is_error,
+                    cache_reference,
                 } => {
                     let mut kept_blocks = Vec::with_capacity(blocks.len());
                     let mut removed_nested_media = false;
@@ -742,6 +869,7 @@ fn prune_excess_claude_media(messages: &mut [ClaudeMessage], limit: usize) {
                         tool_use_id,
                         content: ClaudeToolResultContent::Blocks(kept_blocks),
                         is_error,
+                        cache_reference,
                     });
                 }
                 block if to_remove > 0 && is_claude_media_block(&block) => {
@@ -766,6 +894,7 @@ fn count_claude_media(content: &[ClaudeContentBlock]) -> usize {
             ClaudeContentBlock::Text { .. }
             | ClaudeContentBlock::ToolUse { .. }
             | ClaudeContentBlock::ToolResult { .. }
+            | ClaudeContentBlock::CacheEdits { .. }
             | ClaudeContentBlock::Thinking { .. }
             | ClaudeContentBlock::ProviderState { .. } => 0,
         })
@@ -1137,6 +1266,7 @@ fn tool_result_block(
         tool_use_id: call_id.to_string(),
         content,
         is_error,
+        cache_reference: None,
     }
 }
 
@@ -1593,6 +1723,7 @@ mod tests {
                         tool_use_id: "call_1".to_string(),
                         content: ClaudeToolResultContent::Text("ok".to_string()),
                         is_error: false,
+                        cache_reference: None,
                     }],
                 },
             ]
@@ -1704,6 +1835,7 @@ mod tests {
                 tool_use_id: "call_1".to_string(),
                 content: ClaudeToolResultContent::Text("first\n\nsecond".to_string()),
                 is_error: true,
+                cache_reference: None,
             }]
         );
     }
@@ -1750,6 +1882,7 @@ mod tests {
                     NON_TEXT_ERROR_TOOL_RESULT_PLACEHOLDER.to_string()
                 ),
                 is_error: true,
+                cache_reference: None,
             }]
         );
     }
@@ -1928,6 +2061,7 @@ mod tests {
                 | ClaudeContentBlock::Text { .. }
                 | ClaudeContentBlock::ToolUse { .. }
                 | ClaudeContentBlock::ToolResult { .. }
+                | ClaudeContentBlock::CacheEdits { .. }
                 | ClaudeContentBlock::Thinking { .. }
                 | ClaudeContentBlock::ProviderState { .. } => None,
             })
@@ -1999,6 +2133,7 @@ mod tests {
                     cache_control: None,
                 }]),
                 is_error: false,
+                cache_reference: None,
             })
         );
     }
@@ -2332,6 +2467,7 @@ mod tests {
                         tool_use_id: "call_1".to_string(),
                         content: ClaudeToolResultContent::Text("ok".to_string()),
                         is_error: false,
+                        cache_reference: None,
                     }],
                 },
             ]
@@ -2543,6 +2679,7 @@ mod tests {
                             tool_use_id: "call_1".to_string(),
                             content: ClaudeToolResultContent::Text("ok".to_string()),
                             is_error: false,
+                            cache_reference: None,
                         },
                         ClaudeContentBlock::Text {
                             text: "too soon".to_string(),
@@ -2616,11 +2753,13 @@ mod tests {
                             tool_use_id: "call_1".to_string(),
                             content: ClaudeToolResultContent::Text("first second".to_string()),
                             is_error: false,
+                            cache_reference: None,
                         },
                         ClaudeContentBlock::ToolResult {
                             tool_use_id: "call_2".to_string(),
                             content: ClaudeToolResultContent::Text("second first".to_string()),
                             is_error: false,
+                            cache_reference: None,
                         },
                     ],
                 },
@@ -2667,6 +2806,7 @@ mod tests {
                             SYNTHETIC_TOOL_RESULT_PLACEHOLDER.to_string(),
                         ),
                         is_error: true,
+                        cache_reference: None,
                     }],
                 },
             ]
@@ -2723,6 +2863,7 @@ mod tests {
                         tool_use_id: "call_1".to_string(),
                         content: ClaudeToolResultContent::Text("ok".to_string()),
                         is_error: false,
+                        cache_reference: None,
                     }],
                 },
             ]
@@ -2838,6 +2979,350 @@ mod tests {
                 {
                     "role": "user",
                     "content": [{"type": "text", "text": "volatile current question"}]
+                }
+            ])
+        );
+    }
+
+    #[test]
+    fn adds_cache_reference_to_cached_prefix_tool_results_when_capability_enabled() {
+        let prompt = Prompt {
+            input: vec![
+                ResponseItem::FunctionCall {
+                    id: None,
+                    name: "lookup".to_string(),
+                    namespace: None,
+                    arguments: "{}".to_string(),
+                    call_id: "call_1".to_string(),
+                },
+                ResponseItem::FunctionCallOutput {
+                    call_id: "call_1".to_string(),
+                    output: FunctionCallOutputPayload::from_text("ok".to_string()),
+                },
+                ResponseItem::Message {
+                    id: None,
+                    role: "assistant".to_string(),
+                    content: vec![ContentItem::OutputText {
+                        text: "tool noted".to_string(),
+                    }],
+                    phase: None,
+                },
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "stable prior context".to_string(),
+                    }],
+                    phase: None,
+                },
+                ResponseItem::Message {
+                    id: None,
+                    role: "assistant".to_string(),
+                    content: vec![ContentItem::OutputText {
+                        text: "prior answer".to_string(),
+                    }],
+                    phase: None,
+                },
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "volatile current question".to_string(),
+                    }],
+                    phase: None,
+                },
+            ],
+            base_instructions: BaseInstructions {
+                text: String::new(),
+            },
+            ..Default::default()
+        };
+
+        let request = build_claude_messages_request(
+            &prompt,
+            &model_info(),
+            ClaudeRequestOptions {
+                prompt_cache: ClaudePromptCacheOptions {
+                    mode: ClaudePromptCacheMode::Conversation,
+                    ttl: None,
+                },
+                cache_editing: cache_editing_options_for_provider(ClaudeProviderCompat::Anthropic),
+                ..Default::default()
+            },
+        )
+        .expect("request");
+
+        assert_eq!(
+            serde_json::to_value(&request).expect("serialize request")["messages"],
+            json!([
+                {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "call_1",
+                        "name": "lookup",
+                        "input": {}
+                    }]
+                },
+                {
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "call_1",
+                        "content": "ok",
+                        "cache_reference": "call_1"
+                    }]
+                },
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "tool noted"}]
+                },
+                {
+                    "role": "user",
+                    "content": [{
+                        "type": "text",
+                        "text": "stable prior context",
+                        "cache_control": {"type": "ephemeral"}
+                    }]
+                },
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "prior answer"}]
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "volatile current question"}]
+                }
+            ])
+        );
+    }
+
+    #[test]
+    fn inserts_and_dedupes_cache_edits_after_tool_results_when_capability_enabled() {
+        let prompt = Prompt {
+            input: vec![
+                ResponseItem::FunctionCall {
+                    id: None,
+                    name: "lookup".to_string(),
+                    namespace: None,
+                    arguments: "{}".to_string(),
+                    call_id: "call_1".to_string(),
+                },
+                ResponseItem::FunctionCallOutput {
+                    call_id: "call_1".to_string(),
+                    output: FunctionCallOutputPayload::from_text("ok".to_string()),
+                },
+                ResponseItem::Message {
+                    id: None,
+                    role: "assistant".to_string(),
+                    content: vec![ContentItem::OutputText {
+                        text: "prior answer".to_string(),
+                    }],
+                    phase: None,
+                },
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "current question".to_string(),
+                    }],
+                    phase: None,
+                },
+            ],
+            base_instructions: BaseInstructions {
+                text: String::new(),
+            },
+            ..Default::default()
+        };
+
+        let request = build_claude_messages_request(
+            &prompt,
+            &model_info(),
+            ClaudeRequestOptions {
+                cache_editing: ClaudeCacheEditingOptions {
+                    capability: ClaudeCacheEditingCapability::Enabled,
+                    new_delete_references: vec![
+                        "dup-ref".to_string(),
+                        " new-ref ".to_string(),
+                        String::new(),
+                    ],
+                    pinned_deletes: vec![ClaudePinnedCacheEdits {
+                        user_message_index: 1,
+                        delete_references: vec!["old-ref".to_string(), "dup-ref".to_string()],
+                    }],
+                },
+                ..Default::default()
+            },
+        )
+        .expect("request");
+
+        assert_eq!(
+            serde_json::to_value(&request).expect("serialize request")["messages"],
+            json!([
+                {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "call_1",
+                        "name": "lookup",
+                        "input": {}
+                    }]
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "call_1",
+                            "content": "ok"
+                        },
+                        {
+                            "type": "cache_edits",
+                            "edits": [
+                                {"type": "delete", "cache_reference": "old-ref"},
+                                {"type": "delete", "cache_reference": "dup-ref"}
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "prior answer"}]
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "cache_edits",
+                            "edits": [{"type": "delete", "cache_reference": "new-ref"}]
+                        },
+                        {
+                            "type": "text",
+                            "text": "current question"
+                        }
+                    ]
+                }
+            ])
+        );
+    }
+
+    #[test]
+    fn does_not_emit_cache_edit_fields_for_deepseek_capability() {
+        let prompt = Prompt {
+            input: vec![
+                ResponseItem::FunctionCall {
+                    id: None,
+                    name: "lookup".to_string(),
+                    namespace: None,
+                    arguments: "{}".to_string(),
+                    call_id: "call_1".to_string(),
+                },
+                ResponseItem::FunctionCallOutput {
+                    call_id: "call_1".to_string(),
+                    output: FunctionCallOutputPayload::from_text("ok".to_string()),
+                },
+                ResponseItem::Message {
+                    id: None,
+                    role: "assistant".to_string(),
+                    content: vec![ContentItem::OutputText {
+                        text: "tool noted".to_string(),
+                    }],
+                    phase: None,
+                },
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "stable prior context".to_string(),
+                    }],
+                    phase: None,
+                },
+                ResponseItem::Message {
+                    id: None,
+                    role: "assistant".to_string(),
+                    content: vec![ContentItem::OutputText {
+                        text: "prior answer".to_string(),
+                    }],
+                    phase: None,
+                },
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "current question".to_string(),
+                    }],
+                    phase: None,
+                },
+            ],
+            base_instructions: BaseInstructions {
+                text: String::new(),
+            },
+            ..Default::default()
+        };
+        let mut cache_editing = cache_editing_options_for_provider(ClaudeProviderCompat::DeepSeek);
+        cache_editing.new_delete_references = vec!["call_1".to_string()];
+        cache_editing.pinned_deletes = vec![ClaudePinnedCacheEdits {
+            user_message_index: 1,
+            delete_references: vec!["old-ref".to_string()],
+        }];
+
+        let request = build_claude_messages_request(
+            &prompt,
+            &model_info(),
+            ClaudeRequestOptions {
+                prompt_cache: ClaudePromptCacheOptions {
+                    mode: ClaudePromptCacheMode::Conversation,
+                    ttl: None,
+                },
+                provider_compat: ClaudeProviderCompat::DeepSeek,
+                cache_editing,
+                ..Default::default()
+            },
+        )
+        .expect("request");
+
+        assert_eq!(
+            serde_json::to_value(&request).expect("serialize request")["messages"],
+            json!([
+                {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "call_1",
+                        "name": "lookup",
+                        "input": {}
+                    }]
+                },
+                {
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "call_1",
+                        "content": "ok"
+                    }]
+                },
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "tool noted"}]
+                },
+                {
+                    "role": "user",
+                    "content": [{
+                        "type": "text",
+                        "text": "stable prior context",
+                        "cache_control": {"type": "ephemeral"}
+                    }]
+                },
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "prior answer"}]
+                },
+                {
+                    "role": "user",
+                    "content": [{
+                        "type": "text",
+                        "text": "current question"
+                    }]
                 }
             ])
         );

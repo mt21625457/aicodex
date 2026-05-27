@@ -1452,16 +1452,20 @@ impl ModelClientSession {
                 self.client.state.auth_env_telemetry.clone(),
             );
             let provider_info = self.client.state.provider.info();
+            let provider_compat = crate::claude::provider_compat_for_provider(
+                &provider_info.name,
+                provider_info.base_url.as_deref(),
+                Some(&model_info.slug),
+            );
             let request = crate::claude::build_claude_messages_request(
                 prompt,
                 model_info,
                 crate::claude::ClaudeRequestOptions {
                     reasoning_effort: effort,
                     service_tier,
-                    provider_compat: crate::claude::provider_compat_for_provider(
-                        &provider_info.name,
-                        provider_info.base_url.as_deref(),
-                        Some(&model_info.slug),
+                    provider_compat,
+                    cache_editing: crate::claude::cache_editing_options_for_provider(
+                        provider_compat,
                     ),
                     ..Default::default()
                 },
@@ -1570,17 +1574,19 @@ impl ModelClientSession {
             self.client.state.auth_env_telemetry.clone(),
         );
         let provider_info = self.client.state.provider.info();
+        let provider_compat = crate::claude::provider_compat_for_provider(
+            &provider_info.name,
+            provider_info.base_url.as_deref(),
+            Some(&model_info.slug),
+        );
         let request = crate::claude::build_claude_messages_request(
             prompt,
             model_info,
             crate::claude::ClaudeRequestOptions {
                 reasoning_effort: effort,
                 service_tier,
-                provider_compat: crate::claude::provider_compat_for_provider(
-                    &provider_info.name,
-                    provider_info.base_url.as_deref(),
-                    Some(&model_info.slug),
-                ),
+                provider_compat,
+                cache_editing: crate::claude::cache_editing_options_for_provider(provider_compat),
                 ..Default::default()
             },
         )?;

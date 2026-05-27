@@ -23,6 +23,8 @@ pub use crate::auth::SharedAuthProvider;
 pub use crate::auth::auth_header_telemetry;
 pub use crate::common::ClaudeCacheControl;
 pub use crate::common::ClaudeCacheControlType;
+pub use crate::common::ClaudeCacheEdit;
+pub use crate::common::ClaudeCacheEditKind;
 pub use crate::common::ClaudeCacheTtl;
 pub use crate::common::ClaudeContentBlock;
 pub use crate::common::ClaudeContextManagement;
