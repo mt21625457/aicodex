@@ -64,9 +64,9 @@
 
 ## 7. Prompt Cache Extensions
 
-- [ ] 7.1 Keep existing `cache_control` request shapes unchanged and covered by
+- [x] 7.1 Keep existing `cache_control` request shapes unchanged and covered by
   tests.
-- [ ] 7.2 Add a provider capability design for cache references and cache edits
+- [x] 7.2 Add a provider capability design for cache references and cache edits
   before emitting new fields.
 - [ ] 7.3 Implement `cache_reference` on cached-prefix tool results only behind
   an explicit provider capability.
@@ -77,12 +77,12 @@
 
 ## 8. Tool Input Normalization
 
-- [ ] 8.1 Normalize empty streamed JSON tool input to `{}` where appropriate.
-- [ ] 8.2 Preserve custom/freeform raw string input through the existing wrapper
+- [x] 8.1 Normalize empty streamed JSON tool input to `{}` where appropriate.
+- [x] 8.2 Preserve custom/freeform raw string input through the existing wrapper
   contract.
-- [ ] 8.3 Improve invalid JSON diagnostics with block index, tool name, and
+- [x] 8.3 Improve invalid JSON diagnostics with block index, tool name, and
   input length without logging raw input.
-- [ ] 8.4 Add `codex-api` tests for empty input, object input, raw custom input,
+- [x] 8.4 Add `codex-api` tests for empty input, object input, raw custom input,
   and invalid input diagnostics.
 
 ## 9. Observability

@@ -215,6 +215,22 @@ layer before enabling cache edits:
 Cache editing should not be enabled for DeepSeek-compatible Claude providers
 or other compatible gateways until they explicitly advertise support.
 
+Initial capability design:
+
+- keep `cache_control` as the only enabled prompt-cache request metadata for
+  now;
+- model cache editing as a provider capability that defaults to disabled and
+  is independent of the existing `ClaudePromptCacheMode`;
+- represent future `cache_reference` metadata as an optional field on
+  `tool_result` blocks, never as a mutation of stored conversation history;
+- represent future `cache_edits` deletion requests as user-message content
+  blocks inserted after required `tool_result` blocks and before ordinary user
+  content;
+- deduplicate `cache_edits` by cache reference before serialization;
+- gate all `cache_reference` and `cache_edits` emission on the provider
+  capability so Claude-compatible providers such as DeepSeek continue to
+  receive only the current `cache_control` shapes.
+
 ### 7. Normalize Claude tool input
 
 Add a helper in the Claude SSE accumulator for final tool input:

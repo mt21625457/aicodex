@@ -653,11 +653,8 @@ impl ClaudeStreamState {
         if let Some(state) = self.tool_blocks.get_mut(&index)
             && !state.partial_json.trim().is_empty()
         {
-            let value = serde_json::from_str::<Value>(&state.partial_json).map_err(|err| {
-                ApiError::Stream(format!(
-                    "invalid Claude tool input JSON for content block {index}: {err}"
-                ))
-            })?;
+            let value =
+                parse_partial_tool_input_json(index, state.name.as_deref(), &state.partial_json)?;
             state.input = Some(value);
             state.partial_json.clear();
         };
@@ -994,7 +991,6 @@ impl ClaudeStreamState {
             return Ok(None);
         };
         let call_id = state.id.clone().unwrap_or_else(|| claude_name.clone());
-        let input = state.input_value()?;
         let info = self
             .tool_call_info
             .get(claude_name)
@@ -1004,6 +1000,12 @@ impl ClaudeStreamState {
                 namespace: None,
                 kind: ClaudeToolCallKind::Function,
             });
+        let input = match info.kind {
+            ClaudeToolCallKind::Function | ClaudeToolCallKind::ToolSearch => {
+                state.json_object_input_value(index)?
+            }
+            ClaudeToolCallKind::Custom => state.input_value(index)?,
+        };
 
         Ok(Some(match info.kind {
             ClaudeToolCallKind::Function => ResponseItem::FunctionCall {
@@ -1055,7 +1057,7 @@ impl ClaudeStreamState {
             return Ok(None);
         }
         let call_id = state.id.clone().unwrap_or_else(|| name.to_string());
-        let input = state.input_value()?;
+        let input = state.json_object_input_value(index)?;
         Ok(Some(ResponseItem::WebSearchCall {
             id: Some(call_id),
             status: None,
@@ -1113,18 +1115,22 @@ impl ClaudeStreamState {
 }
 
 impl ToolUseState {
-    fn input_value(&self) -> Result<Value, ApiError> {
+    fn input_value(&self, index: usize) -> Result<Value, ApiError> {
         if !self.partial_json.trim().is_empty() {
-            return serde_json::from_str::<Value>(&self.partial_json).map_err(|err| {
-                ApiError::Stream(format!(
-                    "invalid Claude tool input JSON at message stop: {err}"
-                ))
-            });
+            return parse_partial_tool_input_json(index, self.name.as_deref(), &self.partial_json);
         }
         Ok(self
             .input
             .clone()
             .unwrap_or_else(|| Value::Object(Map::new())))
+    }
+
+    fn json_object_input_value(&self, index: usize) -> Result<Value, ApiError> {
+        match self.input_value(index)? {
+            Value::Null => Ok(Value::Object(Map::new())),
+            Value::String(text) if text.trim().is_empty() => Ok(Value::Object(Map::new())),
+            value => Ok(value),
+        }
     }
 
     fn complete_input_value_if_available(&self) -> Option<Value> {
@@ -1133,6 +1139,23 @@ impl ToolUseState {
         }
         self.input.clone()
     }
+}
+
+fn parse_partial_tool_input_json(
+    index: usize,
+    tool_name: Option<&str>,
+    partial_json: &str,
+) -> Result<Value, ApiError> {
+    serde_json::from_str::<Value>(partial_json).map_err(|err| {
+        let tool_name = tool_name
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or("<unknown>");
+        ApiError::Stream(format!(
+            "invalid Claude tool input JSON for content block {index} \
+             (tool `{tool_name}`, input length {} bytes): {err}",
+            partial_json.len()
+        ))
+    })
 }
 
 fn stringify_tool_input(input: &Value) -> String {
@@ -1717,6 +1740,41 @@ mod tests {
             })
             .expect("completed event");
         assert_eq!(end_turn, Some(false));
+    }
+
+    #[tokio::test]
+    async fn claude_stream_maps_null_function_tool_input_to_empty_object() {
+        let events = run_events(
+            vec![
+                json!({
+                    "type": "message_start",
+                    "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": []}
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "search",
+                        "input": null
+                    }
+                }),
+                json!({"type": "message_stop"}),
+            ],
+            HashMap::new(),
+        )
+        .await;
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ResponseEvent::OutputItemDone(ResponseItem::FunctionCall {
+                name,
+                arguments,
+                call_id,
+                ..
+            }) if name == "search" && arguments == "{}" && call_id == "toolu_1"
+        )));
     }
 
     #[tokio::test]
@@ -3151,11 +3209,11 @@ mod tests {
         ])
         .await;
 
-        assert!(
-            error
-                .to_string()
-                .contains("invalid Claude tool input JSON for content block 0")
-        );
+        let message = error.to_string();
+        assert!(message.contains("invalid Claude tool input JSON for content block 0"));
+        assert!(message.contains("tool `search`"));
+        assert!(message.contains("input length 9 bytes"));
+        assert!(!message.contains("{\"query\":"));
     }
 
     #[tokio::test]
