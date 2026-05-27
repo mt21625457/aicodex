@@ -628,7 +628,7 @@ impl TurnRequestProcessor {
 
         if has_any_overrides {
             thread
-                .preview_thread_settings_overrides(CodexThreadSettingsOverrides {
+                .preview_thread_settings_overrides(ThreadSettingsOverrides {
                     cwd: cwd.clone(),
                     workspace_roots: runtime_workspace_roots.clone(),
                     approval_policy,
