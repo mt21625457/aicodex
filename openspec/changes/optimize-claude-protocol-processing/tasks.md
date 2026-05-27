@@ -87,13 +87,13 @@
 
 ## 9. Observability
 
-- [ ] 9.1 Surface Claude upstream request id and relevant rate-limit/quota
+- [x] 9.1 Surface Claude upstream request id and relevant rate-limit/quota
   headers when available.
-- [ ] 9.2 Add trace/debug counters for normalization repairs, media pruning,
+- [x] 9.2 Add trace/debug counters for normalization repairs, media pruning,
   stream failure class, fallback gating, and cache usage details.
-- [ ] 9.3 Ensure observability does not include raw prompts, tool inputs, media
+- [x] 9.3 Ensure observability does not include raw prompts, tool inputs, media
   payloads, credentials, or provider-state payloads.
-- [ ] 9.4 Add tests or telemetry fakes for header extraction and failure-class
+- [x] 9.4 Add tests or telemetry fakes for header extraction and failure-class
   reporting where practical.
 
 ## 10. Verification

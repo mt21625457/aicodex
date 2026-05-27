@@ -45,6 +45,8 @@ use serde_json::Value;
 use serde_json::json;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use tracing::debug;
+use tracing::trace;
 use url::Url;
 
 const DEFAULT_MAX_TOKENS: u64 = 8_192;
@@ -61,6 +63,49 @@ const INTERRUPTED_TOOL_USE_PLACEHOLDER: &str = "[Tool use interrupted]";
 const TOOL_INPUT_FIELD: &str = "input";
 const OUTPUT_SCHEMA_INSTRUCTIONS: &str =
     "Respond with JSON only. It must strictly match this schema:";
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ClaudeToolHistoryRepairStats {
+    duplicate_tool_uses_dropped: usize,
+    duplicate_tool_results_dropped: usize,
+    orphan_tool_results_dropped: usize,
+    synthetic_tool_results_inserted: usize,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ClaudeNormalizationStats {
+    empty_text_blocks_dropped: usize,
+    empty_cached_text_blocks_padded: usize,
+    empty_messages_dropped: usize,
+    error_tool_result_empty_text_replaced: usize,
+    error_tool_result_blocks_flattened: usize,
+    error_tool_result_nested_blocks_dropped: usize,
+    provider_state_dropped: usize,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ClaudeMediaPruningStats {
+    media_blocks_before: usize,
+    media_blocks_removed: usize,
+    tool_result_placeholders_inserted: usize,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ClaudePromptCacheStats {
+    tool_cache_controls_added: usize,
+    system_cache_controls_added: usize,
+    conversation_cache_controls_added: usize,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ClaudeCacheEditingStats {
+    pinned_cache_edit_blocks_inserted: usize,
+    pinned_cache_edits_inserted: usize,
+    new_cache_edit_blocks_inserted: usize,
+    new_cache_edits_inserted: usize,
+    duplicate_or_empty_delete_references_dropped: usize,
+    cache_references_added: usize,
+}
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ClaudeRequestOptions {
@@ -388,10 +433,15 @@ pub(crate) fn build_claude_messages_request(
         }
     }
 
-    messages =
-        normalize_claude_messages(repair_tool_result_history(messages), &history_requirements);
-    prune_excess_claude_media(&mut messages, CLAUDE_MAX_MEDIA_PER_REQUEST);
-    messages = normalize_claude_messages(messages, &history_requirements);
+    let (repaired_messages, repair_stats) = repair_tool_result_history(messages);
+    let (normalized_messages, first_normalization_stats) =
+        normalize_claude_messages_with_stats(repaired_messages, &history_requirements);
+    messages = normalized_messages;
+    let media_pruning_stats =
+        prune_excess_claude_media(&mut messages, CLAUDE_MAX_MEDIA_PER_REQUEST);
+    let (normalized_messages, second_normalization_stats) =
+        normalize_claude_messages_with_stats(messages, &history_requirements);
+    messages = normalized_messages;
 
     if messages.is_empty() {
         push_message(
@@ -427,8 +477,39 @@ pub(crate) fn build_claude_messages_request(
         .filter(|segment| !segment.is_empty())
         .collect::<Vec<_>>()
         .join("\n\n");
-    apply_prompt_cache_policy(options.prompt_cache, &mut tools, &system, &mut messages);
-    apply_cache_editing_policy(options.cache_editing, &mut messages);
+    let prompt_cache_mode = options.prompt_cache.mode;
+    let cache_editing_capability = options.cache_editing.capability;
+    let prompt_cache_stats =
+        apply_prompt_cache_policy(options.prompt_cache, &mut tools, &system, &mut messages);
+    let cache_editing_stats = apply_cache_editing_policy(options.cache_editing, &mut messages);
+    debug!(
+        provider_compat = ?options.provider_compat,
+        prompt_cache_mode = ?prompt_cache_mode,
+        cache_editing_capability = ?cache_editing_capability,
+        message_count = messages.len(),
+        tool_count = tools.len(),
+        mcp_server_count = mcp_servers.len(),
+        media_blocks_before = media_pruning_stats.media_blocks_before,
+        media_blocks_removed = media_pruning_stats.media_blocks_removed,
+        cache_references_added = cache_editing_stats.cache_references_added,
+        cache_edit_blocks_inserted = cache_editing_stats.pinned_cache_edit_blocks_inserted
+            + cache_editing_stats.new_cache_edit_blocks_inserted,
+        cache_edits_inserted = cache_editing_stats.pinned_cache_edits_inserted
+            + cache_editing_stats.new_cache_edits_inserted,
+        synthetic_tool_results_inserted = repair_stats.synthetic_tool_results_inserted,
+        provider_state_dropped = first_normalization_stats.provider_state_dropped
+            + second_normalization_stats.provider_state_dropped,
+        "Claude protocol processing counters"
+    );
+    trace!(
+        ?repair_stats,
+        ?first_normalization_stats,
+        ?media_pruning_stats,
+        ?second_normalization_stats,
+        ?prompt_cache_stats,
+        ?cache_editing_stats,
+        "Claude protocol processing detailed counters"
+    );
     validate_tool_result_history(&messages)?;
     let (thinking, output_config) = match options.provider_compat {
         ClaudeProviderCompat::Anthropic => (claude_thinking_config(options.reasoning_effort), None),
@@ -533,63 +614,90 @@ fn apply_prompt_cache_policy(
     tools: &mut [ClaudeTool],
     system: &str,
     messages: &mut [ClaudeMessage],
-) {
+) -> ClaudePromptCacheStats {
+    let mut stats = ClaudePromptCacheStats::default();
     if options.mode == ClaudePromptCacheMode::Off {
-        return;
+        return stats;
     }
     let cache_control = Some(ClaudeCacheControl::ephemeral(options.ttl));
     if !tools.is_empty()
         && let Some(last_tool) = tools.last_mut()
     {
         last_tool.set_cache_control(cache_control.clone());
+        stats.tool_cache_controls_added += 1;
     }
     if !system.trim().is_empty() && options.mode == ClaudePromptCacheMode::System {
-        return;
+        stats.system_cache_controls_added += 1;
+        return stats;
     }
     if options.mode == ClaudePromptCacheMode::Conversation {
-        mark_latest_stable_prior_text_block(messages, cache_control);
+        stats.conversation_cache_controls_added +=
+            mark_latest_stable_prior_text_block(messages, cache_control);
     }
+    stats
 }
 
-fn apply_cache_editing_policy(options: ClaudeCacheEditingOptions, messages: &mut [ClaudeMessage]) {
+fn apply_cache_editing_policy(
+    options: ClaudeCacheEditingOptions,
+    messages: &mut [ClaudeMessage],
+) -> ClaudeCacheEditingStats {
+    let mut stats = ClaudeCacheEditingStats::default();
     if options.capability == ClaudeCacheEditingCapability::Disabled {
-        return;
+        return stats;
     }
 
     let mut seen_delete_references = HashSet::new();
     for pinned in options.pinned_deletes {
-        let edits = cache_delete_edits(pinned.delete_references, &mut seen_delete_references);
+        let (edits, dropped) =
+            cache_delete_edits(pinned.delete_references, &mut seen_delete_references);
+        stats.duplicate_or_empty_delete_references_dropped += dropped;
         if edits.is_empty() {
             continue;
         }
+        let edit_count = edits.len();
         if let Some(message) = messages.get_mut(pinned.user_message_index)
             && message.role == ClaudeMessageRole::User
         {
             insert_cache_edits_after_tool_results(&mut message.content, edits);
+            stats.pinned_cache_edit_blocks_inserted += 1;
+            stats.pinned_cache_edits_inserted += edit_count;
         }
     }
 
-    let edits = cache_delete_edits(options.new_delete_references, &mut seen_delete_references);
+    let (edits, dropped) =
+        cache_delete_edits(options.new_delete_references, &mut seen_delete_references);
+    stats.duplicate_or_empty_delete_references_dropped += dropped;
     if !edits.is_empty()
         && let Some(message) = messages
             .iter_mut()
             .rev()
             .find(|message| message.role == ClaudeMessageRole::User)
     {
+        let edit_count = edits.len();
         insert_cache_edits_after_tool_results(&mut message.content, edits);
+        stats.new_cache_edit_blocks_inserted += 1;
+        stats.new_cache_edits_inserted += edit_count;
     }
 
-    mark_cached_prefix_tool_results(messages);
+    stats.cache_references_added = mark_cached_prefix_tool_results(messages);
+    stats
 }
 
-fn cache_delete_edits(references: Vec<String>, seen: &mut HashSet<String>) -> Vec<ClaudeCacheEdit> {
-    references
-        .into_iter()
-        .map(|reference| reference.trim().to_string())
-        .filter(|reference| !reference.is_empty())
-        .filter(|reference| seen.insert(reference.clone()))
-        .map(ClaudeCacheEdit::delete)
-        .collect()
+fn cache_delete_edits(
+    references: Vec<String>,
+    seen: &mut HashSet<String>,
+) -> (Vec<ClaudeCacheEdit>, usize) {
+    let mut edits = Vec::new();
+    let mut dropped = 0;
+    for reference in references {
+        let reference = reference.trim().to_string();
+        if reference.is_empty() || !seen.insert(reference.clone()) {
+            dropped += 1;
+            continue;
+        }
+        edits.push(ClaudeCacheEdit::delete(reference));
+    }
+    (edits, dropped)
 }
 
 fn insert_cache_edits_after_tool_results(
@@ -603,14 +711,15 @@ fn insert_cache_edits_after_tool_results(
     content.insert(insert_at, ClaudeContentBlock::CacheEdits { edits });
 }
 
-fn mark_cached_prefix_tool_results(messages: &mut [ClaudeMessage]) {
+fn mark_cached_prefix_tool_results(messages: &mut [ClaudeMessage]) -> usize {
     let Some(last_cache_control_message_index) = messages
         .iter()
         .rposition(|message| message.content.iter().any(has_cache_control))
     else {
-        return;
+        return 0;
     };
 
+    let mut added = 0;
     for message in messages.iter_mut().take(last_cache_control_message_index) {
         if message.role != ClaudeMessageRole::User {
             continue;
@@ -624,9 +733,11 @@ fn mark_cached_prefix_tool_results(messages: &mut [ClaudeMessage]) {
                 && cache_reference.is_none()
             {
                 *cache_reference = Some(tool_use_id.clone());
+                added += 1;
             }
         }
     }
+    added
 }
 
 fn has_cache_control(block: &ClaudeContentBlock) -> bool {
@@ -642,9 +753,9 @@ fn has_cache_control(block: &ClaudeContentBlock) -> bool {
 fn mark_latest_stable_prior_text_block(
     messages: &mut [ClaudeMessage],
     cache_control: Option<ClaudeCacheControl>,
-) {
+) -> usize {
     if messages.len() < 2 {
-        return;
+        return 0;
     }
     for message in messages.iter_mut().rev().skip(1) {
         if message.role != ClaudeMessageRole::User {
@@ -658,10 +769,11 @@ fn mark_latest_stable_prior_text_block(
                 && !text.trim().is_empty()
             {
                 *block_cache_control = cache_control;
-                return;
+                return 1;
             }
         }
     }
+    0
 }
 
 fn system_prompt(system: String, options: ClaudePromptCacheOptions) -> Option<ClaudeSystemPrompt> {
@@ -718,10 +830,11 @@ fn push_message(
     messages.push(ClaudeMessage { role, content });
 }
 
-fn normalize_claude_messages(
+fn normalize_claude_messages_with_stats(
     messages: Vec<ClaudeMessage>,
     history_requirements: &ClaudeHistoryRequirements,
-) -> Vec<ClaudeMessage> {
+) -> (Vec<ClaudeMessage>, ClaudeNormalizationStats) {
+    let mut stats = ClaudeNormalizationStats::default();
     let mut normalized = Vec::with_capacity(messages.len());
     for message in messages {
         let mut content = Vec::with_capacity(message.content.len());
@@ -732,10 +845,13 @@ fn normalize_claude_messages(
                     cache_control,
                 } if text.trim().is_empty() => {
                     if cache_control.is_some() {
+                        stats.empty_cached_text_blocks_padded += 1;
                         content.push(ClaudeContentBlock::Text {
                             text: " ".to_string(),
                             cache_control,
                         });
+                    } else {
+                        stats.empty_text_blocks_dropped += 1;
                     }
                 }
                 ClaudeContentBlock::ToolResult {
@@ -747,18 +863,23 @@ fn normalize_claude_messages(
                     tool_use_id,
                     content: match result_content {
                         ClaudeToolResultContent::Text(text) if text.trim().is_empty() => {
+                            stats.error_tool_result_empty_text_replaced += 1;
                             ClaudeToolResultContent::Text(
                                 NON_TEXT_ERROR_TOOL_RESULT_PLACEHOLDER.to_string(),
                             )
                         }
                         ClaudeToolResultContent::Text(text) => ClaudeToolResultContent::Text(text),
                         ClaudeToolResultContent::Blocks(blocks) => {
+                            stats.error_tool_result_blocks_flattened += 1;
+                            let block_count = blocks.len();
+                            let mut kept_text_count = 0;
                             let text = blocks
                                 .into_iter()
                                 .filter_map(|block| match block {
                                     ClaudeContentBlock::Text { text, .. }
                                         if !text.trim().is_empty() =>
                                     {
+                                        kept_text_count += 1;
                                         Some(text.trim().to_string())
                                     }
                                     ClaudeContentBlock::Text { .. }
@@ -771,6 +892,8 @@ fn normalize_claude_messages(
                                 })
                                 .collect::<Vec<_>>()
                                 .join("\n\n");
+                            stats.error_tool_result_nested_blocks_dropped +=
+                                block_count.saturating_sub(kept_text_count);
                             ClaudeToolResultContent::Text(if text.is_empty() {
                                 NON_TEXT_ERROR_TOOL_RESULT_PLACEHOLDER.to_string()
                             } else {
@@ -782,16 +905,21 @@ fn normalize_claude_messages(
                     cache_reference,
                 }),
                 ClaudeContentBlock::ProviderState { value }
-                    if !should_preserve_provider_state(&value, history_requirements) => {}
+                    if !should_preserve_provider_state(&value, history_requirements) =>
+                {
+                    stats.provider_state_dropped += 1;
+                }
                 block => content.push(block),
             }
         }
 
-        if !content.is_empty() {
+        if content.is_empty() {
+            stats.empty_messages_dropped += 1;
+        } else {
             push_message(&mut normalized, message.role, content);
         }
     }
-    normalized
+    (normalized, stats)
 }
 
 fn should_preserve_provider_state(
@@ -828,19 +956,26 @@ fn should_preserve_provider_state(
     }
 }
 
-fn prune_excess_claude_media(messages: &mut [ClaudeMessage], limit: usize) {
-    let mut to_remove = messages
+fn prune_excess_claude_media(
+    messages: &mut [ClaudeMessage],
+    limit: usize,
+) -> ClaudeMediaPruningStats {
+    let media_blocks_before = messages
         .iter()
         .map(|message| count_claude_media(&message.content))
-        .sum::<usize>()
-        .saturating_sub(limit);
+        .sum::<usize>();
+    let mut stats = ClaudeMediaPruningStats {
+        media_blocks_before,
+        ..ClaudeMediaPruningStats::default()
+    };
+    let mut to_remove = media_blocks_before.saturating_sub(limit);
     if to_remove == 0 {
-        return;
+        return stats;
     }
 
     for message in messages {
         if to_remove == 0 {
-            return;
+            return stats;
         }
 
         let mut content = Vec::with_capacity(message.content.len());
@@ -857,12 +992,14 @@ fn prune_excess_claude_media(messages: &mut [ClaudeMessage], limit: usize) {
                     for block in blocks {
                         if to_remove > 0 && is_claude_media_block(&block) {
                             to_remove -= 1;
+                            stats.media_blocks_removed += 1;
                             removed_nested_media = true;
                         } else {
                             kept_blocks.push(block);
                         }
                     }
                     if kept_blocks.is_empty() && removed_nested_media {
+                        stats.tool_result_placeholders_inserted += 1;
                         kept_blocks.push(text_block(PRUNED_TOOL_RESULT_MEDIA_PLACEHOLDER));
                     }
                     content.push(ClaudeContentBlock::ToolResult {
@@ -874,12 +1011,14 @@ fn prune_excess_claude_media(messages: &mut [ClaudeMessage], limit: usize) {
                 }
                 block if to_remove > 0 && is_claude_media_block(&block) => {
                     to_remove -= 1;
+                    stats.media_blocks_removed += 1;
                 }
                 block => content.push(block),
             }
         }
         message.content = content;
     }
+    stats
 }
 
 fn count_claude_media(content: &[ClaudeContentBlock]) -> usize {
@@ -941,8 +1080,11 @@ fn validate_tool_result_history(messages: &[ClaudeMessage]) -> codex_protocol::e
     Ok(())
 }
 
-fn repair_tool_result_history(messages: Vec<ClaudeMessage>) -> Vec<ClaudeMessage> {
+fn repair_tool_result_history(
+    messages: Vec<ClaudeMessage>,
+) -> (Vec<ClaudeMessage>, ClaudeToolHistoryRepairStats) {
     let mut repaired = Vec::with_capacity(messages.len());
+    let mut stats = ClaudeToolHistoryRepairStats::default();
     let mut seen_tool_use_ids = HashSet::new();
     let mut index = 0;
 
@@ -950,8 +1092,9 @@ fn repair_tool_result_history(messages: Vec<ClaudeMessage>) -> Vec<ClaudeMessage
         let message = &messages[index];
         match message.role {
             ClaudeMessageRole::Assistant => {
-                let (message, pending_tool_use_ids) =
+                let (message, pending_tool_use_ids, duplicate_tool_uses_dropped) =
                     repair_assistant_tool_uses(message, &mut seen_tool_use_ids);
+                stats.duplicate_tool_uses_dropped += duplicate_tool_uses_dropped;
                 repaired.push(message);
 
                 if pending_tool_use_ids.is_empty() {
@@ -961,13 +1104,19 @@ fn repair_tool_result_history(messages: Vec<ClaudeMessage>) -> Vec<ClaudeMessage
 
                 match messages.get(index + 1) {
                     Some(next_message) if next_message.role == ClaudeMessageRole::User => {
-                        repaired.push(repair_user_tool_results(
-                            next_message,
-                            &pending_tool_use_ids,
-                        ));
+                        let (message, user_repair_stats) =
+                            repair_user_tool_results(next_message, &pending_tool_use_ids);
+                        stats.duplicate_tool_results_dropped +=
+                            user_repair_stats.duplicate_tool_results_dropped;
+                        stats.orphan_tool_results_dropped +=
+                            user_repair_stats.orphan_tool_results_dropped;
+                        stats.synthetic_tool_results_inserted +=
+                            user_repair_stats.synthetic_tool_results_inserted;
+                        repaired.push(message);
                         index += 2;
                     }
                     _ => {
+                        stats.synthetic_tool_results_inserted += pending_tool_use_ids.len();
                         repaired.push(ClaudeMessage {
                             role: ClaudeMessageRole::User,
                             content: pending_tool_use_ids
@@ -980,6 +1129,11 @@ fn repair_tool_result_history(messages: Vec<ClaudeMessage>) -> Vec<ClaudeMessage
                 }
             }
             ClaudeMessageRole::User => {
+                stats.orphan_tool_results_dropped += message
+                    .content
+                    .iter()
+                    .filter(|block| is_tool_result_block(block))
+                    .count();
                 let content = strip_tool_result_blocks(&message.content);
                 if !content.is_empty() {
                     repaired.push(ClaudeMessage {
@@ -992,16 +1146,17 @@ fn repair_tool_result_history(messages: Vec<ClaudeMessage>) -> Vec<ClaudeMessage
         }
     }
 
-    repaired
+    (repaired, stats)
 }
 
 fn repair_assistant_tool_uses(
     message: &ClaudeMessage,
     seen_tool_use_ids: &mut HashSet<String>,
-) -> (ClaudeMessage, Vec<String>) {
+) -> (ClaudeMessage, Vec<String>, usize) {
     let mut pending_tool_use_ids = Vec::new();
     let mut content = Vec::with_capacity(message.content.len());
     let mut dropped_tool_use = false;
+    let mut duplicate_tool_uses_dropped = 0;
 
     for block in &message.content {
         if let Some(id) = tool_use_id(block) {
@@ -1010,6 +1165,7 @@ fn repair_assistant_tool_uses(
                 content.push(block.clone());
             } else {
                 dropped_tool_use = true;
+                duplicate_tool_uses_dropped += 1;
             }
         } else {
             content.push(block.clone());
@@ -1026,13 +1182,15 @@ fn repair_assistant_tool_uses(
             content,
         },
         pending_tool_use_ids,
+        duplicate_tool_uses_dropped,
     )
 }
 
 fn repair_user_tool_results(
     message: &ClaudeMessage,
     pending_tool_use_ids: &[String],
-) -> ClaudeMessage {
+) -> (ClaudeMessage, ClaudeToolHistoryRepairStats) {
+    let mut stats = ClaudeToolHistoryRepairStats::default();
     let pending = pending_tool_use_ids
         .iter()
         .map(String::as_str)
@@ -1043,9 +1201,13 @@ fn repair_user_tool_results(
     for block in &message.content {
         if let Some(id) = tool_result_id(block) {
             if pending.contains(id) {
-                matching_results
-                    .entry(id.to_string())
-                    .or_insert_with(|| block.clone());
+                if matching_results.contains_key(id) {
+                    stats.duplicate_tool_results_dropped += 1;
+                } else {
+                    matching_results.insert(id.to_string(), block.clone());
+                }
+            } else {
+                stats.orphan_tool_results_dropped += 1;
             }
         } else {
             ordinary_content.push(block.clone());
@@ -1055,17 +1217,23 @@ fn repair_user_tool_results(
     let mut content = pending_tool_use_ids
         .iter()
         .map(|id| {
-            matching_results
-                .remove(id)
-                .unwrap_or_else(|| synthetic_tool_result_block(id))
+            if let Some(block) = matching_results.remove(id) {
+                block
+            } else {
+                stats.synthetic_tool_results_inserted += 1;
+                synthetic_tool_result_block(id)
+            }
         })
         .collect::<Vec<_>>();
     content.append(&mut ordinary_content);
 
-    ClaudeMessage {
-        role: ClaudeMessageRole::User,
-        content,
-    }
+    (
+        ClaudeMessage {
+            role: ClaudeMessageRole::User,
+            content,
+        },
+        stats,
+    )
 }
 
 fn strip_tool_result_blocks(content: &[ClaudeContentBlock]) -> Vec<ClaudeContentBlock> {
@@ -3639,13 +3807,14 @@ mod tests {
             ],
         }];
 
-        let normalized = normalize_claude_messages(
+        let (normalized, stats) = normalize_claude_messages_with_stats(
             messages,
             &ClaudeHistoryRequirements {
                 preserve_mcp_tool_results: true,
                 ..ClaudeHistoryRequirements::default()
             },
         );
+        assert_eq!(stats.provider_state_dropped, 1);
 
         assert_eq!(
             serde_json::to_value(&normalized).expect("serialize messages"),
@@ -3691,13 +3860,14 @@ mod tests {
             },
         ];
 
-        let normalized = normalize_claude_messages(
+        let (normalized, stats) = normalize_claude_messages_with_stats(
             messages,
             &ClaudeHistoryRequirements {
                 preserve_mcp_tool_results: true,
                 ..ClaudeHistoryRequirements::default()
             },
         );
+        assert_eq!(stats.provider_state_dropped, 0);
 
         assert_eq!(
             serde_json::to_value(&normalized).expect("serialize messages"),

@@ -1974,6 +1974,10 @@ async fn try_run_sampling_request(
         let event = match event {
             Some(Ok(event)) => event,
             Some(Err(err)) => {
+                trace!(
+                    completed_tool_call_started,
+                    streamed_tool_input_started, "stream retry gate evaluated after stream error"
+                );
                 if completed_tool_call_started {
                     warn!(
                         "stream failed after a tool call started; continuing with tool follow-up instead of retrying: {err}"
@@ -1992,6 +1996,10 @@ async fn try_run_sampling_request(
                 break Err(err);
             }
             None => {
+                trace!(
+                    completed_tool_call_started,
+                    streamed_tool_input_started, "stream retry gate evaluated after stream close"
+                );
                 if completed_tool_call_started {
                     warn!(
                         "stream closed after a tool call started; continuing with tool follow-up instead of retrying"

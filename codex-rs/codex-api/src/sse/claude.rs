@@ -5,6 +5,7 @@ use crate::common::ResponseStream;
 use crate::error::ApiError;
 use crate::error::ProviderMediaErrorKind;
 use crate::error::ProviderStreamErrorKind;
+use crate::rate_limits::parse_all_rate_limits;
 use crate::telemetry::SseTelemetry;
 use codex_client::ByteStream;
 use codex_client::StreamResponse;
@@ -41,19 +42,26 @@ pub fn spawn_claude_response_stream(
     telemetry: Option<Arc<dyn SseTelemetry>>,
     tool_call_info: HashMap<String, ClaudeToolCallInfo>,
 ) -> ResponseStream {
+    let rate_limit_snapshots = parse_all_rate_limits(&stream_response.headers);
     let upstream_request_id = stream_response
         .headers
         .get(REQUEST_ID_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
     let (tx_event, rx_event) = mpsc::channel::<Result<ResponseEvent, ApiError>>(1600);
-    tokio::spawn(process_sse(
-        stream_response.bytes,
-        tx_event,
-        idle_timeout,
-        telemetry,
-        tool_call_info,
-    ));
+    tokio::spawn(async move {
+        for snapshot in rate_limit_snapshots {
+            let _ = tx_event.send(Ok(ResponseEvent::RateLimits(snapshot))).await;
+        }
+        process_sse(
+            stream_response.bytes,
+            tx_event,
+            idle_timeout,
+            telemetry,
+            tool_call_info,
+        )
+        .await;
+    });
     ResponseStream {
         rx_event,
         upstream_request_id,
@@ -1352,6 +1360,7 @@ fn parse_claude_stream_event(event_name: &str, data: &str) -> Result<ClaudeStrea
 }
 
 fn provider_stream_error(kind: ProviderStreamErrorKind, message: String) -> ApiError {
+    debug!(%kind, "Claude stream failure classified");
     ApiError::StreamFailure { kind, message }
 }
 
@@ -1414,11 +1423,20 @@ async fn process_sse(
             }
         };
 
-        trace!("Claude SSE event: {} {}", &sse.event, &sse.data);
+        trace!(
+            event = %sse.event,
+            data_len = sse.data.len(),
+            "Claude SSE event received"
+        );
         let event: ClaudeStreamEvent = match parse_claude_stream_event(&sse.event, &sse.data) {
             Ok(event) => event,
             Err(e) => {
-                debug!("failed to parse Claude SSE event: {e}, data: {}", &sse.data);
+                debug!(
+                    event = %sse.event,
+                    data_len = sse.data.len(),
+                    error = %e,
+                    "failed to parse Claude SSE event"
+                );
                 let _ = tx_event.send(Err(e)).await;
                 return;
             }
@@ -1442,6 +1460,7 @@ mod tests {
     use codex_client::TransportError;
     use futures::stream;
     use http::HeaderMap;
+    use http::HeaderValue;
     use http::StatusCode;
     use pretty_assertions::assert_eq;
     use serde_json::json;
@@ -1482,6 +1501,17 @@ mod tests {
         codex_client::StreamResponse {
             status: StatusCode::OK,
             headers: HeaderMap::new(),
+            bytes: Box::pin(stream::iter(chunks)),
+        }
+    }
+
+    fn stream_response_with_headers(
+        chunks: Vec<Result<Bytes, TransportError>>,
+        headers: HeaderMap,
+    ) -> codex_client::StreamResponse {
+        codex_client::StreamResponse {
+            status: StatusCode::OK,
+            headers,
             bytes: Box::pin(stream::iter(chunks)),
         }
     }
@@ -1625,6 +1655,73 @@ mod tests {
         };
         assert_eq!(kind, ProviderStreamErrorKind::IdleTimeout);
         assert_eq!(message, "idle timeout waiting for SSE");
+    }
+
+    #[tokio::test]
+    async fn spawn_claude_response_stream_emits_header_events() {
+        let mut headers = HeaderMap::new();
+        headers.insert(REQUEST_ID_HEADER, HeaderValue::from_static("req-claude-1"));
+        headers.insert(
+            "x-codex-primary-used-percent",
+            HeaderValue::from_static("42"),
+        );
+        headers.insert(
+            "anthropic-ratelimit-requests-limit",
+            HeaderValue::from_static("100"),
+        );
+        headers.insert(
+            "anthropic-ratelimit-requests-remaining",
+            HeaderValue::from_static("60"),
+        );
+        let start = json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "content": []
+            }
+        });
+        let stop = json!({"type": "message_stop"});
+        let mut stream = spawn_claude_response_stream(
+            stream_response_with_headers(
+                vec![Ok(Bytes::from(format!(
+                    "event: message_start\ndata: {start}\n\nevent: message_stop\ndata: {stop}\n\n"
+                )))],
+                headers,
+            ),
+            Duration::from_secs(1),
+            /*telemetry*/ None,
+            HashMap::new(),
+        );
+
+        assert_eq!(stream.upstream_request_id.as_deref(), Some("req-claude-1"));
+
+        let event = stream
+            .rx_event
+            .recv()
+            .await
+            .expect("expected codex rate limit event")
+            .expect("expected ok event");
+        let ResponseEvent::RateLimits(snapshot) = event else {
+            panic!("expected codex rate limits event");
+        };
+        assert_eq!(snapshot.limit_id.as_deref(), Some("codex"));
+        let primary = snapshot.primary.expect("primary");
+        assert_eq!(primary.used_percent, 42.0);
+
+        let event = stream
+            .rx_event
+            .recv()
+            .await
+            .expect("expected anthropic rate limit event")
+            .expect("expected ok event");
+        let ResponseEvent::RateLimits(snapshot) = event else {
+            panic!("expected anthropic rate limits event");
+        };
+        assert_eq!(snapshot.limit_id.as_deref(), Some("anthropic_requests"));
+        let primary = snapshot.primary.expect("primary");
+        assert_eq!(primary.used_percent, 40.0);
     }
 
     #[tokio::test]
