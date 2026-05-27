@@ -5,6 +5,7 @@ use crate::common::ClaudeMessagesApiRequest;
 use crate::common::ResponseStream;
 use crate::endpoint::session::EndpointSession;
 use crate::error::ApiError;
+use crate::error::ProviderMediaErrorKind;
 use crate::provider::Provider;
 use crate::requests::headers::insert_header;
 use crate::sse::spawn_claude_response_stream;
@@ -276,6 +277,9 @@ fn map_claude_status_error(status: StatusCode, kind: Option<&str>, message: Stri
     if kind == Some("overloaded_error") || status == StatusCode::SERVICE_UNAVAILABLE {
         return ApiError::ServerOverloaded;
     }
+    if let Some(kind) = ProviderMediaErrorKind::classify(Some(status), &message) {
+        return ApiError::ProviderMedia { kind, message };
+    }
     ApiError::Api { status, message }
 }
 
@@ -336,6 +340,63 @@ mod tests {
             map_claude_api_error(error),
             ApiError::ServerOverloaded
         ));
+    }
+
+    #[test]
+    fn maps_claude_image_size_error_to_provider_media_error() {
+        let error = ApiError::Transport(TransportError::Http {
+            status: StatusCode::BAD_REQUEST,
+            url: Some("https://example.com/v1/messages".to_string()),
+            headers: None,
+            body: Some(
+                r#"{"type":"error","error":{"type":"invalid_request_error","message":"image exceeds 5 MB maximum: 5316852 bytes > 5242880 bytes"}}"#
+                    .to_string(),
+            ),
+        });
+
+        let ApiError::ProviderMedia { kind, message } = map_claude_api_error(error) else {
+            panic!("expected provider media error");
+        };
+        assert_eq!(kind, ProviderMediaErrorKind::ImageTooLarge);
+        assert!(message.contains("image exceeds 5 MB maximum"));
+    }
+
+    #[test]
+    fn maps_claude_payload_too_large_to_provider_media_error() {
+        let error = ApiError::Transport(TransportError::Http {
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+            url: Some("https://example.com/v1/messages".to_string()),
+            headers: None,
+            body: Some(
+                r#"{"type":"error","error":{"type":"invalid_request_error","message":"request body is too large"}}"#
+                    .to_string(),
+            ),
+        });
+
+        let ApiError::ProviderMedia { kind, message } = map_claude_api_error(error) else {
+            panic!("expected provider media error");
+        };
+        assert_eq!(kind, ProviderMediaErrorKind::RequestTooLarge);
+        assert!(message.contains("request body is too large"));
+    }
+
+    #[test]
+    fn maps_claude_invalid_pdf_error_to_provider_media_error() {
+        let error = ApiError::Transport(TransportError::Http {
+            status: StatusCode::BAD_REQUEST,
+            url: Some("https://example.com/v1/messages".to_string()),
+            headers: None,
+            body: Some(
+                r#"{"type":"error","error":{"type":"invalid_request_error","message":"The PDF specified was not valid"}}"#
+                    .to_string(),
+            ),
+        });
+
+        let ApiError::ProviderMedia { kind, message } = map_claude_api_error(error) else {
+            panic!("expected provider media error");
+        };
+        assert_eq!(kind, ProviderMediaErrorKind::InvalidDocument);
+        assert!(message.contains("The PDF specified was not valid"));
     }
 
     #[test]

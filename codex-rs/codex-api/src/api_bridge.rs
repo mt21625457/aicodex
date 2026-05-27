@@ -1,5 +1,7 @@
 use crate::TransportError;
 use crate::error::ApiError;
+use crate::error::ProviderMediaErrorKind;
+use crate::error::ProviderStreamErrorKind;
 use crate::rate_limits::parse_promo_message;
 use crate::rate_limits::parse_rate_limit_for_limit;
 use base64::Engine;
@@ -21,6 +23,20 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
         ApiError::UsageNotIncluded => CodexErr::UsageNotIncluded,
         ApiError::Retryable { message, delay } => CodexErr::Stream(message, delay),
         ApiError::Stream(msg) => CodexErr::Stream(msg, None),
+        ApiError::StreamFailure { kind, message } => {
+            CodexErr::Stream(provider_stream_error_message(kind, &message), None)
+        }
+        ApiError::ProviderMedia { kind, message } => match kind {
+            ProviderMediaErrorKind::InvalidImage
+            | ProviderMediaErrorKind::ImageTooLarge
+            | ProviderMediaErrorKind::ImageDimensionsTooLarge => CodexErr::InvalidImageRequest(),
+            ProviderMediaErrorKind::RequestTooLarge
+            | ProviderMediaErrorKind::DocumentTooLarge
+            | ProviderMediaErrorKind::InvalidDocument
+            | ProviderMediaErrorKind::PasswordProtectedDocument => {
+                CodexErr::InvalidRequest(message)
+            }
+        },
         ApiError::ServerOverloaded => CodexErr::ServerOverloaded,
         ApiError::Api { status, message } => CodexErr::UnexpectedStatus(UnexpectedResponseError {
             status,
@@ -130,6 +146,10 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
         },
         ApiError::RateLimit(msg) => CodexErr::Stream(msg, None),
     }
+}
+
+fn provider_stream_error_message(kind: ProviderStreamErrorKind, message: &str) -> String {
+    format!("{kind}: {message}")
 }
 
 const ACTIVE_LIMIT_HEADER: &str = "x-codex-active-limit";

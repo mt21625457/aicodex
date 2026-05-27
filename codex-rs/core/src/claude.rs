@@ -50,6 +50,10 @@ const CLAUDE_THINKING_MIN_BUDGET_TOKENS: u32 = 1_024;
 const CLAUDE_THINKING_MEDIUM_BUDGET_TOKENS: u32 = 2_048;
 const CLAUDE_THINKING_HIGH_BUDGET_TOKENS: u32 = 4_096;
 const CLAUDE_THINKING_XHIGH_BUDGET_TOKENS: u32 = 6_144;
+const CLAUDE_MAX_MEDIA_PER_REQUEST: usize = 100;
+const NON_TEXT_ERROR_TOOL_RESULT_PLACEHOLDER: &str = "[Non-text tool error content omitted]";
+const PRUNED_TOOL_RESULT_MEDIA_PLACEHOLDER: &str =
+    "[Media content omitted to stay within Claude request limits]";
 const SYNTHETIC_TOOL_RESULT_PLACEHOLDER: &str = "[Tool result missing due to internal error]";
 const INTERRUPTED_TOOL_USE_PLACEHOLDER: &str = "[Tool use interrupted]";
 const TOOL_INPUT_FIELD: &str = "input";
@@ -348,7 +352,9 @@ pub(crate) fn build_claude_messages_request(
         }
     }
 
-    messages = repair_tool_result_history(messages);
+    messages = normalize_claude_messages(repair_tool_result_history(messages));
+    prune_excess_claude_media(&mut messages, CLAUDE_MAX_MEDIA_PER_REQUEST);
+    messages = normalize_claude_messages(messages);
 
     if messages.is_empty() {
         push_message(
@@ -584,6 +590,148 @@ fn push_message(
         return;
     }
     messages.push(ClaudeMessage { role, content });
+}
+
+fn normalize_claude_messages(messages: Vec<ClaudeMessage>) -> Vec<ClaudeMessage> {
+    let mut normalized = Vec::with_capacity(messages.len());
+    for message in messages {
+        let mut content = Vec::with_capacity(message.content.len());
+        for block in message.content {
+            match block {
+                ClaudeContentBlock::Text {
+                    text,
+                    cache_control,
+                } if text.trim().is_empty() => {
+                    if cache_control.is_some() {
+                        content.push(ClaudeContentBlock::Text {
+                            text: " ".to_string(),
+                            cache_control,
+                        });
+                    }
+                }
+                ClaudeContentBlock::ToolResult {
+                    tool_use_id,
+                    content: result_content,
+                    is_error: true,
+                } => content.push(ClaudeContentBlock::ToolResult {
+                    tool_use_id,
+                    content: match result_content {
+                        ClaudeToolResultContent::Text(text) if text.trim().is_empty() => {
+                            ClaudeToolResultContent::Text(
+                                NON_TEXT_ERROR_TOOL_RESULT_PLACEHOLDER.to_string(),
+                            )
+                        }
+                        ClaudeToolResultContent::Text(text) => ClaudeToolResultContent::Text(text),
+                        ClaudeToolResultContent::Blocks(blocks) => {
+                            let text = blocks
+                                .into_iter()
+                                .filter_map(|block| match block {
+                                    ClaudeContentBlock::Text { text, .. }
+                                        if !text.trim().is_empty() =>
+                                    {
+                                        Some(text.trim().to_string())
+                                    }
+                                    ClaudeContentBlock::Text { .. }
+                                    | ClaudeContentBlock::Image { .. }
+                                    | ClaudeContentBlock::ToolUse { .. }
+                                    | ClaudeContentBlock::ToolResult { .. }
+                                    | ClaudeContentBlock::Thinking { .. }
+                                    | ClaudeContentBlock::ProviderState { .. } => None,
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n\n");
+                            ClaudeToolResultContent::Text(if text.is_empty() {
+                                NON_TEXT_ERROR_TOOL_RESULT_PLACEHOLDER.to_string()
+                            } else {
+                                text
+                            })
+                        }
+                    },
+                    is_error: true,
+                }),
+                block => content.push(block),
+            }
+        }
+
+        if !content.is_empty() {
+            push_message(&mut normalized, message.role, content);
+        }
+    }
+    normalized
+}
+
+fn prune_excess_claude_media(messages: &mut [ClaudeMessage], limit: usize) {
+    let mut to_remove = messages
+        .iter()
+        .map(|message| count_claude_media(&message.content))
+        .sum::<usize>()
+        .saturating_sub(limit);
+    if to_remove == 0 {
+        return;
+    }
+
+    for message in messages {
+        if to_remove == 0 {
+            return;
+        }
+
+        let mut content = Vec::with_capacity(message.content.len());
+        for block in std::mem::take(&mut message.content) {
+            match block {
+                ClaudeContentBlock::ToolResult {
+                    tool_use_id,
+                    content: ClaudeToolResultContent::Blocks(blocks),
+                    is_error,
+                } => {
+                    let mut kept_blocks = Vec::with_capacity(blocks.len());
+                    let mut removed_nested_media = false;
+                    for block in blocks {
+                        if to_remove > 0 && is_claude_media_block(&block) {
+                            to_remove -= 1;
+                            removed_nested_media = true;
+                        } else {
+                            kept_blocks.push(block);
+                        }
+                    }
+                    if kept_blocks.is_empty() && removed_nested_media {
+                        kept_blocks.push(text_block(PRUNED_TOOL_RESULT_MEDIA_PLACEHOLDER));
+                    }
+                    content.push(ClaudeContentBlock::ToolResult {
+                        tool_use_id,
+                        content: ClaudeToolResultContent::Blocks(kept_blocks),
+                        is_error,
+                    });
+                }
+                block if to_remove > 0 && is_claude_media_block(&block) => {
+                    to_remove -= 1;
+                }
+                block => content.push(block),
+            }
+        }
+        message.content = content;
+    }
+}
+
+fn count_claude_media(content: &[ClaudeContentBlock]) -> usize {
+    content
+        .iter()
+        .map(|block| match block {
+            ClaudeContentBlock::ToolResult {
+                content: ClaudeToolResultContent::Blocks(blocks),
+                ..
+            } => count_claude_media(blocks),
+            ClaudeContentBlock::Image { .. } => 1,
+            ClaudeContentBlock::Text { .. }
+            | ClaudeContentBlock::ToolUse { .. }
+            | ClaudeContentBlock::ToolResult { .. }
+            | ClaudeContentBlock::Thinking { .. }
+            | ClaudeContentBlock::ProviderState { .. } => 0,
+        })
+        .sum()
+}
+
+fn is_claude_media_block(block: &ClaudeContentBlock) -> bool {
+    matches!(block, ClaudeContentBlock::Image { .. })
 }
 
 fn validate_tool_result_history(messages: &[ClaudeMessage]) -> codex_protocol::error::Result<()> {
@@ -1469,6 +1617,102 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_claude_error_tool_result_to_text_only_content() {
+        let prompt = Prompt {
+            input: vec![
+                ResponseItem::FunctionCall {
+                    id: None,
+                    name: "lookup".to_string(),
+                    namespace: None,
+                    arguments: "{}".to_string(),
+                    call_id: "call_1".to_string(),
+                },
+                ResponseItem::FunctionCallOutput {
+                    call_id: "call_1".to_string(),
+                    output: FunctionCallOutputPayload {
+                        body: FunctionCallOutputBody::ContentItems(vec![
+                            FunctionCallOutputContentItem::InputText {
+                                text: "first".to_string(),
+                            },
+                            FunctionCallOutputContentItem::InputImage {
+                                image_url: "data:image/png;base64,Zm9v".to_string(),
+                                detail: Some(ImageDetail::High),
+                            },
+                            FunctionCallOutputContentItem::InputText {
+                                text: " second ".to_string(),
+                            },
+                        ]),
+                        success: Some(false),
+                    },
+                },
+            ],
+            base_instructions: BaseInstructions {
+                text: String::new(),
+            },
+            ..Default::default()
+        };
+
+        let request =
+            build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
+                .expect("request");
+
+        assert_eq!(
+            request.messages[1].content,
+            vec![ClaudeContentBlock::ToolResult {
+                tool_use_id: "call_1".to_string(),
+                content: ClaudeToolResultContent::Text("first\n\nsecond".to_string()),
+                is_error: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn normalizes_image_only_error_tool_result_to_text_placeholder() {
+        let prompt = Prompt {
+            input: vec![
+                ResponseItem::FunctionCall {
+                    id: None,
+                    name: "lookup".to_string(),
+                    namespace: None,
+                    arguments: "{}".to_string(),
+                    call_id: "call_1".to_string(),
+                },
+                ResponseItem::FunctionCallOutput {
+                    call_id: "call_1".to_string(),
+                    output: FunctionCallOutputPayload {
+                        body: FunctionCallOutputBody::ContentItems(vec![
+                            FunctionCallOutputContentItem::InputImage {
+                                image_url: "data:image/png;base64,Zm9v".to_string(),
+                                detail: Some(ImageDetail::High),
+                            },
+                        ]),
+                        success: Some(false),
+                    },
+                },
+            ],
+            base_instructions: BaseInstructions {
+                text: String::new(),
+            },
+            ..Default::default()
+        };
+
+        let request =
+            build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
+                .expect("request");
+
+        assert_eq!(
+            request.messages[1].content,
+            vec![ClaudeContentBlock::ToolResult {
+                tool_use_id: "call_1".to_string(),
+                content: ClaudeToolResultContent::Text(
+                    NON_TEXT_ERROR_TOOL_RESULT_PLACEHOLDER.to_string()
+                ),
+                is_error: true,
+            }]
+        );
+    }
+
+    #[test]
     fn builds_claude_url_image_and_structured_tool_result_blocks() {
         let prompt = Prompt {
             input: vec![
@@ -1604,6 +1848,172 @@ mod tests {
                     text: "[image: file:///tmp/screenshot.png]".to_string(),
                     cache_control: None,
                 }],
+            }]
+        );
+    }
+
+    #[test]
+    fn prunes_oldest_top_level_media_blocks_before_sending_claude_request() {
+        let prompt = Prompt {
+            input: vec![ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: (0..=CLAUDE_MAX_MEDIA_PER_REQUEST)
+                    .map(|index| ContentItem::InputImage {
+                        image_url: format!("https://example.com/image-{index:03}.png"),
+                        detail: Some(ImageDetail::High),
+                    })
+                    .collect(),
+                phase: None,
+            }],
+            base_instructions: BaseInstructions {
+                text: String::new(),
+            },
+            ..Default::default()
+        };
+
+        let request =
+            build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
+                .expect("request");
+        let urls = request.messages[0]
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ClaudeContentBlock::Image {
+                    source: ClaudeImageSource::Url { url },
+                } => Some(url.as_str()),
+                ClaudeContentBlock::Image { .. }
+                | ClaudeContentBlock::Text { .. }
+                | ClaudeContentBlock::ToolUse { .. }
+                | ClaudeContentBlock::ToolResult { .. }
+                | ClaudeContentBlock::Thinking { .. }
+                | ClaudeContentBlock::ProviderState { .. } => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(urls.len(), CLAUDE_MAX_MEDIA_PER_REQUEST);
+        assert_eq!(
+            urls.first().copied(),
+            Some("https://example.com/image-001.png")
+        );
+        assert_eq!(
+            urls.last().copied(),
+            Some("https://example.com/image-100.png")
+        );
+    }
+
+    #[test]
+    fn counts_nested_tool_result_media_and_preserves_tool_result_id_when_pruned() {
+        let prompt = Prompt {
+            input: vec![
+                ResponseItem::FunctionCall {
+                    id: None,
+                    name: "inspect".to_string(),
+                    namespace: None,
+                    arguments: "{}".to_string(),
+                    call_id: "call_1".to_string(),
+                },
+                ResponseItem::FunctionCallOutput {
+                    call_id: "call_1".to_string(),
+                    output: FunctionCallOutputPayload::from_content_items(vec![
+                        FunctionCallOutputContentItem::InputImage {
+                            image_url: "data:image/png;base64,Zm9v".to_string(),
+                            detail: Some(ImageDetail::High),
+                        },
+                    ]),
+                },
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: (0..CLAUDE_MAX_MEDIA_PER_REQUEST)
+                        .map(|index| ContentItem::InputImage {
+                            image_url: format!("https://example.com/recent-{index:03}.png"),
+                            detail: Some(ImageDetail::High),
+                        })
+                        .collect(),
+                    phase: None,
+                },
+            ],
+            base_instructions: BaseInstructions {
+                text: String::new(),
+            },
+            ..Default::default()
+        };
+
+        let request =
+            build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
+                .expect("request");
+
+        assert_eq!(
+            count_claude_media(&request.messages[1].content),
+            CLAUDE_MAX_MEDIA_PER_REQUEST
+        );
+        assert_eq!(
+            request.messages[1].content.first(),
+            Some(&ClaudeContentBlock::ToolResult {
+                tool_use_id: "call_1".to_string(),
+                content: ClaudeToolResultContent::Blocks(vec![ClaudeContentBlock::Text {
+                    text: PRUNED_TOOL_RESULT_MEDIA_PLACEHOLDER.to_string(),
+                    cache_control: None,
+                }]),
+                is_error: false,
+            })
+        );
+    }
+
+    #[test]
+    fn normalizes_whitespace_only_assistant_message_and_merges_adjacent_users() {
+        let prompt = Prompt {
+            input: vec![
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "first".to_string(),
+                    }],
+                    phase: None,
+                },
+                ResponseItem::Message {
+                    id: None,
+                    role: "assistant".to_string(),
+                    content: vec![ContentItem::OutputText {
+                        text: "\n\n".to_string(),
+                    }],
+                    phase: None,
+                },
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "second".to_string(),
+                    }],
+                    phase: None,
+                },
+            ],
+            base_instructions: BaseInstructions {
+                text: String::new(),
+            },
+            ..Default::default()
+        };
+
+        let request =
+            build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
+                .expect("request");
+
+        assert_eq!(
+            request.messages,
+            vec![ClaudeMessage {
+                role: ClaudeMessageRole::User,
+                content: vec![
+                    ClaudeContentBlock::Text {
+                        text: "first".to_string(),
+                        cache_control: None,
+                    },
+                    ClaudeContentBlock::Text {
+                        text: "second".to_string(),
+                        cache_control: None,
+                    },
+                ],
             }]
         );
     }

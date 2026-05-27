@@ -1925,6 +1925,8 @@ async fn try_run_sampling_request(
     let mut in_flight: FuturesOrdered<BoxFuture<'static, CodexResult<ResponseInputItem>>> =
         FuturesOrdered::new();
     let mut needs_follow_up = false;
+    let mut completed_tool_call_started = false;
+    let mut streamed_tool_input_started = false;
     let mut last_agent_message: Option<String> = None;
     let mut active_item: Option<TurnItem> = None;
     let mut active_tool_argument_diff_consumer: Option<(
@@ -1971,8 +1973,41 @@ async fn try_run_sampling_request(
 
         let event = match event {
             Some(Ok(event)) => event,
-            Some(Err(err)) => break Err(err),
+            Some(Err(err)) => {
+                if completed_tool_call_started {
+                    warn!(
+                        "stream failed after a tool call started; continuing with tool follow-up instead of retrying: {err}"
+                    );
+                    break Ok(SamplingRequestResult {
+                        needs_follow_up: true,
+                        provider_stop_reason: Some("stream_error_after_tool_call".to_string()),
+                        last_agent_message,
+                    });
+                }
+                if streamed_tool_input_started {
+                    break Err(CodexErr::InvalidRequest(format!(
+                        "stream disconnected after tool input started; retry skipped to avoid duplicating tool execution: {err}"
+                    )));
+                }
+                break Err(err);
+            }
             None => {
+                if completed_tool_call_started {
+                    warn!(
+                        "stream closed after a tool call started; continuing with tool follow-up instead of retrying"
+                    );
+                    break Ok(SamplingRequestResult {
+                        needs_follow_up: true,
+                        provider_stop_reason: Some("stream_closed_after_tool_call".to_string()),
+                        last_agent_message,
+                    });
+                }
+                if streamed_tool_input_started {
+                    break Err(CodexErr::InvalidRequest(
+                        "stream closed after tool input started; retry skipped to avoid duplicating tool execution"
+                            .to_string(),
+                    ));
+                }
                 break Err(CodexErr::Stream(
                     "stream closed before response.completed".into(),
                     None,
@@ -2065,6 +2100,7 @@ async fn try_run_sampling_request(
                         Err(err) => break Err(err),
                     };
                 if let Some(tool_future) = output_result.tool_future {
+                    completed_tool_call_started = true;
                     in_flight.push_back(tool_future);
                 }
                 if let Some(agent_message) = output_result.last_agent_message {
@@ -2266,6 +2302,7 @@ async fn try_run_sampling_request(
                     None => active_call_id.clone(),
                 };
                 if let Some(event) = consumer.consume_diff(turn_context.as_ref(), call_id, &delta) {
+                    streamed_tool_input_started = true;
                     sess.send_event(&turn_context, event).await;
                 }
             }

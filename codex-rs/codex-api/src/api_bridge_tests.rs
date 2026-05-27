@@ -9,6 +9,45 @@ fn map_api_error_maps_server_overloaded() {
 }
 
 #[test]
+fn map_api_error_maps_provider_image_errors_to_invalid_image() {
+    let err = map_api_error(ApiError::ProviderMedia {
+        kind: ProviderMediaErrorKind::ImageTooLarge,
+        message: "image exceeds 5 MB maximum".to_string(),
+    });
+
+    assert!(matches!(err, CodexErr::InvalidImageRequest()));
+}
+
+#[test]
+fn map_api_error_maps_provider_document_errors_to_invalid_request() {
+    let err = map_api_error(ApiError::ProviderMedia {
+        kind: ProviderMediaErrorKind::InvalidDocument,
+        message: "The PDF specified was not valid".to_string(),
+    });
+
+    let CodexErr::InvalidRequest(message) = err else {
+        panic!("expected CodexErr::InvalidRequest, got {err:?}");
+    };
+    assert_eq!(message, "The PDF specified was not valid");
+}
+
+#[test]
+fn map_api_error_preserves_provider_stream_failure_class() {
+    let err = map_api_error(ApiError::StreamFailure {
+        kind: ProviderStreamErrorKind::ClosedBeforeMessageStart,
+        message: "stream closed before message_start".to_string(),
+    });
+
+    let CodexErr::Stream(message, None) = err else {
+        panic!("expected CodexErr::Stream, got {err:?}");
+    };
+    assert_eq!(
+        message,
+        "closed_before_message_start: stream closed before message_start"
+    );
+}
+
+#[test]
 fn map_api_error_maps_server_overloaded_from_503_body() {
     let body = serde_json::json!({
         "error": {

@@ -158,6 +158,76 @@ async fn claude_wire_tool_loop_posts_messages_and_tool_result() -> anyhow::Resul
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_wire_stream_close_after_tool_call_continues_with_tool_follow_up()
+-> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let incomplete_tool_use = sse(vec![
+        json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            }
+        }),
+        json!({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+                "type": "tool_use",
+                "id": "toolu_1",
+                "name": "exec_command",
+                "input": {}
+            }
+        }),
+        json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+                "type": "input_json_delta",
+                "partial_json": "{\"cmd\":\"printf claude\"}"
+            }
+        }),
+        json!({"type": "content_block_stop", "index": 0}),
+    ]);
+    let responses = mount_claude_sse_sequence(
+        &server,
+        vec![incomplete_tool_use, claude_text_sse("msg_2", "done")],
+    )
+    .await;
+    let count_tokens = mount_claude_count_tokens_response(
+        &server,
+        ResponseTemplate::new(200).set_body_json(json!({ "input_tokens": 789 })),
+        1,
+    )
+    .await;
+
+    let test = test_codex()
+        .with_config(configure_claude_provider)
+        .build(&server)
+        .await?;
+
+    test.submit_turn("run a shell command").await?;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 2);
+    let second = requests[1].body_json();
+    let tool_result = tool_result_block(&second, "toolu_1");
+    assert_eq!(tool_result["tool_use_id"].as_str(), Some("toolu_1"));
+    assert!(
+        tool_result["content"]
+            .as_str()
+            .expect("tool_result content")
+            .contains("claude")
+    );
+    assert_eq!(count_tokens.requests().len(), 1);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn claude_wire_uses_count_tokens_for_post_turn_context_usage() -> anyhow::Result<()> {
     let server = start_mock_server().await;
     let responses = mount_claude_sse_sequence(
@@ -865,6 +935,60 @@ async fn claude_wire_apply_patch_wrapper_streams_raw_patch_update() -> anyhow::R
     );
     let written = std::fs::read_to_string(test.config.cwd.join("claude_streamed.txt"))?;
     assert_eq!(written, "hello\n");
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_wire_stream_close_after_tool_input_does_not_retry() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let patch = "*** Begin Patch\n*** Add File: claude_partial.txt\n+hello\n*** End Patch";
+    let partial_json = serde_json::to_string(&json!({ "input": patch }))?;
+    let incomplete_tool_input = sse(vec![
+        json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            }
+        }),
+        json!({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+                "type": "tool_use",
+                "id": "toolu_stream",
+                "name": "apply_patch",
+                "input": {}
+            }
+        }),
+        json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+                "type": "input_json_delta",
+                "partial_json": partial_json
+            }
+        }),
+    ]);
+    let responses = mount_claude_sse_sequence(&server, vec![incomplete_tool_input]).await;
+    mount_claude_count_tokens_never(&server).await;
+
+    let test = test_codex()
+        .with_config(configure_claude_provider_with_apply_patch_streaming)
+        .build(&server)
+        .await?;
+
+    test.submit_turn("stream an apply_patch tool call").await?;
+
+    assert_eq!(responses.requests().len(), 1);
+    assert!(
+        !test.config.cwd.join("claude_partial.txt").exists(),
+        "partial streamed tool input must not execute after stream close"
+    );
 
     Ok(())
 }

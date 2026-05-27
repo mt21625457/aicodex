@@ -3,6 +3,8 @@ use crate::common::ClaudeToolCallKind;
 use crate::common::ResponseEvent;
 use crate::common::ResponseStream;
 use crate::error::ApiError;
+use crate::error::ProviderMediaErrorKind;
+use crate::error::ProviderStreamErrorKind;
 use crate::telemetry::SseTelemetry;
 use codex_client::ByteStream;
 use codex_client::StreamResponse;
@@ -324,14 +326,16 @@ struct ClaudeUsage {
 
 impl ClaudeUsage {
     fn merge(&mut self, usage: ClaudeUsage) {
-        self.input_tokens = usage.input_tokens.or(self.input_tokens);
+        merge_non_zero_usage_field(&mut self.input_tokens, usage.input_tokens);
         self.output_tokens = usage.output_tokens.or(self.output_tokens);
-        self.cache_read_input_tokens = usage
-            .cache_read_input_tokens
-            .or(self.cache_read_input_tokens);
-        self.cache_creation_input_tokens = usage
-            .cache_creation_input_tokens
-            .or(self.cache_creation_input_tokens);
+        merge_non_zero_usage_field(
+            &mut self.cache_read_input_tokens,
+            usage.cache_read_input_tokens,
+        );
+        merge_non_zero_usage_field(
+            &mut self.cache_creation_input_tokens,
+            usage.cache_creation_input_tokens,
+        );
         self.server_tool_use = usage.server_tool_use.or(self.server_tool_use.take());
         self.iterations = usage.iterations.or(self.iterations);
     }
@@ -355,6 +359,12 @@ impl ClaudeUsage {
             reasoning_output_tokens: 0,
             total_tokens,
         })
+    }
+}
+
+fn merge_non_zero_usage_field(current: &mut Option<i64>, incoming: Option<i64>) {
+    if incoming.is_some_and(|value| value > 0) {
+        *current = incoming;
     }
 }
 
@@ -479,7 +489,13 @@ impl ClaudeStreamState {
                         None => error.message,
                     })
                     .unwrap_or_else(|| "claude stream error".to_string());
-                return Err(ApiError::Stream(message));
+                if let Some(kind) = ProviderMediaErrorKind::classify(/*status*/ None, &message) {
+                    return Err(ApiError::ProviderMedia { kind, message });
+                }
+                return Err(provider_stream_error(
+                    ProviderStreamErrorKind::ProviderError,
+                    message,
+                ));
             }
             ClaudeStreamEvent::Unknown => trace!("unhandled Claude stream event"),
         }
@@ -1304,8 +1320,37 @@ fn parse_claude_stream_event(event_name: &str, data: &str) -> Result<ClaudeStrea
         return Ok(ClaudeStreamEvent::event_name_only(event_name));
     }
 
-    serde_json::from_str(data)
-        .map_err(|err| ApiError::Stream(format!("failed to parse Claude SSE event: {err}")))
+    serde_json::from_str(data).map_err(|err| {
+        provider_stream_error(
+            ProviderStreamErrorKind::ParseError,
+            format!("failed to parse Claude SSE event: {err}"),
+        )
+    })
+}
+
+fn provider_stream_error(kind: ProviderStreamErrorKind, message: String) -> ApiError {
+    ApiError::StreamFailure { kind, message }
+}
+
+fn stream_closed_error(state: &ClaudeStreamState) -> ApiError {
+    if state.message_started {
+        provider_stream_error(
+            ProviderStreamErrorKind::ClosedAfterMessageStartBeforeStop,
+            "stream closed after message_start before message_stop".to_string(),
+        )
+    } else {
+        provider_stream_error(
+            ProviderStreamErrorKind::ClosedBeforeMessageStart,
+            "stream closed before message_start".to_string(),
+        )
+    }
+}
+
+fn idle_timeout_error() -> ApiError {
+    provider_stream_error(
+        ProviderStreamErrorKind::IdleTimeout,
+        "idle timeout waiting for SSE".to_string(),
+    )
 }
 
 async fn process_sse(
@@ -1328,21 +1373,20 @@ async fn process_sse(
             Ok(Some(Ok(sse))) => sse,
             Ok(Some(Err(e))) => {
                 debug!("Claude SSE error: {e:#}");
-                let _ = tx_event.send(Err(ApiError::Stream(e.to_string()))).await;
-                return;
-            }
-            Ok(None) => {
                 let _ = tx_event
-                    .send(Err(ApiError::Stream(
-                        "stream closed before message_stop".to_string(),
+                    .send(Err(provider_stream_error(
+                        ProviderStreamErrorKind::TransportError,
+                        e.to_string(),
                     )))
                     .await;
                 return;
             }
+            Ok(None) => {
+                let _ = tx_event.send(Err(stream_closed_error(&state))).await;
+                return;
+            }
             Err(_) => {
-                let _ = tx_event
-                    .send(Err(ApiError::Stream("idle timeout waiting for SSE".into())))
-                    .await;
+                let _ = tx_event.send(Err(idle_timeout_error())).await;
                 return;
             }
         };
@@ -1371,6 +1415,11 @@ async fn process_sse(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
+    use codex_client::TransportError;
+    use futures::stream;
+    use http::HeaderMap;
+    use http::StatusCode;
     use pretty_assertions::assert_eq;
     use serde_json::json;
 
@@ -1404,6 +1453,23 @@ mod tests {
             }
         }
         panic!("expected Claude stream event error")
+    }
+
+    fn stream_response(chunks: Vec<Result<Bytes, TransportError>>) -> codex_client::StreamResponse {
+        codex_client::StreamResponse {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            bytes: Box::pin(stream::iter(chunks)),
+        }
+    }
+
+    async fn recv_stream_error(mut stream: ResponseStream) -> ApiError {
+        while let Some(event) = stream.rx_event.recv().await {
+            if let Err(error) = event {
+                return error;
+            }
+        }
+        panic!("expected stream error")
     }
 
     fn custom_apply_patch_tool_call_info() -> HashMap<String, ClaudeToolCallInfo> {
@@ -1450,6 +1516,92 @@ mod tests {
     fn claude_stream_parses_event_name_only_sse() {
         let event = parse_claude_stream_event("message_stop", "").expect("event parses");
         assert!(matches!(event, ClaudeStreamEvent::MessageStop));
+    }
+
+    #[tokio::test]
+    async fn claude_stream_classifies_close_before_message_start() {
+        let stream = spawn_claude_response_stream(
+            stream_response(Vec::new()),
+            Duration::from_secs(1),
+            /*telemetry*/ None,
+            HashMap::new(),
+        );
+
+        let ApiError::StreamFailure { kind, message } = recv_stream_error(stream).await else {
+            panic!("expected stream failure");
+        };
+        assert_eq!(kind, ProviderStreamErrorKind::ClosedBeforeMessageStart);
+        assert_eq!(message, "stream closed before message_start");
+    }
+
+    #[tokio::test]
+    async fn claude_stream_classifies_close_after_message_start() {
+        let start = json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "content": []
+            }
+        });
+        let stream = spawn_claude_response_stream(
+            stream_response(vec![Ok(Bytes::from(format!(
+                "event: message_start\ndata: {start}\n\n"
+            )))]),
+            Duration::from_secs(1),
+            /*telemetry*/ None,
+            HashMap::new(),
+        );
+
+        let ApiError::StreamFailure { kind, message } = recv_stream_error(stream).await else {
+            panic!("expected stream failure");
+        };
+        assert_eq!(
+            kind,
+            ProviderStreamErrorKind::ClosedAfterMessageStartBeforeStop
+        );
+        assert_eq!(
+            message,
+            "stream closed after message_start before message_stop"
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_stream_classifies_parse_error() {
+        let stream = spawn_claude_response_stream(
+            stream_response(vec![Ok(Bytes::from("event: message_start\ndata: {\n\n"))]),
+            Duration::from_secs(1),
+            /*telemetry*/ None,
+            HashMap::new(),
+        );
+
+        let ApiError::StreamFailure { kind, message } = recv_stream_error(stream).await else {
+            panic!("expected stream failure");
+        };
+        assert_eq!(kind, ProviderStreamErrorKind::ParseError);
+        assert!(message.contains("failed to parse Claude SSE event"));
+    }
+
+    #[tokio::test]
+    async fn claude_stream_classifies_idle_timeout() {
+        let stream_response = codex_client::StreamResponse {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            bytes: Box::pin(stream::pending::<Result<Bytes, TransportError>>()),
+        };
+        let stream = spawn_claude_response_stream(
+            stream_response,
+            Duration::from_millis(1),
+            /*telemetry*/ None,
+            HashMap::new(),
+        );
+
+        let ApiError::StreamFailure { kind, message } = recv_stream_error(stream).await else {
+            panic!("expected stream failure");
+        };
+        assert_eq!(kind, ProviderStreamErrorKind::IdleTimeout);
+        assert_eq!(message, "idle timeout waiting for SSE");
     }
 
     #[tokio::test]
@@ -1600,6 +1752,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn claude_stream_preserves_input_cache_usage_when_delta_reports_zero() {
+        let events = run_events(
+            vec![
+                json!({
+                    "type": "message_start",
+                    "message": {
+                        "id": "msg_1",
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [],
+                        "usage": {
+                            "input_tokens": 100,
+                            "output_tokens": 0,
+                            "cache_read_input_tokens": 30,
+                            "cache_creation_input_tokens": 12
+                        }
+                    }
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": "Done"}
+                }),
+                json!({"type": "content_block_stop", "index": 0}),
+                json!({
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn"},
+                    "usage": {
+                        "input_tokens": 0,
+                        "output_tokens": 9,
+                        "cache_read_input_tokens": 0,
+                        "cache_creation_input_tokens": 0
+                    }
+                }),
+                json!({"type": "message_stop"}),
+            ],
+            HashMap::new(),
+        )
+        .await;
+
+        let usage = events
+            .iter()
+            .find_map(|event| match event {
+                ResponseEvent::Completed {
+                    token_usage: Some(usage),
+                    ..
+                } => Some(usage.clone()),
+                _ => None,
+            })
+            .expect("completed usage");
+
+        assert_eq!(
+            usage,
+            TokenUsage {
+                input_tokens: 100,
+                cached_input_tokens: 30,
+                output_tokens: 9,
+                reasoning_output_tokens: 0,
+                total_tokens: 109,
+            }
+        );
+    }
+
+    #[tokio::test]
     async fn claude_stream_accumulates_fragments_usage_cache_and_stop_metadata() {
         let events = run_events(
             vec![
@@ -1739,6 +1955,48 @@ mod tests {
             })
             .expect("provider stop reason");
         assert_eq!(provider_stop_reason, "stop_sequence");
+    }
+
+    #[test]
+    fn claude_usage_merge_ignores_zero_input_cache_fields() {
+        let mut usage = ClaudeUsage {
+            input_tokens: Some(100),
+            output_tokens: Some(1),
+            cache_read_input_tokens: Some(30),
+            cache_creation_input_tokens: Some(12),
+            server_tool_use: Some(json!({"web_search_requests": 1})),
+            iterations: Some(1),
+        };
+
+        usage.merge(ClaudeUsage {
+            input_tokens: Some(0),
+            output_tokens: Some(9),
+            cache_read_input_tokens: Some(0),
+            cache_creation_input_tokens: Some(0),
+            server_tool_use: Some(json!({"web_search_requests": 2})),
+            iterations: Some(2),
+        });
+
+        assert_eq!(usage.input_tokens, Some(100));
+        assert_eq!(usage.output_tokens, Some(9));
+        assert_eq!(usage.cache_read_input_tokens, Some(30));
+        assert_eq!(usage.cache_creation_input_tokens, Some(12));
+        assert_eq!(
+            usage.server_tool_use,
+            Some(json!({"web_search_requests": 2}))
+        );
+        assert_eq!(usage.iterations, Some(2));
+
+        usage.merge(ClaudeUsage {
+            input_tokens: Some(110),
+            cache_read_input_tokens: Some(40),
+            cache_creation_input_tokens: Some(13),
+            ..ClaudeUsage::default()
+        });
+
+        assert_eq!(usage.input_tokens, Some(110));
+        assert_eq!(usage.cache_read_input_tokens, Some(40));
+        assert_eq!(usage.cache_creation_input_tokens, Some(13));
     }
 
     #[test]
@@ -2948,6 +3206,24 @@ mod tests {
                 .to_string()
                 .contains("invalid_request_error: bad stream")
         );
+    }
+
+    #[tokio::test]
+    async fn claude_stream_classifies_media_error_event() {
+        let error = run_events_expect_error(vec![json!({
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "message": "image exceeds 5 MB maximum: 5316852 bytes > 5242880 bytes"
+            }
+        })])
+        .await;
+
+        let ApiError::ProviderMedia { kind, message } = error else {
+            panic!("expected provider media error");
+        };
+        assert_eq!(kind, ProviderMediaErrorKind::ImageTooLarge);
+        assert!(message.contains("image exceeds 5 MB maximum"));
     }
 
     #[tokio::test]
