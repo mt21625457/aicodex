@@ -305,6 +305,7 @@ pub fn create_tools_json_for_claude_messages_with_options(
                             reason: "Claude native server web search selected",
                         });
                         history_requirements.preserve_server_tool_results = true;
+                        history_requirements.preserve_structured_citations = true;
                         claude_tools.push(claude_web_search_tool_json(filters, user_location));
                     }
                     ClaudeWebSearchToolKind::LocalFunctionTool => {

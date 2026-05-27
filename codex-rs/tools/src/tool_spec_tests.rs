@@ -6,6 +6,7 @@ use super::ResponsesApiWebSearchUserLocation;
 use super::ToolSpec;
 use crate::AdditionalProperties;
 use crate::ClaudeBetaFeature;
+use crate::ClaudeHistoryRequirements;
 use crate::ClaudeLocalExecutorCapability;
 use crate::ClaudeMcpServer;
 use crate::ClaudeMcpToolsetConfig;
@@ -683,7 +684,14 @@ fn create_tools_json_for_claude_messages_maps_web_search_and_omits_image_generat
         result.native_tool_policy.decisions[0].outcome,
         ClaudeNativeToolDecisionOutcome::Enabled
     );
-    assert!(result.history_requirements.preserve_server_tool_results);
+    assert_eq!(
+        result.history_requirements,
+        ClaudeHistoryRequirements {
+            preserve_server_tool_results: true,
+            preserve_mcp_tool_results: false,
+            preserve_structured_citations: true,
+        }
+    );
 }
 
 #[test]
@@ -744,7 +752,10 @@ fn create_tools_json_for_claude_messages_can_map_web_search_to_local_function() 
         result.native_tool_policy.decisions[0].outcome,
         ClaudeNativeToolDecisionOutcome::Fallback
     );
-    assert!(!result.history_requirements.preserve_server_tool_results);
+    assert_eq!(
+        result.history_requirements,
+        ClaudeHistoryRequirements::default()
+    );
 }
 
 #[test]

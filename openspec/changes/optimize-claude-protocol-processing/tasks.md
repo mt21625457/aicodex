@@ -53,11 +53,11 @@
 
 ## 6. History Replay Requirements
 
-- [ ] 6.1 Thread `ClaudeHistoryRequirements` from the Claude tool plan into
+- [x] 6.1 Thread `ClaudeHistoryRequirements` from the Claude tool plan into
   request normalization and history retention decisions.
-- [ ] 6.2 Preserve server tool results, remote MCP results, and structured
+- [x] 6.2 Preserve server tool results, remote MCP results, and structured
   citation state when the active plan requires them.
-- [ ] 6.3 Drop or quarantine stale provider-state blocks only when the active
+- [x] 6.3 Drop or quarantine stale provider-state blocks only when the active
   plan proves they are no longer replayable.
 - [ ] 6.4 Add tests for native server tools and remote MCP histories across
   follow-up turns and compaction.
@@ -103,7 +103,7 @@
   endpoint changes.
 - [x] 10.3 Run `cd codex-rs && cargo test -p codex-core claude` for request,
   history, media, and turn orchestration changes.
-- [ ] 10.4 Run `cd codex-rs && cargo test -p codex-tools claude` if tool-plan
+- [x] 10.4 Run `cd codex-rs && cargo test -p codex-tools claude` if tool-plan
   metadata changes.
 - [x] 10.5 Run scoped `just fix -p <crate>` for each touched Rust crate after
   tests pass.

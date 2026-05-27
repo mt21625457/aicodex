@@ -29,6 +29,7 @@ use codex_protocol::models::LocalShellAction;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
+use codex_tools::ClaudeHistoryRequirements;
 use codex_tools::ClaudeLocalExecutorCapability;
 use codex_tools::ClaudeMessagesToolOptions;
 use codex_tools::ClaudeNativeToolKind;
@@ -162,6 +163,7 @@ pub(crate) fn build_claude_messages_request(
         tool_call_info: tool_call_metadata,
         mcp_servers,
         beta_headers,
+        history_requirements,
         ..
     } = tools_json;
     let mut tools = tools
@@ -352,9 +354,10 @@ pub(crate) fn build_claude_messages_request(
         }
     }
 
-    messages = normalize_claude_messages(repair_tool_result_history(messages));
+    messages =
+        normalize_claude_messages(repair_tool_result_history(messages), &history_requirements);
     prune_excess_claude_media(&mut messages, CLAUDE_MAX_MEDIA_PER_REQUEST);
-    messages = normalize_claude_messages(messages);
+    messages = normalize_claude_messages(messages, &history_requirements);
 
     if messages.is_empty() {
         push_message(
@@ -592,7 +595,10 @@ fn push_message(
     messages.push(ClaudeMessage { role, content });
 }
 
-fn normalize_claude_messages(messages: Vec<ClaudeMessage>) -> Vec<ClaudeMessage> {
+fn normalize_claude_messages(
+    messages: Vec<ClaudeMessage>,
+    history_requirements: &ClaudeHistoryRequirements,
+) -> Vec<ClaudeMessage> {
     let mut normalized = Vec::with_capacity(messages.len());
     for message in messages {
         let mut content = Vec::with_capacity(message.content.len());
@@ -649,6 +655,8 @@ fn normalize_claude_messages(messages: Vec<ClaudeMessage>) -> Vec<ClaudeMessage>
                     },
                     is_error: true,
                 }),
+                ClaudeContentBlock::ProviderState { value }
+                    if !should_preserve_provider_state(&value, history_requirements) => {}
                 block => content.push(block),
             }
         }
@@ -658,6 +666,40 @@ fn normalize_claude_messages(messages: Vec<ClaudeMessage>) -> Vec<ClaudeMessage>
         }
     }
     normalized
+}
+
+fn should_preserve_provider_state(
+    value: &Value,
+    history_requirements: &ClaudeHistoryRequirements,
+) -> bool {
+    let Some(kind) = value
+        .as_object()
+        .and_then(|object| object.get("type"))
+        .and_then(Value::as_str)
+    else {
+        return true;
+    };
+    match kind {
+        "compaction" | "redacted_thinking" => true,
+        "mcp_tool_use" | "mcp_tool_result" => history_requirements.preserve_mcp_tool_results,
+        "server_tool_use"
+        | "web_search_tool_result"
+        | "web_fetch_tool_result"
+        | "code_execution_tool_result"
+        | "bash_code_execution_tool_result"
+        | "text_editor_code_execution_tool_result"
+        | "tool_search_tool_result"
+        | "advisor_tool_result"
+        | "advisor_tool_result_error"
+        | "container_upload"
+        | "tool_reference" => history_requirements.preserve_server_tool_results,
+        "citation"
+        | "citations"
+        | "search_result_location"
+        | "web_search_result_location"
+        | "web_fetch_result_location" => history_requirements.preserve_structured_citations,
+        _ => true,
+    }
 }
 
 fn prune_excess_claude_media(messages: &mut [ClaudeMessage], limit: usize) {
@@ -2855,6 +2897,214 @@ mod tests {
             json!([{
                 "role": "assistant",
                 "content": [raw_compaction]
+            }])
+        );
+    }
+
+    #[test]
+    fn drops_stale_server_provider_state_without_active_server_tools() {
+        let stale_server_tool_result = json!({
+            "type": "web_search_tool_result",
+            "tool_use_id": "srvu_1",
+            "content": [{"type": "text", "text": "old result"}]
+        });
+        let compaction = json!({
+            "type": "compaction",
+            "content": "summarized provider state"
+        });
+        let redacted_thinking = json!({
+            "type": "redacted_thinking",
+            "data": "opaque"
+        });
+        let unknown_provider_state = json!({
+            "type": "future_tool_result",
+            "data": "keep unknown state"
+        });
+        let prompt = Prompt {
+            input: vec![
+                ResponseItem::Compaction {
+                    encrypted_content: stale_server_tool_result.to_string(),
+                },
+                ResponseItem::Compaction {
+                    encrypted_content: compaction.to_string(),
+                },
+                ResponseItem::Compaction {
+                    encrypted_content: redacted_thinking.to_string(),
+                },
+                ResponseItem::Compaction {
+                    encrypted_content: unknown_provider_state.to_string(),
+                },
+            ],
+            base_instructions: BaseInstructions {
+                text: String::new(),
+            },
+            ..Default::default()
+        };
+
+        let request =
+            build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
+                .expect("request");
+
+        assert_eq!(
+            serde_json::to_value(&request.messages).expect("serialize messages"),
+            json!([{
+                "role": "assistant",
+                "content": [
+                    compaction,
+                    redacted_thinking,
+                    unknown_provider_state
+                ]
+            }])
+        );
+    }
+
+    #[test]
+    fn preserves_server_provider_state_for_native_web_search() {
+        let web_search_tool_result = json!({
+            "type": "web_search_tool_result",
+            "tool_use_id": "srvu_1",
+            "content": [{"type": "text", "text": "current result"}]
+        });
+        let web_search_citation = json!({
+            "type": "web_search_result_location",
+            "url": "https://example.com/result"
+        });
+        let prompt = Prompt {
+            input: vec![
+                ResponseItem::Compaction {
+                    encrypted_content: web_search_tool_result.to_string(),
+                },
+                ResponseItem::Compaction {
+                    encrypted_content: web_search_citation.to_string(),
+                },
+            ],
+            tools: vec![ToolSpec::WebSearch {
+                external_web_access: Some(true),
+                filters: None,
+                user_location: None,
+                search_context_size: None,
+                search_content_types: None,
+            }],
+            base_instructions: BaseInstructions {
+                text: String::new(),
+            },
+            ..Default::default()
+        };
+
+        let request =
+            build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
+                .expect("request");
+
+        assert_eq!(
+            serde_json::to_value(&request.messages).expect("serialize messages"),
+            json!([{
+                "role": "assistant",
+                "content": [
+                    web_search_tool_result,
+                    web_search_citation
+                ]
+            }])
+        );
+    }
+
+    #[test]
+    fn drops_web_search_provider_state_for_deepseek_local_web_search() {
+        let web_search_tool_result = json!({
+            "type": "web_search_tool_result",
+            "tool_use_id": "srvu_1",
+            "content": [{"type": "text", "text": "stale result"}]
+        });
+        let prompt = Prompt {
+            input: vec![
+                ResponseItem::Compaction {
+                    encrypted_content: web_search_tool_result.to_string(),
+                },
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "continue".to_string(),
+                    }],
+                    phase: None,
+                },
+            ],
+            tools: vec![ToolSpec::WebSearch {
+                external_web_access: Some(true),
+                filters: None,
+                user_location: None,
+                search_context_size: None,
+                search_content_types: None,
+            }],
+            base_instructions: BaseInstructions {
+                text: String::new(),
+            },
+            ..Default::default()
+        };
+
+        let request = build_claude_messages_request(
+            &prompt,
+            &model_info(),
+            ClaudeRequestOptions {
+                provider_compat: ClaudeProviderCompat::DeepSeek,
+                ..Default::default()
+            },
+        )
+        .expect("request");
+
+        assert_eq!(
+            serde_json::to_value(&request.messages).expect("serialize messages"),
+            json!([{
+                "role": "user",
+                "content": [{"type": "text", "text": "continue"}]
+            }])
+        );
+    }
+
+    #[test]
+    fn preserves_remote_mcp_provider_state_only_when_required() {
+        let mcp_tool_use = json!({
+            "type": "mcp_tool_use",
+            "id": "mcpu_1",
+            "name": "docs.search"
+        });
+        let mcp_tool_result = json!({
+            "type": "mcp_tool_result",
+            "tool_use_id": "mcpu_1",
+            "content": [{"type": "text", "text": "mcp result"}]
+        });
+        let server_tool_result = json!({
+            "type": "web_fetch_tool_result",
+            "tool_use_id": "srvu_1",
+            "content": [{"type": "text", "text": "fetch result"}]
+        });
+        let messages = vec![ClaudeMessage {
+            role: ClaudeMessageRole::Assistant,
+            content: vec![
+                ClaudeContentBlock::ProviderState {
+                    value: mcp_tool_use.clone(),
+                },
+                ClaudeContentBlock::ProviderState {
+                    value: mcp_tool_result.clone(),
+                },
+                ClaudeContentBlock::ProviderState {
+                    value: server_tool_result,
+                },
+            ],
+        }];
+
+        let normalized = normalize_claude_messages(
+            messages,
+            &ClaudeHistoryRequirements {
+                preserve_mcp_tool_results: true,
+                ..ClaudeHistoryRequirements::default()
+            },
+        );
+
+        assert_eq!(
+            serde_json::to_value(&normalized).expect("serialize messages"),
+            json!([{
+                "role": "assistant",
+                "content": [mcp_tool_use, mcp_tool_result]
             }])
         );
     }
