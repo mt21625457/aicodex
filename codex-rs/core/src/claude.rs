@@ -42,6 +42,7 @@ use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use url::Url;
 
 const DEFAULT_MAX_TOKENS: u64 = 8_192;
@@ -49,6 +50,8 @@ const CLAUDE_THINKING_MIN_BUDGET_TOKENS: u32 = 1_024;
 const CLAUDE_THINKING_MEDIUM_BUDGET_TOKENS: u32 = 2_048;
 const CLAUDE_THINKING_HIGH_BUDGET_TOKENS: u32 = 4_096;
 const CLAUDE_THINKING_XHIGH_BUDGET_TOKENS: u32 = 6_144;
+const SYNTHETIC_TOOL_RESULT_PLACEHOLDER: &str = "[Tool result missing due to internal error]";
+const INTERRUPTED_TOOL_USE_PLACEHOLDER: &str = "[Tool use interrupted]";
 const TOOL_INPUT_FIELD: &str = "input";
 const OUTPUT_SCHEMA_INSTRUCTIONS: &str =
     "Respond with JSON only. It must strictly match this schema:";
@@ -345,6 +348,8 @@ pub(crate) fn build_claude_messages_request(
         }
     }
 
+    messages = repair_tool_result_history(messages);
+
     if messages.is_empty() {
         push_message(
             &mut messages,
@@ -615,6 +620,149 @@ fn validate_tool_result_history(messages: &[ClaudeMessage]) -> codex_protocol::e
     }
 
     Ok(())
+}
+
+fn repair_tool_result_history(messages: Vec<ClaudeMessage>) -> Vec<ClaudeMessage> {
+    let mut repaired = Vec::with_capacity(messages.len());
+    let mut seen_tool_use_ids = HashSet::new();
+    let mut index = 0;
+
+    while index < messages.len() {
+        let message = &messages[index];
+        match message.role {
+            ClaudeMessageRole::Assistant => {
+                let (message, pending_tool_use_ids) =
+                    repair_assistant_tool_uses(message, &mut seen_tool_use_ids);
+                repaired.push(message);
+
+                if pending_tool_use_ids.is_empty() {
+                    index += 1;
+                    continue;
+                }
+
+                match messages.get(index + 1) {
+                    Some(next_message) if next_message.role == ClaudeMessageRole::User => {
+                        repaired.push(repair_user_tool_results(
+                            next_message,
+                            &pending_tool_use_ids,
+                        ));
+                        index += 2;
+                    }
+                    _ => {
+                        repaired.push(ClaudeMessage {
+                            role: ClaudeMessageRole::User,
+                            content: pending_tool_use_ids
+                                .iter()
+                                .map(|id| synthetic_tool_result_block(id))
+                                .collect(),
+                        });
+                        index += 1;
+                    }
+                }
+            }
+            ClaudeMessageRole::User => {
+                let content = strip_tool_result_blocks(&message.content);
+                if !content.is_empty() {
+                    repaired.push(ClaudeMessage {
+                        role: ClaudeMessageRole::User,
+                        content,
+                    });
+                }
+                index += 1;
+            }
+        }
+    }
+
+    repaired
+}
+
+fn repair_assistant_tool_uses(
+    message: &ClaudeMessage,
+    seen_tool_use_ids: &mut HashSet<String>,
+) -> (ClaudeMessage, Vec<String>) {
+    let mut pending_tool_use_ids = Vec::new();
+    let mut content = Vec::with_capacity(message.content.len());
+    let mut dropped_tool_use = false;
+
+    for block in &message.content {
+        if let Some(id) = tool_use_id(block) {
+            if seen_tool_use_ids.insert(id.to_string()) {
+                pending_tool_use_ids.push(id.to_string());
+                content.push(block.clone());
+            } else {
+                dropped_tool_use = true;
+            }
+        } else {
+            content.push(block.clone());
+        }
+    }
+
+    if content.is_empty() && dropped_tool_use {
+        content.push(text_block(INTERRUPTED_TOOL_USE_PLACEHOLDER));
+    }
+
+    (
+        ClaudeMessage {
+            role: ClaudeMessageRole::Assistant,
+            content,
+        },
+        pending_tool_use_ids,
+    )
+}
+
+fn repair_user_tool_results(
+    message: &ClaudeMessage,
+    pending_tool_use_ids: &[String],
+) -> ClaudeMessage {
+    let pending = pending_tool_use_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    let mut matching_results: HashMap<String, ClaudeContentBlock> = HashMap::new();
+    let mut ordinary_content = Vec::new();
+
+    for block in &message.content {
+        if let Some(id) = tool_result_id(block) {
+            if pending.contains(id) {
+                matching_results
+                    .entry(id.to_string())
+                    .or_insert_with(|| block.clone());
+            }
+        } else {
+            ordinary_content.push(block.clone());
+        }
+    }
+
+    let mut content = pending_tool_use_ids
+        .iter()
+        .map(|id| {
+            matching_results
+                .remove(id)
+                .unwrap_or_else(|| synthetic_tool_result_block(id))
+        })
+        .collect::<Vec<_>>();
+    content.append(&mut ordinary_content);
+
+    ClaudeMessage {
+        role: ClaudeMessageRole::User,
+        content,
+    }
+}
+
+fn strip_tool_result_blocks(content: &[ClaudeContentBlock]) -> Vec<ClaudeContentBlock> {
+    content
+        .iter()
+        .filter(|block| !is_tool_result_block(block))
+        .cloned()
+        .collect()
+}
+
+fn synthetic_tool_result_block(call_id: &str) -> ClaudeContentBlock {
+    tool_result_block(
+        call_id,
+        ClaudeToolResultContent::Text(SYNTHETIC_TOOL_RESULT_PLACEHOLDER.to_string()),
+        true,
+    )
 }
 
 fn validate_pending_tool_results(
@@ -1863,7 +2011,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_claude_tool_result_without_preceding_tool_use() {
+    fn repairs_claude_tool_result_without_preceding_tool_use() {
         let prompt = Prompt {
             input: vec![ResponseItem::FunctionCallOutput {
                 call_id: "call_1".to_string(),
@@ -1875,19 +2023,24 @@ mod tests {
             ..Default::default()
         };
 
-        let error =
+        let request =
             build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
-                .expect_err("invalid history");
+                .expect("request");
 
-        assert!(
-            error
-                .to_string()
-                .contains("tool_result without a preceding assistant tool_use")
+        assert_eq!(
+            request.messages,
+            vec![ClaudeMessage {
+                role: ClaudeMessageRole::User,
+                content: vec![ClaudeContentBlock::Text {
+                    text: " ".to_string(),
+                    cache_control: None,
+                }],
+            }]
         );
     }
 
     #[test]
-    fn rejects_user_text_before_pending_tool_result() {
+    fn repairs_user_text_before_pending_tool_result() {
         let prompt = Prompt {
             input: vec![
                 ResponseItem::FunctionCall {
@@ -1916,19 +2069,41 @@ mod tests {
             ..Default::default()
         };
 
-        let error =
+        let request =
             build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
-                .expect_err("invalid history");
+                .expect("request");
 
-        assert!(
-            error
-                .to_string()
-                .contains("ordinary content before required tool_result 0")
+        assert_eq!(
+            request.messages,
+            vec![
+                ClaudeMessage {
+                    role: ClaudeMessageRole::Assistant,
+                    content: vec![ClaudeContentBlock::ToolUse {
+                        id: "call_1".to_string(),
+                        name: "lookup".to_string(),
+                        input: json!({}),
+                    }],
+                },
+                ClaudeMessage {
+                    role: ClaudeMessageRole::User,
+                    content: vec![
+                        ClaudeContentBlock::ToolResult {
+                            tool_use_id: "call_1".to_string(),
+                            content: ClaudeToolResultContent::Text("ok".to_string()),
+                            is_error: false,
+                        },
+                        ClaudeContentBlock::Text {
+                            text: "too soon".to_string(),
+                            cache_control: None,
+                        },
+                    ],
+                },
+            ]
         );
     }
 
     #[test]
-    fn rejects_reordered_claude_parallel_tool_results() {
+    fn repairs_reordered_claude_parallel_tool_results() {
         let prompt = Prompt {
             input: vec![
                 ResponseItem::FunctionCall {
@@ -1960,14 +2135,145 @@ mod tests {
             ..Default::default()
         };
 
-        let error =
+        let request =
             build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
-                .expect_err("invalid history");
+                .expect("request");
 
-        assert!(
-            error
-                .to_string()
-                .contains("tool_result 0 does not match preceding tool_use id call_1")
+        assert_eq!(
+            request.messages,
+            vec![
+                ClaudeMessage {
+                    role: ClaudeMessageRole::Assistant,
+                    content: vec![
+                        ClaudeContentBlock::ToolUse {
+                            id: "call_1".to_string(),
+                            name: "lookup".to_string(),
+                            input: json!({}),
+                        },
+                        ClaudeContentBlock::ToolUse {
+                            id: "call_2".to_string(),
+                            name: "read".to_string(),
+                            input: json!({}),
+                        },
+                    ],
+                },
+                ClaudeMessage {
+                    role: ClaudeMessageRole::User,
+                    content: vec![
+                        ClaudeContentBlock::ToolResult {
+                            tool_use_id: "call_1".to_string(),
+                            content: ClaudeToolResultContent::Text("first second".to_string()),
+                            is_error: false,
+                        },
+                        ClaudeContentBlock::ToolResult {
+                            tool_use_id: "call_2".to_string(),
+                            content: ClaudeToolResultContent::Text("second first".to_string()),
+                            is_error: false,
+                        },
+                    ],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn repairs_missing_claude_tool_result_with_synthetic_error() {
+        let prompt = Prompt {
+            input: vec![ResponseItem::FunctionCall {
+                id: None,
+                name: "lookup".to_string(),
+                namespace: None,
+                arguments: "{}".to_string(),
+                call_id: "call_1".to_string(),
+            }],
+            base_instructions: BaseInstructions {
+                text: String::new(),
+            },
+            ..Default::default()
+        };
+
+        let request =
+            build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
+                .expect("request");
+
+        assert_eq!(
+            request.messages,
+            vec![
+                ClaudeMessage {
+                    role: ClaudeMessageRole::Assistant,
+                    content: vec![ClaudeContentBlock::ToolUse {
+                        id: "call_1".to_string(),
+                        name: "lookup".to_string(),
+                        input: json!({}),
+                    }],
+                },
+                ClaudeMessage {
+                    role: ClaudeMessageRole::User,
+                    content: vec![ClaudeContentBlock::ToolResult {
+                        tool_use_id: "call_1".to_string(),
+                        content: ClaudeToolResultContent::Text(
+                            SYNTHETIC_TOOL_RESULT_PLACEHOLDER.to_string(),
+                        ),
+                        is_error: true,
+                    }],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn repairs_duplicate_claude_tool_use_ids() {
+        let prompt = Prompt {
+            input: vec![
+                ResponseItem::FunctionCall {
+                    id: None,
+                    name: "lookup".to_string(),
+                    namespace: None,
+                    arguments: "{\"id\":1}".to_string(),
+                    call_id: "call_1".to_string(),
+                },
+                ResponseItem::FunctionCall {
+                    id: None,
+                    name: "lookup".to_string(),
+                    namespace: None,
+                    arguments: "{\"id\":2}".to_string(),
+                    call_id: "call_1".to_string(),
+                },
+                ResponseItem::FunctionCallOutput {
+                    call_id: "call_1".to_string(),
+                    output: FunctionCallOutputPayload::from_text("ok".to_string()),
+                },
+            ],
+            base_instructions: BaseInstructions {
+                text: String::new(),
+            },
+            ..Default::default()
+        };
+
+        let request =
+            build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
+                .expect("request");
+
+        assert_eq!(
+            request.messages,
+            vec![
+                ClaudeMessage {
+                    role: ClaudeMessageRole::Assistant,
+                    content: vec![ClaudeContentBlock::ToolUse {
+                        id: "call_1".to_string(),
+                        name: "lookup".to_string(),
+                        input: json!({ "id": 1 }),
+                    }],
+                },
+                ClaudeMessage {
+                    role: ClaudeMessageRole::User,
+                    content: vec![ClaudeContentBlock::ToolResult {
+                        tool_use_id: "call_1".to_string(),
+                        content: ClaudeToolResultContent::Text("ok".to_string()),
+                        is_error: false,
+                    }],
+                },
+            ]
         );
     }
 
