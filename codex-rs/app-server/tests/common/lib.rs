@@ -7,6 +7,8 @@ mod models_cache;
 mod responses;
 mod rollout;
 
+use std::future::Future;
+
 pub use analytics_server::start_analytics_events_server;
 pub use auth_fixtures::ChatGptAuthFixture;
 pub use auth_fixtures::ChatGptIdTokenClaims;
@@ -49,4 +51,27 @@ pub fn to_response<T: DeserializeOwned>(response: JSONRPCResponse) -> anyhow::Re
     let value = serde_json::to_value(response.result)?;
     let codex_response = serde_json::from_value(value)?;
     Ok(codex_response)
+}
+
+pub fn run_large_stack_async_test<Fut>(
+    name: &'static str,
+    test: impl FnOnce() -> Fut + Send + 'static,
+) -> anyhow::Result<()>
+where
+    Fut: Future<Output = anyhow::Result<()>> + 'static,
+{
+    let handle = std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(/*size*/ 16 * 1024 * 1024)
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(test())
+        })?;
+
+    match handle.join() {
+        Ok(result) => result,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
 }

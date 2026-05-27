@@ -16,6 +16,7 @@ use codex_core::CodexThread;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigOverrides;
+use codex_features::Feature;
 use codex_utils_absolute_path::AbsolutePathBuf;
 pub use codex_utils_absolute_path::test_support::PathBufExt;
 pub use codex_utils_absolute_path::test_support::PathExt;
@@ -34,6 +35,7 @@ pub mod tracing;
 pub mod zsh_fork;
 
 static TEST_ARG0_PATH_ENTRY: OnceLock<Option<Arg0PathEntryGuard>> = OnceLock::new();
+const LOOPBACK_NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1";
 
 #[ctor]
 fn enable_deterministic_unified_exec_process_ids_for_tests() {
@@ -63,6 +65,33 @@ fn configure_insta_workspace_root_for_snapshot_tests() {
         unsafe {
             std::env::set_var("INSTA_WORKSPACE_ROOT", workspace_root);
         }
+    }
+}
+
+#[ctor]
+fn configure_loopback_no_proxy_for_tests() {
+    ensure_loopback_no_proxy("NO_PROXY");
+    ensure_loopback_no_proxy("no_proxy");
+}
+
+fn ensure_loopback_no_proxy(key: &str) {
+    let loopback = LOOPBACK_NO_PROXY_VALUE;
+    let value = match std::env::var(key) {
+        Ok(existing) if existing.split(',').any(|entry| entry.trim() == "*") => existing,
+        Ok(existing)
+            if existing
+                .split(',')
+                .any(|entry| matches!(entry.trim(), "localhost" | "127.0.0.1" | "::1")) =>
+        {
+            existing
+        }
+        Ok(existing) if !existing.trim().is_empty() => format!("{existing},{loopback}"),
+        _ => loopback.to_string(),
+    };
+
+    // Safety: this ctor runs at process startup before test threads begin.
+    unsafe {
+        std::env::set_var(key, value);
     }
 }
 
@@ -182,14 +211,16 @@ pub async fn load_default_config_for_test_with_cloud_requirements(
     codex_home: &TempDir,
     cloud_requirements: CloudRequirementsLoader,
 ) -> Config {
-    ConfigBuilder::default()
+    let mut config = ConfigBuilder::default()
         .loader_overrides(LoaderOverrides::without_managed_config_for_tests())
         .codex_home(codex_home.path().to_path_buf())
         .harness_overrides(default_test_overrides())
         .cloud_requirements(cloud_requirements)
         .build()
         .await
-        .expect("defaults for test should always succeed")
+        .expect("defaults for test should always succeed");
+    let _ = config.features.disable(Feature::Apps);
+    config
 }
 
 pub fn managed_network_requirements_loader() -> CloudRequirementsLoader {

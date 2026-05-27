@@ -27,6 +27,8 @@ use core_test_support::responses::start_mock_server;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
+use pretty_assertions::assert_eq;
+use serde_json::Value;
 use std::sync::Mutex;
 use tracing::Level;
 use tracing_test::traced_test;
@@ -72,14 +74,36 @@ fn assert_empty_mcp_tool_fields(line: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn extract_log_field_before<'a>(line: &'a str, key: &str, next_key: &str) -> Option<&'a str> {
+    let prefix = format!("{key}=");
+    let value_start = line.find(&prefix)? + prefix.len();
+    let value_end = line[value_start..].find(next_key)? + value_start;
+    Some(&line[value_start..value_end])
+}
+
+fn assert_json_log_field(line: &str, key: &str, expected: Value) -> Result<(), String> {
+    let raw = extract_log_field_before(line, key, " duration_ms=")
+        .ok_or_else(|| format!("missing {key} field"))?;
+    let actual = serde_json::from_str::<Value>(raw)
+        .map_err(|err| format!("invalid {key} field `{raw}`: {err}"))?;
+
+    if actual != expected {
+        return Err(format!(
+            "unexpected {key} field: expected {expected}, got {actual}"
+        ));
+    }
+
+    Ok(())
+}
+
 fn find_tool_result_log_line<'a>(lines: &'a [&str], call_id: &str) -> Result<&'a str, String> {
     lines
         .iter()
         .copied()
         .find(|line| {
-            line.contains("codex.tool_result")
+            line.contains("codex_otel.log_only:")
+                && line.contains("event.name=\"codex.tool_result\"")
                 && line.contains(&format!("call_id={call_id}"))
-                && line.contains("arguments=")
         })
         .ok_or_else(|| "missing codex.tool_result event".to_string())
 }
@@ -115,6 +139,25 @@ fn extract_log_field_does_not_confuse_similar_keys() {
         extract_log_field(line, "mcp_server_origin"),
         Some("stdio".to_string())
     );
+}
+
+#[test]
+fn assert_json_log_field_handles_spaces_inside_json_strings() {
+    let line = concat!(
+        "event.name=\"codex.tool_result\" ",
+        "arguments={\"command\":\"/bin/echo shell\",\"timeout_ms\":null} ",
+        "duration_ms=1"
+    );
+
+    assert_json_log_field(
+        line,
+        "arguments",
+        serde_json::json!({
+            "command": "/bin/echo shell",
+            "timeout_ms": null,
+        }),
+    )
+    .unwrap();
 }
 
 #[tokio::test]
@@ -937,9 +980,7 @@ async fn handle_response_item_records_tool_result_for_custom_tool_call() {
         if !line.contains("tool_name=unsupported_tool") {
             return Err("missing tool_name field".to_string());
         }
-        if !line.contains("arguments={\"key\":\"value\"}") {
-            return Err("missing arguments field".to_string());
-        }
+        assert_json_log_field(line, "arguments", serde_json::json!({ "key": "value" }))?;
         if !line.contains("output=unsupported custom tool call: unsupported_tool") {
             return Err("missing output field".to_string());
         }
@@ -1008,9 +1049,7 @@ async fn handle_response_item_records_tool_result_for_function_call() {
         if !line.contains("tool_name=nonexistent") {
             return Err("missing tool_name field".to_string());
         }
-        if !line.contains("arguments={\"value\":1}") {
-            return Err("missing arguments field".to_string());
-        }
+        assert_json_log_field(line, "arguments", serde_json::json!({ "value": 1 }))?;
         if !line.contains("output=unsupported call: nonexistent") {
             return Err("missing output field".to_string());
         }
@@ -1031,7 +1070,7 @@ async fn handle_response_item_records_tool_result_for_shell_command_call() {
     mount_sse_once(
         &server,
         sse(vec![
-            shell_command_call("shell-call", "echo shell"),
+            shell_command_call("otel-shell-command-call", "echo shell"),
             ev_completed("done"),
         ]),
     )
@@ -1075,14 +1114,16 @@ async fn handle_response_item_records_tool_result_for_shell_command_call() {
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     logs_assert(|lines: &[&str]| {
-        let line = find_tool_result_log_line(lines, "shell-call")?;
+        let line = find_tool_result_log_line(lines, "otel-shell-command-call")?;
 
         if !line.contains("tool_name=shell_command") {
             return Err("missing tool_name field".to_string());
         }
-        if !line.contains("arguments={\"command\":\"echo shell\"}") {
-            return Err("missing arguments field".to_string());
-        }
+        assert_json_log_field(
+            line,
+            "arguments",
+            serde_json::json!({ "command": "echo shell" }),
+        )?;
         let output_idx = line
             .find("output=")
             .ok_or_else(|| "missing output field".to_string())?;
@@ -1163,6 +1204,8 @@ async fn handle_response_item_records_tool_result_for_local_shell_missing_ids() 
             .iter()
             .find(|line| {
                 line.contains("codex.tool_result")
+                    && line.contains("codex_otel.log_only:")
+                    && line.contains("event.name=\"codex.tool_result\"")
                     && line.contains("tool_name=local_shell")
                     && line.contains("output=LocalShellCall without call_id or id")
             })
@@ -1186,7 +1229,11 @@ async fn handle_response_item_records_tool_result_for_local_shell_call() {
     mount_sse_once(
         &server,
         sse(vec![
-            ev_local_shell_call("shell-call", "completed", vec!["/bin/echo", "shell"]),
+            ev_local_shell_call(
+                "otel-local-shell-call",
+                "completed",
+                vec!["/bin/echo", "shell"],
+            ),
             ev_completed("done"),
         ]),
     )
@@ -1230,16 +1277,21 @@ async fn handle_response_item_records_tool_result_for_local_shell_call() {
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     logs_assert(|lines: &[&str]| {
-        let line = find_tool_result_log_line(lines, "shell-call")?;
+        let line = find_tool_result_log_line(lines, "otel-local-shell-call")?;
 
         if !line.contains("tool_name=shell_command") {
             return Err("missing tool_name field".to_string());
         }
-        if !line.contains(
-            "arguments={\"command\":\"/bin/echo shell\",\"sandbox_permissions\":\"use_default\",\"timeout_ms\":null,\"workdir\":null}",
-        ) {
-            return Err("missing arguments field".to_string());
-        }
+        assert_json_log_field(
+            line,
+            "arguments",
+            serde_json::json!({
+                "command": "/bin/echo shell",
+                "sandbox_permissions": "use_default",
+                "timeout_ms": null,
+                "workdir": null,
+            }),
+        )?;
         let output_idx = line
             .find("output=")
             .ok_or_else(|| "missing output field".to_string())?;
