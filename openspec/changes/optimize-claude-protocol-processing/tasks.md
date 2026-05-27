@@ -59,7 +59,7 @@
   citation state when the active plan requires them.
 - [x] 6.3 Drop or quarantine stale provider-state blocks only when the active
   plan proves they are no longer replayable.
-- [ ] 6.4 Add tests for native server tools and remote MCP histories across
+- [x] 6.4 Add tests for native server tools and remote MCP histories across
   follow-up turns and compaction.
 
 ## 7. Prompt Cache Extensions

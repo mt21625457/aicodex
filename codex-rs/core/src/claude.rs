@@ -3493,6 +3493,68 @@ mod tests {
     }
 
     #[test]
+    fn preserves_server_state_for_follow_up_with_native_web_search() {
+        let server_tool_use = json!({
+            "type": "server_tool_use",
+            "id": "srvu_1",
+            "name": "web_search",
+            "input": {"query": "claude protocol"}
+        });
+        let web_search_tool_result = json!({
+            "type": "web_search_tool_result",
+            "tool_use_id": "srvu_1",
+            "content": [{"type": "text", "text": "current result"}]
+        });
+        let prompt = Prompt {
+            input: vec![
+                ResponseItem::Compaction {
+                    encrypted_content: server_tool_use.to_string(),
+                },
+                ResponseItem::Compaction {
+                    encrypted_content: web_search_tool_result.to_string(),
+                },
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "follow up".to_string(),
+                    }],
+                    phase: None,
+                },
+            ],
+            tools: vec![ToolSpec::WebSearch {
+                external_web_access: Some(true),
+                filters: None,
+                user_location: None,
+                search_context_size: None,
+                search_content_types: None,
+            }],
+            base_instructions: BaseInstructions {
+                text: String::new(),
+            },
+            ..Default::default()
+        };
+
+        let request =
+            build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
+                .expect("request");
+
+        assert_eq!(
+            serde_json::to_value(&request.messages).expect("serialize messages"),
+            json!([
+                {
+                    "role": "assistant",
+                    "content": [server_tool_use, web_search_tool_result]
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "follow up"}]
+                }
+            ])
+        );
+    }
+
+    #[test]
     fn drops_web_search_provider_state_for_deepseek_local_web_search() {
         let web_search_tool_result = json!({
             "type": "web_search_tool_result",
@@ -3591,6 +3653,64 @@ mod tests {
                 "role": "assistant",
                 "content": [mcp_tool_use, mcp_tool_result]
             }])
+        );
+    }
+
+    #[test]
+    fn preserves_remote_mcp_provider_state_with_follow_up_after_compaction_when_required() {
+        let mcp_tool_use = json!({
+            "type": "mcp_tool_use",
+            "id": "mcpu_1",
+            "server_name": "docs",
+            "name": "search",
+            "input": {"query": "claude"}
+        });
+        let mcp_tool_result = json!({
+            "type": "mcp_tool_result",
+            "tool_use_id": "mcpu_1",
+            "content": [{"type": "text", "text": "mcp result"}]
+        });
+        let messages = vec![
+            ClaudeMessage {
+                role: ClaudeMessageRole::Assistant,
+                content: vec![
+                    ClaudeContentBlock::ProviderState {
+                        value: mcp_tool_use.clone(),
+                    },
+                    ClaudeContentBlock::ProviderState {
+                        value: mcp_tool_result.clone(),
+                    },
+                ],
+            },
+            ClaudeMessage {
+                role: ClaudeMessageRole::User,
+                content: vec![ClaudeContentBlock::Text {
+                    text: "follow up".to_string(),
+                    cache_control: None,
+                }],
+            },
+        ];
+
+        let normalized = normalize_claude_messages(
+            messages,
+            &ClaudeHistoryRequirements {
+                preserve_mcp_tool_results: true,
+                ..ClaudeHistoryRequirements::default()
+            },
+        );
+
+        assert_eq!(
+            serde_json::to_value(&normalized).expect("serialize messages"),
+            json!([
+                {
+                    "role": "assistant",
+                    "content": [mcp_tool_use, mcp_tool_result]
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "follow up"}]
+                }
+            ])
         );
     }
 }
