@@ -200,6 +200,7 @@ async fn submit_unified_exec_turn(
             environments: None,
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
             thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
                 cwd: Some(test.config.cwd.to_path_buf()),
                 approval_policy: Some(AskForApproval::Never),
@@ -291,6 +292,7 @@ async fn unified_exec_intercepts_apply_patch_exec_command() -> Result<()> {
             environments: None,
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
             thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
                 cwd: Some(cwd),
                 approval_policy: Some(AskForApproval::Never),
@@ -1322,6 +1324,7 @@ async fn unified_exec_emits_one_begin_and_one_end_event() -> Result<()> {
 
     let mut begin_events = Vec::new();
     let mut end_events = Vec::new();
+    let mut terminal_interactions = Vec::new();
     let mut task_completed = false;
     loop {
         let event_msg = wait_for_event(&test.codex, |_| true).await;
@@ -1331,6 +1334,9 @@ async fn unified_exec_emits_one_begin_and_one_end_event() -> Result<()> {
             }
             EventMsg::ExecCommandEnd(event) if event.call_id == open_call_id => {
                 end_events.push(event);
+            }
+            EventMsg::TerminalInteraction(event) if event.call_id == open_call_id => {
+                terminal_interactions.push(event);
             }
             EventMsg::TurnComplete(_) => {
                 task_completed = true;
@@ -1352,6 +1358,10 @@ async fn unified_exec_emits_one_begin_and_one_end_event() -> Result<()> {
         end_events.len(),
         1,
         "expected end event for the write_stdin call"
+    );
+    assert!(
+        terminal_interactions.is_empty(),
+        "completed empty polls should not emit terminal interactions: {terminal_interactions:?}"
     );
 
     let open_event = &begin_events[0];
@@ -2138,6 +2148,7 @@ async fn unified_exec_keeps_long_running_session_after_turn_end() -> Result<()> 
             environments: None,
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
             thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
                 cwd: Some(turn_cwd),
                 approval_policy: Some(AskForApproval::Never),
@@ -2241,6 +2252,7 @@ async fn unified_exec_interrupt_preserves_long_running_session() -> Result<()> {
             environments: None,
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
             thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
                 cwd: Some(turn_cwd),
                 approval_policy: Some(AskForApproval::Never),
@@ -2713,6 +2725,7 @@ async fn unified_exec_runs_under_sandbox() -> Result<()> {
             environments: None,
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
             thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
                 cwd: Some(turn_cwd),
                 approval_policy: Some(AskForApproval::Never),
@@ -2835,6 +2848,7 @@ async fn unified_exec_enforces_glob_deny_read_policy() -> Result<()> {
             environments: None,
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
             thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
                 cwd: Some(turn_cwd),
                 approval_policy: Some(AskForApproval::Never),
@@ -2973,6 +2987,7 @@ async fn unified_exec_python_prompt_under_seatbelt() -> Result<()> {
             environments: None,
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
             thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
                 cwd: Some(turn_cwd),
                 approval_policy: Some(AskForApproval::Never),
