@@ -172,10 +172,6 @@ pub(crate) async fn run_turn(
             .model_client
             .new_session_for_provider(selected_provider),
     };
-    // TODO(ccunningham): Pre-turn compaction runs before context updates and the
-    // new user message are recorded. Estimate pending incoming items (context
-    // diffs/full reinjection + user input) and trigger compaction preemptively
-    // when they would push the thread over the compaction threshold.
     if let Err(err) = run_pre_sampling_compact(&sess, &turn_context, &mut client_session).await {
         if err.to_codex_protocol_error() == CodexErrorInfo::UsageLimitExceeded
             && let Err(err) = sess
@@ -245,6 +241,8 @@ pub(crate) async fn run_turn(
     // 2. After auto-compact, when model/tool continuation needs to resume before any steer.
     let mut can_drain_pending_input = input.is_empty();
     let mut claude_pause_turn_continuations = 0usize;
+    let mut pre_sampling_admission_compact_attempted = false;
+    let mut context_window_recovery_attempted = false;
 
     loop {
         // Note that pending_input would be something like a message the user
@@ -259,6 +257,25 @@ pub(crate) async fn run_turn(
         if run_hooks_and_record_inputs(&sess, &turn_context, &pending_input).await {
             break;
         }
+
+        if turn_context.provider.info().wire_api == WireApi::Claude
+            && !pre_sampling_admission_compact_attempted
+            && let Err(err) =
+                run_pre_sampling_admission_compact(&sess, &turn_context, &mut client_session).await
+        {
+            if err.to_codex_protocol_error() == CodexErrorInfo::UsageLimitExceeded
+                && let Err(err) = sess
+                    .goal_runtime_apply(GoalRuntimeEvent::UsageLimitReached {
+                        turn_context: turn_context.as_ref(),
+                    })
+                    .await
+            {
+                warn!("failed to usage-limit active goal after usage-limit error: {err}");
+            }
+            error!("Failed to run pre-sampling admission compact");
+            return None;
+        }
+        pre_sampling_admission_compact_attempted = true;
 
         // Construct the input that we will send to the model.
         let sampling_request_input: Vec<ResponseItem> = {
@@ -406,6 +423,55 @@ pub(crate) async fn run_turn(
                     }
                     break;
                 }
+                continue;
+            }
+            Err(CodexErr::ContextWindowExceeded)
+                if turn_context.provider.info().wire_api == WireApi::Claude =>
+            {
+                if context_window_recovery_attempted {
+                    let event = EventMsg::Error(
+                        CodexErr::ContextWindowExceeded
+                            .to_error_event(/*message_prefix*/ None),
+                    );
+                    sess.send_event(&turn_context, event).await;
+                    break;
+                }
+
+                context_window_recovery_attempted = true;
+                if let Err(err) = run_auto_compact(
+                    &sess,
+                    &turn_context,
+                    &mut client_session,
+                    InitialContextInjection::BeforeLastUserMessage,
+                    CompactionReason::ContextLimit,
+                    CompactionPhase::MidTurn,
+                )
+                .await
+                {
+                    info!("Context-window recovery compact failed: {err:#}");
+                    if err.to_codex_protocol_error() == CodexErrorInfo::UsageLimitExceeded {
+                        if let Err(err) = sess
+                            .goal_runtime_apply(GoalRuntimeEvent::UsageLimitReached {
+                                turn_context: turn_context.as_ref(),
+                            })
+                            .await
+                        {
+                            warn!(
+                                "failed to usage-limit active goal after usage-limit error: {err}"
+                            );
+                        }
+                        let event = EventMsg::Error(err.to_error_event(/*message_prefix*/ None));
+                        sess.send_event(&turn_context, event).await;
+                    } else {
+                        let event = EventMsg::Error(
+                            CodexErr::ContextWindowExceeded
+                                .to_error_event(/*message_prefix*/ None),
+                        );
+                        sess.send_event(&turn_context, event).await;
+                    }
+                    break;
+                }
+                can_drain_pending_input = false;
                 continue;
             }
             Err(CodexErr::TurnAborted) => {
@@ -693,6 +759,16 @@ struct AutoCompactTokenStatus {
     token_limit_reached: bool,
 }
 
+#[derive(Debug)]
+struct PreSamplingAdmissionStatus {
+    token_status: AutoCompactTokenStatus,
+    estimated_context_tokens: Option<i64>,
+    estimated_auto_compact_scope_tokens: Option<i64>,
+    estimated_auto_compact_scope_limit_reached: bool,
+    estimated_full_context_window_limit_reached: bool,
+    token_limit_reached: bool,
+}
+
 async fn auto_compact_token_status(
     sess: &Session,
     turn_context: &TurnContext,
@@ -759,6 +835,84 @@ async fn run_pre_sampling_compact(
             turn_context,
             client_session,
             InitialContextInjection::DoNotInject,
+            CompactionReason::ContextLimit,
+            CompactionPhase::PreTurn,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn pre_sampling_admission_status(
+    sess: &Session,
+    turn_context: &TurnContext,
+) -> PreSamplingAdmissionStatus {
+    let token_status = auto_compact_token_status(sess, turn_context).await;
+    let estimated_context_tokens = sess.get_estimated_context_token_count().await;
+    let estimated_auto_compact_scope_tokens = estimated_context_tokens.map(|tokens| {
+        match turn_context.config.model_auto_compact_token_limit_scope {
+            AutoCompactTokenLimitScope::Total => tokens,
+            AutoCompactTokenLimitScope::BodyAfterPrefix => {
+                let baseline = token_status
+                    .auto_compact_window_prefill_tokens
+                    .unwrap_or(token_status.active_context_tokens);
+                tokens.saturating_sub(baseline)
+            }
+        }
+    });
+    let estimated_auto_compact_scope_limit_reached = estimated_auto_compact_scope_tokens
+        .is_some_and(|tokens| tokens >= token_status.auto_compact_scope_limit);
+    let estimated_full_context_window_limit_reached =
+        estimated_context_tokens.is_some_and(|tokens| {
+            turn_context
+                .model_context_window()
+                .is_some_and(|limit| tokens >= limit)
+        });
+    let token_limit_reached = token_status.token_limit_reached
+        || estimated_auto_compact_scope_limit_reached
+        || estimated_full_context_window_limit_reached;
+
+    PreSamplingAdmissionStatus {
+        token_status,
+        estimated_context_tokens,
+        estimated_auto_compact_scope_tokens,
+        estimated_auto_compact_scope_limit_reached,
+        estimated_full_context_window_limit_reached,
+        token_limit_reached,
+    }
+}
+
+async fn run_pre_sampling_admission_compact(
+    sess: &Arc<Session>,
+    turn_context: &Arc<TurnContext>,
+    client_session: &mut ModelClientSession,
+) -> CodexResult<()> {
+    let admission_status =
+        pre_sampling_admission_status(sess.as_ref(), turn_context.as_ref()).await;
+
+    trace!(
+        turn_id = %turn_context.sub_id,
+        active_context_tokens = admission_status.token_status.active_context_tokens,
+        auto_compact_scope_tokens = admission_status.token_status.auto_compact_scope_tokens,
+        auto_compact_scope_limit = admission_status.token_status.auto_compact_scope_limit,
+        estimated_context_tokens = ?admission_status.estimated_context_tokens,
+        estimated_auto_compact_scope_tokens = ?admission_status.estimated_auto_compact_scope_tokens,
+        estimated_auto_compact_scope_limit_reached = admission_status.estimated_auto_compact_scope_limit_reached,
+        estimated_full_context_window_limit_reached = admission_status.estimated_full_context_window_limit_reached,
+        auto_compact_limit_scope = ?turn_context.config.model_auto_compact_token_limit_scope,
+        auto_compact_window_ordinal = ?admission_status.token_status.auto_compact_window_ordinal,
+        auto_compact_window_prefill_tokens = ?admission_status.token_status.auto_compact_window_prefill_tokens,
+        full_context_window_limit = ?turn_context.model_context_window(),
+        token_limit_reached = admission_status.token_limit_reached,
+        "pre sampling context admission"
+    );
+
+    if admission_status.token_limit_reached {
+        run_auto_compact(
+            sess,
+            turn_context,
+            client_session,
+            InitialContextInjection::BeforeLastUserMessage,
             CompactionReason::ContextLimit,
             CompactionPhase::PreTurn,
         )

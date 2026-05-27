@@ -174,13 +174,9 @@ impl ClaudeStopReason {
 
     fn end_turn(&self) -> Option<bool> {
         match self {
-            Self::EndTurn
-            | Self::MaxTokens
-            | Self::StopSequence
-            | Self::Refusal
-            | Self::ModelContextWindowExceeded => Some(true),
+            Self::EndTurn | Self::MaxTokens | Self::StopSequence | Self::Refusal => Some(true),
             Self::ToolUse | Self::PauseTurn => Some(false),
-            Self::Unknown(_) => None,
+            Self::ModelContextWindowExceeded | Self::Unknown(_) => None,
         }
     }
 }
@@ -478,6 +474,9 @@ impl ClaudeStreamState {
                 {
                     trace!(?stop_reason, ?stop_sequence, "Claude message delta");
                     if let Some(stop_reason) = stop_reason {
+                        if stop_reason == ClaudeStopReason::ModelContextWindowExceeded {
+                            return Err(ApiError::ContextWindowExceeded);
+                        }
                         self.stop_reason = Some(stop_reason);
                     }
                 }
@@ -874,6 +873,10 @@ impl ClaudeStreamState {
         &mut self,
         tx_event: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
     ) -> Result<(), ApiError> {
+        if self.stop_reason == Some(ClaudeStopReason::ModelContextWindowExceeded) {
+            return Err(ApiError::ContextWindowExceeded);
+        }
+
         let unfinished_blocks = self
             .block_kinds
             .keys()
@@ -2294,6 +2297,30 @@ mod tests {
                 ..
             } if reason == "new_future_reason"
         ));
+    }
+
+    #[tokio::test]
+    async fn claude_stream_context_window_stop_reason_errors() {
+        let error = run_events_expect_error(vec![
+            json!({
+                "type": "message_start",
+                "message": {
+                    "id": "msg_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": []
+                }
+            }),
+            json!({
+                "type": "message_delta",
+                "delta": {"stop_reason": "model_context_window_exceeded"},
+                "usage": {"output_tokens": 0}
+            }),
+            json!({"type": "message_stop"}),
+        ])
+        .await;
+
+        assert!(matches!(error, ApiError::ContextWindowExceeded));
     }
 
     #[tokio::test]

@@ -1,8 +1,15 @@
+use std::time::Duration;
+
+use codex_core::compact::SUMMARIZATION_PROMPT;
+use codex_core::compact::SUMMARY_PREFIX;
 use codex_core::config::Config;
 use codex_features::Feature;
 use codex_model_provider_info::WireApi;
+use codex_protocol::config_types::AutoCompactTokenLimitScope;
+use codex_protocol::items::TurnItem;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ContextTokenUsageSource;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::FileChange;
@@ -16,6 +23,7 @@ use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_claude_count_tokens_never;
 use core_test_support::responses::mount_claude_count_tokens_response;
 use core_test_support::responses::mount_claude_sse_sequence;
+use core_test_support::responses::mount_claude_sse_sequence_with_delays;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
@@ -66,6 +74,80 @@ where
     })
     .await;
     Ok(token_event)
+}
+
+async fn submit_user_input_without_waiting(test: &TestCodex, prompt: &str) -> anyhow::Result<()> {
+    test.codex
+        .submit(Op::UserInput {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: prompt.into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    Ok(())
+}
+
+async fn collect_error_infos_until_turn_complete(test: &TestCodex) -> Vec<Option<CodexErrorInfo>> {
+    let mut errors = Vec::new();
+    loop {
+        let event = wait_for_event(&test.codex, |_| true).await;
+        match event {
+            EventMsg::Error(error) => errors.push(error.codex_error_info),
+            EventMsg::TurnComplete(_) => return errors,
+            _ => {}
+        }
+    }
+}
+
+async fn count_context_window_errors_until_turn_complete(test: &TestCodex) -> usize {
+    collect_error_infos_until_turn_complete(test)
+        .await
+        .into_iter()
+        .filter(|info| info.as_ref() == Some(&CodexErrorInfo::ContextWindowExceeded))
+        .count()
+}
+
+fn compact_prompt_head() -> &'static str {
+    SUMMARIZATION_PROMPT
+        .lines()
+        .next()
+        .unwrap_or(SUMMARIZATION_PROMPT)
+}
+
+fn claude_request_text(body: &Value) -> String {
+    message_content_blocks(body)
+        .into_iter()
+        .filter_map(|block| {
+            block
+                .get("text")
+                .or_else(|| block.get("content"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn assert_claude_request_contains(body: &Value, expected: &str, label: &str) {
+    let text = claude_request_text(body);
+    assert!(
+        text.contains(expected),
+        "{label} should contain {expected:?}; request text was:\n{text}"
+    );
+}
+
+fn assert_claude_request_excludes(body: &Value, unexpected: &str, label: &str) {
+    let text = claude_request_text(body);
+    assert!(
+        !text.contains(unexpected),
+        "{label} should not contain {unexpected:?}; request text was:\n{text}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1590,6 +1672,345 @@ async fn claude_wire_caps_repeated_pause_turn_continuations() -> anyhow::Result<
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_wire_context_window_overflow_auto_compacts_and_retries() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let prompt = "recover a full Claude context";
+    let responses = mount_claude_sse_sequence(
+        &server,
+        vec![
+            claude_context_window_exceeded_sse(),
+            claude_text_sse("msg_compact", "summary after compact"),
+            claude_text_sse("msg_2", "done after compact"),
+        ],
+    )
+    .await;
+    mount_claude_count_tokens_response(
+        &server,
+        ResponseTemplate::new(200).set_body_json(json!({ "input_tokens": 123 })),
+        1,
+    )
+    .await;
+
+    let test = test_codex()
+        .with_config(configure_claude_provider_without_stream_retries)
+        .build(&server)
+        .await?;
+
+    submit_user_input_without_waiting(&test, prompt).await?;
+
+    let context_window_errors = count_context_window_errors_until_turn_complete(&test).await;
+    assert_eq!(
+        context_window_errors, 0,
+        "successful recovery should not report a terminal context-window error"
+    );
+
+    let requests = responses.requests();
+    assert_eq!(
+        requests.len(),
+        3,
+        "expected first request, compact request, and retried request"
+    );
+
+    let initial_request = requests[0].body_json();
+    let compact_request = requests[1].body_json();
+    let retry_request = requests[2].body_json();
+    assert_claude_request_contains(&initial_request, prompt, "initial Claude request");
+    assert_claude_request_excludes(
+        &initial_request,
+        compact_prompt_head(),
+        "initial Claude request",
+    );
+    assert_claude_request_excludes(
+        &initial_request,
+        "summary after compact",
+        "initial Claude request",
+    );
+    assert_claude_request_contains(&compact_request, prompt, "recovery compact request");
+    assert_claude_request_contains(
+        &compact_request,
+        compact_prompt_head(),
+        "recovery compact request",
+    );
+    assert_claude_request_excludes(
+        &compact_request,
+        "summary after compact",
+        "recovery compact request",
+    );
+    assert_claude_request_contains(&retry_request, prompt, "retried Claude request");
+    assert_claude_request_contains(
+        &retry_request,
+        SUMMARY_PREFIX.trim(),
+        "retried Claude request",
+    );
+    assert_claude_request_contains(
+        &retry_request,
+        "summary after compact",
+        "retried Claude request",
+    );
+    assert_claude_request_excludes(
+        &retry_request,
+        compact_prompt_head(),
+        "retried Claude request",
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_wire_context_window_retry_overflow_reports_terminal_error() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let prompt = "fail recovery after a second overflow";
+    let responses = mount_claude_sse_sequence(
+        &server,
+        vec![
+            claude_context_window_exceeded_sse(),
+            claude_text_sse("msg_compact", "summary after compact"),
+            claude_context_window_exceeded_sse(),
+        ],
+    )
+    .await;
+    mount_claude_count_tokens_never(&server).await;
+
+    let test = test_codex()
+        .with_config(configure_claude_provider_without_stream_retries)
+        .build(&server)
+        .await?;
+
+    submit_user_input_without_waiting(&test, prompt).await?;
+
+    let errors = collect_error_infos_until_turn_complete(&test).await;
+    let context_window_errors = errors
+        .iter()
+        .filter(|info| info.as_ref() == Some(&CodexErrorInfo::ContextWindowExceeded))
+        .count();
+    assert_eq!(
+        context_window_errors, 1,
+        "repeated overflow should report exactly one terminal context-window error"
+    );
+    let requests = responses.requests();
+    assert_eq!(
+        requests.len(),
+        3,
+        "expected one compact attempt and one retried sampling request"
+    );
+    let compact_request = requests[1].body_json();
+    let retry_request = requests[2].body_json();
+    assert_claude_request_contains(&compact_request, prompt, "recovery compact request");
+    assert_claude_request_contains(
+        &compact_request,
+        compact_prompt_head(),
+        "recovery compact request",
+    );
+    assert_claude_request_contains(&retry_request, prompt, "retried Claude request");
+    assert_claude_request_contains(
+        &retry_request,
+        "summary after compact",
+        "retried Claude request",
+    );
+    assert_claude_request_excludes(
+        &retry_request,
+        compact_prompt_head(),
+        "retried Claude request",
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_wire_context_window_compact_failure_reports_terminal_error() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let prompt = "fail compaction during recovery";
+    let responses = mount_claude_sse_sequence(
+        &server,
+        vec![
+            claude_context_window_exceeded_sse(),
+            claude_provider_error_sse("compact failed"),
+        ],
+    )
+    .await;
+    mount_claude_count_tokens_never(&server).await;
+
+    let test = test_codex()
+        .with_config(configure_claude_provider_without_stream_retries)
+        .build(&server)
+        .await?;
+
+    submit_user_input_without_waiting(&test, prompt).await?;
+
+    let errors = collect_error_infos_until_turn_complete(&test).await;
+    let context_window_errors = errors
+        .iter()
+        .filter(|info| info.as_ref() == Some(&CodexErrorInfo::ContextWindowExceeded))
+        .count();
+    assert_eq!(
+        context_window_errors, 1,
+        "compact failure should report a terminal context-window error"
+    );
+    let requests = responses.requests();
+    assert_eq!(
+        requests.len(),
+        2,
+        "compact failure should not retry the original turn"
+    );
+    let compact_request = requests[1].body_json();
+    assert_claude_request_contains(&compact_request, prompt, "recovery compact request");
+    assert_claude_request_contains(
+        &compact_request,
+        compact_prompt_head(),
+        "recovery compact request",
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_wire_context_window_admission_compacts_projected_input_before_sampling()
+-> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let prompt = "large projected admission input";
+    let responses = mount_claude_sse_sequence(
+        &server,
+        vec![
+            claude_text_sse("msg_admission_compact", "admission summary"),
+            claude_text_sse("msg_2", "done after admission compact"),
+        ],
+    )
+    .await;
+    mount_claude_count_tokens_response(
+        &server,
+        ResponseTemplate::new(200).set_body_json(json!({ "input_tokens": 123 })),
+        1,
+    )
+    .await;
+
+    let test = test_codex()
+        .with_config(|config| {
+            configure_claude_provider_without_stream_retries(config);
+            config.model_auto_compact_token_limit_scope =
+                AutoCompactTokenLimitScope::BodyAfterPrefix;
+            config.model_auto_compact_token_limit = Some(1);
+        })
+        .build(&server)
+        .await?;
+
+    submit_user_input_without_waiting(&test, prompt).await?;
+
+    let context_window_errors = count_context_window_errors_until_turn_complete(&test).await;
+    assert_eq!(
+        context_window_errors, 0,
+        "admission compaction should recover before a provider overflow"
+    );
+
+    let requests = responses.requests();
+    assert_eq!(
+        requests.len(),
+        2,
+        "projected input should compact before the first sampling request"
+    );
+    let compact_request = requests[0].body_json();
+    let sampling_request = requests[1].body_json();
+    assert_claude_request_contains(&compact_request, prompt, "admission compact request");
+    assert_claude_request_contains(
+        &compact_request,
+        compact_prompt_head(),
+        "admission compact request",
+    );
+    assert_claude_request_contains(&sampling_request, prompt, "post-admission sampling request");
+    assert_claude_request_contains(
+        &sampling_request,
+        SUMMARY_PREFIX.trim(),
+        "post-admission sampling request",
+    );
+    assert_claude_request_contains(
+        &sampling_request,
+        "admission summary",
+        "post-admission sampling request",
+    );
+    assert_claude_request_excludes(
+        &sampling_request,
+        compact_prompt_head(),
+        "post-admission sampling request",
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_wire_context_window_recovery_retries_before_pending_steer() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let original_prompt = "recover before queued steer";
+    let pending_steer = "queued steer should wait";
+    let responses = mount_claude_sse_sequence_with_delays(
+        &server,
+        vec![
+            (claude_context_window_exceeded_sse(), None),
+            (
+                claude_text_sse("msg_compact", "summary before queued steer"),
+                Some(Duration::from_millis(200)),
+            ),
+            (claude_text_sse("msg_2", "done after recovery retry"), None),
+            (claude_text_sse("msg_3", "done after queued steer"), None),
+        ],
+    )
+    .await;
+    mount_claude_count_tokens_response(
+        &server,
+        ResponseTemplate::new(200).set_body_json(json!({ "input_tokens": 123 })),
+        1,
+    )
+    .await;
+
+    let test = test_codex()
+        .with_config(configure_claude_provider_without_stream_retries)
+        .build(&server)
+        .await?;
+
+    submit_user_input_without_waiting(&test, original_prompt).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(
+            event,
+            EventMsg::ItemStarted(item) if matches!(item.item, TurnItem::ContextCompaction(_))
+        )
+    })
+    .await;
+    submit_user_input_without_waiting(&test, pending_steer).await?;
+
+    let context_window_errors = count_context_window_errors_until_turn_complete(&test).await;
+    assert_eq!(
+        context_window_errors, 0,
+        "queued steer should not turn successful recovery into a terminal context-window error"
+    );
+
+    let requests = responses.requests();
+    assert_eq!(
+        requests.len(),
+        4,
+        "expected initial overflow, compact, retry of original turn, and then queued steer"
+    );
+    let retry_request = requests[2].body_json();
+    let queued_steer_request = requests[3].body_json();
+    assert_claude_request_contains(&retry_request, original_prompt, "recovery retry request");
+    assert_claude_request_contains(
+        &retry_request,
+        "summary before queued steer",
+        "recovery retry request",
+    );
+    assert_claude_request_excludes(&retry_request, pending_steer, "recovery retry request");
+    assert_claude_request_contains(
+        &queued_steer_request,
+        original_prompt,
+        "queued steer follow-up request",
+    );
+    assert_claude_request_contains(
+        &queued_steer_request,
+        pending_steer,
+        "queued steer follow-up request",
+    );
+
+    Ok(())
+}
+
 fn configure_claude_provider(config: &mut Config) {
     config.model_provider.name = "Anthropic".to_string();
     config.model_provider.env_key = Some(EXISTING_ENV_VAR_WITH_NON_EMPTY_VALUE.to_string());
@@ -1597,6 +2018,11 @@ fn configure_claude_provider(config: &mut Config) {
     config.model_provider.requires_openai_auth = false;
     config.model_provider.supports_websockets = false;
     config.model_provider.wire_api = WireApi::Claude;
+}
+
+fn configure_claude_provider_without_stream_retries(config: &mut Config) {
+    configure_claude_provider(config);
+    config.model_provider.stream_max_retries = Some(0);
 }
 
 fn configure_deepseek_claude_provider(config: &mut Config) {
@@ -2015,6 +2441,37 @@ fn claude_multi_tool_use_sse() -> String {
         }),
         claude_message_stop(),
     ])
+}
+
+fn claude_context_window_exceeded_sse() -> String {
+    sse(vec![
+        json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_context_full",
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "usage": {"input_tokens": 1, "output_tokens": 0}
+            }
+        }),
+        json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": "model_context_window_exceeded"},
+            "usage": {"output_tokens": 0}
+        }),
+        claude_message_stop(),
+    ])
+}
+
+fn claude_provider_error_sse(message: &str) -> String {
+    sse(vec![json!({
+        "type": "error",
+        "error": {
+            "type": "api_error",
+            "message": message
+        }
+    })])
 }
 
 fn claude_text_sse(message_id: &str, text: &str) -> String {

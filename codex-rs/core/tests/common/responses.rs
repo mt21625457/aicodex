@@ -1464,6 +1464,13 @@ pub async fn mount_claude_sse_sequence(server: &MockServer, bodies: Vec<String>)
     mount_sse_sequence_with_mock(server, bodies, claude_messages_mock()).await
 }
 
+pub async fn mount_claude_sse_sequence_with_delays(
+    server: &MockServer,
+    bodies: Vec<(String, Option<Duration>)>,
+) -> ResponseMock {
+    mount_sse_sequence_with_delays_and_mock(server, bodies, claude_messages_mock()).await
+}
+
 pub async fn mount_claude_count_tokens_response(
     server: &MockServer,
     response: ResponseTemplate,
@@ -1492,21 +1499,37 @@ async fn mount_sse_sequence_with_mock(
     bodies: Vec<String>,
     mock_and_capture: (MockBuilder, ResponseMock),
 ) -> ResponseMock {
+    let bodies = bodies.into_iter().map(|body| (body, None)).collect();
+    mount_sse_sequence_with_delays_and_mock(server, bodies, mock_and_capture).await
+}
+
+async fn mount_sse_sequence_with_delays_and_mock(
+    server: &MockServer,
+    bodies: Vec<(String, Option<Duration>)>,
+    mock_and_capture: (MockBuilder, ResponseMock),
+) -> ResponseMock {
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
 
     struct SeqResponder {
         num_calls: AtomicUsize,
-        responses: Vec<String>,
+        responses: Vec<(String, Option<Duration>)>,
     }
 
     impl Respond for SeqResponder {
         fn respond(&self, _: &wiremock::Request) -> ResponseTemplate {
             let call_num = self.num_calls.fetch_add(1, Ordering::SeqCst);
             match self.responses.get(call_num) {
-                Some(body) => ResponseTemplate::new(200)
-                    .insert_header("content-type", "text/event-stream")
-                    .set_body_string(body.clone()),
+                Some((body, delay)) => {
+                    let response = ResponseTemplate::new(200)
+                        .insert_header("content-type", "text/event-stream")
+                        .set_body_string(body.clone());
+                    if let Some(delay) = delay {
+                        response.set_delay(*delay)
+                    } else {
+                        response
+                    }
+                }
                 None => panic!("no response for {call_num}"),
             }
         }
