@@ -8,15 +8,15 @@ Supports building:
 - Native binaries for CLI distribution
 
 Usage:
-    ./build.py                     # Default: build all in fast local mode, output binary named "aicodex"
+    ./build.py                     # Default: build all in minimized release mode, output binary named "aicodex"
     ./build.py --help
-    ./build.py rust                # Build all Rust crates (fast local mode)
-    ./build.py rust --release      # Build Rust in release mode
+    ./build.py rust                # Build all Rust crates in minimized release mode
+    ./build.py rust --fast         # Build Rust in fast local mode
     ./build.py ts                  # Build TypeScript packages
-    ./build.py all                 # Build everything (fast local mode)
-    ./build.py all --release       # Build everything in release mode
-    ./build.py codex-cli           # Build the aicodex CLI binary (fast local mode)
-    ./build.py codex-cli --release # Build the aicodex CLI binary in release mode
+    ./build.py all                 # Build everything in minimized release mode
+    ./build.py all --fast          # Build everything in fast local mode
+    ./build.py codex-cli           # Build the aicodex CLI binary in minimized release mode
+    ./build.py codex-cli --fast    # Build the aicodex CLI binary in fast local mode
     ./build.py codex-cli --all-targets
     ./build.py clean --dry-run     # Show build artifacts that can be removed
 """
@@ -55,10 +55,20 @@ CLI_TARGETS = (
     "aarch64-pc-windows-msvc",
 )
 
-DEFAULT_BUILD_PROFILE = "dev-small"
+FAST_BUILD_PROFILE = "dev-small"
 RELEASE_BUILD_PROFILE = "release"
+DEFAULT_BUILD_PROFILE = RELEASE_BUILD_PROFILE
 DEBUG_BUILD_PROFILE = "dev"
-DEFAULT_SCCACHE_CACHE_SIZE = "20G"
+
+MINIMIZED_RELEASE_PROFILE_ENV = {
+    "CARGO_PROFILE_RELEASE_OPT_LEVEL": "z",
+    "CARGO_PROFILE_RELEASE_LTO": "fat",
+    "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "1",
+    "CARGO_PROFILE_RELEASE_DEBUG": "none",
+    "CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO": "off",
+    "CARGO_PROFILE_RELEASE_STRIP": "symbols",
+    "CARGO_PROFILE_RELEASE_PANIC": "abort",
+}
 
 CLEAN_BUILD_DIRS = (
     REPO_ROOT / "dist",
@@ -196,36 +206,73 @@ def run(
     )
 
 
-def sccache_path() -> str | None:
-    """Return an installed sccache path when available."""
-    path = shutil.which("sccache")
-    if path:
-        return path
-
-    homebrew_path = Path("/opt/homebrew/bin/sccache")
-    if homebrew_path.exists():
-        return str(homebrew_path)
+def sccache_wrapper_command() -> str | None:
+    """Return a portable sccache wrapper command when available."""
+    for name in ("sccache", "sccache.exe"):
+        if shutil.which(name):
+            return name
 
     return None
 
 
-def cargo_build_env() -> dict[str, str]:
-    """Return Cargo environment overrides for faster repeat local builds."""
-    env: dict[str, str] = {}
+def is_sccache_wrapper(wrapper: str | None) -> bool:
+    """Return true when a Rust compiler wrapper points to sccache."""
+    return bool(wrapper) and Path(wrapper).stem.lower() == "sccache"
+
+
+def require_sccache_wrapper_command() -> str:
+    """Return the sccache wrapper command or exit with a helpful error."""
+    if os.environ.get("SCCACHE_DISABLE"):
+        print(
+            "ERROR: build.py requires sccache caching, but SCCACHE_DISABLE is set. "
+            "Unset SCCACHE_DISABLE and rerun the build.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     wrapper = os.environ.get("RUSTC_WRAPPER")
-    if not wrapper:
-        wrapper = sccache_path()
-        if wrapper:
-            env["RUSTC_WRAPPER"] = wrapper
+    if wrapper and is_sccache_wrapper(wrapper):
+        command = sccache_wrapper_command()
+        if command:
+            return command
 
-    if wrapper and Path(wrapper).name == "sccache":
-        if "CARGO_INCREMENTAL" not in os.environ:
-            # Incremental artifacts are not cacheable by sccache and get very large
-            # in this workspace, so build.py prefers the shared compiler cache.
-            env["CARGO_INCREMENTAL"] = "0"
-        if "SCCACHE_CACHE_SIZE" not in os.environ:
-            env["SCCACHE_CACHE_SIZE"] = DEFAULT_SCCACHE_CACHE_SIZE
+        expanded = Path(wrapper).expanduser()
+        if expanded.is_file() and os.access(expanded, os.X_OK):
+            return wrapper
+
+        print(f"ERROR: RUSTC_WRAPPER points to sccache but is not executable: {wrapper}", file=sys.stderr)
+        sys.exit(1)
+
+    if wrapper:
+        print(
+            f"  → Overriding RUSTC_WRAPPER={wrapper!r}; build.py requires sccache",
+            file=sys.stderr,
+        )
+
+    command = sccache_wrapper_command()
+    if command:
+        return command
+
+    print(
+        "ERROR: build.py requires sccache, but it was not found. "
+        "Install it first, for example: cargo install --locked sccache",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+def cargo_build_env(profile: str) -> dict[str, str]:
+    """Return Cargo environment overrides for minimized, cached builds."""
+    wrapper = require_sccache_wrapper_command()
+    env: dict[str, str] = {
+        "RUSTC_WRAPPER": wrapper,
+        # Incremental artifacts are not cacheable by sccache and get very large
+        # in this workspace, so build.py always prefers the shared compiler cache.
+        "CARGO_INCREMENTAL": "0",
+    }
+
+    if profile == RELEASE_BUILD_PROFILE:
+        env.update(MINIMIZED_RELEASE_PROFILE_ENV)
 
     return env
 
@@ -256,8 +303,8 @@ def add_cargo_profile_args(parser: argparse.ArgumentParser) -> None:
         "--fast",
         dest="profile",
         action="store_const",
-        const=DEFAULT_BUILD_PROFILE,
-        help=f"Build with the fast local Cargo profile ({DEFAULT_BUILD_PROFILE}); default",
+        const=FAST_BUILD_PROFILE,
+        help=f"Build with the fast local Cargo profile ({FAST_BUILD_PROFILE}); development only",
     )
     group.add_argument(
         "--debug",
@@ -271,7 +318,7 @@ def add_cargo_profile_args(parser: argparse.ArgumentParser) -> None:
         dest="profile",
         action="store_const",
         const=RELEASE_BUILD_PROFILE,
-        help="Build with Cargo's release profile",
+        help="Build with the minimized Cargo release profile; default",
     )
     group.add_argument(
         "--profile",
@@ -554,8 +601,12 @@ def build_rust(
         cmd.append("--verbose")
 
     version = read_aicodex_version()
+    cargo_env = cargo_build_env(profile)
+    print(f"  → Using sccache: {cargo_env['RUSTC_WRAPPER']}", file=sys.stderr)
+    if profile == RELEASE_BUILD_PROFILE:
+        print("  → Enforcing minimized release profile", file=sys.stderr)
     with patched_rust_workspace_version(version):
-        run(cmd, cwd=RUST_ROOT, env=cargo_build_env())
+        run(cmd, cwd=RUST_ROOT, env=cargo_env)
 
 
 def build_codex_cli(
@@ -816,7 +867,7 @@ def main(argv: list[str] | None = None) -> None:
 
     args = parser.parse_args(argv)
 
-    # Default behavior: build all in fast local mode, rename to "aicodex"
+    # Default behavior: build all in minimized release mode, rename to "aicodex"
     if args.command is None:
         build_all(profile=DEFAULT_BUILD_PROFILE, rename=OUTPUT_BINARY_NAME)
         print("Build completed successfully.", file=sys.stderr)
