@@ -6,10 +6,6 @@ license.workspace = true
 build = "build.rs"
 
 [[bin]]
-name = "codex"
-path = "src/main.rs"
-
-[[bin]]
 name = "aicodex"
 path = "src/main.rs"
 
