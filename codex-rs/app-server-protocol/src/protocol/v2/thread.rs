@@ -1147,6 +1147,10 @@ pub struct ThreadReadParams {
     /// When true, include turns and their items from rollout history.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub include_turns: bool,
+    /// How much item detail to include for each returned turn; defaults to full
+    /// when `includeTurns` is true.
+    #[ts(optional = nullable)]
+    pub items_view: Option<TurnItemsView>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

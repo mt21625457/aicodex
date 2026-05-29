@@ -1246,6 +1246,7 @@ async fn maybe_backfill_turn_completed_items(
             params: ThreadReadParams {
                 thread_id: payload.thread_id.clone(),
                 include_turns: true,
+                items_view: None,
             },
         },
         "thread/read",

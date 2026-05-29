@@ -108,6 +108,7 @@ async fn thread_read_returns_summary_without_turns() -> Result<()> {
         .send_thread_read_request(ThreadReadParams {
             thread_id: conversation_id.clone(),
             include_turns: false,
+            items_view: None,
         })
         .await?;
     let read_resp: JSONRPCResponse = timeout(
@@ -163,6 +164,7 @@ async fn thread_read_can_include_turns() -> Result<()> {
         .send_thread_read_request(ThreadReadParams {
             thread_id: conversation_id.clone(),
             include_turns: true,
+            items_view: None,
         })
         .await?;
     let read_resp: JSONRPCResponse = timeout(
@@ -190,6 +192,70 @@ async fn thread_read_can_include_turns() -> Result<()> {
         other => panic!("expected user message item, got {other:?}"),
     }
     assert_eq!(thread.status, ThreadStatus::NotLoaded);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_read_supports_requested_items_view() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let filename_ts = "2025-01-05T12-00-00";
+    let conversation_id = create_fake_rollout_with_text_elements(
+        codex_home.path(),
+        filename_ts,
+        "2025-01-05T12:00:00Z",
+        "first",
+        vec![],
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+    let rollout_path = rollout_path(codex_home.path(), filename_ts, &conversation_id);
+    append_agent_message(rollout_path.as_path(), "2025-01-05T12:01:00Z", "draft")?;
+    append_agent_message(rollout_path.as_path(), "2025-01-05T12:02:00Z", "final")?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let default_full =
+        read_thread_single_turn_items_view(&mut mcp, conversation_id.as_str(), None).await?;
+    assert_eq!(default_full.items_view, TurnItemsView::Full);
+    assert_eq!(
+        turn_agent_texts(std::slice::from_ref(&default_full)),
+        vec!["draft", "final"]
+    );
+
+    let summary = read_thread_single_turn_items_view(
+        &mut mcp,
+        conversation_id.as_str(),
+        Some(TurnItemsView::Summary),
+    )
+    .await?;
+    assert_eq!(summary.items_view, TurnItemsView::Summary);
+    assert_eq!(
+        turn_user_texts(std::slice::from_ref(&summary)),
+        vec!["first"]
+    );
+    assert_eq!(
+        turn_agent_texts(std::slice::from_ref(&summary)),
+        vec!["final"]
+    );
+
+    let not_loaded = read_thread_single_turn_items_view(
+        &mut mcp,
+        conversation_id.as_str(),
+        Some(TurnItemsView::NotLoaded),
+    )
+    .await?;
+    assert_eq!(not_loaded.items_view, TurnItemsView::NotLoaded);
+    assert!(not_loaded.items.is_empty());
+    assert_eq!(not_loaded.id, default_full.id);
+    assert_eq!(not_loaded.status, default_full.status);
+    assert_eq!(not_loaded.started_at, default_full.started_at);
+    assert_eq!(not_loaded.completed_at, default_full.completed_at);
+    assert_eq!(not_loaded.duration_ms, default_full.duration_ms);
 
     Ok(())
 }
@@ -495,6 +561,7 @@ fn thread_read_loaded_include_turns_reads_store_history_without_rollout_path() -
                 params: ThreadReadParams {
                     thread_id: thread.id,
                     include_turns: true,
+                    items_view: None,
                 },
             })
             .await?
@@ -620,6 +687,7 @@ async fn thread_read_can_return_archived_threads_by_id() -> Result<()> {
         .send_thread_read_request(ThreadReadParams {
             thread_id: conversation_id.clone(),
             include_turns: false,
+            items_view: None,
         })
         .await?;
     let read_resp: JSONRPCResponse = timeout(
@@ -744,6 +812,7 @@ async fn thread_read_returns_forked_from_id_for_forked_threads() -> Result<()> {
         .send_thread_read_request(ThreadReadParams {
             thread_id: forked.id,
             include_turns: false,
+            items_view: None,
         })
         .await?;
     let read_resp: JSONRPCResponse = timeout(
@@ -789,6 +858,7 @@ async fn thread_read_loaded_thread_returns_precomputed_path_before_materializati
         .send_thread_read_request(ThreadReadParams {
             thread_id: thread.id.clone(),
             include_turns: false,
+            items_view: None,
         })
         .await?;
     let read_resp: JSONRPCResponse = timeout(
@@ -856,6 +926,7 @@ async fn thread_name_set_is_reflected_in_read_list_and_resume() -> Result<()> {
         .send_thread_read_request(ThreadReadParams {
             thread_id: conversation_id.clone(),
             include_turns: false,
+            items_view: None,
         })
         .await?;
     let read_resp: JSONRPCResponse = timeout(
@@ -995,6 +1066,7 @@ async fn thread_read_include_turns_rejects_unmaterialized_loaded_thread() -> Res
         .send_thread_read_request(ThreadReadParams {
             thread_id: thread.id.clone(),
             include_turns: true,
+            items_view: None,
         })
         .await?;
     let read_err: JSONRPCError = timeout(
@@ -1155,6 +1227,7 @@ async fn thread_read_reports_system_error_idle_flag_after_failed_turn() -> Resul
         .send_thread_read_request(ThreadReadParams {
             thread_id: thread.id,
             include_turns: false,
+            items_view: None,
         })
         .await?;
     let read_resp: JSONRPCResponse = timeout(
@@ -1244,6 +1317,28 @@ async fn read_single_turn_items_view(
         to_response::<ThreadTurnsListResponse>(read_resp)?;
     assert_eq!(data.len(), 1);
     Ok(data.remove(0))
+}
+
+async fn read_thread_single_turn_items_view(
+    mcp: &mut McpProcess,
+    thread_id: &str,
+    items_view: Option<TurnItemsView>,
+) -> anyhow::Result<codex_app_server_protocol::Turn> {
+    let read_id = mcp
+        .send_thread_read_request(ThreadReadParams {
+            thread_id: thread_id.to_string(),
+            include_turns: true,
+            items_view,
+        })
+        .await?;
+    let read_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(read_id)),
+    )
+    .await??;
+    let ThreadReadResponse { mut thread, .. } = to_response::<ThreadReadResponse>(read_resp)?;
+    assert_eq!(thread.turns.len(), 1);
+    Ok(thread.turns.remove(0))
 }
 
 fn turn_user_texts(turns: &[codex_app_server_protocol::Turn]) -> Vec<&str> {

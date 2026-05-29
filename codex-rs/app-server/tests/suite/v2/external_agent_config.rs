@@ -354,6 +354,7 @@ async fn external_agent_config_import_creates_session_rollouts() -> Result<()> {
         .send_thread_read_request(ThreadReadParams {
             thread_id: thread.id.clone(),
             include_turns: true,
+            items_view: None,
         })
         .await?;
     let response: JSONRPCResponse = timeout(
@@ -413,6 +414,7 @@ async fn external_agent_config_import_creates_session_rollouts() -> Result<()> {
         .send_thread_read_request(ThreadReadParams {
             thread_id: thread.id,
             include_turns: true,
+            items_view: None,
         })
         .await?;
     let response: JSONRPCResponse = timeout(

@@ -82,6 +82,13 @@ async fn thread_start_deprecates_persist_extended_history_true() -> Result<()> {
         notice.summary,
         "persistExtendedHistory is deprecated and ignored"
     );
+    assert_eq!(
+        notice.details,
+        Some(
+            "Remove this parameter. App-server always persists replayable transcript history."
+                .to_string()
+        )
+    );
 
     timeout(
         DEFAULT_READ_TIMEOUT,

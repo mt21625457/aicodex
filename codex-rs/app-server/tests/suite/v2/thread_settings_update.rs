@@ -345,6 +345,7 @@ async fn read_thread_with_turns(
         .send_thread_read_request(ThreadReadParams {
             thread_id: thread_id.to_string(),
             include_turns: true,
+            items_view: None,
         })
         .await?;
     let response: JSONRPCResponse = timeout(

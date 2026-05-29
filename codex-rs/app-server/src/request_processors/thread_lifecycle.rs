@@ -718,7 +718,8 @@ pub(crate) fn populate_thread_turns_from_history(
     items: &[RolloutItem],
     active_turn: Option<&Turn>,
 ) {
-    let mut turns = build_api_turns_from_rollout_items(items);
+    let mut turns =
+        build_api_turns_from_rollout_items_with_mode(items, EventPersistenceMode::Extended);
     if let Some(active_turn) = active_turn {
         merge_turn_history_with_active_turn(&mut turns, active_turn.clone());
     }

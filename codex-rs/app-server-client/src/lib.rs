@@ -1292,6 +1292,7 @@ mod tests {
                     params: codex_app_server_protocol::ThreadReadParams {
                         thread_id: "missing-thread".to_string(),
                         include_turns: false,
+                        items_view: None,
                     },
                 })
                 .await
@@ -1350,6 +1351,7 @@ mod tests {
                         params: codex_app_server_protocol::ThreadReadParams {
                             thread_id: response.thread.id.clone(),
                             include_turns: false,
+                            items_view: None,
                         },
                     },
                 )

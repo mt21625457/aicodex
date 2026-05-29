@@ -8,7 +8,7 @@ const THREAD_LIST_MAX_LIMIT: usize = 100;
 const PERSIST_EXTENDED_HISTORY_DEPRECATION_SUMMARY: &str =
     "persistExtendedHistory is deprecated and ignored";
 const PERSIST_EXTENDED_HISTORY_DEPRECATION_DETAILS: &str =
-    "Remove this parameter. App-server always uses limited history persistence.";
+    "Remove this parameter. App-server always persists replayable transcript history.";
 
 struct ThreadListFilters {
     model_providers: Option<Vec<String>>,
@@ -1106,7 +1106,7 @@ impl ThreadRequestProcessor {
                 session_source: None,
                 thread_source,
                 dynamic_tools: core_dynamic_tools,
-                persist_extended_history: false,
+                persist_extended_history: true,
                 metrics_service_name: service_name,
                 parent_trace: request_trace,
                 environments,
@@ -1115,7 +1115,7 @@ impl ThreadRequestProcessor {
                 "app_server.thread_start.create_thread",
                 otel.name = "app_server.thread_start.create_thread",
                 thread_start.dynamic_tool_count = core_dynamic_tool_count,
-                thread_start.persist_extended_history = false,
+                thread_start.persist_extended_history = true,
             ))
             .await
             .map_err(|err| match err {
@@ -2053,13 +2053,15 @@ impl ThreadRequestProcessor {
         let ThreadReadParams {
             thread_id,
             include_turns,
+            items_view,
         } = params;
+        let items_view = items_view.unwrap_or(TurnItemsView::Full);
 
         let thread_uuid = ThreadId::from_string(&thread_id)
             .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
 
         let thread = self
-            .read_thread_view(thread_uuid, include_turns)
+            .read_thread_view(thread_uuid, include_turns, items_view)
             .await
             .map_err(thread_read_view_error)?;
         Ok(ThreadReadResponse { thread })
@@ -2070,6 +2072,7 @@ impl ThreadRequestProcessor {
         &self,
         thread_id: ThreadId,
         include_turns: bool,
+        items_view: TurnItemsView,
     ) -> Result<Thread, ThreadReadViewError> {
         let loaded_thread = self.thread_manager.get_thread(thread_id).await.ok();
         let mut thread = if include_turns {
@@ -2077,17 +2080,20 @@ impl ThreadRequestProcessor {
                 // Loaded thread with turns: use persisted metadata when it exists,
                 // but reconstruct turns from the live ThreadStore history.
                 let persisted_thread = self
-                    .load_persisted_thread_for_read(thread_id, /*include_turns*/ false)
+                    .load_persisted_thread_for_read(
+                        thread_id, /*include_turns*/ false, items_view,
+                    )
                     .await?;
                 self.load_live_thread_view(
                     thread_id,
                     include_turns,
+                    items_view,
                     loaded_thread,
                     persisted_thread,
                 )
                 .await?
             } else if let Some(thread) = self
-                .load_persisted_thread_for_read(thread_id, include_turns)
+                .load_persisted_thread_for_read(thread_id, include_turns, items_view)
                 .await?
             {
                 // Unloaded thread with turns: load metadata and history together
@@ -2099,7 +2105,7 @@ impl ThreadRequestProcessor {
                 )));
             }
         } else if let Some(thread) = self
-            .load_persisted_thread_for_read(thread_id, include_turns)
+            .load_persisted_thread_for_read(thread_id, include_turns, items_view)
             .await?
         {
             // Persisted metadata-only read: no live thread state is needed.
@@ -2110,6 +2116,7 @@ impl ThreadRequestProcessor {
             self.load_live_thread_view(
                 thread_id,
                 include_turns,
+                items_view,
                 loaded_thread,
                 /*persisted_thread*/ None,
             )
@@ -2143,6 +2150,7 @@ impl ThreadRequestProcessor {
         &self,
         thread_id: ThreadId,
         include_turns: bool,
+        items_view: TurnItemsView,
     ) -> Result<Option<Thread>, ThreadReadViewError> {
         let fallback_provider = self.config.model_provider_id.as_str();
         match self
@@ -2158,7 +2166,7 @@ impl ThreadRequestProcessor {
                 let (mut thread, history) =
                     thread_from_stored_thread(stored_thread, fallback_provider, &self.config.cwd);
                 if include_turns && let Some(history) = history {
-                    thread.turns = build_api_turns_from_rollout_items(&history.items);
+                    thread.turns = build_api_turns_for_items_view(&history.items, items_view);
                 }
                 Ok(Some(thread))
             }
@@ -2184,6 +2192,7 @@ impl ThreadRequestProcessor {
         &self,
         thread_id: ThreadId,
         include_turns: bool,
+        items_view: TurnItemsView,
         loaded_thread: &CodexThread,
         persisted_thread: Option<Thread>,
     ) -> Result<Thread, ThreadReadViewError> {
@@ -2205,8 +2214,14 @@ impl ThreadRequestProcessor {
         } else {
             fallback_thread
         };
-        self.apply_thread_read_store_fields(thread_id, &mut thread, include_turns, loaded_thread)
-            .await?;
+        self.apply_thread_read_store_fields(
+            thread_id,
+            &mut thread,
+            include_turns,
+            items_view,
+            loaded_thread,
+        )
+        .await?;
         Ok(thread)
     }
 
@@ -2215,6 +2230,7 @@ impl ThreadRequestProcessor {
         thread_id: ThreadId,
         thread: &mut Thread,
         include_turns: bool,
+        items_view: TurnItemsView,
         loaded_thread: &CodexThread,
     ) -> Result<(), ThreadReadViewError> {
         self.attach_thread_name(thread_id, thread).await;
@@ -2224,7 +2240,7 @@ impl ThreadRequestProcessor {
                 .load_history(/*include_archived*/ true)
                 .await
                 .map_err(|err| thread_read_history_load_error(thread_id, err))?;
-            thread.turns = build_api_turns_from_rollout_items(&history.items);
+            thread.turns = build_api_turns_for_items_view(&history.items, items_view);
         }
 
         Ok(())
@@ -2270,49 +2286,15 @@ impl ThreadRequestProcessor {
         } else {
             None
         };
-        let mut turns = reconstruct_thread_turns_for_turns_list(
+        let turns = reconstruct_thread_turns_for_turns_list(
             &items,
             self.thread_watch_manager
                 .loaded_status_for_thread(&thread_uuid.to_string())
                 .await,
             has_live_running_thread,
             active_turn,
+            items_view,
         );
-        for turn in &mut turns {
-            match items_view {
-                TurnItemsView::NotLoaded => {
-                    turn.items.clear();
-                    turn.items_view = TurnItemsView::NotLoaded;
-                }
-                TurnItemsView::Summary => {
-                    let first_user_message = turn
-                        .items
-                        .iter()
-                        .find(|item| matches!(item, ThreadItem::UserMessage { .. }))
-                        .cloned();
-                    let final_agent_message = turn
-                        .items
-                        .iter()
-                        .rev()
-                        .find(|item| matches!(item, ThreadItem::AgentMessage { .. }))
-                        .cloned();
-                    turn.items = match (first_user_message, final_agent_message) {
-                        (Some(user_message), Some(agent_message))
-                            if user_message.id() != agent_message.id() =>
-                        {
-                            vec![user_message, agent_message]
-                        }
-                        (Some(user_message), _) => vec![user_message],
-                        (None, Some(agent_message)) => vec![agent_message],
-                        (None, None) => Vec::new(),
-                    };
-                    turn.items_view = TurnItemsView::Summary;
-                }
-                TurnItemsView::Full => {
-                    turn.items_view = TurnItemsView::Full;
-                }
-            }
-        }
         let page = paginate_thread_turns(
             turns,
             cursor.as_deref(),
@@ -2596,7 +2578,7 @@ impl ThreadRequestProcessor {
                 config.clone(),
                 thread_history,
                 self.auth_manager.clone(),
-                /*persist_extended_history*/ false,
+                /*persist_extended_history*/ true,
                 self.request_trace_context(&request_id).await,
             )
             .await
@@ -3287,7 +3269,7 @@ impl ThreadRequestProcessor {
                     rollout_path: source_thread.rollout_path.clone(),
                 }),
                 thread_source.map(Into::into),
-                /*persist_extended_history*/ false,
+                /*persist_extended_history*/ true,
                 self.request_trace_context(&request_id).await,
             )
             .await
@@ -3711,17 +3693,67 @@ fn reconstruct_thread_turns_for_turns_list(
     loaded_status: ThreadStatus,
     has_live_running_thread: bool,
     active_turn: Option<Turn>,
+    items_view: TurnItemsView,
 ) -> Vec<Turn> {
     let has_live_in_progress_turn = has_live_running_thread
         || active_turn
             .as_ref()
             .is_some_and(|turn| matches!(turn.status, TurnStatus::InProgress));
-    let mut turns = build_api_turns_from_rollout_items(items);
+    let mut turns = build_api_turns_for_items_view(items, items_view);
     normalize_thread_turns_status(&mut turns, loaded_status, has_live_in_progress_turn);
     if let Some(active_turn) = active_turn {
         merge_turn_history_with_active_turn(&mut turns, active_turn);
+        apply_turn_items_view(&mut turns, items_view);
     }
     turns
+}
+
+fn build_api_turns_for_items_view(items: &[RolloutItem], items_view: TurnItemsView) -> Vec<Turn> {
+    let mode = match items_view {
+        TurnItemsView::Full => EventPersistenceMode::Extended,
+        TurnItemsView::Summary | TurnItemsView::NotLoaded => EventPersistenceMode::Limited,
+    };
+    let mut turns = build_api_turns_from_rollout_items_with_mode(items, mode);
+    apply_turn_items_view(&mut turns, items_view);
+    turns
+}
+
+fn apply_turn_items_view(turns: &mut [Turn], items_view: TurnItemsView) {
+    for turn in turns {
+        match items_view {
+            TurnItemsView::NotLoaded => {
+                turn.items.clear();
+                turn.items_view = TurnItemsView::NotLoaded;
+            }
+            TurnItemsView::Summary => {
+                let first_user_message = turn
+                    .items
+                    .iter()
+                    .find(|item| matches!(item, ThreadItem::UserMessage { .. }))
+                    .cloned();
+                let final_agent_message = turn
+                    .items
+                    .iter()
+                    .rev()
+                    .find(|item| matches!(item, ThreadItem::AgentMessage { .. }))
+                    .cloned();
+                turn.items = match (first_user_message, final_agent_message) {
+                    (Some(user_message), Some(agent_message))
+                        if user_message.id() != agent_message.id() =>
+                    {
+                        vec![user_message, agent_message]
+                    }
+                    (Some(user_message), _) => vec![user_message],
+                    (None, Some(agent_message)) => vec![agent_message],
+                    (None, None) => Vec::new(),
+                };
+                turn.items_view = TurnItemsView::Summary;
+            }
+            TurnItemsView::Full => {
+                turn.items_view = TurnItemsView::Full;
+            }
+        }
+    }
 }
 
 fn normalize_thread_turns_status(

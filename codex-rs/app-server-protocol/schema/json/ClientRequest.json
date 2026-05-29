@@ -3556,6 +3556,17 @@
           "description": "When true, include turns and their items from rollout history.",
           "type": "boolean"
         },
+        "itemsView": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TurnItemsView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How much item detail to include for each returned turn; defaults to full when `includeTurns` is true."
+        },
         "threadId": {
           "type": "string"
         }

@@ -1921,6 +1921,7 @@ async fn thread_resume_and_read_interrupt_incomplete_rollout_turn_when_thread_is
         .send_thread_read_request(ThreadReadParams {
             thread_id: resumed_again.id,
             include_turns: true,
+            items_view: None,
         })
         .await?;
     let read_resp: JSONRPCResponse = timeout(
@@ -1955,6 +1956,7 @@ async fn thread_resume_defers_updated_at_until_turn_start() -> Result<()> {
         .send_thread_read_request(ThreadReadParams {
             thread_id: thread_id.clone(),
             include_turns: false,
+            items_view: None,
         })
         .await?;
     let read_resp: JSONRPCResponse = timeout(
@@ -3254,6 +3256,7 @@ async fn start_materialized_thread_and_restart(
         .send_thread_read_request(ThreadReadParams {
             thread_id: thread.id.clone(),
             include_turns: false,
+            items_view: None,
         })
         .await?;
     let read_resp: JSONRPCResponse = timeout(

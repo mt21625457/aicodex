@@ -278,6 +278,20 @@ fn thread_turns_list_params_accepts_items_view() {
 }
 
 #[test]
+fn thread_read_params_accepts_items_view() {
+    let params = serde_json::from_value::<ThreadReadParams>(json!({
+        "threadId": "thr_123",
+        "includeTurns": true,
+        "itemsView": "full",
+    }))
+    .expect("thread read params should deserialize");
+
+    assert_eq!(params.thread_id, "thr_123");
+    assert!(params.include_turns);
+    assert_eq!(params.items_view, Some(TurnItemsView::Full));
+}
+
+#[test]
 fn thread_turns_items_list_round_trips() {
     let params = ThreadTurnsItemsListParams {
         thread_id: "thr_123".to_string(),

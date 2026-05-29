@@ -309,7 +309,7 @@ impl ExternalAgentConfigRequestProcessor {
                 session_source: None,
                 thread_source: None,
                 dynamic_tools: Vec::new(),
-                persist_extended_history: false,
+                persist_extended_history: true,
                 metrics_service_name: None,
                 parent_trace: None,
                 environments,

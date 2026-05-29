@@ -1107,7 +1107,7 @@ impl TurnRequestProcessor {
                     rollout_path: parent_thread.rollout_path(),
                 }),
                 /*thread_source*/ None,
-                /*persist_extended_history*/ false,
+                /*persist_extended_history*/ true,
                 self.request_trace_context(request_id).await,
             )
             .await
