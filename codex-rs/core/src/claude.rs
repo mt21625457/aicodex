@@ -1817,6 +1817,94 @@ mod tests {
     }
 
     #[test]
+    fn builds_claude_request_with_local_web_search_when_native_would_drop_semantics() {
+        let prompt = Prompt {
+            input: vec![ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "search".to_string(),
+                }],
+                phase: None,
+            }],
+            tools: vec![ToolSpec::WebSearch {
+                external_web_access: Some(true),
+                filters: Some(codex_tools::ResponsesApiWebSearchFilters {
+                    allowed_domains: Some(vec!["example.com".to_string()]),
+                }),
+                user_location: None,
+                search_context_size: Some(codex_protocol::config_types::WebSearchContextSize::High),
+                search_content_types: None,
+            }],
+            ..Default::default()
+        };
+
+        let request =
+            build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
+                .expect("request");
+
+        assert_eq!(
+            serde_json::to_value(&request.tools).expect("serialize tools"),
+            json!([{
+                "name": "web_search",
+                "description": "Search the web using Codex's local web search handler and return relevant text results. Use `query` for one search or `queries` for a small batch.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query."
+                        },
+                        "queries": {
+                            "type": "array",
+                            "description": "Optional batch of search queries. Use only when several closely related searches are needed.",
+                            "items": { "type": "string" }
+                        }
+                    },
+                    "additionalProperties": false
+                }
+            }])
+        );
+        assert_eq!(
+            request.tool_call_info.get("web_search"),
+            Some(&ApiClaudeToolCallInfo {
+                name: "web_search".to_string(),
+                namespace: None,
+                kind: ApiClaudeToolCallKind::Function,
+            })
+        );
+    }
+
+    #[test]
+    fn builds_claude_request_without_web_search_when_no_safe_mapping_exists() {
+        let prompt = Prompt {
+            input: vec![ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "search".to_string(),
+                }],
+                phase: None,
+            }],
+            tools: vec![ToolSpec::WebSearch {
+                external_web_access: Some(false),
+                filters: None,
+                user_location: None,
+                search_context_size: None,
+                search_content_types: None,
+            }],
+            ..Default::default()
+        };
+
+        let request =
+            build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
+                .expect("request");
+
+        assert!(request.tools.is_empty());
+        assert!(request.tool_call_info.is_empty());
+    }
+
+    #[test]
     fn builds_deepseek_request_with_local_web_search_function_tool() {
         let prompt = Prompt {
             input: vec![ResponseItem::Message {
@@ -3875,6 +3963,53 @@ mod tests {
             },
         )
         .expect("request");
+
+        assert_eq!(
+            serde_json::to_value(&request.messages).expect("serialize messages"),
+            json!([{
+                "role": "user",
+                "content": [{"type": "text", "text": "continue"}]
+            }])
+        );
+    }
+
+    #[test]
+    fn drops_web_search_provider_state_when_local_fallback_is_selected() {
+        let web_search_tool_result = json!({
+            "type": "web_search_tool_result",
+            "tool_use_id": "srvu_1",
+            "content": [{"type": "text", "text": "stale result"}]
+        });
+        let prompt = Prompt {
+            input: vec![
+                ResponseItem::Compaction {
+                    encrypted_content: web_search_tool_result.to_string(),
+                },
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "continue".to_string(),
+                    }],
+                    phase: None,
+                },
+            ],
+            tools: vec![ToolSpec::WebSearch {
+                external_web_access: Some(true),
+                filters: None,
+                user_location: None,
+                search_context_size: Some(codex_protocol::config_types::WebSearchContextSize::High),
+                search_content_types: None,
+            }],
+            base_instructions: BaseInstructions {
+                text: String::new(),
+            },
+            ..Default::default()
+        };
+
+        let request =
+            build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
+                .expect("request");
 
         assert_eq!(
             serde_json::to_value(&request.messages).expect("serialize messages"),

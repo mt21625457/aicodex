@@ -6,6 +6,9 @@ use codex_core::config::Config;
 use codex_features::Feature;
 use codex_model_provider_info::WireApi;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
+use codex_protocol::config_types::WebSearchConfig;
+use codex_protocol::config_types::WebSearchContextSize;
+use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
@@ -204,6 +207,7 @@ async fn claude_wire_tool_loop_posts_messages_and_tool_result() -> anyhow::Resul
     .await;
 
     let test = test_codex()
+        .with_model("gpt-5.2")
         .with_config(configure_claude_provider)
         .build(&server)
         .await?;
@@ -280,6 +284,60 @@ async fn claude_wire_tool_loop_posts_messages_and_tool_result() -> anyhow::Resul
             .expect("tool_result content")
             .contains("claude"),
         "count_tokens request should include the model-visible tool result: {count_request}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_wire_local_web_search_fallback_posts_function_tool_result() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let responses = mount_claude_sse_sequence(
+        &server,
+        vec![
+            claude_custom_tool_use_sse("toolu_web_search", "web_search", json!({})),
+            claude_text_sse("msg_2", "handled"),
+        ],
+    )
+    .await;
+
+    let test = test_codex()
+        .with_model("gpt-5.2")
+        .with_config(configure_claude_provider_with_web_search_context_size)
+        .build(&server)
+        .await?;
+
+    test.submit_turn("search through local fallback").await?;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 2);
+    let first = requests[0].body_json();
+    let web_search_tool = first["tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .find(|tool| tool.get("name").and_then(Value::as_str) == Some("web_search"))
+        .unwrap_or_else(|| panic!("first Claude request should include web_search: {first}"));
+    assert!(web_search_tool.get("type").is_none());
+    assert_eq!(
+        web_search_tool
+            .get("input_schema")
+            .and_then(|schema| schema.get("properties"))
+            .and_then(|properties| properties.get("query"))
+            .and_then(|query| query.get("type"))
+            .and_then(Value::as_str),
+        Some("string")
+    );
+
+    let second = requests[1].body_json();
+    let tool_result = tool_result_block(&second, "toolu_web_search");
+    assert_eq!(tool_result["is_error"].as_bool(), Some(true));
+    let content = tool_result["content"]
+        .as_str()
+        .expect("tool_result error content");
+    assert!(
+        content.contains("web_search requires `query` or `queries`"),
+        "unexpected error content: {content}"
     );
 
     Ok(())
@@ -2216,6 +2274,18 @@ fn configure_claude_provider(config: &mut Config) {
 fn configure_claude_provider_without_stream_retries(config: &mut Config) {
     configure_claude_provider(config);
     config.model_provider.stream_max_retries = Some(0);
+}
+
+fn configure_claude_provider_with_web_search_context_size(config: &mut Config) {
+    configure_claude_provider(config);
+    config
+        .web_search_mode
+        .set(WebSearchMode::Live)
+        .unwrap_or_else(|err| panic!("test web_search_mode should satisfy constraints: {err}"));
+    config.web_search_config = Some(WebSearchConfig {
+        search_context_size: Some(WebSearchContextSize::High),
+        ..WebSearchConfig::default()
+    });
 }
 
 fn configure_deepseek_claude_provider(config: &mut Config) {

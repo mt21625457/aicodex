@@ -9,6 +9,7 @@ use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
 use crate::web_search::web_search_action_detail;
 use codex_login::default_client::build_reqwest_client;
+use codex_protocol::config_types::WebSearchContextSize;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::WebSearchItem;
 use codex_protocol::models::WebSearchAction;
@@ -28,13 +29,15 @@ const DUCKDUCKGO_HTML_ENDPOINT: &str = "https://html.duckduckgo.com/html/";
 const WEB_SEARCH_USER_AGENT: &str = "aicodex-web-search/1.0";
 const WEB_SEARCH_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_WEB_SEARCH_QUERIES: usize = 5;
-const MAX_RESULTS_PER_QUERY: usize = 5;
+const DEFAULT_RESULTS_PER_QUERY: usize = 5;
 
 pub struct WebSearchHandler {
     spec: ToolSpec,
     endpoint: Url,
     client: reqwest::Client,
     allowed_domains: Vec<String>,
+    max_results_per_query: usize,
+    unsupported_reason: Option<&'static str>,
 }
 
 impl WebSearchHandler {
@@ -42,22 +45,30 @@ impl WebSearchHandler {
         let endpoint = Url::parse(DUCKDUCKGO_HTML_ENDPOINT)
             .expect("built-in DuckDuckGo HTML endpoint must parse");
         let allowed_domains = allowed_domains_from_spec(&spec);
+        let max_results_per_query = max_results_per_query_from_spec(&spec);
+        let unsupported_reason = unsupported_local_web_search_reason(&spec);
         Self {
             spec,
             endpoint,
             client: build_reqwest_client(),
             allowed_domains,
+            max_results_per_query,
+            unsupported_reason,
         }
     }
 
     #[cfg(test)]
     fn new_for_test(spec: ToolSpec, endpoint: Url, client: reqwest::Client) -> Self {
         let allowed_domains = allowed_domains_from_spec(&spec);
+        let max_results_per_query = max_results_per_query_from_spec(&spec);
+        let unsupported_reason = unsupported_local_web_search_reason(&spec);
         Self {
             spec,
             endpoint,
             client,
             allowed_domains,
+            max_results_per_query,
+            unsupported_reason,
         }
     }
 }
@@ -119,6 +130,10 @@ impl ToolExecutor<ToolInvocation> for WebSearchHandler {
             }
         };
 
+        if let Some(reason) = self.unsupported_reason {
+            return Err(FunctionCallError::RespondToModel(reason.to_string()));
+        }
+
         let args: WebSearchArgs = parse_arguments(&arguments)?;
         let queries = normalize_queries(args)?;
         let action = web_search_action_for_queries(&queries);
@@ -134,6 +149,7 @@ impl ToolExecutor<ToolInvocation> for WebSearchHandler {
             &self.endpoint,
             queries,
             self.allowed_domains.as_slice(),
+            self.max_results_per_query,
         )
         .await;
         session.emit_turn_item_completed(turn.as_ref(), item).await;
@@ -167,6 +183,49 @@ fn allowed_domains_from_spec(spec: &ToolSpec) -> Vec<String> {
         .flatten()
         .filter_map(|domain| normalize_domain_filter(domain))
         .collect()
+}
+
+fn max_results_per_query_from_spec(spec: &ToolSpec) -> usize {
+    let ToolSpec::WebSearch {
+        search_context_size,
+        ..
+    } = spec
+    else {
+        return DEFAULT_RESULTS_PER_QUERY;
+    };
+
+    match search_context_size {
+        Some(WebSearchContextSize::Low) => 3,
+        Some(WebSearchContextSize::Medium) | None => DEFAULT_RESULTS_PER_QUERY,
+        Some(WebSearchContextSize::High) => 8,
+    }
+}
+
+fn unsupported_local_web_search_reason(spec: &ToolSpec) -> Option<&'static str> {
+    let ToolSpec::WebSearch {
+        external_web_access,
+        search_content_types,
+        ..
+    } = spec
+    else {
+        return None;
+    };
+
+    if matches!(external_web_access, Some(false)) {
+        return Some(
+            "web_search local fallback cannot honor cached-only search; use live web search or disable web_search",
+        );
+    }
+
+    if search_content_types.as_ref().is_some_and(|content_types| {
+        content_types
+            .iter()
+            .any(|content_type| !content_type.eq_ignore_ascii_case("text"))
+    }) {
+        return Some("web_search local fallback only supports text search results");
+    }
+
+    None
 }
 
 fn normalize_domain_filter(domain: &str) -> Option<String> {
@@ -223,12 +282,13 @@ async fn run_web_searches(
     endpoint: &Url,
     queries: Vec<String>,
     allowed_domains: &[String],
+    max_results_per_query: usize,
 ) -> Result<WebSearchResponse, FunctionCallError> {
     let mut searches = Vec::with_capacity(queries.len());
     for query in queries {
         let effective_query = query_with_allowed_domains(&query, allowed_domains);
         let html = fetch_search_html(client, endpoint, &effective_query).await?;
-        let results = parse_duckduckgo_results(&html, MAX_RESULTS_PER_QUERY);
+        let results = parse_duckduckgo_results(&html, max_results_per_query);
         searches.push(WebSearchResultSet { query, results });
     }
 
