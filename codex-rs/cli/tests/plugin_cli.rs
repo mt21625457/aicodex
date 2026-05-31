@@ -19,7 +19,7 @@ fn marketplace_list_row(marketplace_name: &str, root: &Path) -> String {
 }
 
 fn codex_command(codex_home: &Path) -> Result<assert_cmd::Command> {
-    let mut cmd = assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?);
+    let mut cmd = assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("aicodex")?);
     cmd.env("AICODEX_HOME", codex_home);
     cmd.env("CODEX_HOME", codex_home);
     cmd.env_remove("CODEX_SQLITE_HOME");

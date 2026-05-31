@@ -1,5 +1,6 @@
 ---
 source: cli/src/doctor/output.rs
+assertion_line: 1292
 expression: "render_human_report(&sample_report(), detailed_no_color_unicode_options())"
 ---
 Codex Doctor v0.0.0

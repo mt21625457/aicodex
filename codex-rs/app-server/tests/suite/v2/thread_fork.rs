@@ -50,6 +50,7 @@ use super::analytics::wait_for_analytics_payload;
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
 #[cfg(not(windows))]
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const ABSENCE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
 
 #[tokio::test]
 async fn thread_fork_creates_new_thread_and_emits_started() -> Result<()> {
@@ -357,7 +358,7 @@ async fn thread_fork_can_exclude_turns_and_skip_restored_token_usage() -> Result
     assert!(thread.turns.is_empty());
 
     let note = timeout(
-        DEFAULT_READ_TIMEOUT,
+        ABSENCE_READ_TIMEOUT,
         mcp.read_stream_until_notification_message("thread/tokenUsage/updated"),
     )
     .await;
@@ -747,6 +748,7 @@ async fn thread_fork_ephemeral_remains_pathless_and_omits_listing() -> Result<()
     let turn_id = mcp
         .send_turn_start_request(TurnStartParams {
             thread_id: fork_thread_id,
+            client_user_message_id: None,
             input: vec![UserInput::Text {
                 text: "continue".to_string(),
                 text_elements: Vec::new(),

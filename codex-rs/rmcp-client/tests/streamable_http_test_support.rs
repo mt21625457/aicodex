@@ -50,43 +50,27 @@ fn streamable_http_server_bin() -> Result<PathBuf, CargoBinError> {
 }
 
 fn init_params() -> InitializeRequestParams {
-    InitializeRequestParams {
-        meta: None,
-        capabilities: ClientCapabilities {
-            experimental: None,
-            extensions: None,
-            roots: None,
-            sampling: None,
-            elicitation: Some(ElicitationCapability {
-                form: Some(FormElicitationCapability {
-                    schema_validation: None,
-                }),
-                url: None,
-            }),
-            tasks: None,
-        },
-        client_info: Implementation {
-            name: "codex-test".into(),
-            version: "0.0.0-test".into(),
-            title: Some("Codex rmcp recovery test".into()),
-            description: None,
-            icons: None,
-            website_url: None,
-        },
-        protocol_version: ProtocolVersion::V_2025_06_18,
-    }
+    let mut capabilities = ClientCapabilities::default();
+    capabilities.elicitation = Some(ElicitationCapability {
+        form: Some(FormElicitationCapability {
+            schema_validation: None,
+        }),
+        url: None,
+    });
+    InitializeRequestParams::new(
+        capabilities,
+        Implementation::new("codex-test", "0.0.0-test").with_title("Codex rmcp recovery test"),
+    )
+    .with_protocol_version(ProtocolVersion::V_2025_06_18)
 }
 
 pub(crate) fn expected_echo_result(message: &str) -> CallToolResult {
-    CallToolResult {
-        content: Vec::new(),
-        structured_content: Some(json!({
-            "echo": format!("ECHOING: {message}"),
-            "env": null,
-        })),
-        is_error: Some(false),
-        meta: None,
-    }
+    let mut result = CallToolResult::success(Vec::new());
+    result.structured_content = Some(json!({
+        "echo": format!("ECHOING: {message}"),
+        "env": null,
+    }));
+    result
 }
 
 pub(crate) async fn create_client(base_url: &str) -> anyhow::Result<RmcpClient> {
@@ -178,12 +162,14 @@ pub(crate) async fn arm_session_post_failure(
     base_url: &str,
     status: u16,
     remaining: usize,
+    www_authenticate_headers: &[&str],
 ) -> anyhow::Result<()> {
     let response = reqwest::Client::new()
         .post(format!("{base_url}{SESSION_POST_FAILURE_CONTROL_PATH}"))
         .json(&json!({
             "status": status,
             "remaining": remaining,
+            "www_authenticate_headers": www_authenticate_headers,
         }))
         .send()
         .await?;
@@ -225,7 +211,7 @@ impl Drop for ExecServerProcess {
 /// Starts a local exec-server and connects an initialized `ExecServerClient`.
 pub(crate) async fn spawn_exec_server() -> anyhow::Result<ExecServerProcess> {
     let codex_home = TempDir::new()?;
-    let mut child = Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
+    let mut child = Command::new(codex_utils_cargo_bin::cargo_bin("aicodex")?)
         .args(["exec-server", "--listen", "ws://127.0.0.1:0"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
