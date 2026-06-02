@@ -396,6 +396,7 @@ mod thread_processor_behavior_tests {
             thread_id,
             rollout_path: Some(PathBuf::from("/tmp/thread.jsonl")),
             forked_from_id: None,
+            parent_thread_id: None,
             preview: "preview".to_string(),
             name: None,
             model_provider: "openai".to_string(),
@@ -682,6 +683,7 @@ mod thread_processor_behavior_tests {
                 },
             },
             session_source: SessionSource::Cli,
+            parent_thread_id: None,
             thread_source: None,
         };
 

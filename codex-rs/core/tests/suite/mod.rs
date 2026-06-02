@@ -36,6 +36,7 @@ mod agents_md;
 mod apply_patch_cli;
 #[cfg(not(target_os = "windows"))]
 mod approvals;
+mod auto_review;
 mod claude_wire;
 mod cli_stream;
 mod client;

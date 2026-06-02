@@ -1,5 +1,5 @@
 use anyhow::Result;
-use app_test_support::McpProcess;
+use app_test_support::TestAppServer;
 use app_test_support::create_final_assistant_message_sse_response;
 use app_test_support::create_mock_responses_server_sequence;
 use app_test_support::create_shell_command_sse_response;
@@ -61,7 +61,7 @@ async fn thread_shell_command_history_full_responses_include_persisted_command_e
         &BTreeMap::default(),
     )?;
 
-    let mut mcp = McpProcess::new(codex_home.as_path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.as_path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let start_id = mcp
@@ -282,7 +282,7 @@ async fn thread_shell_command_returns_error_when_local_environment_is_disabled()
         &BTreeMap::default(),
     )?;
 
-    let mut mcp = McpProcess::new_with_env(
+    let mut mcp = TestAppServer::new_with_env(
         codex_home.as_path(),
         &[(CODEX_EXEC_SERVER_URL_ENV_VAR, Some("none"))],
     )
@@ -341,14 +341,11 @@ async fn thread_shell_command_uses_existing_active_turn() -> Result<()> {
         &BTreeMap::default(),
     )?;
 
-    let mut mcp = McpProcess::new(codex_home.as_path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.as_path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let start_id = mcp
-        .send_thread_start_request(ThreadStartParams {
-            persist_extended_history: true,
-            ..Default::default()
-        })
+        .send_thread_start_request(ThreadStartParams::default())
         .await?;
     let start_resp: JSONRPCResponse = timeout(
         DEFAULT_READ_TIMEOUT,
@@ -526,7 +523,7 @@ fn current_shell_output_command(text: &str) -> Result<(String, String)> {
 }
 
 async fn wait_for_command_execution_started(
-    mcp: &mut McpProcess,
+    mcp: &mut TestAppServer,
     expected_id: Option<&str>,
 ) -> Result<ItemStartedNotification> {
     loop {
@@ -548,7 +545,7 @@ async fn wait_for_command_execution_started(
 }
 
 async fn wait_for_command_execution_started_by_source(
-    mcp: &mut McpProcess,
+    mcp: &mut TestAppServer,
     expected_source: CommandExecutionSource,
 ) -> Result<ItemStartedNotification> {
     loop {
@@ -563,7 +560,7 @@ async fn wait_for_command_execution_started_by_source(
 }
 
 async fn wait_for_command_execution_completed(
-    mcp: &mut McpProcess,
+    mcp: &mut TestAppServer,
     expected_id: Option<&str>,
 ) -> Result<ItemCompletedNotification> {
     loop {
@@ -585,7 +582,7 @@ async fn wait_for_command_execution_completed(
 }
 
 async fn wait_for_command_execution_output_delta(
-    mcp: &mut McpProcess,
+    mcp: &mut TestAppServer,
     item_id: &str,
 ) -> Result<CommandExecutionOutputDeltaNotification> {
     loop {

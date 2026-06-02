@@ -1,5 +1,5 @@
 use anyhow::Result;
-use app_test_support::McpProcess;
+use app_test_support::TestAppServer;
 use app_test_support::create_mock_responses_server_repeating_assistant;
 use app_test_support::run_large_stack_async_test;
 use app_test_support::to_response;
@@ -36,7 +36,6 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadMemoryMode;
 use codex_thread_store::CreateThreadParams;
 use codex_thread_store::InMemoryThreadStore;
-use codex_thread_store::ThreadEventPersistenceMode;
 use codex_thread_store::ThreadMetadataPatch;
 use codex_thread_store::ThreadPersistenceMetadata;
 use codex_thread_store::ThreadStore;
@@ -61,7 +60,7 @@ async fn thread_unarchive_moves_rollout_back_into_sessions_directory() -> Result
     let codex_home = TempDir::new()?;
     create_config_toml(codex_home.path(), &server.uri())?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let start_id = mcp
@@ -213,6 +212,7 @@ fn thread_unarchive_preserves_pathless_store_metadata() -> Result<()> {
             .create_thread(CreateThreadParams {
                 thread_id,
                 forked_from_id: Some(parent_thread_id),
+                parent_thread_id: None,
                 source: SessionSource::Cli,
                 thread_source: None,
                 base_instructions: BaseInstructions::default(),
@@ -222,7 +222,6 @@ fn thread_unarchive_preserves_pathless_store_metadata() -> Result<()> {
                     model_provider: "test-provider".to_string(),
                     memory_mode: ThreadMemoryMode::Disabled,
                 },
-                event_persistence_mode: ThreadEventPersistenceMode::default(),
             })
             .await?;
         store
