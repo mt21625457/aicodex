@@ -128,6 +128,7 @@ pub(super) async fn spawn_review_thread(
         user_instructions: None,
         compact_prompt: parent_turn_context.compact_prompt.clone(),
         collaboration_mode: parent_turn_context.collaboration_mode.clone(),
+        multi_agent_version: MultiAgentVersion::Disabled,
         personality: parent_turn_context.personality,
         approval_policy: parent_turn_context.approval_policy.clone(),
         permission_profile: parent_turn_context.permission_profile(),
@@ -159,7 +160,9 @@ pub(super) async fn spawn_review_thread(
         client_id: None,
     }];
     let tc = Arc::new(review_turn_context);
-    tc.turn_metadata_state.spawn_git_enrichment_task();
+    if tc.environments.single_local_environment_cwd().is_some() {
+        tc.turn_metadata_state.spawn_git_enrichment_task();
+    }
     // TODO(ccunningham): Review turns currently rely on `spawn_task` for TurnComplete but do not
     // emit a parent TurnStarted. Consider giving review a full parent turn lifecycle
     // (TurnStarted + TurnComplete) for consistency with other standalone tasks.

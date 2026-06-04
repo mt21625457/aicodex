@@ -155,6 +155,7 @@ async fn run_remote_compact_task_inner(
     }
     attempt.track(sess.as_ref(), status, error.clone()).await;
     if let Err(err) = result {
+        sess.track_turn_codex_error(turn_context, &err);
         let event = EventMsg::Error(
             err.to_error_event(Some("Error running remote compact task".to_string())),
         );
@@ -184,16 +185,16 @@ async fn run_remote_compact_task_inner_impl(
 
     let mut history = sess.clone_history().await;
     let base_instructions = sess.get_base_instructions().await;
-    let deleted_items = trim_function_call_history_to_fit_context_window(
+    let rewritten_outputs = trim_function_call_history_to_fit_context_window(
         &mut history,
         turn_context.as_ref(),
         &base_instructions,
     );
-    if deleted_items > 0 {
+    if rewritten_outputs > 0 {
         info!(
             turn_id = %turn_context.sub_id,
-            deleted_items,
-            "trimmed history items before remote compaction v2"
+            rewritten_outputs,
+            "rewrote history outputs before remote compaction v2"
         );
     }
 
