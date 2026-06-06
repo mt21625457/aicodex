@@ -29,6 +29,7 @@ use codex_protocol::protocol::ExecCommandEndEvent;
 use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::ExecCommandStatus;
 use codex_protocol::protocol::TurnStartedEvent;
+use codex_rollout::EventPersistenceMode;
 use codex_sandboxing::SandboxType;
 use codex_shell_command::parse_command::parse_command;
 
@@ -126,7 +127,7 @@ pub(crate) async fn execute_user_shell_command(
     let display_command = session_shell.derive_exec_args(&command, use_login_shell);
     let mut exec_env_map = create_env(
         &turn_context.shell_environment_policy,
-        Some(session.conversation_id),
+        Some(session.thread_id),
     );
     if exec_env_map.contains_key(PROXY_ACTIVE_ENV_KEY) {
         strip_managed_proxy_env(&mut exec_env_map);
@@ -221,7 +222,7 @@ pub(crate) async fn execute_user_shell_command(
             )
             .await;
             session
-                .send_event(
+                .send_event_with_persistence_mode(
                     turn_context.as_ref(),
                     EventMsg::ExecCommandEnd(ExecCommandEndEvent {
                         call_id,
@@ -241,12 +242,13 @@ pub(crate) async fn execute_user_shell_command(
                         formatted_output: aborted_message,
                         status: ExecCommandStatus::Failed,
                     }),
+                    EventPersistenceMode::Extended,
                 )
                 .await;
         }
         Ok(Ok(output)) => {
             session
-                .send_event(
+                .send_event_with_persistence_mode(
                     turn_context.as_ref(),
                     EventMsg::ExecCommandEnd(ExecCommandEndEvent {
                         call_id: call_id.clone(),
@@ -273,6 +275,7 @@ pub(crate) async fn execute_user_shell_command(
                             ExecCommandStatus::Failed
                         },
                     }),
+                    EventPersistenceMode::Extended,
                 )
                 .await;
 
@@ -291,7 +294,7 @@ pub(crate) async fn execute_user_shell_command(
                 timed_out: false,
             };
             session
-                .send_event(
+                .send_event_with_persistence_mode(
                     turn_context.as_ref(),
                     EventMsg::ExecCommandEnd(ExecCommandEndEvent {
                         call_id,
@@ -314,6 +317,7 @@ pub(crate) async fn execute_user_shell_command(
                         ),
                         status: ExecCommandStatus::Failed,
                     }),
+                    EventPersistenceMode::Extended,
                 )
                 .await;
             persist_user_shell_output(

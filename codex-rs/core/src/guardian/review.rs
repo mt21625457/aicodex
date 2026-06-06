@@ -145,10 +145,18 @@ fn guardian_risk_level_str(level: GuardianRiskLevel) -> &'static str {
 /// reviewer instead of surfacing them to the user. ARC may still block actions
 /// earlier in the flow.
 pub(crate) fn routes_approval_to_guardian(turn: &TurnContext) -> bool {
+    routes_approval_to_guardian_with_reviewer(turn, turn.config.approvals_reviewer)
+}
+
+/// Whether an approval with its own reviewer selection should be routed through guardian.
+pub(crate) fn routes_approval_to_guardian_with_reviewer(
+    turn: &TurnContext,
+    approvals_reviewer: ApprovalsReviewer,
+) -> bool {
     matches!(
         turn.approval_policy.value(),
         AskForApproval::OnRequest | AskForApproval::Granular(_)
-    ) && turn.config.approvals_reviewer == ApprovalsReviewer::AutoReview
+    ) && approvals_reviewer == ApprovalsReviewer::AutoReview
 }
 
 pub(crate) fn is_guardian_reviewer_source(
@@ -257,7 +265,7 @@ async fn run_guardian_review(
     let action_summary = guardian_assessment_action(&request);
     let reviewed_action = guardian_reviewed_action(&request);
     let review_tracking = GuardianReviewTrackContext::new(
-        session.conversation_id.to_string(),
+        session.thread_id.to_string(),
         assessment_turn_id.clone(),
         review_id.clone(),
         target_item_id.clone(),

@@ -1754,6 +1754,8 @@ async fn plugin_list_includes_remote_marketplaces_when_remote_plugin_enabled() -
         "interface": {
           "short_description": "Plan and track work",
           "capabilities": ["Read", "Write"],
+          "default_prompt": "Use the legacy Linear prompt",
+          "default_prompts": ["Create a Linear issue", "Review my Linear projects"],
           "logo_url": "https://example.com/linear.png",
           "screenshot_urls": ["https://example.com/linear-shot.png"]
         },
@@ -1894,11 +1896,42 @@ async fn plugin_list_includes_remote_marketplaces_when_remote_plugin_enabled() -
         Some("Linear")
     );
     assert_eq!(
+        remote_marketplace.plugins[0]
+            .interface
+            .as_ref()
+            .and_then(|interface| interface.default_prompt.clone()),
+        Some(vec![
+            "Create a Linear issue".to_string(),
+            "Review my Linear projects".to_string(),
+        ])
+    );
+    assert_eq!(
         remote_marketplace.plugins[0].keywords,
         vec![
             "issue-tracking".to_string(),
             "project management".to_string()
         ]
+    );
+    let cache_files = std::fs::read_dir(codex_home.path().join("cache/remote_plugin_catalog"))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(cache_files.len(), 1);
+    let cached_catalog: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&cache_files[0])?)?;
+    assert_eq!(cached_catalog["schema_version"], serde_json::json!(1));
+    assert_eq!(
+        cached_catalog["plugins"][0]["release"]["interface"]["default_prompts"],
+        serde_json::json!(["Create a Linear issue", "Review my Linear projects"])
+    );
+    let cached_plugin_ids = cached_catalog["plugins"]
+        .as_array()
+        .expect("cached plugins should be an array")
+        .iter()
+        .map(|plugin| plugin["id"].as_str().expect("cached plugin id").to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        cached_plugin_ids,
+        vec!["plugins~Plugin_00000000000000000000000000000000".to_string()]
     );
     assert_eq!(response.featured_plugin_ids, Vec::<String>::new());
     assert!(

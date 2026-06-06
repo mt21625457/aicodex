@@ -131,7 +131,16 @@ impl LiveThread {
     }
 
     pub async fn append_items(&self, items: &[RolloutItem]) -> ThreadStoreResult<()> {
-        let canonical_items = persisted_rollout_items(items, EventPersistenceMode::Limited);
+        self.append_items_with_persistence_mode(items, EventPersistenceMode::Limited)
+            .await
+    }
+
+    pub async fn append_items_with_persistence_mode(
+        &self,
+        items: &[RolloutItem],
+        mode: EventPersistenceMode,
+    ) -> ThreadStoreResult<()> {
+        let canonical_items = persisted_rollout_items(items, mode);
         if canonical_items.is_empty() {
             return Ok(());
         }
@@ -295,3 +304,7 @@ impl LiveThread {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "live_thread_tests.rs"]
+mod tests;
