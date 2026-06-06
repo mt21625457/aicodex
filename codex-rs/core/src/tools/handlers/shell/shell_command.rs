@@ -203,7 +203,7 @@ impl ToolExecutor<ToolInvocation> for ShellCommandHandler {
             &params,
             session.as_ref(),
             turn.as_ref(),
-            session.conversation_id,
+            session.thread_id,
             turn.config.permissions.allow_login_shell,
         )?;
         let shell_type = Some(session.user_shell().shell_type.clone());
@@ -289,7 +289,7 @@ impl ToolExecutor<ToolInvocation> for ClaudeBashHandler {
             &shell_params,
             session.as_ref(),
             turn.as_ref(),
-            session.conversation_id,
+            session.thread_id,
             self.options.allow_login_shell,
         )?;
         run_exec_like(RunExecLikeArgs {

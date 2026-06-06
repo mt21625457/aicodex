@@ -23,7 +23,7 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput;
 use codex_arg0::Arg0DispatchPaths;
-use codex_config::CloudRequirementsLoader;
+use codex_config::CloudConfigBundleLoader;
 use codex_config::LoaderOverrides;
 use codex_core::config::ConfigBuilder;
 use codex_core::find_archived_thread_path_by_id_str;
@@ -217,6 +217,7 @@ fn thread_unarchive_preserves_pathless_store_metadata() -> Result<()> {
                 thread_source: None,
                 base_instructions: BaseInstructions::default(),
                 dynamic_tools: Vec::new(),
+                multi_agent_version: None,
                 metadata: ThreadPersistenceMetadata {
                     cwd: None,
                     model_provider: "test-provider".to_string(),
@@ -248,7 +249,7 @@ fn thread_unarchive_preserves_pathless_store_metadata() -> Result<()> {
             cli_overrides: Vec::new(),
             loader_overrides,
             strict_config: false,
-            cloud_requirements: CloudRequirementsLoader::default(),
+            cloud_config_bundle: CloudConfigBundleLoader::default(),
             thread_config_loader: Arc::new(codex_config::NoopThreadConfigLoader),
             feedback: CodexFeedback::new(),
             log_db: None,

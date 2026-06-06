@@ -15,6 +15,7 @@ foo = "bar"
 
     let output = Command::new(codex_utils_cargo_bin::cargo_bin("codex-app-server")?)
         .env("CODEX_HOME", codex_home.path())
+        .env("AICODEX_HOME", codex_home.path())
         .env(
             "CODEX_APP_SERVER_MANAGED_CONFIG_PATH",
             codex_home.path().join("managed_config.toml"),

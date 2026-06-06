@@ -247,6 +247,7 @@ async fn run_compact_task_inner_impl(
                     continue;
                 }
                 sess.set_total_tokens_full(turn_context.as_ref()).await;
+                sess.track_turn_codex_error(turn_context.as_ref(), &e);
                 let event = EventMsg::Error(e.to_error_event(/*message_prefix*/ None));
                 sess.send_event(&turn_context, event).await;
                 return Err(e);
@@ -264,6 +265,7 @@ async fn run_compact_task_inner_impl(
                     tokio::time::sleep(delay).await;
                     continue;
                 } else {
+                    sess.track_turn_codex_error(turn_context.as_ref(), &e);
                     let event = EventMsg::Error(e.to_error_event(/*message_prefix*/ None));
                     sess.send_event(&turn_context, event).await;
                     return Err(e);
@@ -332,7 +334,7 @@ impl CompactionAnalyticsAttempt {
     ) -> Self {
         let active_context_tokens_before = sess.get_total_token_usage().await;
         Self {
-            thread_id: sess.conversation_id.to_string(),
+            thread_id: sess.thread_id.to_string(),
             turn_id: turn_context.sub_id.clone(),
             trigger,
             reason,
