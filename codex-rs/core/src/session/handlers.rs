@@ -10,6 +10,7 @@ use tracing::debug_span;
 use tracing::info_span;
 
 use crate::session::SteerInputError;
+use crate::session::TurnInput;
 use crate::session::session::Session;
 use crate::session::session::SessionSettingsUpdate;
 
@@ -29,6 +30,7 @@ use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseInputItem;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::Event;
@@ -86,12 +88,18 @@ pub async fn realtime_conversation_list_voices(sess: &Session, sub_id: String) {
     .await;
 }
 
-pub async fn user_input_or_turn(sess: &Arc<Session>, sub_id: String, op: Op) {
+pub async fn user_input_or_turn(
+    sess: &Arc<Session>,
+    sub_id: String,
+    op: Op,
+    client_user_message_id: Option<String>,
+) {
     user_input_or_turn_inner(
         sess,
         sub_id,
         op,
         /*mirror_user_text_to_realtime*/ Some(()),
+        client_user_message_id,
     )
     .await;
 }
@@ -193,12 +201,14 @@ pub(super) async fn user_input_or_turn_inner(
     sub_id: String,
     op: Op,
     mirror_user_text_to_realtime: Option<()>,
+    client_user_message_id: Option<String>,
 ) {
     let (
         items,
         environments,
         final_output_json_schema,
         responsesapi_client_metadata,
+        additional_context,
         thread_settings,
         apply_thread_settings,
         emit_thread_settings_applied,
@@ -234,6 +244,7 @@ pub(super) async fn user_input_or_turn_inner(
                 environments,
                 final_output_json_schema,
                 None,
+                Default::default(),
                 ThreadSettingsOverrides {
                     cwd: Some(cwd),
                     approval_policy: Some(approval_policy),
@@ -255,6 +266,7 @@ pub(super) async fn user_input_or_turn_inner(
             environments,
             final_output_json_schema,
             responsesapi_client_metadata,
+            additional_context,
             thread_settings,
         } => {
             let emit_thread_settings_applied =
@@ -264,6 +276,7 @@ pub(super) async fn user_input_or_turn_inner(
                 environments,
                 final_output_json_schema,
                 responsesapi_client_metadata,
+                additional_context,
                 thread_settings,
                 emit_thread_settings_applied,
                 emit_thread_settings_applied,
@@ -295,7 +308,9 @@ pub(super) async fn user_input_or_turn_inner(
     let accepted_items = match sess
         .steer_input(
             items.clone(),
+            additional_context.clone(),
             /*expected_turn_id*/ None,
+            client_user_message_id.clone(),
             responsesapi_client_metadata.clone(),
         )
         .await
@@ -317,9 +332,24 @@ pub(super) async fn user_input_or_turn_inner(
             )
             .await;
             let accepted_items = items.clone();
+            let additional_context_input = {
+                let mut state = sess.state.lock().await;
+                state.additional_context.merge(additional_context)
+            };
+            let mut task_input = additional_context_input
+                .into_iter()
+                .map(ResponseItem::from)
+                .map(TurnInput::ResponseItem)
+                .collect::<Vec<_>>();
+            if !items.is_empty() {
+                task_input.push(TurnInput::UserInput {
+                    content: items,
+                    client_id: client_user_message_id,
+                });
+            }
             sess.spawn_task(
                 Arc::clone(&current_context),
-                items,
+                task_input,
                 crate::tasks::RegularTask::new(),
             )
             .await;
@@ -531,16 +561,8 @@ pub async fn reload_user_config(sess: &Arc<Session>) {
 pub async fn compact(sess: &Arc<Session>, sub_id: String) {
     let turn_context = sess.new_default_turn_with_sub_id(sub_id).await;
 
-    sess.spawn_task(
-        Arc::clone(&turn_context),
-        vec![UserInput::Text {
-            text: turn_context.compact_prompt().to_string(),
-            // Compaction prompt is synthesized; no UI element ranges to preserve.
-            text_elements: Vec::new(),
-        }],
-        CompactTask,
-    )
-    .await;
+    sess.spawn_task(Arc::clone(&turn_context), Vec::new(), CompactTask)
+        .await;
 }
 
 pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32) {
@@ -682,6 +704,9 @@ async fn shutdown_session_runtime(sess: &Arc<Session>) {
         .unified_exec_manager
         .terminate_all_processes()
         .await;
+    if let Err(err) = sess.services.code_mode_service.shutdown().await {
+        warn!("failed to shutdown code mode session: {err}");
+    }
     let mcp_shutdown = {
         let mut manager = sess.services.mcp_connection_manager.write().await;
         manager.begin_shutdown()
@@ -836,7 +861,8 @@ pub(super) async fn submission_loop(
                     false
                 }
                 Op::UserInput { .. } | Op::UserTurn { .. } => {
-                    user_input_or_turn(&sess, sub.id.clone(), sub.op).await;
+                    user_input_or_turn(&sess, sub.id.clone(), sub.op, sub.client_user_message_id)
+                        .await;
                     false
                 }
                 Op::ThreadSettings { thread_settings } => {
@@ -964,17 +990,14 @@ Do not assume this also authorizes similar operations with different payloads.
 Approved action:
 {approved_action_json}"#,
     );
-    let items = vec![ResponseInputItem::Message {
+    let items = vec![ResponseItem::from(ResponseInputItem::Message {
         role: "developer".to_string(),
         content: vec![ContentItem::InputText { text }],
         phase: None,
-    }];
+    })];
 
-    if let Err(items) = sess.inject_response_items(items).await {
-        sess.input_queue
-            .queue_response_items_for_next_turn(items)
-            .await;
-    }
+    sess.inject_no_new_turn(items, /*current_turn_context*/ None)
+        .await;
 }
 
 pub(super) fn submission_dispatch_span(sub: &Submission) -> tracing::Span {

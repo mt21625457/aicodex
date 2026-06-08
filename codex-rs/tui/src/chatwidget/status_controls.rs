@@ -225,6 +225,7 @@ impl ChatWidget {
         let (cell, handle) = crate::status::new_status_output_with_rate_limits_handle(
             &self.config,
             self.runtime_model_provider_base_url.as_deref(),
+            self.remote_connection.as_ref(),
             self.status_account_display.as_ref(),
             token_info,
             total_usage,
@@ -345,15 +346,13 @@ impl ChatWidget {
         let Some(context_window) = self.status_line_context_window_size() else {
             return Some(100);
         };
-        let default_usage = TokenUsage::default();
-        let usage = self
-            .token_info
-            .as_ref()
-            .map(|info| &info.last_token_usage)
-            .unwrap_or(&default_usage);
         Some(
-            usage
-                .percent_of_context_window_remaining(context_window)
+            self.token_info
+                .as_ref()
+                .map(|info| info.percent_of_context_window_remaining(context_window))
+                .unwrap_or_else(|| {
+                    TokenUsage::default().percent_of_context_window_remaining(context_window)
+                })
                 .clamp(0, 100),
         )
     }
@@ -377,7 +376,7 @@ impl ChatWidget {
     ) -> Option<String> {
         let window = window?;
         let remaining = (100.0f64 - window.used_percent).clamp(0.0f64, 100.0f64);
-        Some(format!("{label} {remaining:.0}%"))
+        Some(format!("{label} {remaining:.0}% left"))
     }
 
     pub(super) fn status_line_reasoning_effort_label(

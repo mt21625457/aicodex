@@ -1,7 +1,10 @@
 use crate::TransportError;
 use crate::error::ApiError;
+use crate::error::ProviderMediaErrorKind;
+use crate::error::ProviderStreamErrorKind;
 use crate::rate_limits::parse_promo_message;
 use crate::rate_limits::parse_rate_limit_for_limit;
+use crate::rate_limits::parse_rate_limit_reached_type;
 use base64::Engine;
 use chrono::DateTime;
 use chrono::Utc;
@@ -21,6 +24,20 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
         ApiError::UsageNotIncluded => CodexErr::UsageNotIncluded,
         ApiError::Retryable { message, delay } => CodexErr::Stream(message, delay),
         ApiError::Stream(msg) => CodexErr::Stream(msg, None),
+        ApiError::StreamFailure { kind, message } => {
+            CodexErr::Stream(provider_stream_error_message(kind, &message), None)
+        }
+        ApiError::ProviderMedia { kind, message } => match kind {
+            ProviderMediaErrorKind::InvalidImage
+            | ProviderMediaErrorKind::ImageTooLarge
+            | ProviderMediaErrorKind::ImageDimensionsTooLarge => CodexErr::InvalidImageRequest(),
+            ProviderMediaErrorKind::RequestTooLarge
+            | ProviderMediaErrorKind::DocumentTooLarge
+            | ProviderMediaErrorKind::InvalidDocument
+            | ProviderMediaErrorKind::PasswordProtectedDocument => {
+                CodexErr::InvalidRequest(message)
+            }
+        },
         ApiError::ServerOverloaded => CodexErr::ServerOverloaded,
         ApiError::Api { status, message } => CodexErr::UnexpectedStatus(UnexpectedResponseError {
             status,
@@ -85,6 +102,8 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                                 parse_rate_limit_for_limit(map, limit_id.as_deref())
                             });
                             let promo_message = headers.as_ref().and_then(parse_promo_message);
+                            let rate_limit_reached_type =
+                                headers.as_ref().and_then(parse_rate_limit_reached_type);
                             let resets_at = err
                                 .error
                                 .resets_at
@@ -94,6 +113,7 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                                 resets_at,
                                 rate_limits: rate_limits.map(Box::new),
                                 promo_message,
+                                rate_limit_reached_type,
                             });
                         } else if err.error.error_type.as_deref() == Some("usage_not_included") {
                             return CodexErr::UsageNotIncluded;
@@ -123,13 +143,17 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                 status: http::StatusCode::INTERNAL_SERVER_ERROR,
                 request_id: None,
             }),
-            TransportError::Timeout => CodexErr::Timeout,
+            TransportError::Timeout => CodexErr::RequestTimeout,
             TransportError::Network(msg) | TransportError::Build(msg) => {
                 CodexErr::Stream(msg, None)
             }
         },
         ApiError::RateLimit(msg) => CodexErr::Stream(msg, None),
     }
+}
+
+fn provider_stream_error_message(kind: ProviderStreamErrorKind, message: &str) -> String {
+    format!("{kind}: {message}")
 }
 
 const ACTIVE_LIMIT_HEADER: &str = "x-codex-active-limit";

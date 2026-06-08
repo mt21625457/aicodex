@@ -36,15 +36,16 @@ use super::super::shell_spec::CommandToolOptions;
 use super::super::shell_spec::create_exec_command_tool_with_environment_id;
 use super::ExecCommandArgs;
 use super::ExecCommandEnvironmentArgs;
-use super::effective_max_output_tokens;
 use super::get_command;
 use super::post_unified_exec_tool_use_payload;
+use super::shell_mode_for_environment;
 
 #[derive(Clone, Copy)]
 pub(crate) struct ExecCommandHandlerOptions {
     pub(crate) allow_login_shell: bool,
     pub(crate) exec_permission_approvals_enabled: bool,
     pub(crate) include_environment_id: bool,
+    pub(crate) include_shell_parameter: bool,
 }
 
 pub struct ExecCommandHandler {
@@ -58,6 +59,7 @@ impl Default for ExecCommandHandler {
                 allow_login_shell: false,
                 exec_permission_approvals_enabled: false,
                 include_environment_id: false,
+                include_shell_parameter: true,
             },
         }
     }
@@ -75,14 +77,15 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
         ToolName::plain("exec_command")
     }
 
-    fn spec(&self) -> Option<ToolSpec> {
-        Some(create_exec_command_tool_with_environment_id(
+    fn spec(&self) -> ToolSpec {
+        create_exec_command_tool_with_environment_id(
             CommandToolOptions {
                 allow_login_shell: self.options.allow_login_shell,
                 exec_permission_approvals_enabled: self.options.exec_permission_approvals_enabled,
             },
             self.options.include_environment_id,
-        ))
+            self.options.include_shell_parameter,
+        )
     }
 
     fn supports_parallel_tool_calls(&self) -> bool {
@@ -141,10 +144,12 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
         )
         .await;
         let process_id = manager.allocate_process_id().await;
+        let shell_mode =
+            shell_mode_for_environment(&turn.unified_exec_shell_mode, environment.as_ref());
         let resolved_command = get_command(
             &args,
             session.user_shell(),
-            &turn.unified_exec_shell_mode,
+            &shell_mode,
             turn.config.permissions.allow_login_shell,
         )
         .map_err(FunctionCallError::RespondToModel)?;
@@ -162,14 +167,13 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
             prefix_rule,
             ..
         } = args;
-        let max_output_tokens =
-            effective_max_output_tokens(max_output_tokens, turn.truncation_policy);
 
         let exec_permission_approvals_enabled =
             session.features().enabled(Feature::ExecPermissionApprovals);
         let requested_additional_permissions = additional_permissions.clone();
         let effective_additional_permissions = apply_granted_turn_permissions(
             context.session.as_ref(),
+            &turn_environment.environment_id,
             cwd.as_path(),
             sandbox_permissions,
             additional_permissions,
@@ -241,7 +245,8 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
                 chunk_id: String::new(),
                 wall_time: std::time::Duration::ZERO,
                 raw_output: output.into_text().into_bytes(),
-                max_output_tokens: Some(max_output_tokens),
+                truncation_policy: turn.truncation_policy,
+                max_output_tokens,
                 process_id: None,
                 exit_code: None,
                 original_token_count: None,
@@ -258,10 +263,11 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
                     hook_command: hook_command.clone(),
                     process_id,
                     yield_time_ms,
-                    max_output_tokens: Some(max_output_tokens),
+                    max_output_tokens,
                     cwd,
                     sandbox_cwd: turn_environment.cwd.clone(),
                     environment,
+                    shell_mode,
                     network: context.turn.network.clone(),
                     tty,
                     sandbox_permissions: effective_additional_permissions.sandbox_permissions,
@@ -284,7 +290,8 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
                     chunk_id: generate_chunk_id(),
                     wall_time: output.duration,
                     raw_output: output_text.into_bytes(),
-                    max_output_tokens: Some(max_output_tokens),
+                    truncation_policy: turn.truncation_policy,
+                    max_output_tokens,
                     // Sandbox denial is terminal, so there is no live
                     // process for write_stdin to resume.
                     process_id: None,

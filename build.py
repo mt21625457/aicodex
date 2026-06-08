@@ -8,14 +8,15 @@ Supports building:
 - Native binaries for CLI distribution
 
 Usage:
-    ./build.py                     # Default: build all in release mode, output binary named "aicodex"
+    ./build.py                     # Default: build all in minimized release mode, output binary named "aicodex"
     ./build.py --help
-    ./build.py rust                # Build all Rust crates (release mode)
-    ./build.py rust --debug        # Build Rust in debug mode
+    ./build.py rust                # Build all Rust crates in minimized release mode
+    ./build.py rust --fast         # Build Rust in fast local mode
     ./build.py ts                  # Build TypeScript packages
-    ./build.py all                 # Build everything (release mode)
-    ./build.py all --debug         # Build everything in debug mode
-    ./build.py codex-cli           # Build the aicodex CLI binary (release mode)
+    ./build.py all                 # Build everything in minimized release mode
+    ./build.py all --fast          # Build everything in fast local mode
+    ./build.py codex-cli           # Build the aicodex CLI binary in minimized release mode
+    ./build.py codex-cli --fast    # Build the aicodex CLI binary in fast local mode
     ./build.py codex-cli --all-targets
     ./build.py clean --dry-run     # Show build artifacts that can be removed
 """
@@ -53,6 +54,21 @@ CLI_TARGETS = (
     "x86_64-pc-windows-msvc",
     "aarch64-pc-windows-msvc",
 )
+
+FAST_BUILD_PROFILE = "dev-small"
+RELEASE_BUILD_PROFILE = "release"
+DEFAULT_BUILD_PROFILE = RELEASE_BUILD_PROFILE
+DEBUG_BUILD_PROFILE = "dev"
+
+MINIMIZED_RELEASE_PROFILE_ENV = {
+    "CARGO_PROFILE_RELEASE_OPT_LEVEL": "z",
+    "CARGO_PROFILE_RELEASE_LTO": "fat",
+    "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "1",
+    "CARGO_PROFILE_RELEASE_DEBUG": "none",
+    "CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO": "off",
+    "CARGO_PROFILE_RELEASE_STRIP": "symbols",
+    "CARGO_PROFILE_RELEASE_PANIC": "abort",
+}
 
 CLEAN_BUILD_DIRS = (
     REPO_ROOT / "dist",
@@ -190,6 +206,128 @@ def run(
     )
 
 
+def sccache_wrapper_command() -> str | None:
+    """Return a portable sccache wrapper command when available."""
+    for name in ("sccache", "sccache.exe"):
+        if shutil.which(name):
+            return name
+
+    return None
+
+
+def is_sccache_wrapper(wrapper: str | None) -> bool:
+    """Return true when a Rust compiler wrapper points to sccache."""
+    return bool(wrapper) and Path(wrapper).stem.lower() == "sccache"
+
+
+def require_sccache_wrapper_command() -> str:
+    """Return the sccache wrapper command or exit with a helpful error."""
+    if os.environ.get("SCCACHE_DISABLE"):
+        print(
+            "ERROR: build.py requires sccache caching, but SCCACHE_DISABLE is set. "
+            "Unset SCCACHE_DISABLE and rerun the build.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    wrapper = os.environ.get("RUSTC_WRAPPER")
+    if wrapper and is_sccache_wrapper(wrapper):
+        command = sccache_wrapper_command()
+        if command:
+            return command
+
+        expanded = Path(wrapper).expanduser()
+        if expanded.is_file() and os.access(expanded, os.X_OK):
+            return wrapper
+
+        print(f"ERROR: RUSTC_WRAPPER points to sccache but is not executable: {wrapper}", file=sys.stderr)
+        sys.exit(1)
+
+    if wrapper:
+        print(
+            f"  → Overriding RUSTC_WRAPPER={wrapper!r}; build.py requires sccache",
+            file=sys.stderr,
+        )
+
+    command = sccache_wrapper_command()
+    if command:
+        return command
+
+    print(
+        "ERROR: build.py requires sccache, but it was not found. "
+        "Install it first, for example: cargo install --locked sccache",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+def cargo_build_env(profile: str) -> dict[str, str]:
+    """Return Cargo environment overrides for minimized, cached builds."""
+    wrapper = require_sccache_wrapper_command()
+    env: dict[str, str] = {
+        "RUSTC_WRAPPER": wrapper,
+        # Incremental artifacts are not cacheable by sccache and get very large
+        # in this workspace, so build.py always prefers the shared compiler cache.
+        "CARGO_INCREMENTAL": "0",
+    }
+
+    if profile == RELEASE_BUILD_PROFILE:
+        env.update(MINIMIZED_RELEASE_PROFILE_ENV)
+
+    return env
+
+
+def cargo_profile_args(profile: str) -> list[str]:
+    """Return Cargo CLI flags for a profile name."""
+    if profile == DEBUG_BUILD_PROFILE:
+        return []
+    if profile == RELEASE_BUILD_PROFILE:
+        return ["--release"]
+    return ["--profile", profile]
+
+
+def cargo_profile_output_dir(profile: str) -> str:
+    """Return Cargo's output directory name for a profile."""
+    if profile == DEBUG_BUILD_PROFILE:
+        return "debug"
+    return profile
+
+
+def selected_profile(args: argparse.Namespace) -> str:
+    return args.profile or DEFAULT_BUILD_PROFILE
+
+
+def add_cargo_profile_args(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--fast",
+        dest="profile",
+        action="store_const",
+        const=FAST_BUILD_PROFILE,
+        help=f"Build with the fast local Cargo profile ({FAST_BUILD_PROFILE}); development only",
+    )
+    group.add_argument(
+        "--debug",
+        dest="profile",
+        action="store_const",
+        const=DEBUG_BUILD_PROFILE,
+        help="Build with Cargo's dev/debug profile",
+    )
+    group.add_argument(
+        "--release",
+        dest="profile",
+        action="store_const",
+        const=RELEASE_BUILD_PROFILE,
+        help="Build with the minimized Cargo release profile; default",
+    )
+    group.add_argument(
+        "--profile",
+        dest="profile",
+        default=None,
+        help="Build with a specific Cargo profile",
+    )
+
+
 def cargo_available() -> bool:
     return shutil.which("cargo") is not None
 
@@ -306,8 +444,13 @@ def clean_rust_outputs(*, dry_run: bool, target: str | None = None) -> None:
             print(f"  → Would run {' '.join(cmd)} in {repo_relative(RUST_ROOT)}", file=sys.stderr)
             return
         if cargo_available():
-            run(cmd, cwd=RUST_ROOT)
-            return
+            result = run(cmd, cwd=RUST_ROOT, check=False)
+            if result.returncode == 0:
+                return
+            print(
+                "  → cargo clean failed; falling back to removing the target directory",
+                file=sys.stderr,
+            )
         remove_path(RUST_ROOT / "target" / target, dry_run=dry_run)
         return
 
@@ -316,7 +459,12 @@ def clean_rust_outputs(*, dry_run: bool, target: str | None = None) -> None:
         if dry_run:
             print(f"  → Would run {' '.join(cmd)} in {repo_relative(RUST_ROOT)}", file=sys.stderr)
         else:
-            run(cmd, cwd=RUST_ROOT)
+            result = run(cmd, cwd=RUST_ROOT, check=False)
+            if result.returncode != 0:
+                print(
+                    "  → cargo clean failed; falling back to removing Cargo target directories",
+                    file=sys.stderr,
+                )
 
     for path in rust_target_dirs():
         remove_path(path, dry_run=dry_run)
@@ -424,7 +572,7 @@ def clean_targets_for_build_command(command: str | None) -> list[str]:
 
 def build_rust(
     *,
-    release: bool = True,
+    profile: str = DEFAULT_BUILD_PROFILE,
     target: str | None = None,
     package: str | None = None,
     bin: str | None = None,
@@ -438,8 +586,7 @@ def build_rust(
         sys.exit(1)
 
     cmd: list[str] = ["cargo", "build"]
-    if release:
-        cmd.append("--release")
+    cmd += cargo_profile_args(profile)
     if package:
         cmd += ["-p", package]
     if bin:
@@ -454,13 +601,17 @@ def build_rust(
         cmd.append("--verbose")
 
     version = read_aicodex_version()
+    cargo_env = cargo_build_env(profile)
+    print(f"  → Using sccache: {cargo_env['RUSTC_WRAPPER']}", file=sys.stderr)
+    if profile == RELEASE_BUILD_PROFILE:
+        print("  → Enforcing minimized release profile", file=sys.stderr)
     with patched_rust_workspace_version(version):
-        run(cmd, cwd=RUST_ROOT)
+        run(cmd, cwd=RUST_ROOT, env=cargo_env)
 
 
 def build_codex_cli(
     *,
-    release: bool = True,
+    profile: str = DEFAULT_BUILD_PROFILE,
     target: str | None = None,
     install: bool = False,
     rename: str | None = None,
@@ -469,19 +620,18 @@ def build_codex_cli(
     """Build the aicodex CLI binary and optionally stage / rename it."""
     resolved_target = target or detect_cli_target()
     build_rust(
-        release=release,
+        profile=profile,
         target=resolved_target,
         package=CLI_PACKAGE_NAME,
         bin=CLI_BIN_NAME,
         verbose=verbose,
     )
 
-    profile = "release" if release else "debug"
     src = (
         RUST_ROOT
         / "target"
         / resolved_target
-        / profile
+        / cargo_profile_output_dir(profile)
         / executable_name(CLI_BIN_NAME, resolved_target)
     )
 
@@ -525,7 +675,7 @@ def build_codex_cli(
 def build_codex_cli_targets(
     *,
     targets: tuple[str, ...],
-    release: bool = True,
+    profile: str = DEFAULT_BUILD_PROFILE,
     install: bool = False,
     rename: str | None = None,
     verbose: bool = False,
@@ -540,7 +690,7 @@ def build_codex_cli_targets(
 
         outputs.append(
             build_codex_cli(
-                release=release,
+                profile=profile,
                 target=target,
                 install=install,
                 rename=target_rename,
@@ -576,7 +726,7 @@ def build_ts(*, install_deps: bool = True, verbose: bool = False) -> None:
 
 def build_all(
     *,
-    release: bool = True,
+    profile: str = DEFAULT_BUILD_PROFILE,
     target: str | None = None,
     all_targets: bool = False,
     install_cli: bool = False,
@@ -588,14 +738,14 @@ def build_all(
     if all_targets:
         build_codex_cli_targets(
             targets=CLI_TARGETS,
-            release=release,
+            profile=profile,
             install=install_cli,
             rename=rename,
             verbose=verbose,
         )
     else:
         build_codex_cli(
-            release=release,
+            profile=profile,
             target=target,
             install=install_cli,
             rename=rename,
@@ -615,8 +765,8 @@ def main(argv: list[str] | None = None) -> None:
     sub = parser.add_subparsers(dest="command", required=False)
 
     # rust
-    rust_parser = sub.add_parser("rust", help="Build Rust workspace (release mode by default)")
-    rust_parser.add_argument("--debug", action="store_true", help="Build in debug mode instead of release")
+    rust_parser = sub.add_parser("rust", help=f"Build Rust workspace ({DEFAULT_BUILD_PROFILE} by default)")
+    add_cargo_profile_args(rust_parser)
     rust_parser.add_argument("--target", default=None, help="Rust target triple")
     rust_parser.add_argument("-p", "--package", default=None, help="Build specific package")
     rust_parser.add_argument("--bin", default=None, help="Build specific binary")
@@ -624,8 +774,11 @@ def main(argv: list[str] | None = None) -> None:
     rust_parser.add_argument("-j", "--jobs", type=int, default=None, help="Build jobs")
 
     # codex-cli
-    cli_parser = sub.add_parser("codex-cli", help="Build the aicodex CLI binary (release mode by default)")
-    cli_parser.add_argument("--debug", action="store_true", help="Build in debug mode instead of release")
+    cli_parser = sub.add_parser(
+        "codex-cli",
+        help=f"Build the aicodex CLI binary ({DEFAULT_BUILD_PROFILE} by default)",
+    )
+    add_cargo_profile_args(cli_parser)
     cli_target_group = cli_parser.add_mutually_exclusive_group()
     cli_target_group.add_argument("--target", default=None, help="Rust target triple")
     cli_target_group.add_argument(
@@ -653,8 +806,8 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     # all
-    all_parser = sub.add_parser("all", help="Build everything (release mode by default)")
-    all_parser.add_argument("--debug", action="store_true", help="Build in debug mode instead of release")
+    all_parser = sub.add_parser("all", help=f"Build everything ({DEFAULT_BUILD_PROFILE} by default)")
+    add_cargo_profile_args(all_parser)
     all_target_group = all_parser.add_mutually_exclusive_group()
     all_target_group.add_argument("--target", default=None, help="Rust target triple")
     all_target_group.add_argument(
@@ -714,9 +867,9 @@ def main(argv: list[str] | None = None) -> None:
 
     args = parser.parse_args(argv)
 
-    # Default behavior: build all in release mode, rename to "aicodex"
+    # Default behavior: build all in minimized release mode, rename to "aicodex"
     if args.command is None:
-        build_all(release=True, rename=OUTPUT_BINARY_NAME)
+        build_all(profile=DEFAULT_BUILD_PROFILE, rename=OUTPUT_BINARY_NAME)
         print("Build completed successfully.", file=sys.stderr)
         return
 
@@ -730,7 +883,7 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "rust":
         build_rust(
-            release=not args.debug,
+            profile=selected_profile(args),
             target=args.target,
             package=args.package,
             bin=args.bin,
@@ -742,14 +895,14 @@ def main(argv: list[str] | None = None) -> None:
         if args.all_targets:
             build_codex_cli_targets(
                 targets=CLI_TARGETS,
-                release=not args.debug,
+                profile=selected_profile(args),
                 install=args.install,
                 rename=args.rename or OUTPUT_BINARY_NAME,
                 verbose=args.verbose,
             )
         else:
             build_codex_cli(
-                release=not args.debug,
+                profile=selected_profile(args),
                 target=args.target,
                 install=args.install,
                 rename=args.rename or OUTPUT_BINARY_NAME,
@@ -759,7 +912,7 @@ def main(argv: list[str] | None = None) -> None:
         build_ts(install_deps=not args.no_install, verbose=args.verbose)
     elif args.command == "all":
         build_all(
-            release=not args.debug,
+            profile=selected_profile(args),
             target=args.target,
             all_targets=args.all_targets,
             install_cli=args.install_cli,

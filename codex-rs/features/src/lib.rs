@@ -90,6 +90,12 @@ pub enum Feature {
     UnifiedExec,
     /// Route shell tool execution through the zsh exec bridge.
     ShellZshFork,
+    /// Allow unified exec to compose with the zsh exec bridge.
+    ///
+    /// This flag is only a composition gate. Enabling it by itself must not turn
+    /// on either `unified_exec` or `shell_zsh_fork` because those features have
+    /// separate rollout and enterprise controls.
+    UnifiedExecZshFork,
     /// Reflow transcript scrollback when the terminal is resized.
     TerminalResizeReflow,
     /// Stream structured progress while apply_patch input is being generated.
@@ -103,6 +109,8 @@ pub enum Feature {
     /// Allow the model to request web searches that fetch cached content.
     /// Takes precedence over `WebSearchRequest`.
     WebSearchCached,
+    /// Expose the extension-backed standalone web search tool.
+    StandaloneWebSearch,
     /// Use the legacy Landlock Linux sandbox fallback instead of the default
     /// bubblewrap pipeline.
     UseLegacyLandlock,
@@ -112,6 +120,8 @@ pub enum Feature {
     RuntimeMetrics,
     /// Enable startup memory extraction and file-backed memory consolidation.
     MemoryTool,
+    /// Compress cold local thread-store rollout files.
+    LocalThreadStoreCompression,
     /// Enable the Chronicle sidecar for passive screen-context memories.
     Chronicle,
     /// Append additional AGENTS.md guidance to user instructions.
@@ -136,11 +146,13 @@ pub enum Feature {
     ToolSearch,
     /// Always defer MCP tools behind tool_search instead of exposing small sets directly.
     ToolSearchAlwaysDeferMcpTools,
+    /// Expose MCP model-visible namespaces without the legacy `mcp__` prefix.
+    NonPrefixedMcpToolNames,
     /// Enable discoverable tool suggestions for apps.
     ToolSuggest,
     /// Enable plugins.
     Plugins,
-    /// Enable plugin-bundled lifecycle hooks.
+    /// Removed compatibility flag for plugin-bundled lifecycle hooks.
     PluginHooks,
     /// Allow the in-app browser pane in desktop apps.
     ///
@@ -166,6 +178,8 @@ pub enum Feature {
     ExternalMigration,
     /// Allow the model to invoke the built-in image generation tool.
     ImageGeneration,
+    /// Replace hosted image generation with the standalone image-generation extension.
+    ImageGenExt,
     /// Allow prompting and installing missing MCP dependencies.
     SkillMcpDependencyInstall,
     /// Removed compatibility flag for deleted skill env var dependency prompting.
@@ -432,6 +446,9 @@ impl Features {
                     continue;
                 }
                 "image_detail_original" => {
+                    continue;
+                }
+                "plugin_hooks" => {
                     continue;
                 }
                 "skill_env_var_dependency_prompt" => {
@@ -731,6 +748,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
+        id: Feature::UnifiedExecZshFork,
+        key: "unified_exec_zsh_fork",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::ShellSnapshot,
         key: "shell_snapshot",
         stage: Stage::Stable,
@@ -783,6 +806,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
+        id: Feature::StandaloneWebSearch,
+        key: "standalone_web_search",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::SearchTool,
         key: "search_tool",
         stage: Stage::Removed,
@@ -814,6 +843,12 @@ pub const FEATURES: &[FeatureSpec] = &[
             menu_description: "Allow Codex to create new memories from conversations and bring relevant memories into new conversations.",
             announcement: "NEW: Codex can now generate and use memories. Try it now with `/memories`",
         },
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::LocalThreadStoreCompression,
+        key: "local_thread_store_compression",
+        stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
     FeatureSpec {
@@ -959,6 +994,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
+        id: Feature::NonPrefixedMcpToolNames,
+        key: "non_prefixed_mcp_tool_names",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::UnavailableDummyTools,
         key: "unavailable_dummy_tools",
         stage: Stage::Removed,
@@ -979,8 +1020,8 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::PluginHooks,
         key: "plugin_hooks",
-        stage: Stage::Stable,
-        default_enabled: true,
+        stage: Stage::Removed,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::InAppBrowser,
@@ -1035,6 +1076,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: true,
     },
     FeatureSpec {
+        id: Feature::ImageGenExt,
+        key: "imagegenext",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::SkillMcpDependencyInstall,
         key: "skill_mcp_dependency_install",
         stage: Stage::Stable,
@@ -1049,11 +1096,7 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::MentionsV2,
         key: "mentions_v2",
-        stage: Stage::Experimental {
-            name: "Mentions v2",
-            menu_description: "Use a unified @ mention popup for files, folders, apps, plugins, and skills.",
-            announcement: "",
-        },
+        stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
     FeatureSpec {
@@ -1077,12 +1120,8 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::Goals,
         key: "goals",
-        stage: Stage::Experimental {
-            name: "Goals",
-            menu_description: "Set a persistent goal Codex can continue over time",
-            announcement: "",
-        },
-        default_enabled: false,
+        stage: Stage::Stable,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::CollaborationModes,

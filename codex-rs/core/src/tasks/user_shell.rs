@@ -4,10 +4,6 @@ use std::time::Duration;
 use codex_async_utils::CancelErr;
 use codex_async_utils::OrCancelExt;
 use codex_network_proxy::PROXY_ACTIVE_ENV_KEY;
-use codex_network_proxy::PROXY_ENV_KEYS;
-#[cfg(target_os = "macos")]
-use codex_network_proxy::PROXY_GIT_SSH_COMMAND_ENV_KEY;
-use codex_protocol::user_input::UserInput;
 use tokio_util::sync::CancellationToken;
 use tracing::error;
 use uuid::Uuid;
@@ -17,10 +13,12 @@ use crate::exec::StdoutStream;
 use crate::exec::execute_exec_request;
 use crate::exec_env::create_env;
 use crate::sandboxing::ExecRequest;
+use crate::session::TurnInput;
 use crate::session::turn_context::TurnContext;
 use crate::state::TaskKind;
 use crate::tools::format_exec_output_str;
 use crate::tools::runtimes::maybe_wrap_shell_lc_with_snapshot;
+use crate::tools::runtimes::strip_managed_proxy_env;
 use crate::turn_timing::now_unix_timestamp_ms;
 use crate::user_shell_command::user_shell_command_record_item;
 use codex_protocol::exec_output::ExecToolCallOutput;
@@ -31,6 +29,7 @@ use codex_protocol::protocol::ExecCommandEndEvent;
 use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::ExecCommandStatus;
 use codex_protocol::protocol::TurnStartedEvent;
+use codex_rollout::EventPersistenceMode;
 use codex_sandboxing::SandboxType;
 use codex_shell_command::parse_command::parse_command;
 
@@ -38,8 +37,6 @@ use super::SessionTask;
 use super::SessionTaskContext;
 use crate::session::session::Session;
 use codex_protocol::models::PermissionProfile;
-use codex_protocol::models::ResponseInputItem;
-use codex_protocol::models::ResponseItem;
 
 const USER_SHELL_TIMEOUT_MS: u64 = 60 * 60 * 1000; // 1 hour
 
@@ -77,7 +74,7 @@ impl SessionTask for UserShellCommandTask {
         self: Arc<Self>,
         session: Arc<SessionTaskContext>,
         turn_context: Arc<TurnContext>,
-        _input: Vec<UserInput>,
+        _input: Vec<TurnInput>,
         cancellation_token: CancellationToken,
     ) -> Option<String> {
         execute_user_shell_command(
@@ -114,6 +111,7 @@ pub(crate) async fn execute_user_shell_command(
         // freshly reinjected context before the summary/replacement history is applied.
         let event = EventMsg::TurnStarted(TurnStartedEvent {
             turn_id: turn_context.sub_id.clone(),
+            trace_id: turn_context.trace_id.clone(),
             started_at: turn_context.turn_timing_state.started_at_unix_secs().await,
             model_context_window: turn_context.model_context_window(),
             collaboration_mode_kind: turn_context.collaboration_mode.mode,
@@ -129,21 +127,10 @@ pub(crate) async fn execute_user_shell_command(
     let display_command = session_shell.derive_exec_args(&command, use_login_shell);
     let mut exec_env_map = create_env(
         &turn_context.shell_environment_policy,
-        Some(session.conversation_id),
+        Some(session.thread_id),
     );
     if exec_env_map.contains_key(PROXY_ACTIVE_ENV_KEY) {
-        for key in PROXY_ENV_KEYS {
-            exec_env_map.remove(*key);
-        }
-        #[cfg(target_os = "macos")]
-        if exec_env_map
-            .get(PROXY_GIT_SSH_COMMAND_ENV_KEY)
-            .is_some_and(|value| {
-                value.starts_with(codex_network_proxy::CODEX_PROXY_GIT_SSH_COMMAND_MARKER)
-            })
-        {
-            exec_env_map.remove(PROXY_GIT_SSH_COMMAND_ENV_KEY);
-        }
+        strip_managed_proxy_env(&mut exec_env_map);
     }
     let exec_command = maybe_wrap_shell_lc_with_snapshot(
         &display_command,
@@ -192,6 +179,7 @@ pub(crate) async fn execute_user_shell_command(
         capture_policy: ExecCapturePolicy::ShellTool,
         sandbox: SandboxType::None,
         windows_sandbox_policy_cwd: cwd.clone(),
+        windows_sandbox_workspace_roots: turn_context.config.effective_workspace_roots(),
         windows_sandbox_level: turn_context.windows_sandbox_level,
         windows_sandbox_private_desktop: turn_context
             .config
@@ -234,7 +222,7 @@ pub(crate) async fn execute_user_shell_command(
             )
             .await;
             session
-                .send_event(
+                .send_event_with_persistence_mode(
                     turn_context.as_ref(),
                     EventMsg::ExecCommandEnd(ExecCommandEndEvent {
                         call_id,
@@ -254,12 +242,13 @@ pub(crate) async fn execute_user_shell_command(
                         formatted_output: aborted_message,
                         status: ExecCommandStatus::Failed,
                     }),
+                    EventPersistenceMode::Extended,
                 )
                 .await;
         }
         Ok(Ok(output)) => {
             session
-                .send_event(
+                .send_event_with_persistence_mode(
                     turn_context.as_ref(),
                     EventMsg::ExecCommandEnd(ExecCommandEndEvent {
                         call_id: call_id.clone(),
@@ -286,6 +275,7 @@ pub(crate) async fn execute_user_shell_command(
                             ExecCommandStatus::Failed
                         },
                     }),
+                    EventPersistenceMode::Extended,
                 )
                 .await;
 
@@ -304,7 +294,7 @@ pub(crate) async fn execute_user_shell_command(
                 timed_out: false,
             };
             session
-                .send_event(
+                .send_event_with_persistence_mode(
                     turn_context.as_ref(),
                     EventMsg::ExecCommandEnd(ExecCommandEndEvent {
                         call_id,
@@ -327,6 +317,7 @@ pub(crate) async fn execute_user_shell_command(
                         ),
                         status: ExecCommandStatus::Failed,
                     }),
+                    EventPersistenceMode::Extended,
                 )
                 .await;
             persist_user_shell_output(
@@ -360,30 +351,7 @@ async fn persist_user_shell_output(
         return;
     }
 
-    let response_input_item = match output_item {
-        ResponseItem::Message {
-            role,
-            content,
-            phase,
-            ..
-        } => ResponseInputItem::Message {
-            role,
-            content,
-            phase,
-        },
-        _ => unreachable!("user shell command output record should always be a message"),
-    };
-
-    if let Err(items) = session
-        .inject_response_items(vec![response_input_item])
-        .await
-    {
-        let response_items = items
-            .into_iter()
-            .map(ResponseItem::from)
-            .collect::<Vec<_>>();
-        session
-            .record_conversation_items(turn_context, &response_items)
-            .await;
-    }
+    session
+        .inject_no_new_turn(vec![output_item], Some(turn_context))
+        .await;
 }

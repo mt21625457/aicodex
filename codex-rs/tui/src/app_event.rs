@@ -33,6 +33,7 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_approval_presets::ApprovalPreset;
 
 use crate::app_command::AppCommand;
+use crate::app_server_session::AppServerStartedThread;
 use crate::bottom_pane::ApprovalRequest;
 use crate::bottom_pane::StatusLineItem;
 use crate::bottom_pane::TerminalTitleItem;
@@ -180,6 +181,11 @@ pub(crate) enum AppEvent {
     /// Start a new session.
     NewSession,
 
+    /// Result of the fresh startup thread that is attached after the input UI is live.
+    StartupThreadStarted {
+        result: Result<AppServerStartedThread, String>,
+    },
+
     /// Clear the terminal UI (screen + scrollback), start a fresh session, and keep the
     /// previous chat resumable.
     ClearUi,
@@ -203,6 +209,9 @@ pub(crate) enum AppEvent {
     /// Resume a thread by UUID or thread name inside the running TUI session.
     ResumeSessionByIdOrName(String),
 
+    /// Archive the current active main thread and exit after it succeeds.
+    ArchiveCurrentThread,
+
     /// Fork the current session into a new thread.
     ForkCurrentSession,
 
@@ -224,6 +233,9 @@ pub(crate) enum AppEvent {
     /// Forward a command to the Agent. Using an `AppEvent` for this avoids
     /// bubbling channels through layers of widgets.
     CodexOp(AppCommand),
+
+    /// Restore an output-free interrupted turn into the composer and roll it back.
+    RestoreCancelledTurn(UserMessage),
 
     /// Approve one retry of a recent auto-review denial selected in the TUI.
     ApproveRecentAutoReviewDenial {
@@ -316,6 +328,11 @@ pub(crate) enum AppEvent {
     /// Open the provided URL in the user's browser.
     OpenUrlInBrowser {
         url: String,
+    },
+
+    /// Open the current thread in Codex Desktop.
+    OpenDesktopThread {
+        thread_id: ThreadId,
     },
 
     /// Persist a pet selection and reload the ambient pet.
@@ -539,12 +556,14 @@ pub(crate) enum AppEvent {
     /// Fetch MCP inventory via app-server RPCs and render it into history.
     FetchMcpInventory {
         detail: McpServerStatusDetail,
+        thread_id: Option<ThreadId>,
     },
 
     /// Result of fetching MCP inventory via app-server RPCs.
     McpInventoryLoaded {
         result: Result<Vec<McpServerStatus>, String>,
         detail: McpServerStatusDetail,
+        thread_id: Option<ThreadId>,
     },
 
     /// Result of the startup skills refresh that runs after the first frame is scheduled.
@@ -680,6 +699,7 @@ pub(crate) enum AppEvent {
     OpenFullAccessConfirmation {
         preset: ApprovalPreset,
         return_to_permissions: bool,
+        profile_selection: Option<PermissionProfileSelection>,
     },
 
     /// Open the Windows world-writable directories warning.
@@ -689,6 +709,7 @@ pub(crate) enum AppEvent {
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     OpenWorldWritableWarningConfirmation {
         preset: Option<ApprovalPreset>,
+        profile_selection: Option<PermissionProfileSelection>,
         /// Up to 3 sample world-writable directories to display in the warning.
         sample_paths: Vec<String>,
         /// If there are more than `sample_paths`, this carries the remaining count.
@@ -701,24 +722,28 @@ pub(crate) enum AppEvent {
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     OpenWindowsSandboxEnablePrompt {
         preset: ApprovalPreset,
+        profile_selection: Option<PermissionProfileSelection>,
     },
 
     /// Open the Windows sandbox fallback prompt after declining or failing elevation.
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     OpenWindowsSandboxFallbackPrompt {
         preset: ApprovalPreset,
+        profile_selection: Option<PermissionProfileSelection>,
     },
 
     /// Begin the elevated Windows sandbox setup flow.
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     BeginWindowsSandboxElevatedSetup {
         preset: ApprovalPreset,
+        profile_selection: Option<PermissionProfileSelection>,
     },
 
     /// Begin the non-elevated Windows sandbox setup flow.
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     BeginWindowsSandboxLegacySetup {
         preset: ApprovalPreset,
+        profile_selection: Option<PermissionProfileSelection>,
     },
 
     /// Begin a non-elevated grant of read access for an additional directory.
@@ -739,6 +764,7 @@ pub(crate) enum AppEvent {
     EnableWindowsSandboxForAgentMode {
         preset: ApprovalPreset,
         mode: WindowsSandboxEnableMode,
+        profile_selection: Option<PermissionProfileSelection>,
     },
 
     /// Update the Windows sandbox feature mode without changing approval presets.
@@ -749,6 +775,9 @@ pub(crate) enum AppEvent {
 
     /// Update the current built-in active permission profile in the running app and widget.
     UpdateActivePermissionProfile(ActivePermissionProfile),
+
+    /// Select a named permission profile, optionally applying built-in mode settings too.
+    SelectPermissionProfile(PermissionProfileSelection),
 
     /// Update the current approvals reviewer in the running app and widget.
     UpdateApprovalsReviewer(ApprovalsReviewer),
@@ -987,6 +1016,15 @@ pub(crate) enum AppEvent {
         context: String,
         action: String,
     },
+}
+
+/// Named profile selection to apply after any required UI guardrails complete.
+#[derive(Debug, Clone)]
+pub(crate) struct PermissionProfileSelection {
+    pub profile_id: String,
+    pub approval_policy: Option<AskForApproval>,
+    pub approvals_reviewer: Option<ApprovalsReviewer>,
+    pub display_label: String,
 }
 
 #[derive(Debug)]

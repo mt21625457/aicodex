@@ -103,7 +103,7 @@ mod tests {
     use crate::extensions::thread_extensions;
     use async_trait::async_trait;
     use codex_arg0::Arg0DispatchPaths;
-    use codex_config::CloudRequirementsLoader;
+    use codex_config::CloudConfigBundleLoader;
     use codex_config::LoaderOverrides;
     use codex_config::ThreadConfigContext;
     use codex_config::ThreadConfigLoadError;
@@ -114,6 +114,7 @@ mod tests {
     use codex_core::init_state_db;
     use codex_core::thread_store_from_config;
     use codex_exec_server::EnvironmentManager;
+    use codex_extension_api::NoopExtensionEventSink;
     use codex_login::AuthManager;
     use codex_login::CodexAuth;
     use codex_protocol::protocol::SessionSource;
@@ -183,12 +184,16 @@ mod tests {
         let thread_manager = Arc::new_cyclic(|thread_manager| {
             ThreadManager::new(
                 &good_config,
-                auth_manager,
+                auth_manager.clone(),
                 SessionSource::Exec,
                 Arc::new(EnvironmentManager::default_for_tests()),
-                thread_extensions(guardian_agent_spawner(thread_manager.clone())),
+                thread_extensions(
+                    guardian_agent_spawner(thread_manager.clone()),
+                    Arc::new(NoopExtensionEventSink),
+                    auth_manager.clone(),
+                ),
                 /*analytics_events_client*/ None,
-                thread_store,
+                Arc::clone(&thread_store),
                 Some(state_db.clone()),
                 "11111111-1111-4111-8111-111111111111".to_string(),
                 /*attestation_provider*/ None,
@@ -208,7 +213,7 @@ mod tests {
             Vec::new(),
             LoaderOverrides::without_managed_config_for_tests(),
             /*strict_config*/ false,
-            CloudRequirementsLoader::default(),
+            CloudConfigBundleLoader::default(),
             Arg0DispatchPaths::default(),
             loader.clone(),
         );

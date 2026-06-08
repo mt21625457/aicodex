@@ -7,6 +7,7 @@ use std::time::Duration;
 use anyhow::anyhow;
 use codex_analytics::GuardianReviewAnalyticsResult;
 use codex_analytics::GuardianReviewSessionKind;
+use codex_protocol::ThreadId;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
@@ -19,7 +20,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RolloutItem;
-use codex_protocol::protocol::SandboxPolicy;
+use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TokenUsage;
 use serde_json::Value;
@@ -49,7 +50,7 @@ use super::GUARDIAN_REVIEWER_NAME;
 use super::GuardianApprovalRequest;
 use super::prompt::GuardianPromptMode;
 use super::prompt::GuardianTranscriptCursor;
-use super::prompt::build_guardian_prompt_items;
+use super::prompt::build_guardian_prompt_items_with_parent_turn;
 use super::prompt::guardian_policy_prompt;
 use super::prompt::guardian_policy_prompt_with_config;
 
@@ -181,6 +182,20 @@ impl GuardianReviewSessionReuseKey {
             use_experimental_unified_exec_tool: spawn_config.use_experimental_unified_exec_tool,
         }
     }
+}
+
+pub(crate) fn prompt_cache_key_override_for_review_session(
+    session_source: &SessionSource,
+    parent_thread_id: Option<ThreadId>,
+) -> Option<String> {
+    let SessionSource::SubAgent(SubAgentSource::Other(name)) = session_source else {
+        return None;
+    };
+    if name != GUARDIAN_REVIEWER_NAME {
+        return None;
+    }
+    let parent_thread_id = parent_thread_id?;
+    Some(format!("guardian:{parent_thread_id}"))
 }
 
 impl GuardianReviewSession {
@@ -647,7 +662,7 @@ async fn run_review_on_session(
         None
     };
     let mut analytics_result = GuardianReviewAnalyticsResult::from_session(
-        review_session.codex.session.conversation_id.to_string(),
+        review_session.codex.session.thread_id.to_string(),
         guardian_session_kind,
         params.model.clone(),
         guardian_reasoning_effort.map(|effort| effort.to_string()),
@@ -670,8 +685,9 @@ async fn run_review_on_session(
                 )
                 .await;
 
-            build_guardian_prompt_items(
+            build_guardian_prompt_items_with_parent_turn(
                 params.parent_session.as_ref(),
+                Some(params.parent_turn.as_ref()),
                 params.retry_reason.clone(),
                 params.request.clone(),
                 prompt_mode,
@@ -702,9 +718,7 @@ async fn run_review_on_session(
         .total_token_usage()
         .await
         .unwrap_or_default();
-    // The legacy SandboxPolicy should match the PermissionProfile.
     let guardian_permission_profile = PermissionProfile::read_only();
-    let legacy_sandbox_policy = SandboxPolicy::new_read_only_policy();
 
     let submit_result = run_before_review_deadline(
         deadline,
@@ -714,11 +728,12 @@ async fn run_review_on_session(
             environments: None,
             final_output_json_schema: Some(params.schema.clone()),
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
             thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
                 #[allow(deprecated)]
                 cwd: Some(params.parent_turn.cwd.to_path_buf()),
                 approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(legacy_sandbox_policy),
+                sandbox_policy: None,
                 permission_profile: Some(guardian_permission_profile),
                 summary: Some(params.reasoning_summary),
                 personality: params.personality,
@@ -773,12 +788,11 @@ async fn run_review_on_session(
 }
 
 async fn append_guardian_followup_reminder(review_session: &GuardianReviewSession) {
-    let turn_context = review_session.codex.session.new_default_turn().await;
     let reminder: ResponseItem = ContextualUserFragment::into(GuardianFollowupReviewReminder);
     review_session
         .codex
         .session
-        .record_conversation_items(turn_context.as_ref(), std::slice::from_ref(&reminder))
+        .inject_no_new_turn(vec![reminder], /*current_turn_context*/ None)
         .await;
 }
 
@@ -904,6 +918,7 @@ pub(crate) fn build_guardian_review_session_config(
             .map(guardian_policy_prompt_with_config)
             .unwrap_or_else(guardian_policy_prompt),
     );
+    guardian_config.notify = None;
     guardian_config.developer_instructions = None;
     guardian_config.permissions.approval_policy = Constrained::allow_only(AskForApproval::Never);
     guardian_config
@@ -1155,6 +1170,46 @@ mod tests {
         assert_eq!(
             cached_reuse_key,
             GuardianReviewSessionReuseKey::from_spawn_config(&cached_spawn_config)
+        );
+    }
+
+    #[tokio::test]
+    async fn guardian_prompt_cache_key_is_scoped_to_parent_thread() {
+        let session_source =
+            SessionSource::SubAgent(SubAgentSource::Other(GUARDIAN_REVIEWER_NAME.to_string()));
+        let parent_thread_id = ThreadId::new();
+        let key =
+            prompt_cache_key_override_for_review_session(&session_source, Some(parent_thread_id))
+                .expect("guardian prompt cache key");
+
+        assert_eq!(key, format!("guardian:{parent_thread_id}"));
+        assert!(
+            key.len() <= 64,
+            "guardian prompt cache key should fit the Responses API limit"
+        );
+        assert_eq!(
+            key,
+            prompt_cache_key_override_for_review_session(&session_source, Some(parent_thread_id))
+                .expect("same guardian prompt cache key")
+        );
+        assert_ne!(
+            key,
+            prompt_cache_key_override_for_review_session(&session_source, Some(ThreadId::new()))
+                .expect("different parent guardian prompt cache key")
+        );
+        assert_eq!(
+            None,
+            prompt_cache_key_override_for_review_session(
+                &SessionSource::Cli,
+                Some(parent_thread_id)
+            )
+        );
+        assert_eq!(
+            None,
+            prompt_cache_key_override_for_review_session(
+                &session_source,
+                /*parent_thread_id*/ None
+            )
         );
     }
 

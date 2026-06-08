@@ -6,7 +6,9 @@ import stat
 from pathlib import Path
 
 from .targets import PackageInputs
+from .targets import PackageVariant
 from .targets import TargetSpec
+from .zsh import ZSH_RESOURCE_PATH
 
 
 LAYOUT_VERSION = 1
@@ -15,7 +17,9 @@ LAYOUT_VERSION = 1
 def prepare_package_dir(package_dir: Path, *, force: bool) -> None:
     if package_dir.exists():
         if not package_dir.is_dir():
-            raise RuntimeError(f"Package output exists and is not a directory: {package_dir}")
+            raise RuntimeError(
+                f"Package output exists and is not a directory: {package_dir}"
+            )
         if any(package_dir.iterdir()):
             if not force:
                 raise RuntimeError(
@@ -30,7 +34,7 @@ def prepare_package_dir(package_dir: Path, *, force: bool) -> None:
 def build_package_dir(
     package_dir: Path,
     version: str,
-    variant: str,
+    variant: PackageVariant,
     spec: TargetSpec,
     inputs: PackageInputs,
 ) -> None:
@@ -41,8 +45,20 @@ def build_package_dir(
     resources_dir.mkdir()
     path_dir.mkdir()
 
-    copy_executable(inputs.codex_bin, bin_dir / spec.codex_name, is_windows=spec.is_windows)
+    entrypoint_name = variant.entrypoint_name(spec)
+    copy_executable(
+        inputs.entrypoint_bin,
+        bin_dir / entrypoint_name,
+        is_windows=spec.is_windows,
+    )
     copy_executable(inputs.rg_bin, path_dir / spec.rg_name, is_windows=spec.is_windows)
+
+    if inputs.zsh_bin is not None:
+        copy_executable(
+            inputs.zsh_bin,
+            resources_dir / ZSH_RESOURCE_PATH,
+            is_windows=False,
+        )
 
     if inputs.bwrap_bin is not None:
         copy_executable(inputs.bwrap_bin, resources_dir / "bwrap", is_windows=False)
@@ -65,15 +81,21 @@ def build_package_dir(
         "layoutVersion": LAYOUT_VERSION,
         "version": version,
         "target": spec.target,
-        "variant": variant,
-        "entrypoint": f"bin/{spec.codex_name}",
+        "variant": variant.name,
+        "entrypoint": f"bin/{entrypoint_name}",
         "resourcesDir": "codex-resources",
         "pathDir": "codex-path",
     }
     write_json(package_dir / "codex-package.json", metadata)
 
 
-def validate_package_dir(package_dir: Path, spec: TargetSpec) -> None:
+def validate_package_dir(
+    package_dir: Path,
+    variant: PackageVariant,
+    spec: TargetSpec,
+    *,
+    include_zsh: bool,
+) -> None:
     required_dirs = [
         Path("bin"),
         Path("codex-resources"),
@@ -94,7 +116,8 @@ def validate_package_dir(package_dir: Path, spec: TargetSpec) -> None:
     expected_metadata = {
         "layoutVersion": LAYOUT_VERSION,
         "target": spec.target,
-        "entrypoint": f"bin/{spec.codex_name}",
+        "variant": variant.name,
+        "entrypoint": f"bin/{variant.entrypoint_name(spec)}",
         "resourcesDir": "codex-resources",
         "pathDir": "codex-path",
     }
@@ -106,10 +129,15 @@ def validate_package_dir(package_dir: Path, spec: TargetSpec) -> None:
             )
 
     required_files = [
-        Path("bin") / spec.codex_name,
+        Path("bin") / variant.entrypoint_name(spec),
         Path("codex-path") / spec.rg_name,
     ]
     executable_files = list(required_files)
+
+    if include_zsh:
+        zsh_path = Path("codex-resources") / ZSH_RESOURCE_PATH
+        required_files.append(zsh_path)
+        executable_files.append(zsh_path)
 
     if spec.is_linux:
         required_files.append(Path("codex-resources") / "bwrap")
@@ -137,7 +165,7 @@ def validate_package_dir(package_dir: Path, spec: TargetSpec) -> None:
 
 def copy_executable(src: Path, dest: Path, *, is_windows: bool) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dest)
+    shutil.copyfile(src, dest)
     if not is_windows:
         mode = dest.stat().st_mode
         dest.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)

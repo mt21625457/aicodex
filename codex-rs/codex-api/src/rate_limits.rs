@@ -1,5 +1,6 @@
 use codex_protocol::account::PlanType;
 use codex_protocol::protocol::CreditsSnapshot;
+use codex_protocol::protocol::RateLimitReachedType;
 use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::RateLimitWindow;
 use http::HeaderMap;
@@ -45,6 +46,7 @@ pub fn parse_all_rate_limits(headers: &HeaderMap) -> Vec<RateLimitSnapshot> {
         let snapshot = parse_rate_limit_for_limit(headers, Some(limit_id.as_str()))?;
         has_rate_limit_data(&snapshot).then_some(snapshot)
     }));
+    snapshots.extend(parse_anthropic_rate_limits(headers));
 
     snapshots
 }
@@ -92,6 +94,7 @@ pub fn parse_rate_limit_for_limit(
         primary,
         secondary,
         credits,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     })
@@ -156,6 +159,7 @@ pub fn parse_rate_limit_event(payload: &str) -> Option<RateLimitSnapshot> {
         primary,
         secondary,
         credits,
+        individual_limit: None,
         plan_type: event.plan_type,
         rate_limit_reached_type: None,
     })
@@ -176,6 +180,13 @@ pub fn parse_promo_message(headers: &HeaderMap) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(std::string::ToString::to_string)
+}
+
+pub(crate) fn parse_rate_limit_reached_type(headers: &HeaderMap) -> Option<RateLimitReachedType> {
+    parse_header_str(headers, "x-codex-rate-limit-reached-type")?
+        .trim()
+        .parse()
+        .ok()
 }
 
 fn parse_rate_limit_window(
@@ -255,6 +266,73 @@ fn header_name_to_limit_id(header_name: &str) -> Option<String> {
 
 fn normalize_limit_id(name: impl Into<String>) -> String {
     name.into().trim().to_ascii_lowercase().replace('-', "_")
+}
+
+fn parse_anthropic_rate_limits(headers: &HeaderMap) -> Vec<RateLimitSnapshot> {
+    [
+        (
+            "anthropic_requests",
+            "Anthropic requests",
+            "anthropic-ratelimit-requests",
+        ),
+        (
+            "anthropic_tokens",
+            "Anthropic tokens",
+            "anthropic-ratelimit-tokens",
+        ),
+        (
+            "anthropic_input_tokens",
+            "Anthropic input tokens",
+            "anthropic-ratelimit-input-tokens",
+        ),
+        (
+            "anthropic_output_tokens",
+            "Anthropic output tokens",
+            "anthropic-ratelimit-output-tokens",
+        ),
+        (
+            "anthropic_priority_input_tokens",
+            "Anthropic priority input tokens",
+            "anthropic-priority-input-tokens",
+        ),
+        (
+            "anthropic_priority_output_tokens",
+            "Anthropic priority output tokens",
+            "anthropic-priority-output-tokens",
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(limit_id, limit_name, prefix)| {
+        let primary = parse_anthropic_rate_limit_window(headers, prefix)?;
+        Some(RateLimitSnapshot {
+            limit_id: Some(limit_id.to_string()),
+            limit_name: Some(limit_name.to_string()),
+            primary: Some(primary),
+            secondary: None,
+            credits: None,
+            individual_limit: None,
+            plan_type: None,
+            rate_limit_reached_type: None,
+        })
+    })
+    .collect()
+}
+
+fn parse_anthropic_rate_limit_window(headers: &HeaderMap, prefix: &str) -> Option<RateLimitWindow> {
+    let limit = parse_header_f64(headers, &format!("{prefix}-limit"))?;
+    let remaining = parse_header_f64(headers, &format!("{prefix}-remaining"))?;
+    if limit <= 0.0 {
+        return None;
+    }
+    let used_percent = ((limit - remaining).max(0.0) / limit * 100.0).clamp(0.0, 100.0);
+    let resets_at = parse_header_str(headers, &format!("{prefix}-reset"))
+        .and_then(|raw| chrono::DateTime::parse_from_rfc3339(raw).ok())
+        .map(|value| value.timestamp());
+    Some(RateLimitWindow {
+        used_percent,
+        window_minutes: None,
+        resets_at,
+    })
 }
 
 #[cfg(test)]
@@ -364,5 +442,53 @@ mod tests {
         assert_eq!(updates[0].primary, None);
         assert_eq!(updates[0].secondary, None);
         assert_eq!(updates[0].credits, None);
+    }
+
+    #[test]
+    fn parse_all_rate_limits_reads_anthropic_header_families() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "anthropic-ratelimit-requests-limit",
+            HeaderValue::from_static("100"),
+        );
+        headers.insert(
+            "anthropic-ratelimit-requests-remaining",
+            HeaderValue::from_static("25"),
+        );
+        headers.insert(
+            "anthropic-ratelimit-requests-reset",
+            HeaderValue::from_static("2024-01-01T00:00:00Z"),
+        );
+        headers.insert(
+            "anthropic-ratelimit-tokens-limit",
+            HeaderValue::from_static("2000"),
+        );
+        headers.insert(
+            "anthropic-ratelimit-tokens-remaining",
+            HeaderValue::from_static("1500"),
+        );
+
+        let updates = parse_all_rate_limits(&headers);
+        assert_eq!(updates.len(), 3);
+
+        let requests = updates
+            .iter()
+            .find(|snapshot| snapshot.limit_id.as_deref() == Some("anthropic_requests"))
+            .expect("anthropic requests snapshot");
+        assert_eq!(requests.limit_name.as_deref(), Some("Anthropic requests"));
+        let primary = requests.primary.as_ref().expect("primary");
+        assert_eq!(primary.used_percent, 75.0);
+        assert_eq!(primary.window_minutes, None);
+        assert_eq!(primary.resets_at, Some(1704067200));
+
+        let tokens = updates
+            .iter()
+            .find(|snapshot| snapshot.limit_id.as_deref() == Some("anthropic_tokens"))
+            .expect("anthropic tokens snapshot");
+        assert_eq!(tokens.limit_name.as_deref(), Some("Anthropic tokens"));
+        let primary = tokens.primary.as_ref().expect("primary");
+        assert_eq!(primary.used_percent, 25.0);
+        assert_eq!(primary.window_minutes, None);
+        assert_eq!(primary.resets_at, None);
     }
 }

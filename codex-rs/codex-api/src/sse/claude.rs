@@ -3,6 +3,9 @@ use crate::common::ClaudeToolCallKind;
 use crate::common::ResponseEvent;
 use crate::common::ResponseStream;
 use crate::error::ApiError;
+use crate::error::ProviderMediaErrorKind;
+use crate::error::ProviderStreamErrorKind;
+use crate::rate_limits::parse_all_rate_limits;
 use crate::telemetry::SseTelemetry;
 use codex_client::ByteStream;
 use codex_client::StreamResponse;
@@ -39,19 +42,26 @@ pub fn spawn_claude_response_stream(
     telemetry: Option<Arc<dyn SseTelemetry>>,
     tool_call_info: HashMap<String, ClaudeToolCallInfo>,
 ) -> ResponseStream {
+    let rate_limit_snapshots = parse_all_rate_limits(&stream_response.headers);
     let upstream_request_id = stream_response
         .headers
         .get(REQUEST_ID_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
     let (tx_event, rx_event) = mpsc::channel::<Result<ResponseEvent, ApiError>>(1600);
-    tokio::spawn(process_sse(
-        stream_response.bytes,
-        tx_event,
-        idle_timeout,
-        telemetry,
-        tool_call_info,
-    ));
+    tokio::spawn(async move {
+        for snapshot in rate_limit_snapshots {
+            let _ = tx_event.send(Ok(ResponseEvent::RateLimits(snapshot))).await;
+        }
+        process_sse(
+            stream_response.bytes,
+            tx_event,
+            idle_timeout,
+            telemetry,
+            tool_call_info,
+        )
+        .await;
+    });
     ResponseStream {
         rx_event,
         upstream_request_id,
@@ -164,13 +174,9 @@ impl ClaudeStopReason {
 
     fn end_turn(&self) -> Option<bool> {
         match self {
-            Self::EndTurn
-            | Self::MaxTokens
-            | Self::StopSequence
-            | Self::Refusal
-            | Self::ModelContextWindowExceeded => Some(true),
+            Self::EndTurn | Self::MaxTokens | Self::StopSequence | Self::Refusal => Some(true),
             Self::ToolUse | Self::PauseTurn => Some(false),
-            Self::Unknown(_) => None,
+            Self::ModelContextWindowExceeded | Self::Unknown(_) => None,
         }
     }
 }
@@ -324,14 +330,16 @@ struct ClaudeUsage {
 
 impl ClaudeUsage {
     fn merge(&mut self, usage: ClaudeUsage) {
-        self.input_tokens = usage.input_tokens.or(self.input_tokens);
+        merge_non_zero_usage_field(&mut self.input_tokens, usage.input_tokens);
         self.output_tokens = usage.output_tokens.or(self.output_tokens);
-        self.cache_read_input_tokens = usage
-            .cache_read_input_tokens
-            .or(self.cache_read_input_tokens);
-        self.cache_creation_input_tokens = usage
-            .cache_creation_input_tokens
-            .or(self.cache_creation_input_tokens);
+        merge_non_zero_usage_field(
+            &mut self.cache_read_input_tokens,
+            usage.cache_read_input_tokens,
+        );
+        merge_non_zero_usage_field(
+            &mut self.cache_creation_input_tokens,
+            usage.cache_creation_input_tokens,
+        );
         self.server_tool_use = usage.server_tool_use.or(self.server_tool_use.take());
         self.iterations = usage.iterations.or(self.iterations);
     }
@@ -355,6 +363,12 @@ impl ClaudeUsage {
             reasoning_output_tokens: 0,
             total_tokens,
         })
+    }
+}
+
+fn merge_non_zero_usage_field(current: &mut Option<i64>, incoming: Option<i64>) {
+    if incoming.is_some_and(|value| value > 0) {
+        *current = incoming;
     }
 }
 
@@ -460,6 +474,9 @@ impl ClaudeStreamState {
                 {
                     trace!(?stop_reason, ?stop_sequence, "Claude message delta");
                     if let Some(stop_reason) = stop_reason {
+                        if stop_reason == ClaudeStopReason::ModelContextWindowExceeded {
+                            return Err(ApiError::ContextWindowExceeded);
+                        }
                         self.stop_reason = Some(stop_reason);
                     }
                 }
@@ -479,7 +496,13 @@ impl ClaudeStreamState {
                         None => error.message,
                     })
                     .unwrap_or_else(|| "claude stream error".to_string());
-                return Err(ApiError::Stream(message));
+                if let Some(kind) = ProviderMediaErrorKind::classify(/*status*/ None, &message) {
+                    return Err(ApiError::ProviderMedia { kind, message });
+                }
+                return Err(provider_stream_error(
+                    ProviderStreamErrorKind::ProviderError,
+                    message,
+                ));
             }
             ClaudeStreamEvent::Unknown => trace!("unhandled Claude stream event"),
         }
@@ -637,11 +660,8 @@ impl ClaudeStreamState {
         if let Some(state) = self.tool_blocks.get_mut(&index)
             && !state.partial_json.trim().is_empty()
         {
-            let value = serde_json::from_str::<Value>(&state.partial_json).map_err(|err| {
-                ApiError::Stream(format!(
-                    "invalid Claude tool input JSON for content block {index}: {err}"
-                ))
-            })?;
+            let value =
+                parse_partial_tool_input_json(index, state.name.as_deref(), &state.partial_json)?;
             state.input = Some(value);
             state.partial_json.clear();
         };
@@ -853,6 +873,10 @@ impl ClaudeStreamState {
         &mut self,
         tx_event: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
     ) -> Result<(), ApiError> {
+        if self.stop_reason == Some(ClaudeStopReason::ModelContextWindowExceeded) {
+            return Err(ApiError::ContextWindowExceeded);
+        }
+
         let unfinished_blocks = self
             .block_kinds
             .keys()
@@ -978,7 +1002,6 @@ impl ClaudeStreamState {
             return Ok(None);
         };
         let call_id = state.id.clone().unwrap_or_else(|| claude_name.clone());
-        let input = state.input_value()?;
         let info = self
             .tool_call_info
             .get(claude_name)
@@ -988,6 +1011,12 @@ impl ClaudeStreamState {
                 namespace: None,
                 kind: ClaudeToolCallKind::Function,
             });
+        let input = match info.kind {
+            ClaudeToolCallKind::Function | ClaudeToolCallKind::ToolSearch => {
+                state.json_object_input_value(index)?
+            }
+            ClaudeToolCallKind::Custom => state.input_value(index)?,
+        };
 
         Ok(Some(match info.kind {
             ClaudeToolCallKind::Function => ResponseItem::FunctionCall {
@@ -1039,7 +1068,7 @@ impl ClaudeStreamState {
             return Ok(None);
         }
         let call_id = state.id.clone().unwrap_or_else(|| name.to_string());
-        let input = state.input_value()?;
+        let input = state.json_object_input_value(index)?;
         Ok(Some(ResponseItem::WebSearchCall {
             id: Some(call_id),
             status: None,
@@ -1097,18 +1126,22 @@ impl ClaudeStreamState {
 }
 
 impl ToolUseState {
-    fn input_value(&self) -> Result<Value, ApiError> {
+    fn input_value(&self, index: usize) -> Result<Value, ApiError> {
         if !self.partial_json.trim().is_empty() {
-            return serde_json::from_str::<Value>(&self.partial_json).map_err(|err| {
-                ApiError::Stream(format!(
-                    "invalid Claude tool input JSON at message stop: {err}"
-                ))
-            });
+            return parse_partial_tool_input_json(index, self.name.as_deref(), &self.partial_json);
         }
         Ok(self
             .input
             .clone()
             .unwrap_or_else(|| Value::Object(Map::new())))
+    }
+
+    fn json_object_input_value(&self, index: usize) -> Result<Value, ApiError> {
+        match self.input_value(index)? {
+            Value::Null => Ok(Value::Object(Map::new())),
+            Value::String(text) if text.trim().is_empty() => Ok(Value::Object(Map::new())),
+            value => Ok(value),
+        }
     }
 
     fn complete_input_value_if_available(&self) -> Option<Value> {
@@ -1117,6 +1150,23 @@ impl ToolUseState {
         }
         self.input.clone()
     }
+}
+
+fn parse_partial_tool_input_json(
+    index: usize,
+    tool_name: Option<&str>,
+    partial_json: &str,
+) -> Result<Value, ApiError> {
+    serde_json::from_str::<Value>(partial_json).map_err(|err| {
+        let tool_name = tool_name
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or("<unknown>");
+        ApiError::Stream(format!(
+            "invalid Claude tool input JSON for content block {index} \
+             (tool `{tool_name}`, input length {} bytes): {err}",
+            partial_json.len()
+        ))
+    })
 }
 
 fn stringify_tool_input(input: &Value) -> String {
@@ -1304,8 +1354,38 @@ fn parse_claude_stream_event(event_name: &str, data: &str) -> Result<ClaudeStrea
         return Ok(ClaudeStreamEvent::event_name_only(event_name));
     }
 
-    serde_json::from_str(data)
-        .map_err(|err| ApiError::Stream(format!("failed to parse Claude SSE event: {err}")))
+    serde_json::from_str(data).map_err(|err| {
+        provider_stream_error(
+            ProviderStreamErrorKind::ParseError,
+            format!("failed to parse Claude SSE event: {err}"),
+        )
+    })
+}
+
+fn provider_stream_error(kind: ProviderStreamErrorKind, message: String) -> ApiError {
+    debug!(%kind, "Claude stream failure classified");
+    ApiError::StreamFailure { kind, message }
+}
+
+fn stream_closed_error(state: &ClaudeStreamState) -> ApiError {
+    if state.message_started {
+        provider_stream_error(
+            ProviderStreamErrorKind::ClosedAfterMessageStartBeforeStop,
+            "stream closed after message_start before message_stop".to_string(),
+        )
+    } else {
+        provider_stream_error(
+            ProviderStreamErrorKind::ClosedBeforeMessageStart,
+            "stream closed before message_start".to_string(),
+        )
+    }
+}
+
+fn idle_timeout_error() -> ApiError {
+    provider_stream_error(
+        ProviderStreamErrorKind::IdleTimeout,
+        "idle timeout waiting for SSE".to_string(),
+    )
 }
 
 async fn process_sse(
@@ -1328,30 +1408,38 @@ async fn process_sse(
             Ok(Some(Ok(sse))) => sse,
             Ok(Some(Err(e))) => {
                 debug!("Claude SSE error: {e:#}");
-                let _ = tx_event.send(Err(ApiError::Stream(e.to_string()))).await;
-                return;
-            }
-            Ok(None) => {
                 let _ = tx_event
-                    .send(Err(ApiError::Stream(
-                        "stream closed before message_stop".to_string(),
+                    .send(Err(provider_stream_error(
+                        ProviderStreamErrorKind::TransportError,
+                        e.to_string(),
                     )))
                     .await;
                 return;
             }
+            Ok(None) => {
+                let _ = tx_event.send(Err(stream_closed_error(&state))).await;
+                return;
+            }
             Err(_) => {
-                let _ = tx_event
-                    .send(Err(ApiError::Stream("idle timeout waiting for SSE".into())))
-                    .await;
+                let _ = tx_event.send(Err(idle_timeout_error())).await;
                 return;
             }
         };
 
-        trace!("Claude SSE event: {} {}", &sse.event, &sse.data);
+        trace!(
+            event = %sse.event,
+            data_len = sse.data.len(),
+            "Claude SSE event received"
+        );
         let event: ClaudeStreamEvent = match parse_claude_stream_event(&sse.event, &sse.data) {
             Ok(event) => event,
             Err(e) => {
-                debug!("failed to parse Claude SSE event: {e}, data: {}", &sse.data);
+                debug!(
+                    event = %sse.event,
+                    data_len = sse.data.len(),
+                    error = %e,
+                    "failed to parse Claude SSE event"
+                );
                 let _ = tx_event.send(Err(e)).await;
                 return;
             }
@@ -1371,6 +1459,12 @@ async fn process_sse(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
+    use codex_client::TransportError;
+    use futures::stream;
+    use http::HeaderMap;
+    use http::HeaderValue;
+    use http::StatusCode;
     use pretty_assertions::assert_eq;
     use serde_json::json;
 
@@ -1404,6 +1498,34 @@ mod tests {
             }
         }
         panic!("expected Claude stream event error")
+    }
+
+    fn stream_response(chunks: Vec<Result<Bytes, TransportError>>) -> codex_client::StreamResponse {
+        codex_client::StreamResponse {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            bytes: Box::pin(stream::iter(chunks)),
+        }
+    }
+
+    fn stream_response_with_headers(
+        chunks: Vec<Result<Bytes, TransportError>>,
+        headers: HeaderMap,
+    ) -> codex_client::StreamResponse {
+        codex_client::StreamResponse {
+            status: StatusCode::OK,
+            headers,
+            bytes: Box::pin(stream::iter(chunks)),
+        }
+    }
+
+    async fn recv_stream_error(mut stream: ResponseStream) -> ApiError {
+        while let Some(event) = stream.rx_event.recv().await {
+            if let Err(error) = event {
+                return error;
+            }
+        }
+        panic!("expected stream error")
     }
 
     fn custom_apply_patch_tool_call_info() -> HashMap<String, ClaudeToolCallInfo> {
@@ -1450,6 +1572,159 @@ mod tests {
     fn claude_stream_parses_event_name_only_sse() {
         let event = parse_claude_stream_event("message_stop", "").expect("event parses");
         assert!(matches!(event, ClaudeStreamEvent::MessageStop));
+    }
+
+    #[tokio::test]
+    async fn claude_stream_classifies_close_before_message_start() {
+        let stream = spawn_claude_response_stream(
+            stream_response(Vec::new()),
+            Duration::from_secs(1),
+            /*telemetry*/ None,
+            HashMap::new(),
+        );
+
+        let ApiError::StreamFailure { kind, message } = recv_stream_error(stream).await else {
+            panic!("expected stream failure");
+        };
+        assert_eq!(kind, ProviderStreamErrorKind::ClosedBeforeMessageStart);
+        assert_eq!(message, "stream closed before message_start");
+    }
+
+    #[tokio::test]
+    async fn claude_stream_classifies_close_after_message_start() {
+        let start = json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "content": []
+            }
+        });
+        let stream = spawn_claude_response_stream(
+            stream_response(vec![Ok(Bytes::from(format!(
+                "event: message_start\ndata: {start}\n\n"
+            )))]),
+            Duration::from_secs(1),
+            /*telemetry*/ None,
+            HashMap::new(),
+        );
+
+        let ApiError::StreamFailure { kind, message } = recv_stream_error(stream).await else {
+            panic!("expected stream failure");
+        };
+        assert_eq!(
+            kind,
+            ProviderStreamErrorKind::ClosedAfterMessageStartBeforeStop
+        );
+        assert_eq!(
+            message,
+            "stream closed after message_start before message_stop"
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_stream_classifies_parse_error() {
+        let stream = spawn_claude_response_stream(
+            stream_response(vec![Ok(Bytes::from("event: message_start\ndata: {\n\n"))]),
+            Duration::from_secs(1),
+            /*telemetry*/ None,
+            HashMap::new(),
+        );
+
+        let ApiError::StreamFailure { kind, message } = recv_stream_error(stream).await else {
+            panic!("expected stream failure");
+        };
+        assert_eq!(kind, ProviderStreamErrorKind::ParseError);
+        assert!(message.contains("failed to parse Claude SSE event"));
+    }
+
+    #[tokio::test]
+    async fn claude_stream_classifies_idle_timeout() {
+        let stream_response = codex_client::StreamResponse {
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            bytes: Box::pin(stream::pending::<Result<Bytes, TransportError>>()),
+        };
+        let stream = spawn_claude_response_stream(
+            stream_response,
+            Duration::from_millis(1),
+            /*telemetry*/ None,
+            HashMap::new(),
+        );
+
+        let ApiError::StreamFailure { kind, message } = recv_stream_error(stream).await else {
+            panic!("expected stream failure");
+        };
+        assert_eq!(kind, ProviderStreamErrorKind::IdleTimeout);
+        assert_eq!(message, "idle timeout waiting for SSE");
+    }
+
+    #[tokio::test]
+    async fn spawn_claude_response_stream_emits_header_events() {
+        let mut headers = HeaderMap::new();
+        headers.insert(REQUEST_ID_HEADER, HeaderValue::from_static("req-claude-1"));
+        headers.insert(
+            "x-codex-primary-used-percent",
+            HeaderValue::from_static("42"),
+        );
+        headers.insert(
+            "anthropic-ratelimit-requests-limit",
+            HeaderValue::from_static("100"),
+        );
+        headers.insert(
+            "anthropic-ratelimit-requests-remaining",
+            HeaderValue::from_static("60"),
+        );
+        let start = json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "content": []
+            }
+        });
+        let stop = json!({"type": "message_stop"});
+        let mut stream = spawn_claude_response_stream(
+            stream_response_with_headers(
+                vec![Ok(Bytes::from(format!(
+                    "event: message_start\ndata: {start}\n\nevent: message_stop\ndata: {stop}\n\n"
+                )))],
+                headers,
+            ),
+            Duration::from_secs(1),
+            /*telemetry*/ None,
+            HashMap::new(),
+        );
+
+        assert_eq!(stream.upstream_request_id.as_deref(), Some("req-claude-1"));
+
+        let event = stream
+            .rx_event
+            .recv()
+            .await
+            .expect("expected codex rate limit event")
+            .expect("expected ok event");
+        let ResponseEvent::RateLimits(snapshot) = event else {
+            panic!("expected codex rate limits event");
+        };
+        assert_eq!(snapshot.limit_id.as_deref(), Some("codex"));
+        let primary = snapshot.primary.expect("primary");
+        assert_eq!(primary.used_percent, 42.0);
+
+        let event = stream
+            .rx_event
+            .recv()
+            .await
+            .expect("expected anthropic rate limit event")
+            .expect("expected ok event");
+        let ResponseEvent::RateLimits(snapshot) = event else {
+            panic!("expected anthropic rate limits event");
+        };
+        assert_eq!(snapshot.limit_id.as_deref(), Some("anthropic_requests"));
+        let primary = snapshot.primary.expect("primary");
+        assert_eq!(primary.used_percent, 40.0);
     }
 
     #[tokio::test]
@@ -1568,6 +1843,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn claude_stream_maps_null_function_tool_input_to_empty_object() {
+        let events = run_events(
+            vec![
+                json!({
+                    "type": "message_start",
+                    "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": []}
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "search",
+                        "input": null
+                    }
+                }),
+                json!({"type": "message_stop"}),
+            ],
+            HashMap::new(),
+        )
+        .await;
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ResponseEvent::OutputItemDone(ResponseItem::FunctionCall {
+                name,
+                arguments,
+                call_id,
+                ..
+            }) if name == "search" && arguments == "{}" && call_id == "toolu_1"
+        )));
+    }
+
+    #[tokio::test]
     async fn claude_stream_does_not_emit_zero_usage_when_usage_is_absent() {
         let events = run_events(
             vec![
@@ -1597,6 +1907,70 @@ mod tests {
             _ => None,
         });
         assert_eq!(completed_usage, Some(&None));
+    }
+
+    #[tokio::test]
+    async fn claude_stream_preserves_input_cache_usage_when_delta_reports_zero() {
+        let events = run_events(
+            vec![
+                json!({
+                    "type": "message_start",
+                    "message": {
+                        "id": "msg_1",
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [],
+                        "usage": {
+                            "input_tokens": 100,
+                            "output_tokens": 0,
+                            "cache_read_input_tokens": 30,
+                            "cache_creation_input_tokens": 12
+                        }
+                    }
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": "Done"}
+                }),
+                json!({"type": "content_block_stop", "index": 0}),
+                json!({
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn"},
+                    "usage": {
+                        "input_tokens": 0,
+                        "output_tokens": 9,
+                        "cache_read_input_tokens": 0,
+                        "cache_creation_input_tokens": 0
+                    }
+                }),
+                json!({"type": "message_stop"}),
+            ],
+            HashMap::new(),
+        )
+        .await;
+
+        let usage = events
+            .iter()
+            .find_map(|event| match event {
+                ResponseEvent::Completed {
+                    token_usage: Some(usage),
+                    ..
+                } => Some(usage.clone()),
+                _ => None,
+            })
+            .expect("completed usage");
+
+        assert_eq!(
+            usage,
+            TokenUsage {
+                input_tokens: 100,
+                cached_input_tokens: 30,
+                output_tokens: 9,
+                reasoning_output_tokens: 0,
+                total_tokens: 109,
+            }
+        );
     }
 
     #[tokio::test]
@@ -1742,6 +2116,48 @@ mod tests {
     }
 
     #[test]
+    fn claude_usage_merge_ignores_zero_input_cache_fields() {
+        let mut usage = ClaudeUsage {
+            input_tokens: Some(100),
+            output_tokens: Some(1),
+            cache_read_input_tokens: Some(30),
+            cache_creation_input_tokens: Some(12),
+            server_tool_use: Some(json!({"web_search_requests": 1})),
+            iterations: Some(1),
+        };
+
+        usage.merge(ClaudeUsage {
+            input_tokens: Some(0),
+            output_tokens: Some(9),
+            cache_read_input_tokens: Some(0),
+            cache_creation_input_tokens: Some(0),
+            server_tool_use: Some(json!({"web_search_requests": 2})),
+            iterations: Some(2),
+        });
+
+        assert_eq!(usage.input_tokens, Some(100));
+        assert_eq!(usage.output_tokens, Some(9));
+        assert_eq!(usage.cache_read_input_tokens, Some(30));
+        assert_eq!(usage.cache_creation_input_tokens, Some(12));
+        assert_eq!(
+            usage.server_tool_use,
+            Some(json!({"web_search_requests": 2}))
+        );
+        assert_eq!(usage.iterations, Some(2));
+
+        usage.merge(ClaudeUsage {
+            input_tokens: Some(110),
+            cache_read_input_tokens: Some(40),
+            cache_creation_input_tokens: Some(13),
+            ..ClaudeUsage::default()
+        });
+
+        assert_eq!(usage.input_tokens, Some(110));
+        assert_eq!(usage.cache_read_input_tokens, Some(40));
+        assert_eq!(usage.cache_creation_input_tokens, Some(13));
+    }
+
+    #[test]
     fn claude_usage_maps_cache_creation_without_cached_input() {
         let usage = ClaudeUsage {
             input_tokens: Some(10),
@@ -1881,6 +2297,30 @@ mod tests {
                 ..
             } if reason == "new_future_reason"
         ));
+    }
+
+    #[tokio::test]
+    async fn claude_stream_context_window_stop_reason_errors() {
+        let error = run_events_expect_error(vec![
+            json!({
+                "type": "message_start",
+                "message": {
+                    "id": "msg_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": []
+                }
+            }),
+            json!({
+                "type": "message_delta",
+                "delta": {"stop_reason": "model_context_window_exceeded"},
+                "usage": {"output_tokens": 0}
+            }),
+            json!({"type": "message_stop"}),
+        ])
+        .await;
+
+        assert!(matches!(error, ApiError::ContextWindowExceeded));
     }
 
     #[tokio::test]
@@ -2186,6 +2626,98 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, ResponseEvent::OutputTextDelta(_)))
         );
+    }
+
+    #[tokio::test]
+    async fn claude_stream_emits_reasoning_item_for_empty_thinking_start() {
+        let events = run_events(
+            vec![
+                json!({
+                    "type": "message_start",
+                    "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": []}
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "thinking", "thinking": ""}
+                }),
+                json!({"type": "message_stop"}),
+            ],
+            HashMap::new(),
+        )
+        .await;
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ResponseEvent::OutputItemAdded(ResponseItem::Reasoning {
+                id,
+                summary,
+                content: Some(content),
+                encrypted_content: None,
+            }) if id == "msg_1_reasoning_0" && summary.is_empty() && content.is_empty()
+        )));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, ResponseEvent::OutputTextDelta(_)))
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_stream_keeps_thinking_delta_separate_from_delayed_text_delta() {
+        let events = run_events(
+            vec![
+                json!({
+                    "type": "message_start",
+                    "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": []}
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "thinking", "thinking": ""}
+                }),
+                json!({
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": "one-line thinking"}
+                }),
+                json!({
+                    "type": "content_block_stop",
+                    "index": 0
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 1,
+                    "content_block": {"type": "text", "text": ""}
+                }),
+                json!({
+                    "type": "content_block_delta",
+                    "index": 1,
+                    "delta": {"type": "text_delta", "text": "final answer"}
+                }),
+                json!({"type": "message_stop"}),
+            ],
+            HashMap::new(),
+        )
+        .await;
+
+        let reasoning_deltas: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match event {
+                ResponseEvent::ReasoningContentDelta { delta, .. } => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect();
+        let text_deltas: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match event {
+                ResponseEvent::OutputTextDelta(delta) => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(reasoning_deltas, vec!["one-line thinking"]);
+        assert_eq!(text_deltas, vec!["final answer"]);
     }
 
     #[tokio::test]
@@ -2801,11 +3333,11 @@ mod tests {
         ])
         .await;
 
-        assert!(
-            error
-                .to_string()
-                .contains("invalid Claude tool input JSON for content block 0")
-        );
+        let message = error.to_string();
+        assert!(message.contains("invalid Claude tool input JSON for content block 0"));
+        assert!(message.contains("tool `search`"));
+        assert!(message.contains("input length 9 bytes"));
+        assert!(!message.contains("{\"query\":"));
     }
 
     #[tokio::test]
@@ -2856,6 +3388,24 @@ mod tests {
                 .to_string()
                 .contains("invalid_request_error: bad stream")
         );
+    }
+
+    #[tokio::test]
+    async fn claude_stream_classifies_media_error_event() {
+        let error = run_events_expect_error(vec![json!({
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "message": "image exceeds 5 MB maximum: 5316852 bytes > 5242880 bytes"
+            }
+        })])
+        .await;
+
+        let ApiError::ProviderMedia { kind, message } = error else {
+            panic!("expected provider media error");
+        };
+        assert_eq!(kind, ProviderMediaErrorKind::ImageTooLarge);
+        assert!(message.contains("image exceeds 5 MB maximum"));
     }
 
     #[tokio::test]

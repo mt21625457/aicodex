@@ -2,6 +2,8 @@ use super::*;
 use crate::bottom_pane::goal_status_indicator_line;
 use crate::chatwidget::rate_limits::NUDGE_MODEL_SLUG;
 use crate::chatwidget::rate_limits::get_limits_duration;
+use codex_app_server_protocol::ContextTokenUsageSource;
+use codex_app_server_protocol::SpendControlLimitSnapshot;
 use pretty_assertions::assert_eq;
 use ratatui::backend::TestBackend;
 use serial_test::serial;
@@ -84,6 +86,8 @@ async fn context_indicator_shows_used_tokens_when_window_unknown() {
     let token_info = TokenUsageInfo {
         total_token_usage: token_usage.clone(),
         last_token_usage: token_usage,
+        context_tokens: None,
+        context_source: None,
         model_context_window: None,
     };
 
@@ -93,6 +97,37 @@ async fn context_indicator_shows_used_tokens_when_window_unknown() {
     assert_eq!(
         chat.bottom_pane.context_window_used_tokens(),
         Some(total_tokens)
+    );
+}
+
+#[tokio::test]
+async fn context_indicator_prefers_context_tokens_when_window_unknown() {
+    let (mut chat, _rx, _ops) = make_chatwidget_manual(Some("unknown-model")).await;
+
+    chat.config.model_context_window = None;
+    let token_info = TokenUsageInfo {
+        total_token_usage: TokenUsage {
+            total_tokens: 106_000,
+            ..TokenUsage::default()
+        },
+        last_token_usage: TokenUsage {
+            total_tokens: 12_000,
+            ..TokenUsage::default()
+        },
+        context_tokens: Some(88_000),
+        context_source: Some(ContextTokenUsageSource::ClaudeCountTokens),
+        model_context_window: None,
+    };
+
+    handle_token_count(&mut chat, Some(token_info));
+
+    assert_eq!(chat.bottom_pane.context_window_percent(), None);
+    assert_eq!(chat.bottom_pane.context_window_used_tokens(), Some(88_000));
+    assert_eq!(
+        chat.token_info
+            .as_ref()
+            .and_then(|info| info.context_source),
+        Some(ContextTokenUsageSource::ClaudeCountTokens)
     );
 }
 
@@ -393,8 +428,8 @@ async fn completed_plan_table_tail_skips_provisional_history_insert() {
 
     assert!(saw_source_backed_plan, "expected source-backed plan insert");
     assert!(
-        rendered_plan.contains('│') || rendered_plan.contains('┌'),
-        "expected completed plan table to render as a boxed table, got: {rendered_plan:?}"
+        rendered_plan.contains('━'),
+        "expected completed plan table to render with separators, got: {rendered_plan:?}"
     );
     assert!(
         !saw_stream_plan,
@@ -580,13 +615,14 @@ async fn status_line_uses_secondary_fallback_for_unsupported_window() {
             resets_at: None,
         }),
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
 
     assert_eq!(
         chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::WeeklyLimit),
-        Some("secondary usage 50%".to_string())
+        Some("secondary usage 50% left".to_string())
     );
 }
 
@@ -608,17 +644,18 @@ async fn status_line_legacy_limit_items_prefer_matching_windows() {
             resets_at: None,
         }),
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
 
     assert_eq!(
         chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::FiveHourLimit),
-        Some("5h 60%".to_string())
+        Some("5h 60% left".to_string())
     );
     assert_eq!(
         chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::WeeklyLimit),
-        Some("weekly 6%".to_string())
+        Some("weekly 6% left".to_string())
     );
 }
 
@@ -640,17 +677,18 @@ async fn status_line_shows_secondary_non_weekly_when_primary_is_weekly() {
             resets_at: None,
         }),
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
 
     assert_eq!(
         chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::FiveHourLimit),
-        Some("monthly 65%".to_string())
+        Some("monthly 65% left".to_string())
     );
     assert_eq!(
         chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::WeeklyLimit),
-        Some("weekly 6%".to_string())
+        Some("weekly 6% left".to_string())
     );
 }
 
@@ -668,6 +706,7 @@ async fn status_line_five_hour_item_omits_weekly_only_limit() {
         }),
         secondary: None,
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
@@ -678,7 +717,7 @@ async fn status_line_five_hour_item_omits_weekly_only_limit() {
     );
     assert_eq!(
         chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::WeeklyLimit),
-        Some("weekly 91%".to_string())
+        Some("weekly 91% left".to_string())
     );
 }
 
@@ -696,13 +735,14 @@ async fn status_line_single_monthly_primary_omits_weekly_limit_item() {
         }),
         secondary: None,
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
 
     assert_eq!(
         chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::FiveHourLimit),
-        Some("monthly 65%".to_string())
+        Some("monthly 65% left".to_string())
     );
     assert_eq!(
         chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::WeeklyLimit),
@@ -724,6 +764,7 @@ async fn status_line_secondary_only_non_weekly_limit_omits_primary_limit_item() 
             resets_at: None,
         }),
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
@@ -734,7 +775,7 @@ async fn status_line_secondary_only_non_weekly_limit_omits_primary_limit_item() 
     );
     assert_eq!(
         chat.status_line_value_for_item(crate::bottom_pane::StatusLineItem::WeeklyLimit),
-        Some("monthly 65%".to_string())
+        Some("monthly 65% left".to_string())
     );
 }
 
@@ -752,6 +793,7 @@ async fn rate_limit_snapshot_keeps_prior_credits_when_missing_from_headers() {
             unlimited: false,
             balance: Some("17.5".to_string()),
         }),
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
@@ -772,6 +814,7 @@ async fn rate_limit_snapshot_keeps_prior_credits_when_missing_from_headers() {
         }),
         secondary: None,
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
@@ -794,6 +837,40 @@ async fn rate_limit_snapshot_keeps_prior_credits_when_missing_from_headers() {
 }
 
 #[tokio::test]
+async fn rolling_rate_limit_snapshot_preserves_prior_individual_limit() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let mut usage_limits = snapshot(/*percent*/ 10.0);
+    usage_limits.individual_limit = Some(SpendControlLimitSnapshot {
+        limit: "25000".to_string(),
+        used: "8000".to_string(),
+        remaining_percent: 68,
+        resets_at: 1_800_000_000,
+    });
+    chat.on_rate_limit_snapshot(Some(usage_limits));
+
+    chat.on_rolling_rate_limit_snapshot(snapshot(/*percent*/ 20.0));
+
+    let display = chat
+        .rate_limit_snapshots_by_limit_id
+        .get("codex")
+        .expect("rate limits should be cached");
+    let individual_limit = display
+        .individual_limit
+        .as_ref()
+        .expect("rolling updates should preserve monthly limits");
+    assert_eq!(individual_limit.used, "8,000");
+    assert_eq!(individual_limit.limit, "25,000");
+    assert_eq!(individual_limit.percent_remaining, 68.0);
+
+    chat.on_rate_limit_snapshot(Some(snapshot(/*percent*/ 30.0)));
+    let display = chat
+        .rate_limit_snapshots_by_limit_id
+        .get("codex")
+        .expect("rate limits should be cached");
+    assert!(display.individual_limit.is_none());
+}
+
+#[tokio::test]
 async fn rate_limit_snapshot_updates_and_retains_plan_type() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
@@ -811,6 +888,7 @@ async fn rate_limit_snapshot_updates_and_retains_plan_type() {
             resets_at: None,
         }),
         credits: None,
+        individual_limit: None,
         plan_type: Some(PlanType::Plus),
         rate_limit_reached_type: None,
     }));
@@ -830,6 +908,7 @@ async fn rate_limit_snapshot_updates_and_retains_plan_type() {
             resets_at: Some(234),
         }),
         credits: None,
+        individual_limit: None,
         plan_type: Some(PlanType::Pro),
         rate_limit_reached_type: None,
     }));
@@ -849,6 +928,7 @@ async fn rate_limit_snapshot_updates_and_retains_plan_type() {
             resets_at: Some(567),
         }),
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
@@ -873,6 +953,7 @@ async fn rate_limit_snapshots_keep_separate_entries_per_limit_id() {
             unlimited: false,
             balance: Some("5.00".to_string()),
         }),
+        individual_limit: None,
         plan_type: Some(PlanType::Pro),
         rate_limit_reached_type: None,
     }));
@@ -887,6 +968,7 @@ async fn rate_limit_snapshots_keep_separate_entries_per_limit_id() {
         }),
         secondary: None,
         credits: None,
+        individual_limit: None,
         plan_type: Some(PlanType::Pro),
         rate_limit_reached_type: None,
     }));
@@ -940,6 +1022,7 @@ async fn rate_limit_switch_prompt_skips_non_codex_limit() {
         }),
         secondary: None,
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }));
@@ -1351,7 +1434,7 @@ async fn streaming_final_answer_keeps_task_running_state() {
 
     chat.handle_key_event(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
     match op_rx.try_recv() {
-        Ok(Op::Interrupt) => {}
+        Ok(Op::Interrupt { .. }) => {}
         other => panic!("expected Op::Interrupt, got {other:?}"),
     }
     assert!(!chat.bottom_pane.quit_shortcut_hint_visible());
@@ -1384,7 +1467,7 @@ async fn ctrl_c_interrupt_pauses_active_goal_turn() {
     chat.handle_key_event(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
 
     match op_rx.try_recv() {
-        Ok(Op::Interrupt) => {}
+        Ok(Op::Interrupt { .. }) => {}
         other => panic!("expected Op::Interrupt, got {other:?}"),
     }
     assert_matches!(
@@ -2027,6 +2110,41 @@ async fn status_line_legacy_context_usage_renders_context_used_percent() {
 }
 
 #[tokio::test]
+async fn status_line_context_items_prefer_context_tokens() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.config.tui_status_line = Some(vec![
+        "context-used".to_string(),
+        "context-remaining".to_string(),
+        "context-usage".to_string(),
+    ]);
+
+    handle_token_count(
+        &mut chat,
+        Some(TokenUsageInfo {
+            total_token_usage: TokenUsage {
+                total_tokens: 106_000,
+                ..TokenUsage::default()
+            },
+            last_token_usage: TokenUsage {
+                total_tokens: 12_000,
+                ..TokenUsage::default()
+            },
+            context_tokens: Some(16_000),
+            context_source: Some(ContextTokenUsageSource::ClaudeCountTokens),
+            model_context_window: Some(20_000),
+        }),
+    );
+    chat.refresh_status_line();
+
+    assert_eq!(
+        status_line_text(&chat),
+        Some("Context 50% used · Context 50% left · Context 50% used".to_string())
+    );
+    assert!(drain_insert_history(&mut rx).is_empty());
+}
+
+#[tokio::test]
 async fn status_line_branch_state_resets_when_git_branch_disabled() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.status_line_branch = Some("main".to_string());
@@ -2206,6 +2324,37 @@ async fn terminal_title_model_updates_on_model_change_without_manual_refresh() {
     chat.set_model("gpt-5.3-codex");
 
     assert_eq!(chat.last_terminal_title, Some("gpt-5.3-codex".to_string()));
+}
+
+#[tokio::test]
+async fn status_line_and_terminal_title_reasoning_render_only_effort() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+    chat.config.tui_status_line = Some(vec!["reasoning".to_string()]);
+    chat.config.tui_terminal_title = Some(vec!["reasoning".to_string()]);
+    chat.set_reasoning_effort(Some(ReasoningEffortConfig::XHigh));
+    chat.set_service_tier(Some(ServiceTier::Fast.request_value().to_string()));
+
+    chat.refresh_status_line();
+    chat.refresh_terminal_title();
+
+    assert_eq!(status_line_text(&chat), Some("xhigh".to_string()));
+    assert_eq!(chat.last_terminal_title, Some("xhigh".to_string()));
+}
+
+#[tokio::test]
+async fn status_line_reasoning_updates_on_mode_switch_without_manual_refresh() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.3-codex")).await;
+    chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
+    chat.config.tui_status_line = Some(vec!["reasoning".to_string()]);
+    chat.set_reasoning_effort(Some(ReasoningEffortConfig::High));
+
+    assert_eq!(status_line_text(&chat), Some("high".to_string()));
+
+    let plan_mask = collaboration_modes::plan_mask(chat.model_catalog.as_ref())
+        .expect("expected plan collaboration mode");
+    chat.set_collaboration_mask(plan_mask);
+
+    assert_eq!(status_line_text(&chat), Some("medium".to_string()));
 }
 
 #[tokio::test]
@@ -2493,6 +2642,8 @@ async fn session_configured_clears_goal_status_footer() {
         runtime_workspace_roots: Vec::new(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),
+        collaboration_mode: None,
+        personality: None,
         message_history: None,
         network_proxy: None,
         rollout_path: Some(rollout_file.path().to_path_buf()),
@@ -3379,7 +3530,7 @@ async fn hook_completed_before_reveal_renders_completed_without_running_flash() 
             codex_app_server_protocol::HookRunStatus::Completed,
             vec![codex_app_server_protocol::HookOutputEntry {
                 kind: codex_app_server_protocol::HookOutputEntryKind::Context,
-                text: "session context".to_string(),
+                text: "session context\nsecond line".to_string(),
             }],
         ),
     );

@@ -9,7 +9,6 @@ use crate::compact::insert_initial_context_before_last_real_user_or_summary;
 use crate::context_manager::ContextManager;
 use crate::context_manager::TotalTokenUsageBreakdown;
 use crate::context_manager::estimate_response_item_model_visible_bytes;
-use crate::context_manager::is_codex_generated_item;
 use crate::hook_runtime::PostCompactHookOutcome;
 use crate::hook_runtime::PreCompactHookOutcome;
 use crate::hook_runtime::run_post_compact_hooks;
@@ -17,6 +16,7 @@ use crate::hook_runtime::run_pre_compact_hooks;
 use crate::session::session::Session;
 use crate::session::turn::built_tools;
 use crate::session::turn_context::TurnContext;
+use crate::turn_metadata::CompactionTurnMetadata;
 use codex_analytics::CompactionImplementation;
 use codex_analytics::CompactionPhase;
 use codex_analytics::CompactionReason;
@@ -27,6 +27,8 @@ use codex_protocol::error::Result as CodexResult;
 use codex_protocol::items::ContextCompactionItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::BaseInstructions;
+use codex_protocol::models::FunctionCallOutputBody;
+use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::EventMsg;
@@ -36,6 +38,9 @@ use futures::TryFutureExt;
 use tokio_util::sync::CancellationToken;
 use tracing::error;
 use tracing::info;
+
+const CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE: &str =
+    "Output exceeded the available model context and was truncated";
 
 pub(crate) async fn run_inline_remote_auto_compact_task(
     sess: Arc<Session>,
@@ -62,6 +67,7 @@ pub(crate) async fn run_remote_compact_task(
 ) -> CodexResult<()> {
     let start_event = EventMsg::TurnStarted(TurnStartedEvent {
         turn_id: turn_context.sub_id.clone(),
+        trace_id: turn_context.trace_id.clone(),
         started_at: turn_context.turn_timing_state.started_at_unix_secs().await,
         model_context_window: turn_context.model_context_window(),
         collaboration_mode_kind: turn_context.collaboration_mode.mode,
@@ -88,6 +94,12 @@ async fn run_remote_compact_task_inner(
     reason: CompactionReason,
     phase: CompactionPhase,
 ) -> CodexResult<()> {
+    let compaction_metadata = CompactionTurnMetadata::new(
+        trigger,
+        reason,
+        CompactionImplementation::ResponsesCompact,
+        phase,
+    );
     let attempt = CompactionAnalyticsAttempt::begin(
         sess.as_ref(),
         turn_context.as_ref(),
@@ -112,8 +124,13 @@ async fn run_remote_compact_task_inner(
             return Err(CodexErr::TurnAborted);
         }
     }
-    let result =
-        run_remote_compact_task_inner_impl(sess, turn_context, initial_context_injection).await;
+    let result = run_remote_compact_task_inner_impl(
+        sess,
+        turn_context,
+        initial_context_injection,
+        compaction_metadata,
+    )
+    .await;
     let status = compaction_status_from_result(&result);
     let error = result.as_ref().err().map(ToString::to_string);
     if result.is_ok() {
@@ -125,6 +142,7 @@ async fn run_remote_compact_task_inner(
     }
     attempt.track(sess.as_ref(), status, error.clone()).await;
     if let Err(err) = result {
+        sess.track_turn_codex_error(turn_context, &err);
         let event = EventMsg::Error(
             err.to_error_event(Some("Error running remote compact task".to_string())),
         );
@@ -138,6 +156,7 @@ async fn run_remote_compact_task_inner_impl(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
     initial_context_injection: InitialContextInjection,
+    compaction_metadata: CompactionTurnMetadata,
 ) -> CodexResult<()> {
     let context_compaction_item = ContextCompactionItem::new();
     // Use the UI compaction item ID as the trace compaction ID so protocol lifecycle events,
@@ -153,21 +172,21 @@ async fn run_remote_compact_task_inner_impl(
         .await;
     let mut history = sess.clone_history().await;
     let base_instructions = sess.get_base_instructions().await;
-    let deleted_items = trim_function_call_history_to_fit_context_window(
+    let rewritten_outputs = trim_function_call_history_to_fit_context_window(
         &mut history,
         turn_context.as_ref(),
         &base_instructions,
     );
-    if deleted_items > 0 {
+    if rewritten_outputs > 0 {
         info!(
             turn_id = %turn_context.sub_id,
-            deleted_items,
-            "trimmed history items before remote compaction"
+            rewritten_outputs,
+            "rewrote history outputs before remote compaction"
         );
     }
-    // This is the history selected for remote compaction, after any trimming required to fit the
-    // compact endpoint. The checkpoint below records it separately from the next sampling request,
-    // whose prompt will repeat current developer/context prefix items.
+    // This is the history selected for remote compaction, after any output rewriting required to
+    // fit the compact endpoint. The checkpoint below records it separately from the next sampling
+    // request, whose prompt will repeat current developer/context prefix items.
     let trace_input_history = history.raw_items().to_vec();
     let prompt_input = history.for_prompt(&turn_context.model_info.input_modalities);
     let tool_router = built_tools(
@@ -185,6 +204,10 @@ async fn run_remote_compact_task_inner_impl(
         output_schema: None,
         output_schema_strict: true,
     };
+    let window_id = sess.services.model_client.current_window_id();
+    let turn_metadata_header = turn_context
+        .turn_metadata_state
+        .current_header_value_for_compaction(&window_id, compaction_metadata);
     let mut new_history = sess
         .services
         .model_client
@@ -202,6 +225,7 @@ async fn run_remote_compact_task_inner_impl(
             },
             &turn_context.session_telemetry,
             &compaction_trace,
+            turn_metadata_header.as_deref(),
         )
         .or_else(|err| async {
             let total_usage_breakdown = sess.get_total_token_usage_breakdown().await;
@@ -286,7 +310,7 @@ pub(crate) async fn process_compacted_history(
 /// - `user`-role warnings that parse as `TurnItem::UserMessage` and compaction-generated summary
 ///   messages. Legacy warning fragments are filtered by `parse_turn_item` before they reach this
 ///   check.
-fn should_keep_compacted_history_item(item: &ResponseItem) -> bool {
+pub(crate) fn should_keep_compacted_history_item(item: &ResponseItem) -> bool {
     match item {
         ResponseItem::Message { role, .. } if role == "developer" => false,
         ResponseItem::Message { role, .. } if role == "user" => {
@@ -359,26 +383,68 @@ pub(crate) fn trim_function_call_history_to_fit_context_window(
     turn_context: &TurnContext,
     base_instructions: &BaseInstructions,
 ) -> usize {
-    let mut deleted_items = 0usize;
     let Some(context_window) = turn_context.model_context_window() else {
-        return deleted_items;
+        return 0;
     };
+    let mut rewritten_outputs = 0usize;
+    let item_count = history.raw_items().len();
 
-    while history
-        .estimate_token_count_with_base_instructions(base_instructions)
-        .is_some_and(|estimated_tokens| estimated_tokens > context_window)
-    {
-        let Some(last_item) = history.raw_items().last() else {
+    for index in (0..item_count).rev() {
+        if history
+            .estimate_token_count_with_base_instructions(base_instructions)
+            .is_none_or(|estimated_tokens| estimated_tokens <= context_window)
+        {
+            break;
+        }
+        let Some(rewritten_item) = history
+            .raw_items()
+            .get(index)
+            .and_then(rewritten_output_for_context_window)
+        else {
             break;
         };
-        if !is_codex_generated_item(last_item) {
-            break;
-        }
-        if !history.remove_last_item() {
-            break;
-        }
-        deleted_items += 1;
+        let mut items = history.raw_items().to_vec();
+        items[index] = rewritten_item;
+        history.replace(items);
+        rewritten_outputs += 1;
     }
 
-    deleted_items
+    rewritten_outputs
+}
+
+fn rewritten_output_for_context_window(item: &ResponseItem) -> Option<ResponseItem> {
+    Some(match item {
+        ResponseItem::FunctionCallOutput { call_id, output } => ResponseItem::FunctionCallOutput {
+            call_id: call_id.clone(),
+            output: truncated_output_payload(output),
+        },
+        ResponseItem::CustomToolCallOutput {
+            call_id,
+            name,
+            output,
+        } => ResponseItem::CustomToolCallOutput {
+            call_id: call_id.clone(),
+            name: name.clone(),
+            output: truncated_output_payload(output),
+        },
+        ResponseItem::ToolSearchOutput {
+            call_id,
+            status,
+            execution,
+            ..
+        } => ResponseItem::ToolSearchOutput {
+            call_id: call_id.clone(),
+            status: status.clone(),
+            execution: execution.clone(),
+            tools: Vec::new(),
+        },
+        _ => return None,
+    })
+}
+
+fn truncated_output_payload(output: &FunctionCallOutputPayload) -> FunctionCallOutputPayload {
+    FunctionCallOutputPayload {
+        body: FunctionCallOutputBody::Text(CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE.to_string()),
+        success: output.success,
+    }
 }

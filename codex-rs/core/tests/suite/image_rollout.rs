@@ -127,6 +127,7 @@ async fn copy_paste_local_image_persists_rollout_request_shape() -> anyhow::Resu
             environments: None,
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
             thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
                 cwd: Some(cwd.path().to_path_buf()),
                 approval_policy: Some(AskForApproval::Never),
@@ -160,7 +161,9 @@ async fn copy_paste_local_image_persists_rollout_request_shape() -> anyhow::Resu
         role: "user".to_string(),
         content: vec![
             ContentItem::InputText {
-                text: codex_protocol::models::local_image_open_tag_text(/*label_number*/ 1),
+                text: codex_protocol::models::local_image_open_tag_text_with_path(
+                    /*label_number*/ 1, &abs_path,
+                ),
             },
             ContentItem::InputImage {
                 image_url,
@@ -223,6 +226,7 @@ async fn drag_drop_image_persists_rollout_request_shape() -> anyhow::Result<()> 
             environments: None,
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            additional_context: Default::default(),
             thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
                 cwd: Some(cwd.path().to_path_buf()),
                 approval_policy: Some(AskForApproval::Never),
@@ -255,15 +259,9 @@ async fn drag_drop_image_persists_rollout_request_shape() -> anyhow::Result<()> 
         id: None,
         role: "user".to_string(),
         content: vec![
-            ContentItem::InputText {
-                text: codex_protocol::models::image_open_tag_text(),
-            },
             ContentItem::InputImage {
                 image_url,
                 detail: Some(DEFAULT_IMAGE_DETAIL),
-            },
-            ContentItem::InputText {
-                text: codex_protocol::models::image_close_tag_text(),
             },
             ContentItem::InputText {
                 text: "dropped image".to_string(),

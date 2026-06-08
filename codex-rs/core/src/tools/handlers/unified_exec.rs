@@ -7,10 +7,9 @@ use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::PostToolUsePayload;
-use crate::unified_exec::resolve_max_tokens;
+use codex_exec_server::Environment;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_tools::UnifiedExecShellMode;
-use codex_utils_output_truncation::TruncationPolicy;
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -72,13 +71,6 @@ fn default_tty() -> bool {
     false
 }
 
-fn effective_max_output_tokens(
-    max_output_tokens: Option<usize>,
-    truncation_policy: TruncationPolicy,
-) -> usize {
-    resolve_max_tokens(max_output_tokens).min(truncation_policy.token_budget())
-}
-
 #[derive(Debug)]
 pub(crate) struct ResolvedCommand {
     pub(crate) command: Vec<String>,
@@ -133,14 +125,33 @@ pub(crate) fn get_command(
                 shell_type: shell.shell_type.clone(),
             })
         }
-        UnifiedExecShellMode::ZshFork(zsh_fork_config) => Ok(ResolvedCommand {
-            command: vec![
-                zsh_fork_config.shell_zsh_path.to_string_lossy().to_string(),
-                if use_login_shell { "-lc" } else { "-c" }.to_string(),
-                args.cmd.clone(),
-            ],
-            shell_type: ShellType::Zsh,
-        }),
+        UnifiedExecShellMode::ZshFork(zsh_fork_config) => {
+            if args.shell.is_some() {
+                return Err(
+                    "`shell` is not supported for local zsh-fork exec; omit `shell` to use zsh-fork, or target a remote environment where `shell` is supported.".to_string(),
+                );
+            }
+
+            Ok(ResolvedCommand {
+                command: vec![
+                    zsh_fork_config.shell_zsh_path.to_string_lossy().to_string(),
+                    if use_login_shell { "-lc" } else { "-c" }.to_string(),
+                    args.cmd.clone(),
+                ],
+                shell_type: ShellType::Zsh,
+            })
+        }
+    }
+}
+
+pub(crate) fn shell_mode_for_environment(
+    turn_shell_mode: &UnifiedExecShellMode,
+    environment: &Environment,
+) -> UnifiedExecShellMode {
+    if environment.is_remote() {
+        UnifiedExecShellMode::Direct
+    } else {
+        turn_shell_mode.clone()
     }
 }
 

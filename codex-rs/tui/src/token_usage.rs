@@ -2,11 +2,27 @@
 
 use std::fmt;
 
+use codex_app_server_protocol::ContextTokenUsageSource;
 use codex_protocol::num_format::format_with_separators;
 use serde::Deserialize;
 use serde::Serialize;
 
 const BASELINE_TOKENS: i64 = 12000;
+
+pub(crate) fn percent_of_context_window_remaining_for_tokens(
+    tokens_in_context: i64,
+    context_window: i64,
+) -> i64 {
+    if context_window <= BASELINE_TOKENS {
+        return 0;
+    }
+    let effective_window = context_window - BASELINE_TOKENS;
+    let used = (tokens_in_context - BASELINE_TOKENS).max(0);
+    let remaining = (effective_window - used).max(0);
+    ((remaining as f64 / effective_window as f64) * 100.0)
+        .clamp(0.0, 100.0)
+        .round() as i64
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenUsage {
@@ -41,15 +57,10 @@ impl TokenUsage {
     }
 
     pub(crate) fn percent_of_context_window_remaining(&self, context_window: i64) -> i64 {
-        if context_window <= BASELINE_TOKENS {
-            return 0;
-        }
-        let effective_window = context_window - BASELINE_TOKENS;
-        let used = (self.tokens_in_context_window() - BASELINE_TOKENS).max(0);
-        let remaining = (effective_window - used).max(0);
-        ((remaining as f64 / effective_window as f64) * 100.0)
-            .clamp(0.0, 100.0)
-            .round() as i64
+        percent_of_context_window_remaining_for_tokens(
+            self.tokens_in_context_window(),
+            context_window,
+        )
     }
 }
 
@@ -57,7 +68,23 @@ impl TokenUsage {
 pub(crate) struct TokenUsageInfo {
     pub(crate) total_token_usage: TokenUsage,
     pub(crate) last_token_usage: TokenUsage,
+    pub(crate) context_tokens: Option<i64>,
+    pub(crate) context_source: Option<ContextTokenUsageSource>,
     pub(crate) model_context_window: Option<i64>,
+}
+
+impl TokenUsageInfo {
+    pub(crate) fn tokens_in_context_window(&self) -> i64 {
+        self.context_tokens
+            .unwrap_or_else(|| self.last_token_usage.tokens_in_context_window())
+    }
+
+    pub(crate) fn percent_of_context_window_remaining(&self, context_window: i64) -> i64 {
+        percent_of_context_window_remaining_for_tokens(
+            self.tokens_in_context_window(),
+            context_window,
+        )
+    }
 }
 
 impl fmt::Display for TokenUsage {
@@ -85,5 +112,50 @@ impl fmt::Display for TokenUsage {
                 String::new()
             }
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_usage_info_prefers_context_tokens_for_window_usage() {
+        let info = TokenUsageInfo {
+            total_token_usage: TokenUsage {
+                total_tokens: 100_000,
+                ..TokenUsage::default()
+            },
+            last_token_usage: TokenUsage {
+                total_tokens: 12_000,
+                ..TokenUsage::default()
+            },
+            context_tokens: Some(16_000),
+            context_source: Some(ContextTokenUsageSource::ClaudeCountTokens),
+            model_context_window: Some(20_000),
+        };
+
+        assert_eq!(info.tokens_in_context_window(), 16_000);
+        assert_eq!(info.percent_of_context_window_remaining(20_000), 50);
+    }
+
+    #[test]
+    fn token_usage_info_falls_back_to_last_usage_when_context_tokens_absent() {
+        let info = TokenUsageInfo {
+            total_token_usage: TokenUsage {
+                total_tokens: 100_000,
+                ..TokenUsage::default()
+            },
+            last_token_usage: TokenUsage {
+                total_tokens: 16_000,
+                ..TokenUsage::default()
+            },
+            context_tokens: None,
+            context_source: None,
+            model_context_window: Some(20_000),
+        };
+
+        assert_eq!(info.tokens_in_context_window(), 16_000);
+        assert_eq!(info.percent_of_context_window_remaining(20_000), 50);
     }
 }

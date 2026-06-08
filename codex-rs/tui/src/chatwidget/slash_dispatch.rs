@@ -30,8 +30,6 @@ struct PreparedSlashCommandArgs {
 }
 
 const SIDE_STARTING_CONTEXT_LABEL: &str = "Side starting...";
-const SIDE_REVIEW_UNAVAILABLE_MESSAGE: &str =
-    "'/side' is unavailable while code review is running.";
 const SIDE_SLASH_COMMAND_UNAVAILABLE_HINT: &str =
     "Press Ctrl+C to return to the main thread first.";
 const GOAL_USAGE: &str = "Usage: /goal <objective>";
@@ -90,7 +88,7 @@ impl ChatWidget {
             return false;
         }
         if let Some(mask) = collaboration_modes::plan_mask(self.model_catalog.as_ref()) {
-            self.set_collaboration_mask(mask);
+            self.set_collaboration_mask_from_user_action(mask);
             true
         } else {
             self.add_info_message(
@@ -114,9 +112,12 @@ impl ChatWidget {
         });
     }
 
-    fn request_empty_side_conversation(&mut self) {
+    fn request_empty_side_conversation(&mut self, cmd: SlashCommand) {
         let Some(parent_thread_id) = self.thread_id else {
-            self.add_error_message("'/side' is unavailable before the session starts.".to_string());
+            let command = cmd.command();
+            self.add_error_message(format!(
+                "'/{command}' is unavailable before the session starts."
+            ));
             return;
         };
 
@@ -163,6 +164,35 @@ impl ChatWidget {
             SlashCommand::New => {
                 self.app_event_tx.send(AppEvent::NewSession);
             }
+            SlashCommand::Archive => {
+                self.bottom_pane.show_selection_view(SelectionViewParams {
+                    title: Some("Archive this session?".to_string()),
+                    subtitle: Some(
+                        "Are you sure? This will archive the current session and exit Codex"
+                            .to_string(),
+                    ),
+                    footer_hint: Some(standard_popup_hint_line()),
+                    items: vec![
+                        SelectionItem {
+                            name: "No, don't archive".to_string(),
+                            description: Some("Return to the current session".to_string()),
+                            dismiss_on_select: true,
+                            ..Default::default()
+                        },
+                        SelectionItem {
+                            name: "Yes, archive and exit".to_string(),
+                            description: Some("Archive this session now".to_string()),
+                            actions: vec![Box::new(|tx| {
+                                tx.send(AppEvent::ArchiveCurrentThread);
+                            })],
+                            dismiss_on_select: true,
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                });
+                self.request_redraw();
+            }
             SlashCommand::Clear => {
                 self.app_event_tx.send(AppEvent::ClearUi);
             }
@@ -171,6 +201,16 @@ impl ChatWidget {
             }
             SlashCommand::Fork => {
                 self.app_event_tx.send(AppEvent::ForkCurrentSession);
+            }
+            SlashCommand::App => {
+                let Some(thread_id) = self.thread_id else {
+                    self.add_error_message(
+                        "Session is still starting; try /app again in a moment.".to_string(),
+                    );
+                    return;
+                };
+                self.app_event_tx
+                    .send(AppEvent::OpenDesktopThread { thread_id });
             }
             SlashCommand::Init => {
                 let init_target = self.config.cwd.join(DEFAULT_AGENTS_MD_FILENAME);
@@ -239,8 +279,8 @@ impl ChatWidget {
                     );
                 }
             }
-            SlashCommand::Side => {
-                self.request_empty_side_conversation();
+            SlashCommand::Side | SlashCommand::Btw => {
+                self.request_empty_side_conversation(cmd);
             }
             SlashCommand::Agent | SlashCommand::MultiAgents => {
                 self.app_event_tx.send(AppEvent::OpenAgentPicker);
@@ -296,7 +336,10 @@ impl ChatWidget {
                         &[],
                     );
                     self.app_event_tx
-                        .send(AppEvent::BeginWindowsSandboxElevatedSetup { preset });
+                        .send(AppEvent::BeginWindowsSandboxElevatedSetup {
+                            preset,
+                            profile_selection: None,
+                        });
                 }
                 #[cfg(not(target_os = "windows"))]
                 {
@@ -745,11 +788,12 @@ impl ChatWidget {
                     self.bottom_pane.drain_pending_submission_state();
                 }
             }
-            SlashCommand::Side if !trimmed.is_empty() => {
+            SlashCommand::Side | SlashCommand::Btw if !trimmed.is_empty() => {
                 let Some(parent_thread_id) = self.thread_id else {
-                    self.add_error_message(
-                        "'/side' is unavailable before the session starts.".to_string(),
-                    );
+                    let command = cmd.command();
+                    self.add_error_message(format!(
+                        "'/{command}' is unavailable before the session starts."
+                    ));
                     return;
                 };
                 let user_message = self.prepared_inline_user_message(
@@ -940,10 +984,12 @@ impl ChatWidget {
             | SlashCommand::Raw
             | SlashCommand::Vim
             | SlashCommand::Diff
+            | SlashCommand::App
             | SlashCommand::Rename
             | SlashCommand::TestApproval => QueueDrain::Continue,
             SlashCommand::Feedback
             | SlashCommand::New
+            | SlashCommand::Archive
             | SlashCommand::Clear
             | SlashCommand::Resume
             | SlashCommand::Fork
@@ -957,6 +1003,7 @@ impl ChatWidget {
             | SlashCommand::Plan
             | SlashCommand::Goal
             | SlashCommand::Side
+            | SlashCommand::Btw
             | SlashCommand::Keymap
             | SlashCommand::Agent
             | SlashCommand::MultiAgents
@@ -1017,11 +1064,14 @@ impl ChatWidget {
     }
 
     fn ensure_side_command_allowed_outside_review(&mut self, cmd: SlashCommand) -> bool {
-        if cmd != SlashCommand::Side || !self.review.is_review_mode {
+        if !matches!(cmd, SlashCommand::Side | SlashCommand::Btw) || !self.review.is_review_mode {
             return true;
         }
 
-        self.add_error_message(SIDE_REVIEW_UNAVAILABLE_MESSAGE.to_string());
+        let command = cmd.command();
+        self.add_error_message(format!(
+            "'/{command}' is unavailable while code review is running."
+        ));
         self.bottom_pane.drain_pending_submission_state();
         false
     }

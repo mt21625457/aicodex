@@ -3,6 +3,8 @@ use std::path::Path;
 use codex_exec_server::ExecutorFileSystem;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_tools::CLAUDE_TEXT_EDITOR_TOOL_NAME;
+use codex_tools::JsonSchema;
+use codex_tools::ResponsesApiTool;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -69,8 +71,15 @@ impl ToolExecutor<ToolInvocation> for ClaudeTextEditorHandler {
         ToolName::plain(CLAUDE_TEXT_EDITOR_TOOL_NAME)
     }
 
-    fn spec(&self) -> Option<ToolSpec> {
-        None
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::Function(ResponsesApiTool {
+            name: CLAUDE_TEXT_EDITOR_TOOL_NAME.to_string(),
+            description: "Claude native text editor runtime.".to_string(),
+            strict: false,
+            defer_loading: None,
+            parameters: JsonSchema::default(),
+            output_schema: None,
+        })
     }
 
     async fn handle(

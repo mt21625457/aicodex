@@ -8,14 +8,14 @@ use ctor::ctor;
 use std::sync::OnceLock;
 use tempfile::TempDir;
 
-use codex_config::CloudRequirementsLoader;
-use codex_config::ConfigRequirementsToml;
+use codex_config::CloudConfigBundleLoader;
 use codex_config::LoaderOverrides;
-use codex_config::NetworkRequirementsToml;
+use codex_config::test_support::CloudConfigBundleFixture;
 use codex_core::CodexThread;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigOverrides;
+use codex_features::Feature;
 use codex_utils_absolute_path::AbsolutePathBuf;
 pub use codex_utils_absolute_path::test_support::PathBufExt;
 pub use codex_utils_absolute_path::test_support::PathExt;
@@ -34,6 +34,7 @@ pub mod tracing;
 pub mod zsh_fork;
 
 static TEST_ARG0_PATH_ENTRY: OnceLock<Option<Arg0PathEntryGuard>> = OnceLock::new();
+const LOOPBACK_NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1";
 
 #[ctor]
 fn enable_deterministic_unified_exec_process_ids_for_tests() {
@@ -63,6 +64,33 @@ fn configure_insta_workspace_root_for_snapshot_tests() {
         unsafe {
             std::env::set_var("INSTA_WORKSPACE_ROOT", workspace_root);
         }
+    }
+}
+
+#[ctor]
+fn configure_loopback_no_proxy_for_tests() {
+    ensure_loopback_no_proxy("NO_PROXY");
+    ensure_loopback_no_proxy("no_proxy");
+}
+
+fn ensure_loopback_no_proxy(key: &str) {
+    let loopback = LOOPBACK_NO_PROXY_VALUE;
+    let value = match std::env::var(key) {
+        Ok(existing) if existing.split(',').any(|entry| entry.trim() == "*") => existing,
+        Ok(existing)
+            if existing
+                .split(',')
+                .any(|entry| matches!(entry.trim(), "localhost" | "127.0.0.1" | "::1")) =>
+        {
+            existing
+        }
+        Ok(existing) if !existing.trim().is_empty() => format!("{existing},{loopback}"),
+        _ => loopback.to_string(),
+    };
+
+    // Safety: this ctor runs at process startup before test threads begin.
+    unsafe {
+        std::env::set_var(key, value);
     }
 }
 
@@ -169,40 +197,39 @@ pub fn fetch_dotslash_file(
 /// temporary directory. Using a per-test directory keeps tests hermetic and
 /// avoids clobbering a developer’s real `~/.aicodex`.
 pub async fn load_default_config_for_test(codex_home: &TempDir) -> Config {
-    load_default_config_for_test_with_cloud_requirements(
+    load_default_config_for_test_with_cloud_config_bundle(
         codex_home,
-        CloudRequirementsLoader::default(),
+        CloudConfigBundleLoader::default(),
     )
     .await
 }
 
-/// Returns a default `Config` with test-provided cloud requirements applied
+/// Returns a default `Config` with test-provided cloud bundle requirements applied.
 /// during config construction.
-pub async fn load_default_config_for_test_with_cloud_requirements(
+pub async fn load_default_config_for_test_with_cloud_config_bundle(
     codex_home: &TempDir,
-    cloud_requirements: CloudRequirementsLoader,
+    cloud_config_bundle: CloudConfigBundleLoader,
 ) -> Config {
-    ConfigBuilder::default()
+    let mut config = ConfigBuilder::default()
         .loader_overrides(LoaderOverrides::without_managed_config_for_tests())
         .codex_home(codex_home.path().to_path_buf())
         .harness_overrides(default_test_overrides())
-        .cloud_requirements(cloud_requirements)
+        .cloud_config_bundle(cloud_config_bundle)
         .build()
         .await
-        .expect("defaults for test should always succeed")
+        .expect("defaults for test should always succeed");
+    let _ = config.features.disable(Feature::Apps);
+    config
 }
 
-pub fn managed_network_requirements_loader() -> CloudRequirementsLoader {
-    CloudRequirementsLoader::new(async {
-        Ok(Some(ConfigRequirementsToml {
-            network: Some(NetworkRequirementsToml {
-                enabled: Some(true),
-                allow_local_binding: Some(true),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }))
-    })
+pub fn managed_network_requirements_loader() -> CloudConfigBundleLoader {
+    CloudConfigBundleFixture::loader_with_enterprise_requirement(
+        r#"
+[experimental_network]
+enabled = true
+allow_local_binding = true
+"#,
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -246,6 +273,39 @@ where
 {
     use tokio::time::Duration;
     wait_for_event_with_timeout(codex, predicate, Duration::from_secs(1)).await
+}
+
+/// Waits for a configured MCP server to finish startup and requires it to be ready.
+pub async fn wait_for_mcp_server(codex: &CodexThread, server_name: &str) -> anyhow::Result<()> {
+    use codex_protocol::protocol::EventMsg;
+
+    // Wait for the startup summary regardless of outcome, then interpret the
+    // requested server's ready, failed, or cancelled entry below.
+    let summary = loop {
+        let event = codex
+            .next_event()
+            .await
+            .expect("stream ended unexpectedly while waiting for MCP startup");
+        if let EventMsg::McpStartupComplete(summary) = event.msg {
+            break summary;
+        }
+    };
+    if let Some(failure) = summary
+        .failed
+        .iter()
+        .find(|failure| failure.server == server_name)
+    {
+        let error = &failure.error;
+        anyhow::bail!("MCP server {server_name} failed to start: {error}");
+    }
+    if summary.cancelled.iter().any(|server| server == server_name) {
+        anyhow::bail!("MCP server {server_name} startup was cancelled");
+    }
+    assert!(
+        summary.ready.iter().any(|server| server == server_name),
+        "expected MCP server {server_name} to be ready; startup summary: {summary:?}"
+    );
+    Ok(())
 }
 
 pub async fn submit_thread_settings(

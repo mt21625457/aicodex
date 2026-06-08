@@ -325,17 +325,13 @@ impl Session {
             host_owned_codex_apps_enabled(&mcp_config, auth.as_ref());
         let auth_statuses =
             compute_auth_statuses(mcp_servers.iter(), store_mode, auth.as_ref()).await;
-        let mcp_runtime_environment = match turn_context.environments.primary() {
-            Some(turn_environment) => McpRuntimeEnvironment::new(
-                Some(Arc::clone(&turn_environment.environment)),
-                self.services.environment_manager.try_local_environment(),
+        let mcp_runtime_context = match turn_context.environments.primary() {
+            Some(turn_environment) => McpRuntimeContext::new(
+                Arc::clone(&self.services.environment_manager),
                 turn_environment.cwd.to_path_buf(),
             ),
-            None => McpRuntimeEnvironment::new(
-                self.services
-                    .environment_manager
-                    .default_or_local_environment(),
-                self.services.environment_manager.try_local_environment(),
+            None => McpRuntimeContext::new(
+                Arc::clone(&self.services.environment_manager),
                 #[allow(deprecated)]
                 turn_context.cwd.to_path_buf(),
             ),
@@ -353,10 +349,11 @@ impl Session {
             turn_context.sub_id.clone(),
             self.get_tx_event(),
             turn_context.permission_profile(),
-            mcp_runtime_environment,
+            mcp_runtime_context,
             config.codex_home.to_path_buf(),
             codex_apps_tools_cache_key(auth.as_ref()),
             host_owned_codex_apps_enabled,
+            mcp_config.prefix_mcp_tool_names,
             mcp_config.client_elicitation_capability,
             tool_plugin_provenance,
             auth.as_ref(),
@@ -458,7 +455,15 @@ async fn review_guardian_mcp_elicitation(
         return Ok(None);
     };
 
-    if !crate::guardian::routes_approval_to_guardian(turn_context.as_ref()) {
+    let approvals_reviewer = crate::connectors::mcp_approvals_reviewer(
+        turn_context.config.as_ref(),
+        request.server_name.as_str(),
+        elicitation_connector_id(&request.elicitation),
+    );
+    if !crate::guardian::routes_approval_to_guardian_with_reviewer(
+        turn_context.as_ref(),
+        approvals_reviewer,
+    ) {
         return Ok(None);
     }
 
@@ -568,6 +573,15 @@ fn guardian_elicitation_review_request(
             annotations: None,
         },
     ))
+}
+
+fn elicitation_connector_id(elicitation: &CreateElicitationRequestParams) -> Option<&str> {
+    match elicitation {
+        CreateElicitationRequestParams::FormElicitationParams { meta, .. }
+        | CreateElicitationRequestParams::UrlElicitationParams { meta, .. } => meta
+            .as_ref()
+            .and_then(|meta| metadata_str(&meta.0, MCP_ELICITATION_CONNECTOR_ID_KEY)),
+    }
 }
 
 fn meta_requests_approval_request(meta: &Option<Meta>) -> bool {

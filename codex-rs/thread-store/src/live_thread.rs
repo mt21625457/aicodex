@@ -17,7 +17,6 @@ use crate::ReadThreadParams;
 use crate::ResumeThreadParams;
 use crate::StoredThread;
 use crate::StoredThreadHistory;
-use crate::ThreadEventPersistenceMode;
 use crate::ThreadMetadataPatch;
 use crate::ThreadStore;
 use crate::ThreadStoreResult;
@@ -33,7 +32,6 @@ use crate::thread_metadata_sync::ThreadMetadataSync;
 pub struct LiveThread {
     thread_id: ThreadId,
     thread_store: Arc<dyn ThreadStore>,
-    event_persistence_mode: EventPersistenceMode,
     metadata_sync: Arc<Mutex<ThreadMetadataSync>>,
 }
 
@@ -92,13 +90,11 @@ impl LiveThread {
         params: CreateThreadParams,
     ) -> ThreadStoreResult<Self> {
         let thread_id = params.thread_id;
-        let event_persistence_mode = event_persistence_mode(params.event_persistence_mode);
         let metadata_sync = ThreadMetadataSync::for_create(&params).await;
         thread_store.create_thread(params).await?;
         Ok(Self {
             thread_id,
             thread_store,
-            event_persistence_mode,
             metadata_sync: Arc::new(Mutex::new(metadata_sync)),
         })
     }
@@ -108,7 +104,6 @@ impl LiveThread {
         mut params: ResumeThreadParams,
     ) -> ThreadStoreResult<Self> {
         let thread_id = params.thread_id;
-        let event_persistence_mode = event_persistence_mode(params.event_persistence_mode);
         let should_load_history = params.history.is_none();
         let include_archived = params.include_archived;
         thread_store.resume_thread(params.clone()).await?;
@@ -131,13 +126,21 @@ impl LiveThread {
         Ok(Self {
             thread_id,
             thread_store,
-            event_persistence_mode,
             metadata_sync: Arc::new(Mutex::new(metadata_sync)),
         })
     }
 
     pub async fn append_items(&self, items: &[RolloutItem]) -> ThreadStoreResult<()> {
-        let canonical_items = persisted_rollout_items(items, self.event_persistence_mode);
+        self.append_items_with_persistence_mode(items, EventPersistenceMode::Limited)
+            .await
+    }
+
+    pub async fn append_items_with_persistence_mode(
+        &self,
+        items: &[RolloutItem],
+        mode: EventPersistenceMode,
+    ) -> ThreadStoreResult<()> {
+        let canonical_items = persisted_rollout_items(items, mode);
         if canonical_items.is_empty() {
             return Ok(());
         }
@@ -302,9 +305,6 @@ impl LiveThread {
     }
 }
 
-fn event_persistence_mode(mode: ThreadEventPersistenceMode) -> EventPersistenceMode {
-    match mode {
-        ThreadEventPersistenceMode::Limited => EventPersistenceMode::Limited,
-        ThreadEventPersistenceMode::Extended => EventPersistenceMode::Extended,
-    }
-}
+#[cfg(test)]
+#[path = "live_thread_tests.rs"]
+mod tests;

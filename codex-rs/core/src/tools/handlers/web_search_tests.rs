@@ -2,12 +2,21 @@ use super::*;
 use codex_protocol::config_types::WebSearchContextSize;
 use codex_tools::ResponsesApiWebSearchFilters;
 use pretty_assertions::assert_eq;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 use wiremock::Mock;
 use wiremock::MockServer;
 use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 use wiremock::matchers::query_param;
+
+use crate::session::tests::make_session_and_context;
+use crate::tools::context::ToolCallSource;
+use crate::tools::context::ToolInvocation;
+use crate::tools::context::ToolPayload;
+use crate::turn_diff_tracker::TurnDiffTracker;
 
 #[test]
 fn normalize_queries_accepts_single_and_batch_queries() {
@@ -80,6 +89,7 @@ async fn run_web_searches_uses_configured_endpoint_and_returns_results() {
         &endpoint,
         vec!["rust async".to_string()],
         &["example.com".to_string()],
+        DEFAULT_RESULTS_PER_QUERY,
     )
     .await
     .expect("web search should succeed");
@@ -96,7 +106,7 @@ async fn run_web_searches_uses_configured_endpoint_and_returns_results() {
 }
 
 #[test]
-fn handler_uses_web_search_spec_for_allowed_domains_without_exposing_duplicate_spec() {
+fn handler_uses_web_search_spec_for_allowed_domains() {
     let spec = ToolSpec::WebSearch {
         external_web_access: Some(true),
         filters: Some(ResponsesApiWebSearchFilters {
@@ -107,8 +117,76 @@ fn handler_uses_web_search_spec_for_allowed_domains_without_exposing_duplicate_s
         search_content_types: None,
     };
     let endpoint = Url::parse("https://example.test/html/").expect("endpoint");
+    let handler = WebSearchHandler::new_for_test(spec.clone(), endpoint, reqwest::Client::new());
+
+    assert_eq!(handler.spec(), spec);
+    assert_eq!(handler.allowed_domains, vec!["example.com"]);
+    assert_eq!(handler.max_results_per_query, 3);
+    assert_eq!(handler.unsupported_reason, None);
+}
+
+#[tokio::test]
+async fn handler_rejects_unsupported_local_semantics_before_network_search() {
+    let server = MockServer::start().await;
+    let endpoint = Url::parse(&format!("{}/html/", server.uri())).expect("mock endpoint");
+    let spec = ToolSpec::WebSearch {
+        external_web_access: Some(false),
+        filters: None,
+        user_location: None,
+        search_context_size: None,
+        search_content_types: None,
+    };
     let handler = WebSearchHandler::new_for_test(spec, endpoint, reqwest::Client::new());
 
-    assert_eq!(handler.spec(), None);
-    assert_eq!(handler.allowed_domains, vec!["example.com"]);
+    let Err(FunctionCallError::RespondToModel(message)) = handler
+        .handle(invocation_for_arguments(r#"{"query":"rust async"}"#).await)
+        .await
+    else {
+        panic!("cached-only local fallback should return a model-correctable error")
+    };
+
+    assert!(
+        message.contains("cached-only"),
+        "unexpected error message: {message}"
+    );
+    assert_eq!(
+        server
+            .received_requests()
+            .await
+            .expect("mock server should capture requests")
+            .len(),
+        0
+    );
+}
+
+#[test]
+fn local_web_search_rejects_non_text_content_types() {
+    let spec = ToolSpec::WebSearch {
+        external_web_access: Some(true),
+        filters: None,
+        user_location: None,
+        search_context_size: None,
+        search_content_types: Some(vec!["text".to_string(), "image".to_string()]),
+    };
+
+    assert_eq!(
+        unsupported_local_web_search_reason(&spec),
+        Some("web_search local fallback only supports text search results")
+    );
+}
+
+async fn invocation_for_arguments(arguments: &str) -> ToolInvocation {
+    let (session, turn) = make_session_and_context().await;
+    ToolInvocation {
+        session: session.into(),
+        turn: turn.into(),
+        cancellation_token: CancellationToken::new(),
+        tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
+        call_id: "call-web-search".to_string(),
+        tool_name: codex_tools::ToolName::plain("web_search"),
+        source: ToolCallSource::Direct,
+        payload: ToolPayload::Function {
+            arguments: arguments.to_string(),
+        },
+    }
 }

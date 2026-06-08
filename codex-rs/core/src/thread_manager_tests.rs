@@ -172,7 +172,6 @@ fn fork_thread_accepts_legacy_usize_snapshot_argument() {
             config,
             path,
             /*thread_source*/ None,
-            /*persist_extended_history*/ false,
             /*parent_trace*/ None,
         );
     }
@@ -187,6 +186,7 @@ fn out_of_range_truncation_drops_pre_user_active_turn_prefix() {
         RolloutItem::ResponseItem(assistant_msg("a1")),
         RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
             turn_id: "turn-2".to_string(),
+            trace_id: None,
             started_at: None,
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
@@ -327,7 +327,6 @@ async fn start_thread_rejects_explicit_local_environment_when_default_provider_i
             session_source: None,
             thread_source: None,
             dynamic_tools: Vec::new(),
-            persist_extended_history: false,
             metrics_service_name: None,
             parent_trace: None,
             environments: vec![TurnEnvironmentSelection {
@@ -461,7 +460,6 @@ async fn start_thread_keeps_internal_threads_hidden_from_normal_lookups() {
             )),
             thread_source: None,
             dynamic_tools: Vec::new(),
-            persist_extended_history: false,
             metrics_service_name: None,
             parent_trace: None,
             environments: Vec::new(),
@@ -535,7 +533,6 @@ async fn resume_and_fork_do_not_restore_thread_environments_from_rollout_inner()
             session_source: None,
             thread_source: None,
             dynamic_tools: Vec::new(),
-            persist_extended_history: false,
             metrics_service_name: None,
             parent_trace: None,
             environments: environments.clone(),
@@ -591,7 +588,6 @@ async fn resume_and_fork_do_not_restore_thread_environments_from_rollout_inner()
             config,
             rollout_path,
             /*thread_source*/ None,
-            /*persist_extended_history*/ false,
             /*parent_trace*/ None,
         )
         .await
@@ -807,7 +803,6 @@ async fn resume_stopped_thread_from_rollout_preserves_thread_source() {
             session_source: None,
             thread_source: Some(ThreadSource::User),
             dynamic_tools: Vec::new(),
-            persist_extended_history: false,
             metrics_service_name: None,
             parent_trace: None,
             environments: Vec::new(),
@@ -914,7 +909,6 @@ async fn rollout_path_resume_and_fork_read_history_through_thread_store() {
                 rollout_path: Some(rollout_path.clone()),
             }),
             auth_manager.clone(),
-            /*persist_extended_history*/ false,
             /*parent_trace*/ None,
         )
         .await
@@ -943,7 +937,6 @@ async fn rollout_path_resume_and_fork_read_history_through_thread_store() {
             config,
             rollout_path,
             /*thread_source*/ None,
-            /*persist_extended_history*/ false,
             /*parent_trace*/ None,
         )
         .await
@@ -1141,6 +1134,7 @@ fn multi_agent_v2_interrupted_marker_uses_developer_input_message() {
 fn completed_legacy_event_history_is_not_mid_turn() {
     let completed_history = InitialHistory::Forked(vec![
         RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+            client_id: None,
             message: "hello".to_string(),
             images: None,
             text_elements: Vec::new(),
@@ -1169,6 +1163,7 @@ fn mixed_response_and_legacy_user_event_history_is_mid_turn() {
     let mixed_history = InitialHistory::Forked(vec![
         RolloutItem::ResponseItem(user_msg("hello")),
         RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+            client_id: None,
             message: "hello".to_string(),
             images: None,
             text_elements: Vec::new(),
@@ -1219,7 +1214,6 @@ async fn interrupted_fork_snapshot_does_not_synthesize_turn_id_for_legacy_histor
                 RolloutItem::ResponseItem(assistant_msg("partial")),
             ]),
             auth_manager,
-            /*persist_extended_history*/ false,
             /*parent_trace*/ None,
         )
         .await
@@ -1242,7 +1236,6 @@ async fn interrupted_fork_snapshot_does_not_synthesize_turn_id_for_legacy_histor
             config.clone(),
             source_path,
             /*thread_source*/ None,
-            /*persist_extended_history*/ false,
             /*parent_trace*/ None,
         )
         .await
@@ -1325,6 +1318,7 @@ async fn interrupted_fork_snapshot_preserves_explicit_turn_id() {
             InitialHistory::Forked(vec![
                 RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
                     turn_id: "turn-explicit".to_string(),
+                    trace_id: None,
                     started_at: None,
                     model_context_window: None,
                     collaboration_mode_kind: Default::default(),
@@ -1333,7 +1327,6 @@ async fn interrupted_fork_snapshot_preserves_explicit_turn_id() {
                 RolloutItem::ResponseItem(assistant_msg("partial")),
             ]),
             auth_manager,
-            /*persist_extended_history*/ false,
             /*parent_trace*/ None,
         )
         .await
@@ -1361,7 +1354,6 @@ async fn interrupted_fork_snapshot_preserves_explicit_turn_id() {
             config.clone(),
             source_path,
             /*thread_source*/ None,
-            /*persist_extended_history*/ false,
             /*parent_trace*/ None,
         )
         .await
@@ -1424,7 +1416,6 @@ async fn interrupted_fork_snapshot_uses_persisted_mid_turn_history_without_live_
                 RolloutItem::ResponseItem(assistant_msg("partial")),
             ]),
             auth_manager,
-            /*persist_extended_history*/ false,
             /*parent_trace*/ None,
         )
         .await
@@ -1445,7 +1436,6 @@ async fn interrupted_fork_snapshot_uses_persisted_mid_turn_history_without_live_
             config.clone(),
             source_path,
             /*thread_source*/ None,
-            /*persist_extended_history*/ false,
             /*parent_trace*/ None,
         )
         .await
@@ -1486,7 +1476,6 @@ async fn interrupted_fork_snapshot_uses_persisted_mid_turn_history_without_live_
             config.clone(),
             forked_path,
             /*thread_source*/ None,
-            /*persist_extended_history*/ false,
             /*parent_trace*/ None,
         )
         .await
@@ -1564,7 +1553,6 @@ async fn resumed_thread_keeps_paused_goal_paused() -> anyhow::Result<()> {
             config.clone(),
             InitialHistory::Forked(vec![RolloutItem::ResponseItem(user_msg("keep working"))]),
             auth_manager.clone(),
-            /*persist_extended_history*/ false,
             /*parent_trace*/ None,
         )
         .await

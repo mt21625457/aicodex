@@ -310,6 +310,7 @@ impl App {
                     thread_id,
                     thread_label,
                     call_id: params.item_id.clone(),
+                    environment_id: params.environment_id.clone(),
                     reason: params.reason.clone(),
                     permissions: params.permissions.clone().into(),
                 }),
@@ -497,7 +498,7 @@ impl App {
         op: &AppCommand,
     ) -> Result<bool> {
         match op {
-            AppCommand::Interrupt => {
+            AppCommand::Interrupt { .. } => {
                 if let Some(turn_id) = self.active_turn_id_for_thread(thread_id).await {
                     app_server.turn_interrupt(thread_id, turn_id).await?;
                 } else {
@@ -591,7 +592,9 @@ impl App {
                     let permissions_override = Self::turn_permissions_override_from_config(
                         config,
                         active_permission_profile.as_ref(),
-                        self.runtime_permission_profile_override.as_ref(),
+                        self.runtime_permission_profile_override
+                            .as_ref()
+                            .map(|profile| &profile.permission_profile),
                     );
                     app_server
                         .turn_start(
@@ -682,10 +685,13 @@ impl App {
             }
             AppCommand::ReloadUserConfig => {
                 app_server.reload_user_config().await?;
-                self.refresh_in_memory_config_from_disk().await?;
                 Ok(true)
             }
-            AppCommand::OverrideTurnContext { .. } => Ok(true),
+            AppCommand::OverrideTurnContext { .. } => {
+                self.sync_override_turn_context_settings(app_server, thread_id, op)
+                    .await;
+                Ok(true)
+            }
             AppCommand::ApproveGuardianDeniedAction { event } => {
                 app_server
                     .thread_approve_guardian_denied_action(thread_id, event)
@@ -825,6 +831,17 @@ impl App {
         thread_id: ThreadId,
         notification: ServerNotification,
     ) -> Result<()> {
+        if matches!(notification, ServerNotification::ThreadSettingsUpdated(_))
+            && self.primary_thread_id.is_some()
+            && self.primary_thread_id != Some(thread_id)
+            && !self.thread_event_channels.contains_key(&thread_id)
+        {
+            return Ok(());
+        }
+        if let ServerNotification::ThreadSettingsUpdated(notification) = &notification {
+            self.apply_thread_settings_to_cached_session(thread_id, &notification.thread_settings)
+                .await;
+        }
         let inferred_session = self
             .infer_session_for_thread_notification(thread_id, &notification)
             .await;

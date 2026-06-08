@@ -153,6 +153,9 @@ const RESPONSES_ENDPOINT: &str = "/responses";
 const CLAUDE_MESSAGES_ENDPOINT: &str = "/messages";
 const CLAUDE_COUNT_TOKENS_ENDPOINT: &str = "/messages/count_tokens";
 const RESPONSES_COMPACT_ENDPOINT: &str = "/responses/compact";
+// `/responses/compact` is unary, so the timeout covers the full response rather than one idle
+// period between stream events.
+const COMPACT_REQUEST_TIMEOUT_IDLE_MULTIPLIER: u32 = 4;
 const MEMORIES_SUMMARIZE_ENDPOINT: &str = "/memories/trace_summarize";
 #[cfg(test)]
 pub(crate) const WEBSOCKET_CONNECT_TIMEOUT: Duration =
@@ -177,6 +180,7 @@ struct ModelClientState {
     provider: SharedModelProvider,
     auth_env_telemetry: AuthEnvTelemetry,
     session_source: SessionSource,
+    parent_thread_id: Option<ThreadId>,
     model_verbosity: Option<VerbosityConfig>,
     enable_request_compression: bool,
     include_timing_metrics: bool,
@@ -222,6 +226,7 @@ impl RequestRouteTelemetry {
 #[derive(Debug, Clone)]
 pub struct ModelClient {
     state: Arc<ModelClientState>,
+    prompt_cache_key_override: Option<String>,
 }
 
 /// A turn-scoped streaming session created from a [`ModelClient`].
@@ -264,6 +269,7 @@ struct WebsocketSession {
     connection: Option<ApiWebSocketConnection>,
     last_request: Option<ResponsesApiRequest>,
     last_response_rx: Option<oneshot::Receiver<LastResponse>>,
+    last_response_from_untraced_warmup: bool,
     connection_reused: StdMutex<bool>,
 }
 
@@ -323,6 +329,7 @@ impl ModelClient {
         installation_id: String,
         provider_info: ModelProviderInfo,
         session_source: SessionSource,
+        parent_thread_id: Option<ThreadId>,
         model_verbosity: Option<VerbosityConfig>,
         enable_request_compression: bool,
         include_timing_metrics: bool,
@@ -346,6 +353,7 @@ impl ModelClient {
                 provider: model_provider,
                 auth_env_telemetry,
                 session_source,
+                parent_thread_id,
                 model_verbosity,
                 enable_request_compression,
                 include_timing_metrics,
@@ -355,7 +363,22 @@ impl ModelClient {
                 disable_websockets: AtomicBool::new(false),
                 cached_websocket_session: StdMutex::new(WebsocketSession::default()),
             }),
+            prompt_cache_key_override: None,
         }
+    }
+
+    pub(crate) fn with_prompt_cache_key_override(
+        mut self,
+        prompt_cache_key_override: Option<String>,
+    ) -> Self {
+        self.prompt_cache_key_override = prompt_cache_key_override;
+        self
+    }
+
+    fn prompt_cache_key(&self) -> String {
+        self.prompt_cache_key_override
+            .clone()
+            .unwrap_or_else(|| self.state.thread_id.to_string())
     }
 
     /// Creates a fresh turn-scoped streaming session.
@@ -408,6 +431,7 @@ impl ModelClient {
                 provider,
                 auth_env_telemetry,
                 session_source: self.state.session_source.clone(),
+                parent_thread_id: self.state.parent_thread_id,
                 model_verbosity: self.state.model_verbosity,
                 enable_request_compression: self.state.enable_request_compression,
                 include_timing_metrics: self.state.include_timing_metrics,
@@ -419,6 +443,7 @@ impl ModelClient {
                 ),
                 cached_websocket_session: StdMutex::new(WebsocketSession::default()),
             }),
+            prompt_cache_key_override: self.prompt_cache_key_override.clone(),
         };
 
         ModelClientSession {
@@ -444,7 +469,7 @@ impl ModelClient {
         self.store_cached_websocket_session(WebsocketSession::default());
     }
 
-    fn current_window_id(&self) -> String {
+    pub(crate) fn current_window_id(&self) -> String {
         let thread_id = self.state.thread_id;
         let window_generation = self.state.window_generation.load(Ordering::Relaxed);
         format!("{thread_id}:{window_generation}")
@@ -502,6 +527,7 @@ impl ModelClient {
         settings: CompactConversationRequestSettings,
         session_telemetry: &SessionTelemetry,
         compaction_trace: &CompactionTraceContext,
+        turn_metadata_header: Option<&str>,
     ) -> Result<Vec<ResponseItem>> {
         if prompt.input.is_empty() {
             return Ok(Vec::new());
@@ -557,7 +583,7 @@ impl ModelClient {
         extra_headers.extend(build_responses_headers(
             self.state.beta_features_header.as_deref(),
             /*turn_state*/ None,
-            /*turn_metadata_header*/ None,
+            parse_turn_metadata_header(turn_metadata_header).as_ref(),
         ));
         extra_headers.extend(self.build_responses_identity_headers());
         extra_headers.extend(build_session_headers(
@@ -567,12 +593,16 @@ impl ModelClient {
         if let Some(header_value) = self.generate_attestation_header_for().await {
             extra_headers.insert(X_OAI_ATTESTATION_HEADER, header_value);
         }
+        let compact_request_timeout = client_setup
+            .api_provider
+            .stream_idle_timeout
+            .saturating_mul(COMPACT_REQUEST_TIMEOUT_IDLE_MULTIPLIER);
         let client =
             ApiCompactClient::new(transport, client_setup.api_provider, client_setup.api_auth)
                 .with_telemetry(Some(request_telemetry));
         let trace_attempt = compaction_trace.start_attempt(&payload);
         let result = client
-            .compact_input(&payload, extra_headers)
+            .compact_input(&payload, extra_headers, compact_request_timeout)
             .await
             .map_err(map_api_error);
         trace_attempt.record_result(result.as_deref());
@@ -677,7 +707,7 @@ impl ModelClient {
 
     fn build_responses_identity_headers(&self) -> ApiHeaderMap {
         let mut extra_headers = self.build_subagent_headers();
-        if let Some(parent_thread_id) = parent_thread_id_header_value(&self.state.session_source)
+        if let Some(parent_thread_id) = parent_thread_id_header_value(self.state.parent_thread_id)
             && let Ok(val) = HeaderValue::from_str(&parent_thread_id)
         {
             extra_headers.insert(X_CODEX_PARENT_THREAD_ID_HEADER, val);
@@ -704,7 +734,7 @@ impl ModelClient {
         if let Some(subagent) = subagent_header_value(&self.state.session_source) {
             client_metadata.insert(X_OPENAI_SUBAGENT_HEADER.to_string(), subagent);
         }
-        if let Some(parent_thread_id) = parent_thread_id_header_value(&self.state.session_source) {
+        if let Some(parent_thread_id) = parent_thread_id_header_value(self.state.parent_thread_id) {
             client_metadata.insert(
                 X_CODEX_PARENT_THREAD_ID_HEADER.to_string(),
                 parent_thread_id,
@@ -806,9 +836,8 @@ impl ModelClient {
             &prompt.output_schema,
             prompt.output_schema_strict,
         );
-        let prompt_cache_key = Some(self.state.thread_id.to_string());
-        let service_tier =
-            service_tier.filter(|service_tier| model_info.supports_service_tier(service_tier));
+        let prompt_cache_key = Some(self.prompt_cache_key());
+        let service_tier = model_info.service_tier_for_request(service_tier);
         let request = ResponsesApiRequest {
             model: model_info.slug.clone(),
             instructions: instructions.clone(),
@@ -1031,10 +1060,11 @@ impl ModelClientSession {
         self.client.state.provider.info()
     }
 
-    pub(crate) fn reset_websocket_session(&mut self) {
+    fn reset_websocket_session(&mut self) {
         self.websocket_session.connection = None;
         self.websocket_session.last_request = None;
         self.websocket_session.last_response_rx = None;
+        self.websocket_session.last_response_from_untraced_warmup = false;
         self.websocket_session
             .set_connection_reused(/*connection_reused*/ false);
     }
@@ -1140,28 +1170,33 @@ impl ModelClientSession {
         &mut self,
         payload: ResponseCreateWsRequest,
         request: &ResponsesApiRequest,
-    ) -> ResponsesWsRequest {
+    ) -> (ResponsesWsRequest, bool) {
         let Some(last_response) = self.get_last_response() else {
-            return ResponsesWsRequest::ResponseCreate(payload);
+            return (ResponsesWsRequest::ResponseCreate(payload), false);
         };
+        let previous_response_id_from_untraced_warmup =
+            self.websocket_session.last_response_from_untraced_warmup;
         let Some(incremental_items) = self.get_incremental_items(
             request,
             Some(&last_response),
             /*allow_empty_delta*/ true,
         ) else {
-            return ResponsesWsRequest::ResponseCreate(payload);
+            return (ResponsesWsRequest::ResponseCreate(payload), false);
         };
 
         if last_response.response_id.is_empty() {
             trace!("incremental request failed, no previous response id");
-            return ResponsesWsRequest::ResponseCreate(payload);
+            return (ResponsesWsRequest::ResponseCreate(payload), false);
         }
 
-        ResponsesWsRequest::ResponseCreate(ResponseCreateWsRequest {
-            previous_response_id: Some(last_response.response_id),
-            input: incremental_items,
-            ..payload
-        })
+        (
+            ResponsesWsRequest::ResponseCreate(ResponseCreateWsRequest {
+                previous_response_id: Some(last_response.response_id),
+                input: incremental_items,
+                ..payload
+            }),
+            previous_response_id_from_untraced_warmup,
+        )
     }
 
     /// Opportunistically preconnects a websocket for this turn-scoped client session.
@@ -1240,6 +1275,7 @@ impl ModelClientSession {
         if needs_new {
             self.websocket_session.last_request = None;
             self.websocket_session.last_response_rx = None;
+            self.websocket_session.last_response_from_untraced_warmup = false;
             let turn_state = options
                 .turn_state
                 .clone()
@@ -1452,16 +1488,20 @@ impl ModelClientSession {
                 self.client.state.auth_env_telemetry.clone(),
             );
             let provider_info = self.client.state.provider.info();
+            let provider_compat = crate::claude::provider_compat_for_provider(
+                &provider_info.name,
+                provider_info.base_url.as_deref(),
+                Some(&model_info.slug),
+            );
             let request = crate::claude::build_claude_messages_request(
                 prompt,
                 model_info,
                 crate::claude::ClaudeRequestOptions {
                     reasoning_effort: effort,
                     service_tier,
-                    provider_compat: crate::claude::provider_compat_for_provider(
-                        &provider_info.name,
-                        provider_info.base_url.as_deref(),
-                        Some(&model_info.slug),
+                    provider_compat,
+                    cache_editing: crate::claude::cache_editing_options_for_provider(
+                        provider_compat,
                     ),
                     ..Default::default()
                 },
@@ -1570,17 +1610,19 @@ impl ModelClientSession {
             self.client.state.auth_env_telemetry.clone(),
         );
         let provider_info = self.client.state.provider.info();
+        let provider_compat = crate::claude::provider_compat_for_provider(
+            &provider_info.name,
+            provider_info.base_url.as_deref(),
+            Some(&model_info.slug),
+        );
         let request = crate::claude::build_claude_messages_request(
             prompt,
             model_info,
             crate::claude::ClaudeRequestOptions {
                 reasoning_effort: effort,
                 service_tier,
-                provider_compat: crate::claude::provider_compat_for_provider(
-                    &provider_info.name,
-                    provider_info.base_url.as_deref(),
-                    Some(&model_info.slug),
-                ),
+                provider_compat,
+                cache_editing: crate::claude::cache_editing_options_for_provider(provider_compat),
                 ..Default::default()
             },
         )?;
@@ -1705,8 +1747,8 @@ impl ModelClientSession {
                 Err(err) => return Err(map_api_error(err)),
             }
 
-            let mut ws_request = self.prepare_websocket_request(ws_payload, &request);
-            self.websocket_session.last_request = Some(request);
+            let (mut ws_request, previous_response_id_from_untraced_warmup) =
+                self.prepare_websocket_request(ws_payload, &request);
             let inference_trace_attempt = if warmup {
                 // Prewarm sends `generate=false`; it is connection setup, not a
                 // model inference attempt that should appear in rollout traces.
@@ -1715,7 +1757,16 @@ impl ModelClientSession {
                 inference_trace.start_attempt()
             };
             stamp_ws_stream_request_start_ms(&mut ws_request);
-            inference_trace_attempt.record_started(&ws_request);
+            if previous_response_id_from_untraced_warmup {
+                // The transport can reuse an untraced warmup response id and omit the
+                // already-sent input, but rollout replay needs the logical model-visible
+                // request rather than the compressed websocket delta.
+                inference_trace_attempt.record_started(&request);
+            } else {
+                inference_trace_attempt.record_started(&ws_request);
+            }
+            self.websocket_session.last_request = Some(request);
+            self.websocket_session.last_response_from_untraced_warmup = warmup;
             let websocket_connection =
                 self.websocket_session.connection.as_ref().ok_or_else(|| {
                     map_api_error(ApiError::Stream(
@@ -2006,20 +2057,8 @@ fn subagent_header_value(session_source: &SessionSource) -> Option<String> {
     }
 }
 
-fn parent_thread_id_header_value(session_source: &SessionSource) -> Option<String> {
-    match session_source {
-        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-            parent_thread_id, ..
-        }) => Some(parent_thread_id.to_string()),
-        SessionSource::Cli
-        | SessionSource::VSCode
-        | SessionSource::Exec
-        | SessionSource::Mcp
-        | SessionSource::Custom(_)
-        | SessionSource::Internal(_)
-        | SessionSource::SubAgent(_)
-        | SessionSource::Unknown => None,
-    }
+fn parent_thread_id_header_value(parent_thread_id: Option<ThreadId>) -> Option<String> {
+    parent_thread_id.map(|parent_thread_id| parent_thread_id.to_string())
 }
 
 const RESPONSE_STREAM_CHANNEL_CAPACITY: usize = 1600;

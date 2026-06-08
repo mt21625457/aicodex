@@ -3,8 +3,11 @@
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::models::ResponseItem;
 use codex_sandboxing::policy_transforms::merge_permission_profiles;
+use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 
+use super::AdditionalContextStore;
 use super::auto_compact_window::AutoCompactWindow;
 use super::auto_compact_window::AutoCompactWindowSnapshot;
 use crate::context_manager::ContextManager;
@@ -25,6 +28,7 @@ pub(crate) struct SessionState {
     pub(crate) latest_rate_limits: Option<RateLimitSnapshot>,
     pub(crate) server_reasoning_included: bool,
     pub(crate) mcp_dependency_prompted: HashSet<String>,
+    pub(crate) additional_context: AdditionalContextStore,
     /// Settings used by the latest regular user turn, used for turn-to-turn
     /// model/realtime handling on subsequent regular turns (including full-context
     /// reinjection after resume or `/compact`).
@@ -34,8 +38,8 @@ pub(crate) struct SessionState {
     /// Startup prewarmed session prepared during session initialization.
     pub(crate) startup_prewarm: Option<SessionStartupPrewarmHandle>,
     pub(crate) active_connector_selection: HashSet<String>,
-    pub(crate) pending_session_start_source: Option<codex_hooks::SessionStartSource>,
-    granted_permissions: Option<AdditionalPermissionProfile>,
+    pub(crate) pending_session_start_sources: VecDeque<codex_hooks::SessionStartSource>,
+    granted_permissions_by_environment_id: HashMap<String, AdditionalPermissionProfile>,
     next_turn_is_first: bool,
 }
 
@@ -49,12 +53,13 @@ impl SessionState {
             latest_rate_limits: None,
             server_reasoning_included: false,
             mcp_dependency_prompted: HashSet::new(),
+            additional_context: AdditionalContextStore::default(),
             previous_turn_settings: None,
             auto_compact_window: AutoCompactWindow::new(),
             startup_prewarm: None,
             active_connector_selection: HashSet::new(),
-            pending_session_start_source: None,
-            granted_permissions: None,
+            pending_session_start_sources: VecDeque::new(),
+            granted_permissions_by_environment_id: HashMap::new(),
             next_turn_is_first: true,
         }
     }
@@ -229,26 +234,42 @@ impl SessionState {
         self.active_connector_selection.clear();
     }
 
-    pub(crate) fn set_pending_session_start_source(
+    pub(crate) fn queue_pending_session_start_source(
         &mut self,
-        value: Option<codex_hooks::SessionStartSource>,
+        value: codex_hooks::SessionStartSource,
     ) {
-        self.pending_session_start_source = value;
+        self.pending_session_start_sources.push_back(value);
     }
 
     pub(crate) fn take_pending_session_start_source(
         &mut self,
     ) -> Option<codex_hooks::SessionStartSource> {
-        self.pending_session_start_source.take()
+        self.pending_session_start_sources.pop_front()
     }
 
-    pub(crate) fn record_granted_permissions(&mut self, permissions: AdditionalPermissionProfile) {
-        self.granted_permissions =
-            merge_permission_profiles(self.granted_permissions.as_ref(), Some(&permissions));
+    pub(crate) fn record_granted_permissions(
+        &mut self,
+        environment_id: &str,
+        permissions: AdditionalPermissionProfile,
+    ) {
+        let granted_permissions = merge_permission_profiles(
+            self.granted_permissions_by_environment_id
+                .get(environment_id),
+            Some(&permissions),
+        );
+        if let Some(granted_permissions) = granted_permissions {
+            self.granted_permissions_by_environment_id
+                .insert(environment_id.to_string(), granted_permissions);
+        }
     }
 
-    pub(crate) fn granted_permissions(&self) -> Option<AdditionalPermissionProfile> {
-        self.granted_permissions.clone()
+    pub(crate) fn granted_permissions(
+        &self,
+        environment_id: &str,
+    ) -> Option<AdditionalPermissionProfile> {
+        self.granted_permissions_by_environment_id
+            .get(environment_id)
+            .cloned()
     }
 }
 
@@ -264,6 +285,9 @@ fn merge_rate_limit_fields(
     }
     if snapshot.credits.is_none() {
         snapshot.credits = previous.and_then(|prior| prior.credits.clone());
+    }
+    if snapshot.individual_limit.is_none() {
+        snapshot.individual_limit = previous.and_then(|prior| prior.individual_limit.clone());
     }
     if snapshot.plan_type.is_none() {
         snapshot.plan_type = previous.and_then(|prior| prior.plan_type);

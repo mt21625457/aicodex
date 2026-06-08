@@ -641,12 +641,14 @@ async fn prepare_realtime_start(
             realtime_request_headers(
                 requested_realtime_session_id.as_deref(),
                 Some(realtime_api_key.as_str()),
+                version,
             )?
         }
         ConversationStartTransport::Webrtc { .. } => {
             realtime_request_headers(
                 requested_realtime_session_id.as_deref(),
                 /*api_key*/ None,
+                version,
             )?
         }
     };
@@ -714,7 +716,7 @@ pub(crate) async fn build_realtime_session_config(
     Ok(RealtimeSessionConfig {
         instructions: prompt,
         model,
-        session_id: Some(realtime_session_id.unwrap_or_else(|| sess.conversation_id.to_string())),
+        session_id: Some(realtime_session_id.unwrap_or_else(|| sess.thread_id.to_string())),
         event_parser,
         session_mode,
         output_modality,
@@ -973,8 +975,13 @@ fn realtime_api_key(auth: Option<&CodexAuth>, provider: &ModelProviderInfo) -> C
 fn realtime_request_headers(
     realtime_session_id: Option<&str>,
     api_key: Option<&str>,
+    version: RealtimeWsVersion,
 ) -> CodexResult<Option<HeaderMap>> {
     let mut headers = HeaderMap::new();
+
+    if version == RealtimeWsVersion::V1 {
+        headers.insert("openai-alpha", HeaderValue::from_static("quicksilver=v1"));
+    }
 
     if let Some(realtime_session_id) = realtime_session_id
         && let Ok(realtime_session_id) = HeaderValue::from_str(realtime_session_id)

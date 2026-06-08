@@ -19,8 +19,8 @@ impl ToolExecutor<ToolInvocation> for ReportAgentJobResultHandler {
         ToolName::plain("report_agent_job_result")
     }
 
-    fn spec(&self) -> Option<ToolSpec> {
-        Some(create_report_agent_job_result_tool())
+    fn spec(&self) -> ToolSpec {
+        create_report_agent_job_result_tool()
     }
 
     async fn handle(
@@ -61,7 +61,7 @@ pub async fn handle(
         ));
     }
     let db = required_state_db(&session)?;
-    let reporting_thread_id = session.conversation_id.to_string();
+    let reporting_thread_id = session.thread_id.to_string();
     let accepted = db
         .report_agent_job_item_result(
             args.job_id.as_str(),

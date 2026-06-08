@@ -333,16 +333,7 @@ async fn plugins_popup_add_marketplace_tab_opens_prompt_and_submits_source() {
         "expected marketplace source prompt, got:\n{prompt}"
     );
 
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+    chat.handle_paste("owner/repo".to_string());
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
 
     match rx.try_recv() {
@@ -1400,6 +1391,77 @@ async fn apps_popup_stays_loading_until_final_snapshot_updates() {
 }
 
 #[tokio::test]
+async fn apps_notification_update_excludes_inaccessible_apps_from_mentions() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    set_chatgpt_auth(&mut chat);
+    chat.config
+        .features
+        .enable(Feature::Apps)
+        .expect("test config should allow feature update");
+    chat.bottom_pane.set_connectors_enabled(/*enabled*/ true);
+    chat.bottom_pane
+        .set_composer_text("$".to_string(), Vec::new(), Vec::new());
+
+    chat.on_connectors_loaded(
+        Ok(ConnectorsSnapshot {
+            connectors: vec![
+                AppInfo {
+                    id: "google_drive".to_string(),
+                    name: "Google Drive".to_string(),
+                    description: Some("Connected files".to_string()),
+                    logo_url: None,
+                    logo_url_dark: None,
+                    distribution_channel: None,
+                    branding: None,
+                    app_metadata: None,
+                    labels: None,
+                    install_url: Some("https://example.test/google-drive".to_string()),
+                    is_accessible: true,
+                    is_enabled: true,
+                    plugin_display_names: Vec::new(),
+                },
+                AppInfo {
+                    id: "arabica_uae".to_string(),
+                    name: "% Arabica UAE".to_string(),
+                    description: Some("Directory-only app".to_string()),
+                    logo_url: None,
+                    logo_url_dark: None,
+                    distribution_channel: None,
+                    branding: None,
+                    app_metadata: None,
+                    labels: None,
+                    install_url: Some("https://example.test/arabica".to_string()),
+                    is_accessible: false,
+                    is_enabled: true,
+                    plugin_display_names: Vec::new(),
+                },
+            ],
+        }),
+        /*is_final*/ false,
+    );
+
+    assert_matches!(
+        &chat.connectors.partial_snapshot,
+        Some(snapshot)
+            if snapshot
+                .connectors
+                .iter()
+                .find(|connector| connector.id == "arabica_uae")
+                .is_some_and(|connector| !connector.is_accessible)
+    );
+
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        popup.contains("Google Drive"),
+        "expected accessible apps to appear in the mention popup, got:\n{popup}"
+    );
+    assert!(
+        !popup.contains("% Arabica UAE"),
+        "did not expect an inaccessible directory app in the mention popup, got:\n{popup}"
+    );
+}
+
+#[tokio::test]
 async fn apps_refresh_failure_keeps_existing_full_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     set_chatgpt_auth(&mut chat);
@@ -2129,7 +2191,7 @@ async fn memories_settings_popup_snapshot() {
 
     chat.open_memories_popup();
 
-    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    let popup = strip_osc8_for_snapshot(&render_bottom_popup(&chat, /*width*/ 80));
     assert_chatwidget_snapshot!("memories_settings_popup", popup);
 }
 
@@ -2279,6 +2341,7 @@ async fn model_picker_hides_show_in_picker_false_models_from_cache() {
         supports_personality: false,
         additional_speed_tiers: Vec::new(),
         service_tiers: Vec::new(),
+        default_service_tier: None,
         is_default: false,
         upgrade: None,
         show_in_picker,
@@ -2363,58 +2426,67 @@ async fn model_reasoning_selection_popup_extra_high_warning_snapshot() {
     assert_chatwidget_snapshot!("model_reasoning_selection_popup_extra_high_warning", popup);
 }
 
-#[tokio::test]
-async fn alt_period_raises_reasoning_effort() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
-    chat.thread_id = Some(ThreadId::new());
-    chat.set_reasoning_effort(Some(ReasoningEffortConfig::Medium));
+async fn assert_reasoning_shortcuts_update_effort(
+    key_events: [KeyEvent; 2],
+    expected_effort: ReasoningEffortConfig,
+    expect_model_update: bool,
+) {
+    for key_event in key_events {
+        let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
+        chat.thread_id = Some(ThreadId::new());
+        chat.set_reasoning_effort(Some(ReasoningEffortConfig::Medium));
 
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char('.'), KeyModifiers::ALT));
+        chat.handle_key_event(key_event);
 
-    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, AppEvent::UpdateModel(model) if model == "gpt-5.4")),
-        "expected model update event; events: {events:?}"
-    );
-    assert!(
-        events.iter().any(|event| matches!(
-            event,
-            AppEvent::UpdateReasoningEffort(Some(ReasoningEffortConfig::High))
-        )),
-        "expected reasoning update event; events: {events:?}"
-    );
-    assert!(
-        events
-            .iter()
-            .all(|event| !matches!(event, AppEvent::PersistModelSelection { .. })),
-        "expected no model persistence event; events: {events:?}"
-    );
+        let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        if expect_model_update {
+            assert!(
+                events.iter().any(
+                    |event| matches!(event, AppEvent::UpdateModel(model) if model == "gpt-5.4")
+                ),
+                "expected model update event for {key_event:?}; events: {events:?}"
+            );
+        }
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                AppEvent::UpdateReasoningEffort(Some(effort)) if effort == &expected_effort
+            )),
+            "expected reasoning update event for {key_event:?}; events: {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event, AppEvent::PersistModelSelection { .. })),
+            "expected no model persistence event for {key_event:?}; events: {events:?}"
+        );
+    }
 }
 
 #[tokio::test]
-async fn alt_comma_lowers_reasoning_effort() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
-    chat.thread_id = Some(ThreadId::new());
-    chat.set_reasoning_effort(Some(ReasoningEffortConfig::Medium));
+async fn reasoning_up_shortcuts_raise_reasoning_effort() {
+    assert_reasoning_shortcuts_update_effort(
+        [
+            KeyEvent::new(KeyCode::Char('.'), KeyModifiers::ALT),
+            KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT),
+        ],
+        ReasoningEffortConfig::High,
+        /*expect_model_update*/ true,
+    )
+    .await;
+}
 
-    chat.handle_key_event(KeyEvent::new(KeyCode::Char(','), KeyModifiers::ALT));
-
-    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
-    assert!(
-        events.iter().any(|event| matches!(
-            event,
-            AppEvent::UpdateReasoningEffort(Some(ReasoningEffortConfig::Low))
-        )),
-        "expected reasoning update event; events: {events:?}"
-    );
-    assert!(
-        events
-            .iter()
-            .all(|event| !matches!(event, AppEvent::PersistModelSelection { .. })),
-        "expected no model persistence event; events: {events:?}"
-    );
+#[tokio::test]
+async fn reasoning_down_shortcuts_lower_reasoning_effort() {
+    assert_reasoning_shortcuts_update_effort(
+        [
+            KeyEvent::new(KeyCode::Char(','), KeyModifiers::ALT),
+            KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT),
+        ],
+        ReasoningEffortConfig::Low,
+        /*expect_model_update*/ false,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -2500,6 +2572,7 @@ async fn single_reasoning_option_skips_selection() {
         supports_personality: false,
         additional_speed_tiers: Vec::new(),
         service_tiers: Vec::new(),
+        default_service_tier: None,
         is_default: false,
         upgrade: None,
         show_in_picker: true,
@@ -2548,6 +2621,7 @@ async fn feedback_upload_consent_popup_snapshot() {
         crate::app_event::FeedbackCategory::Bug,
         chat.current_rollout_path.clone(),
         Some("auto-review-rollout-thread-1.jsonl".to_string()),
+        /*include_windows_sandbox_log*/ true,
         &codex_feedback::FeedbackDiagnostics::new(vec![codex_feedback::FeedbackDiagnostic {
             headline: "Proxy environment variables are set and may affect connectivity."
                 .to_string(),
@@ -2568,6 +2642,7 @@ async fn feedback_good_result_consent_popup_includes_connectivity_diagnostics_fi
         crate::app_event::FeedbackCategory::GoodResult,
         chat.current_rollout_path.clone(),
         Some("auto-review-rollout-thread-1.jsonl".to_string()),
+        /*include_windows_sandbox_log*/ false,
         &codex_feedback::FeedbackDiagnostics::new(vec![codex_feedback::FeedbackDiagnostic {
             headline: "Proxy environment variables are set and may affect connectivity."
                 .to_string(),

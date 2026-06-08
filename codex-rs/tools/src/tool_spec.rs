@@ -172,6 +172,13 @@ pub enum ClaudeWebSearchToolKind {
     LocalFunctionTool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClaudeWebSearchPlan {
+    NativeLossless,
+    LocalFallback(&'static str),
+    Disabled(&'static str),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaudeMessagesToolOptions {
     pub web_search_tool_kind: ClaudeWebSearchToolKind,
@@ -290,31 +297,57 @@ pub fn create_tools_json_for_claude_messages_with_options(
                 });
             }
             ToolSpec::WebSearch {
+                external_web_access,
                 filters,
                 user_location,
-                ..
+                search_context_size,
+                search_content_types,
             } => {
-                match options.web_search_tool_kind {
+                let has_non_text_content_types =
+                    search_content_types.as_ref().is_some_and(|content_types| {
+                        content_types
+                            .iter()
+                            .any(|content_type| !content_type.eq_ignore_ascii_case("text"))
+                    });
+                let native_mapping_is_lossless = !matches!(external_web_access, Some(false))
+                    && search_context_size.is_none()
+                    && !has_non_text_content_types;
+                let web_search_plan = match options.web_search_tool_kind {
+                    ClaudeWebSearchToolKind::NativeServerTool if native_mapping_is_lossless => {
+                        ClaudeWebSearchPlan::NativeLossless
+                    }
+                    ClaudeWebSearchToolKind::NativeServerTool
+                        if matches!(external_web_access, Some(false)) =>
+                    {
+                        ClaudeWebSearchPlan::Disabled(
+                            "Claude native web search is live-only and local fallback cannot honor cached-only web search",
+                        )
+                    }
+                    ClaudeWebSearchToolKind::NativeServerTool if has_non_text_content_types => {
+                        ClaudeWebSearchPlan::Disabled(
+                            "Claude web search local fallback only supports text search results",
+                        )
+                    }
                     ClaudeWebSearchToolKind::NativeServerTool => {
-                        native_tool_policy
-                            .enabled_tools
-                            .insert(ClaudeNativeToolKind::WebSearch20250305);
-                        native_tool_policy.decisions.push(ClaudeNativeToolDecision {
-                            tool: ClaudeNativeToolKind::WebSearch20250305,
-                            outcome: ClaudeNativeToolDecisionOutcome::Enabled,
-                            reason: "Claude native server web search selected",
-                        });
-                        history_requirements.preserve_server_tool_results = true;
-                        claude_tools.push(claude_web_search_tool_json(filters, user_location));
+                        ClaudeWebSearchPlan::LocalFallback(
+                            "Claude native web search cannot represent all configured Responses web search fields; selected local web search function",
+                        )
                     }
                     ClaudeWebSearchToolKind::LocalFunctionTool => {
+                        ClaudeWebSearchPlan::LocalFallback(
+                            "provider compatibility selected local web search function",
+                        )
+                    }
+                };
+                match web_search_plan {
+                    ClaudeWebSearchPlan::LocalFallback(reason) => {
                         native_tool_policy
                             .fallback_tools
                             .insert(ClaudeNativeToolKind::WebSearch20250305);
                         native_tool_policy.decisions.push(ClaudeNativeToolDecision {
                             tool: ClaudeNativeToolKind::WebSearch20250305,
                             outcome: ClaudeNativeToolDecisionOutcome::Fallback,
-                            reason: "provider compatibility selected local web search function",
+                            reason,
                         });
                         let claude_name = unique_claude_tool_name(
                             &mut used_names,
@@ -331,6 +364,29 @@ pub fn create_tools_json_for_claude_messages_with_options(
                             name: tool.name().to_string(),
                             namespace: None,
                             kind: ClaudeToolCallKind::Function,
+                        });
+                    }
+                    ClaudeWebSearchPlan::NativeLossless => {
+                        native_tool_policy
+                            .enabled_tools
+                            .insert(ClaudeNativeToolKind::WebSearch20250305);
+                        native_tool_policy.decisions.push(ClaudeNativeToolDecision {
+                            tool: ClaudeNativeToolKind::WebSearch20250305,
+                            outcome: ClaudeNativeToolDecisionOutcome::Enabled,
+                            reason: "Claude native server web search selected",
+                        });
+                        history_requirements.preserve_server_tool_results = true;
+                        history_requirements.preserve_structured_citations = true;
+                        claude_tools.push(claude_web_search_tool_json(filters, user_location));
+                    }
+                    ClaudeWebSearchPlan::Disabled(reason) => {
+                        native_tool_policy
+                            .disabled_tools
+                            .insert(ClaudeNativeToolKind::WebSearch20250305);
+                        native_tool_policy.decisions.push(ClaudeNativeToolDecision {
+                            tool: ClaudeNativeToolKind::WebSearch20250305,
+                            outcome: ClaudeNativeToolDecisionOutcome::Disabled,
+                            reason,
                         });
                     }
                 }

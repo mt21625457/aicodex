@@ -112,6 +112,7 @@ pub(super) fn snapshot(percent: f64) -> RateLimitSnapshot {
         }),
         secondary: None,
         credits: None,
+        individual_limit: None,
         plan_type: None,
         rate_limit_reached_type: None,
     }
@@ -208,7 +209,7 @@ pub(super) fn next_submit_op(op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Op
 pub(super) fn next_interrupt_op(op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Op>) {
     loop {
         match op_rx.try_recv() {
-            Ok(Op::Interrupt) => return,
+            Ok(Op::Interrupt { .. }) => return,
             Ok(_) => continue,
             Err(TryRecvError::Empty) => panic!("expected interrupt op but queue was empty"),
             Err(TryRecvError::Disconnected) => panic!("expected interrupt op but channel closed"),
@@ -246,15 +247,14 @@ pub(crate) fn set_chatgpt_auth(chat: &mut ChatWidget) {
 }
 
 fn test_model_info(slug: &str, priority: i32, supports_fast_mode: bool) -> ModelInfo {
-    let service_tiers = if supports_fast_mode {
-        vec![json!({
+    let mut service_tiers = Vec::new();
+    if supports_fast_mode {
+        service_tiers.push(json!({
             "id": ServiceTier::Fast.request_value(),
             "name": "fast",
             "description": "Fastest inference with increased plan usage"
-        })]
-    } else {
-        Vec::new()
-    };
+        }));
+    }
     serde_json::from_value(json!({
         "slug": slug,
         "display_name": slug,
@@ -267,6 +267,7 @@ fn test_model_info(slug: &str, priority: i32, supports_fast_mode: bool) -> Model
         "priority": priority,
         "additional_speed_tiers": [],
         "service_tiers": service_tiers,
+        "default_service_tier": null,
         "availability_nux": null,
         "upgrade": null,
         "base_instructions": "base instructions",
@@ -358,6 +359,8 @@ pub(super) fn make_token_info(total_tokens: i64, context_window: i64) -> TokenUs
     TokenUsageInfo {
         total_token_usage: usage(total_tokens),
         last_token_usage: usage(total_tokens),
+        context_tokens: None,
+        context_source: None,
         model_context_window: Some(context_window),
     }
 }
@@ -391,8 +394,8 @@ pub(super) fn handle_token_count(chat: &mut ChatWidget, info: Option<TokenUsageI
                         token_usage: codex_app_server_protocol::ThreadTokenUsage {
                             total: token_usage_breakdown(info.total_token_usage),
                             last: token_usage_breakdown(info.last_token_usage),
-                            context_tokens: None,
-                            context_source: None,
+                            context_tokens: info.context_tokens,
+                            context_source: info.context_source,
                             model_context_window: info.model_context_window,
                         },
                     },
@@ -724,6 +727,7 @@ pub(super) fn replay_user_message_inputs(
     chat.replay_thread_item(
         AppServerThreadItem::UserMessage {
             id: item_id.to_string(),
+            client_id: None,
             content,
         },
         "turn-1".to_string(),
@@ -948,6 +952,7 @@ pub(super) fn complete_user_message_for_inputs(
             completed_at_ms: 0,
             item: AppServerThreadItem::UserMessage {
                 id: item_id.to_string(),
+                client_id: None,
                 content,
             },
         }),
@@ -1574,6 +1579,7 @@ fn hook_event_label(event_name: codex_app_server_protocol::HookEventName) -> &'s
         codex_app_server_protocol::HookEventName::SessionStart => "SessionStart",
         codex_app_server_protocol::HookEventName::UserPromptSubmit => "UserPromptSubmit",
         codex_app_server_protocol::HookEventName::SubagentStart => "SubagentStart",
+        codex_app_server_protocol::HookEventName::SubagentStop => "SubagentStop",
         codex_app_server_protocol::HookEventName::Stop => "Stop",
     }
 }

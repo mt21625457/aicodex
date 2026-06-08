@@ -24,8 +24,10 @@ prefix_rule(
 "#,
     )?;
 
-    let output = Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
+    let output = Command::new(codex_utils_cargo_bin::cargo_bin("aicodex")?)
+        .env("AICODEX_HOME", codex_home.path())
         .env("CODEX_HOME", codex_home.path())
+        .env_remove("CODEX_SQLITE_HOME")
         .args([
             "execpolicy",
             "check",
@@ -81,8 +83,10 @@ prefix_rule(
 "#,
     )?;
 
-    let output = Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
+    let output = Command::new(codex_utils_cargo_bin::cargo_bin("aicodex")?)
+        .env("AICODEX_HOME", codex_home.path())
         .env("CODEX_HOME", codex_home.path())
+        .env_remove("CODEX_SQLITE_HOME")
         .args([
             "execpolicy",
             "check",

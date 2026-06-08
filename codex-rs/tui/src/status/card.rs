@@ -6,6 +6,7 @@ use crate::history_cell::with_border_with_inner_width;
 use crate::legacy_core::config::Config;
 use crate::token_usage::TokenUsage;
 use crate::token_usage::TokenUsageInfo;
+use crate::token_usage::percent_of_context_window_remaining_for_tokens;
 use crate::version::CODEX_CLI_VERSION;
 use chrono::DateTime;
 use chrono::Local;
@@ -26,6 +27,7 @@ use ratatui::prelude::*;
 use ratatui::style::Stylize;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use unicode_width::UnicodeWidthStr;
 use url::Url;
 
 use super::account::StatusAccountDisplay;
@@ -45,10 +47,14 @@ use super::rate_limits::compose_rate_limit_data;
 use super::rate_limits::compose_rate_limit_data_many;
 use super::rate_limits::format_status_limit_summary;
 use super::rate_limits::render_status_limit_progress_bar;
+use super::remote_connection::RemoteConnectionStatus;
 use crate::wrapping::RtOptions;
 use crate::wrapping::adaptive_wrap_lines;
+use crate::wrapping::word_wrap_lines;
 use std::sync::Arc;
 use std::sync::RwLock;
+
+const CHATGPT_USAGE_URL: &str = "https://chatgpt.com/codex/settings/usage";
 
 #[derive(Debug, Clone)]
 struct StatusContextWindowData {
@@ -106,6 +112,7 @@ struct StatusHistoryCell {
     agents_summary: Arc<RwLock<String>>,
     collaboration_mode: Option<String>,
     model_provider: Option<String>,
+    remote_connection: Option<RemoteConnectionStatus>,
     show_chatgpt_usage_link: bool,
     account: Option<StatusAccountDisplay>,
     thread_name: Option<String>,
@@ -172,6 +179,7 @@ pub(crate) fn new_status_output_with_rate_limits(
     new_status_output_with_rate_limits_handle(
         config,
         /*runtime_model_provider_base_url*/ None,
+        /*remote_connection*/ None,
         account_display,
         token_info,
         total_usage,
@@ -194,6 +202,7 @@ pub(crate) fn new_status_output_with_rate_limits(
 pub(crate) fn new_status_output_with_rate_limits_handle(
     config: &Config,
     runtime_model_provider_base_url: Option<&str>,
+    remote_connection: Option<&RemoteConnectionStatus>,
     account_display: Option<&StatusAccountDisplay>,
     token_info: Option<&TokenUsageInfo>,
     total_usage: &TokenUsage,
@@ -213,6 +222,7 @@ pub(crate) fn new_status_output_with_rate_limits_handle(
     let (card, handle) = StatusHistoryCell::new(
         config,
         runtime_model_provider_base_url,
+        remote_connection,
         account_display,
         token_info,
         total_usage,
@@ -240,6 +250,7 @@ impl StatusHistoryCell {
     fn new(
         config: &Config,
         runtime_model_provider_base_url: Option<&str>,
+        remote_connection: Option<&RemoteConnectionStatus>,
         account_display: Option<&StatusAccountDisplay>,
         token_info: Option<&TokenUsageInfo>,
         total_usage: &TokenUsage,
@@ -313,14 +324,19 @@ impl StatusHistoryCell {
         let account = compose_account_display(account_display);
         let session_id = session_id.as_ref().map(std::string::ToString::to_string);
         let forked_from = forked_from.map(|id| id.to_string());
-        let default_usage = TokenUsage::default();
-        let (context_usage, context_window) = match token_info {
-            Some(info) => (&info.last_token_usage, info.model_context_window),
-            None => (&default_usage, config.model_context_window),
+        let (tokens_in_context, context_window) = match token_info {
+            Some(info) => (info.tokens_in_context_window(), info.model_context_window),
+            None => (
+                TokenUsage::default().tokens_in_context_window(),
+                config.model_context_window,
+            ),
         };
         let context_window = context_window.map(|window| StatusContextWindowData {
-            percent_remaining: context_usage.percent_of_context_window_remaining(window),
-            tokens_in_context: context_usage.tokens_in_context_window(),
+            percent_remaining: percent_of_context_window_remaining_for_tokens(
+                tokens_in_context,
+                window,
+            ),
+            tokens_in_context,
             window,
         });
 
@@ -349,6 +365,7 @@ impl StatusHistoryCell {
                 permissions,
                 collaboration_mode: collaboration_mode.map(ToString::to_string),
                 model_provider,
+                remote_connection: remote_connection.cloned(),
                 show_chatgpt_usage_link,
                 account,
                 thread_name,
@@ -460,6 +477,7 @@ impl StatusHistoryCell {
                 StatusRateLimitValue::Window {
                     percent_used,
                     resets_at,
+                    details,
                 } => {
                     let percent_remaining = (100.0 - percent_used).clamp(0.0, 100.0);
                     let summary = format_status_limit_summary(percent_remaining);
@@ -510,6 +528,18 @@ impl StatusHistoryCell {
                         }
                     } else {
                         lines.push(base_line);
+                    }
+                    if let Some(details) = details {
+                        let detail_width = formatter.value_width(available_inner_width).max(1);
+                        let wrap_options = textwrap::Options::new(detail_width).break_words(false);
+                        lines.extend(
+                            textwrap::wrap(details.as_str(), wrap_options)
+                                .into_iter()
+                                .map(|wrapped| {
+                                    formatter
+                                        .continuation(vec![Span::from(wrapped.into_owned()).dim()])
+                                }),
+                        );
                     }
                 }
                 StatusRateLimitValue::Text(text) => {
@@ -671,13 +701,14 @@ fn status_approval_label(
     approvals_reviewer: ApprovalsReviewer,
     approval: &str,
 ) -> String {
-    if approval_policy == AskForApproval::OnRequest
-        && approvals_reviewer == ApprovalsReviewer::AutoReview
-    {
-        "auto-review".to_string()
-    } else {
-        approval.to_string()
+    if approval_policy == AskForApproval::OnRequest {
+        return match approvals_reviewer {
+            ApprovalsReviewer::AutoReview => "Approve for me".to_string(),
+            ApprovalsReviewer::User => "Ask for approval".to_string(),
+        };
     }
+
+    approval.to_string()
 }
 
 impl HistoryCell for StatusHistoryCell {
@@ -689,7 +720,6 @@ impl HistoryCell for StatusHistoryCell {
             Span::from(" ").dim(),
             Span::from(format!("(v{CODEX_CLI_VERSION})")).dim(),
         ]));
-        lines.push(Line::from(Vec::<Span<'static>>::new()));
 
         let available_inner_width = usize::from(width.saturating_sub(4));
         if available_inner_width == 0 {
@@ -756,9 +786,7 @@ impl HistoryCell for StatusHistoryCell {
 
         let note_first_line = Line::from(vec![
             Span::from("Visit ").cyan(),
-            "https://chatgpt.com/codex/settings/usage"
-                .cyan()
-                .underlined(),
+            CHATGPT_USAGE_URL.cyan().underlined(),
             Span::from(" for up-to-date").cyan(),
         ]);
         let note_second_line = Line::from(vec![
@@ -768,10 +796,28 @@ impl HistoryCell for StatusHistoryCell {
             [note_first_line, note_second_line],
             RtOptions::new(available_inner_width),
         );
+        lines.push(Line::from(Vec::<Span<'static>>::new()));
         // The ChatGPT usage page only applies to providers backed by OpenAI auth;
         // providers like Bedrock manage limits and billing elsewhere.
         if self.show_chatgpt_usage_link {
             lines.extend(note_lines);
+            lines.push(Line::from(Vec::<Span<'static>>::new()));
+        }
+        if let Some(remote_connection) = self.remote_connection.as_ref() {
+            let wrapped_remote = word_wrap_lines(
+                [Line::from(vec![
+                    Span::from(remote_connection.address.clone()),
+                    Span::from(" (").dim(),
+                    Span::from(remote_connection.version.clone()).dim(),
+                    Span::from(")").dim(),
+                ])],
+                RtOptions::new(value_width.max(1)),
+            );
+            let mut wrapped_remote = wrapped_remote.into_iter();
+            if let Some(first) = wrapped_remote.next() {
+                lines.push(formatter.line("Remote", first.spans));
+                lines.extend(wrapped_remote.map(|line| formatter.continuation(line.spans)));
+            }
             lines.push(Line::from(Vec::<Span<'static>>::new()));
         }
 
@@ -835,6 +881,38 @@ impl HistoryCell for StatusHistoryCell {
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
         plain_lines(self.display_lines(u16::MAX))
+    }
+
+    fn display_hyperlink_lines(
+        &self,
+        width: u16,
+    ) -> Vec<crate::terminal_hyperlinks::HyperlinkLine> {
+        let mut lines =
+            crate::terminal_hyperlinks::plain_hyperlink_lines(self.display_lines(width));
+        for line in &mut lines {
+            let visible = line
+                .line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>();
+            if let Some(start_byte) = visible.find(CHATGPT_USAGE_URL) {
+                let start = visible[..start_byte].width();
+                line.hyperlinks
+                    .push(crate::terminal_hyperlinks::TerminalHyperlink {
+                        columns: start..start + CHATGPT_USAGE_URL.width(),
+                        destination: CHATGPT_USAGE_URL.to_string(),
+                    });
+            }
+        }
+        lines
+    }
+
+    fn transcript_hyperlink_lines(
+        &self,
+        width: u16,
+    ) -> Vec<crate::terminal_hyperlinks::HyperlinkLine> {
+        self.display_hyperlink_lines(width)
     }
 }
 

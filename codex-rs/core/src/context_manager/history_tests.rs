@@ -121,6 +121,7 @@ fn reference_context_item() -> TurnContextItem {
     TurnContextItem {
         turn_id: Some("reference-turn".to_string()),
         cwd: PathBuf::from("/tmp/reference-cwd"),
+        workspace_roots: None,
         current_date: Some("2026-03-23".to_string()),
         timezone: Some("America/Los_Angeles".to_string()),
         approval_policy: AskForApproval::OnRequest,
@@ -131,6 +132,7 @@ fn reference_context_item() -> TurnContextItem {
         model: "gpt-test".to_string(),
         personality: None,
         collaboration_mode: None,
+        multi_agent_version: None,
         realtime_active: Some(false),
         effort: None,
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
@@ -353,6 +355,34 @@ fn total_token_usage_includes_all_items_after_last_model_generated_item() {
     assert_eq!(
         history.get_total_token_usage(/*server_reasoning_included*/ true),
         100 + estimate_item_token_count(&added_user)
+            + estimate_item_token_count(&added_tool_output)
+    );
+}
+
+#[test]
+fn total_token_usage_prefers_context_tokens_when_available() {
+    let mut history = create_history_with_items(vec![assistant_msg("already counted by API")]);
+    history.update_token_info(
+        &TokenUsage {
+            total_tokens: 100,
+            ..Default::default()
+        },
+        /*model_context_window*/ None,
+    );
+    let info = history.token_info.as_mut().expect("token info");
+    info.context_tokens = Some(250);
+    info.context_source = Some(ContextTokenUsageSource::ClaudeCountTokens);
+
+    let added_user = user_msg("new user message");
+    let added_tool_output = custom_tool_call_output("tool-tail", "new tool output");
+    history.record_items(
+        [&added_user, &added_tool_output],
+        TruncationPolicy::Tokens(10_000),
+    );
+
+    assert_eq!(
+        history.get_total_token_usage(/*server_reasoning_included*/ true),
+        250 + estimate_item_token_count(&added_user)
             + estimate_item_token_count(&added_tool_output)
     );
 }
@@ -647,28 +677,6 @@ fn remove_first_item_removes_matching_call_for_output() {
     let mut h = create_history_with_items(items);
     h.remove_first_item();
     assert_eq!(h.raw_items(), vec![]);
-}
-
-#[test]
-fn remove_last_item_removes_matching_call_for_output() {
-    let items = vec![
-        user_msg("before tool call"),
-        ResponseItem::FunctionCall {
-            id: None,
-            name: "do_it".to_string(),
-            namespace: None,
-            arguments: "{}".to_string(),
-            call_id: "call-delete-last".to_string(),
-        },
-        ResponseItem::FunctionCallOutput {
-            call_id: "call-delete-last".to_string(),
-            output: FunctionCallOutputPayload::from_text("ok".to_string()),
-        },
-    ];
-    let mut h = create_history_with_items(items);
-
-    assert!(h.remove_last_item());
-    assert_eq!(h.raw_items(), vec![user_msg("before tool call")]);
 }
 
 #[test]
@@ -1752,6 +1760,26 @@ fn non_base64_image_urls_are_unchanged() {
         estimate_response_item_model_visible_bytes(&function_output_item),
         serde_json::to_string(&function_output_item).unwrap().len() as i64
     );
+}
+
+#[test]
+fn encrypted_function_output_uses_plaintext_byte_estimate() {
+    let encrypted_content = "A".repeat(1_868);
+    let item = ResponseItem::FunctionCallOutput {
+        call_id: "call-encrypted".to_string(),
+        output: FunctionCallOutputPayload::from_content_items(vec![
+            FunctionCallOutputContentItem::EncryptedContent {
+                encrypted_content: encrypted_content.clone(),
+            },
+        ]),
+    };
+
+    let raw_len = serde_json::to_string(&item).unwrap().len() as i64;
+    let estimated = estimate_response_item_model_visible_bytes(&item);
+    let expected = raw_len - encrypted_content.len() as i64
+        + estimate_encrypted_function_output_length(encrypted_content.len()) as i64;
+
+    assert_eq!(estimated, expected);
 }
 
 #[test]

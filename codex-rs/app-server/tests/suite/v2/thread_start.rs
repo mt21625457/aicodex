@@ -1,7 +1,7 @@
 use anyhow::Result;
 use app_test_support::ChatGptAuthFixture;
-use app_test_support::McpProcess;
 use app_test_support::PathBufExt;
+use app_test_support::TestAppServer;
 use app_test_support::create_mock_responses_server_repeating_assistant;
 use app_test_support::to_response;
 use app_test_support::write_chatgpt_auth;
@@ -28,6 +28,7 @@ use codex_core::config::set_project_trust_level;
 use codex_exec_server::LOCAL_FS;
 use codex_git_utils::resolve_root_git_project_for_trust;
 use codex_login::REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR;
+use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::TrustLevel;
 use codex_protocol::openai_models::ReasoningEffort;
 use pretty_assertions::assert_eq;
@@ -57,7 +58,7 @@ async fn thread_start_deprecates_persist_extended_history_true() -> Result<()> {
     let codex_home = TempDir::new()?;
     create_config_toml_without_approval_policy(codex_home.path(), &server.uri())?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let req_id = mcp
@@ -81,6 +82,13 @@ async fn thread_start_deprecates_persist_extended_history_true() -> Result<()> {
         notice.summary,
         "persistExtendedHistory is deprecated and ignored"
     );
+    assert_eq!(
+        notice.details,
+        Some(
+            "Remove this parameter. App-server always persists replayable transcript history."
+                .to_string()
+        )
+    );
 
     timeout(
         DEFAULT_READ_TIMEOUT,
@@ -100,7 +108,7 @@ async fn thread_start_creates_thread_and_emits_started() -> Result<()> {
     create_config_toml_without_approval_policy(codex_home.path(), &server.uri())?;
 
     // Start server and initialize.
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     // Start a v2 thread with an explicit model override.
@@ -247,7 +255,7 @@ async fn thread_start_resolves_runtime_workspace_roots_against_cwd() -> Result<(
     let relative_root = PathBuf::from("extra-root");
     std::fs::create_dir_all(cwd.join(&relative_root))?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let req_id = mcp
@@ -291,7 +299,7 @@ async fn thread_start_excludes_profile_workspace_roots_from_runtime_workspace_ro
         profile_root.path(),
     )?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let req_id = mcp
@@ -326,7 +334,7 @@ async fn thread_start_rejects_unknown_environment_as_invalid_request() -> Result
     let codex_home = TempDir::new()?;
     create_config_toml_without_approval_policy(codex_home.path(), &server.uri())?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp
@@ -363,7 +371,7 @@ async fn thread_start_response_includes_loaded_instruction_sources() -> Result<(
     let project_agents_path = workspace.path().join("AGENTS.md");
     std::fs::write(&project_agents_path, "project instructions")?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp
@@ -419,7 +427,7 @@ async fn thread_start_tracks_thread_initialized_analytics() -> Result<()> {
     create_config_toml_with_chatgpt_base_url(codex_home.path(), &server.uri(), &server.uri())?;
     mount_analytics_capture(&server, codex_home.path()).await?;
 
-    let mut mcp = McpProcess::new_without_managed_config(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new_without_managed_config(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let req_id = mcp
@@ -438,7 +446,14 @@ async fn thread_start_tracks_thread_initialized_analytics() -> Result<()> {
     let payload = wait_for_analytics_payload(&server, DEFAULT_READ_TIMEOUT).await?;
     assert_eq!(payload["events"].as_array().expect("events array").len(), 1);
     let event = thread_initialized_event(&payload)?;
-    assert_basic_thread_initialized_event(event, &thread.id, "mock-model", "new", "user");
+    assert_basic_thread_initialized_event(
+        event,
+        &thread.id,
+        &thread.session_id,
+        "mock-model",
+        "new",
+        "user",
+    );
     Ok(())
 }
 
@@ -460,7 +475,7 @@ model_reasoning_effort = "high"
     )?;
     set_project_trust_level(codex_home.path(), workspace.path(), TrustLevel::Trusted)?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let req_id = mcp
@@ -484,13 +499,13 @@ model_reasoning_effort = "high"
 }
 
 #[tokio::test]
-async fn thread_start_accepts_arbitrary_service_tier_id() -> Result<()> {
+async fn thread_start_drops_unsupported_service_tier_id() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
 
     let codex_home = TempDir::new()?;
     create_config_toml_without_approval_policy(codex_home.path(), &server.uri())?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let service_tier_id = "experimental-tier-id".to_string();
@@ -508,7 +523,39 @@ async fn thread_start_accepts_arbitrary_service_tier_id() -> Result<()> {
     .await??;
     let ThreadStartResponse { service_tier, .. } = to_response::<ThreadStartResponse>(resp)?;
 
-    assert_eq!(service_tier, Some(service_tier_id));
+    // Unsupported catalog ids are dropped at session config time instead of echoed back.
+    assert_eq!(service_tier, None);
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_start_accepts_default_service_tier() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+
+    let codex_home = TempDir::new()?;
+    create_config_toml_without_approval_policy(codex_home.path(), &server.uri())?;
+
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let req_id = mcp
+        .send_thread_start_request(ThreadStartParams {
+            service_tier: Some(Some(SERVICE_TIER_DEFAULT_REQUEST_VALUE.to_string())),
+            ..Default::default()
+        })
+        .await?;
+
+    let resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(req_id)),
+    )
+    .await??;
+    let ThreadStartResponse { service_tier, .. } = to_response::<ThreadStartResponse>(resp)?;
+
+    assert_eq!(
+        service_tier,
+        Some(SERVICE_TIER_DEFAULT_REQUEST_VALUE.to_string())
+    );
     Ok(())
 }
 
@@ -519,7 +566,7 @@ async fn thread_start_accepts_metrics_service_name() -> Result<()> {
     let codex_home = TempDir::new()?;
     create_config_toml_without_approval_policy(codex_home.path(), &server.uri())?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let req_id = mcp
@@ -546,7 +593,7 @@ async fn thread_start_ephemeral_remains_pathless() -> Result<()> {
     let codex_home = TempDir::new()?;
     create_config_toml_without_approval_policy(codex_home.path(), &server.uri())?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let req_id = mcp
@@ -592,7 +639,7 @@ async fn thread_start_fails_when_required_mcp_server_fails_to_initialize() -> Re
     let codex_home = TempDir::new()?;
     create_config_toml_with_required_broken_mcp(codex_home.path(), &server.uri())?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let req_id = mcp
@@ -628,7 +675,7 @@ async fn thread_start_emits_mcp_server_status_updated_notifications() -> Result<
     let codex_home = TempDir::new()?;
     create_config_toml_with_optional_broken_mcp(codex_home.path(), &server.uri())?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let req_id = mcp
@@ -719,10 +766,10 @@ async fn thread_start_emits_mcp_server_status_updated_notifications() -> Result<
 }
 
 #[tokio::test]
-async fn thread_start_surfaces_cloud_requirements_load_errors() -> Result<()> {
+async fn thread_start_surfaces_cloud_config_bundle_load_errors() -> Result<()> {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/backend-api/wham/config/requirements"))
+        .and(path("/backend-api/wham/config/bundle"))
         .respond_with(
             ResponseTemplate::new(401)
                 .insert_header("content-type", "text/html")
@@ -758,7 +805,7 @@ async fn thread_start_surfaces_cloud_requirements_load_errors() -> Result<()> {
     )?;
 
     let refresh_token_url = format!("{}/oauth/token", server.uri());
-    let mut mcp = McpProcess::new_with_env(
+    let mut mcp = TestAppServer::new_with_env(
         codex_home.path(),
         &[
             ("OPENAI_API_KEY", None),
@@ -789,7 +836,7 @@ async fn thread_start_surfaces_cloud_requirements_load_errors() -> Result<()> {
     assert_eq!(
         err.error.data,
         Some(json!({
-            "reason": "cloudRequirements",
+            "reason": "cloudConfigBundle",
             "errorCode": "Auth",
             "action": "relogin",
             "statusCode": 401,
@@ -818,7 +865,7 @@ model_reasoning_effort = "high"
 "#,
     )?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let first_request = mcp
@@ -878,7 +925,7 @@ async fn thread_start_with_nested_git_cwd_trusts_repo_root() -> Result<()> {
     let nested = repo_root.path().join("nested/project");
     std::fs::create_dir_all(&nested)?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp
@@ -916,7 +963,7 @@ async fn thread_start_with_read_only_sandbox_does_not_persist_project_trust() ->
 
     let workspace = TempDir::new()?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp
@@ -954,7 +1001,7 @@ async fn thread_start_preserves_untrusted_project_trust() -> Result<()> {
     std::fs::write(&config_path, config_toml.to_string())?;
     let config_before = std::fs::read_to_string(&config_path)?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp
@@ -995,7 +1042,7 @@ model_reasoning_effort = "high"
     set_project_trust_level(codex_home.path(), workspace.path(), TrustLevel::Trusted)?;
     let config_before = std::fs::read_to_string(codex_home.path().join("config.toml"))?;
 
-    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let request_id = mcp

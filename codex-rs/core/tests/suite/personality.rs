@@ -68,6 +68,7 @@ fn read_only_text_turn_with_personality(
         environments: None,
         final_output_json_schema: None,
         responsesapi_client_metadata: None,
+        additional_context: Default::default(),
         thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
             cwd: Some(test.cwd_path().to_path_buf()),
             approval_policy: Some(approval_policy),
@@ -562,6 +563,7 @@ async fn remote_model_friendly_personality_instructions_with_feature() -> anyhow
         priority: 1,
         additional_speed_tiers: Vec::new(),
         service_tiers: Vec::new(),
+        default_service_tier: None,
         upgrade: None,
         base_instructions: "base instructions".to_string(),
         model_messages: Some(ModelMessages {
@@ -590,6 +592,9 @@ async fn remote_model_friendly_personality_instructions_with_feature() -> anyhow
         input_modalities: default_input_modalities(),
         used_fallback_model_metadata: false,
         supports_search_tool: false,
+        auto_review_model_override: None,
+        tool_mode: None,
+        multi_agent_version: None,
     };
 
     let _models_mock = mount_models_once(
@@ -671,6 +676,7 @@ async fn user_turn_personality_remote_model_template_includes_update_message() -
         priority: 1,
         additional_speed_tiers: Vec::new(),
         service_tiers: Vec::new(),
+        default_service_tier: None,
         upgrade: None,
         base_instructions: "base instructions".to_string(),
         model_messages: Some(ModelMessages {
@@ -699,6 +705,9 @@ async fn user_turn_personality_remote_model_template_includes_update_message() -
         input_modalities: default_input_modalities(),
         used_fallback_model_metadata: false,
         supports_search_tool: false,
+        auto_review_model_override: None,
+        tool_mode: None,
+        multi_agent_version: None,
     };
 
     let _models_mock = mount_models_once(

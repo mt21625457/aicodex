@@ -284,11 +284,19 @@ fn keyring_auth_storage_load_returns_deserialized_auth() -> anyhow::Result<()> {
 
 #[test]
 fn keyring_auth_storage_compute_store_key_for_home_directory() -> anyhow::Result<()> {
-    let codex_home = PathBuf::from("~/.aicodex");
+    let tempdir = tempdir()?;
+    let codex_home = tempdir.path().join("missing").join(".aicodex");
+    assert!(!codex_home.exists());
 
     let key = compute_store_key(codex_home.as_path())?;
+    let path_str = codex_home.to_string_lossy();
+    let mut hasher = Sha256::new();
+    hasher.update(path_str.as_bytes());
+    let digest = hasher.finalize();
+    let hex = format!("{digest:x}");
+    let expected = format!("cli|{}", &hex[..16]);
 
-    assert_eq!(key, "cli|940db7b1d0e4eb40");
+    assert_eq!(key, expected);
     Ok(())
 }
 

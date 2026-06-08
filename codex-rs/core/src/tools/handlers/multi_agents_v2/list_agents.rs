@@ -11,8 +11,8 @@ impl ToolExecutor<ToolInvocation> for Handler {
         ToolName::plain("list_agents")
     }
 
-    fn spec(&self) -> Option<ToolSpec> {
-        Some(create_list_agents_tool())
+    fn spec(&self) -> ToolSpec {
+        create_list_agents_tool()
     }
 
     async fn handle(
@@ -30,7 +30,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
         session
             .services
             .agent_control
-            .register_session_root(session.conversation_id, &turn.session_source);
+            .register_session_root(session.thread_id, turn.parent_thread_id);
         let agents = session
             .services
             .agent_control
