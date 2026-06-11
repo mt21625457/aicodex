@@ -89,6 +89,7 @@ test *args:
     just bench-smoke
 
 # Run from the repository root so scripts that resolve paths from `cwd` see
+
 # the same layout they use in GitHub Actions.
 [no-cd]
 test-github-scripts:
