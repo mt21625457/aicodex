@@ -29,7 +29,7 @@ use codex_protocol::config_types::WebSearchContextSize;
 use codex_protocol::config_types::WebSearchFilters as ConfigWebSearchFilters;
 use codex_protocol::config_types::WebSearchUserLocation as ConfigWebSearchUserLocation;
 use codex_protocol::config_types::WebSearchUserLocationType;
-use codex_protocol::dynamic_tools::DynamicToolSpec;
+use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
@@ -566,8 +566,7 @@ fn create_tools_json_for_claude_messages_preserves_representative_tool_contracts
 
 #[test]
 fn create_tools_json_for_claude_messages_preserves_dynamic_tool_schema() {
-    let dynamic_tool = DynamicToolSpec {
-        namespace: Some("codex_app".to_string()),
+    let dynamic_tool = DynamicToolFunctionSpec {
         name: "lookup_order".to_string(),
         description: "Look up an order".to_string(),
         input_schema: json!({

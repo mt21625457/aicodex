@@ -24,6 +24,7 @@
 //! The parser below is a little more lenient than the explicit spec and allows for
 //! leading/trailing whitespace around patch markers.
 use crate::ApplyPatchArgs;
+use crate::streaming_parser::StreamingPatchParser;
 use codex_utils_absolute_path::AbsolutePathBuf;
 #[cfg(test)]
 use codex_utils_absolute_path::test_support::PathBufExt;
@@ -33,7 +34,6 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 pub(crate) const BEGIN_PATCH_MARKER: &str = "*** Begin Patch";
-pub(crate) const ENVIRONMENT_ID_MARKER: &str = "*** Environment ID: ";
 pub(crate) const END_PATCH_MARKER: &str = "*** End Patch";
 pub(crate) const ADD_FILE_MARKER: &str = "*** Add File: ";
 pub(crate) const DELETE_FILE_MARKER: &str = "*** Delete File: ";
@@ -107,6 +107,7 @@ impl Hunk {
     }
 }
 
+#[cfg(test)]
 use Hunk::*;
 
 #[derive(Debug, PartialEq, Clone)]
@@ -175,21 +176,16 @@ enum ParseMode {
 
 fn parse_patch_text(patch: &str, mode: ParseMode) -> Result<ApplyPatchArgs, ParseError> {
     let lines: Vec<&str> = patch.trim().lines().collect();
-    let (patch_lines, hunk_lines) = match mode {
+    let patch_lines = match mode {
         ParseMode::Strict => check_patch_boundaries_strict(&lines)?,
         ParseMode::Lenient => check_patch_boundaries_lenient(&lines)?,
     };
 
-    let (environment_id, mut remaining_lines, mut line_number) =
-        parse_environment_id_preamble(hunk_lines)?;
-    let mut hunks: Vec<Hunk> = Vec::new();
-    while !remaining_lines.is_empty() {
-        let (hunk, hunk_lines) = parse_one_hunk(remaining_lines, line_number)?;
-        hunks.push(hunk);
-        line_number += hunk_lines;
-        remaining_lines = &remaining_lines[hunk_lines..]
-    }
     let patch = patch_lines.join("\n");
+    let mut parser = StreamingPatchParser::default();
+    parser.push_delta(&patch)?;
+    let hunks = parser.finish()?;
+    let environment_id = parser.environment_id().map(str::to_owned);
     Ok(ApplyPatchArgs {
         hunks,
         patch,
@@ -198,36 +194,16 @@ fn parse_patch_text(patch: &str, mode: ParseMode) -> Result<ApplyPatchArgs, Pars
     })
 }
 
-fn parse_environment_id_preamble<'a>(
-    hunk_lines: &'a [&'a str],
-) -> Result<(Option<String>, &'a [&'a str], usize), ParseError> {
-    let Some(first_line) = hunk_lines.first() else {
-        return Ok((None, hunk_lines, 2));
-    };
-    let Some(environment_id) = first_line.trim_start().strip_prefix(ENVIRONMENT_ID_MARKER) else {
-        return Ok((None, hunk_lines, 2));
-    };
-    let environment_id = environment_id.trim();
-    if environment_id.is_empty() {
-        return Err(InvalidPatchError(
-            "apply_patch environment_id cannot be empty".to_string(),
-        ));
-    }
-    Ok((Some(environment_id.to_string()), &hunk_lines[1..], 3))
-}
-
 /// Checks the start and end lines of the patch text for `apply_patch`,
 /// returning an error if they do not match the expected markers.
-fn check_patch_boundaries_strict<'a>(
-    lines: &'a [&'a str],
-) -> Result<(&'a [&'a str], &'a [&'a str]), ParseError> {
+fn check_patch_boundaries_strict<'a>(lines: &'a [&'a str]) -> Result<&'a [&'a str], ParseError> {
     let (first_line, last_line) = match lines {
         [] => (None, None),
         [first] => (Some(first), Some(first)),
         [first, .., last] => (Some(first), Some(last)),
     };
     check_start_and_end_lines_strict(first_line, last_line)?;
-    Ok((lines, &lines[1..lines.len() - 1]))
+    Ok(lines)
 }
 
 /// If we are in lenient mode, we check if the first line starts with `<<EOF`
@@ -239,7 +215,7 @@ fn check_patch_boundaries_strict<'a>(
 /// contents, excluding the heredoc markers.
 fn check_patch_boundaries_lenient<'a>(
     original_lines: &'a [&'a str],
-) -> Result<(&'a [&'a str], &'a [&'a str]), ParseError> {
+) -> Result<&'a [&'a str], ParseError> {
     let original_parse_error = match check_patch_boundaries_strict(original_lines) {
         Ok(lines) => return Ok(lines),
         Err(e) => e,
@@ -283,6 +259,7 @@ fn check_start_and_end_lines_strict(
 
 /// Attempts to parse a single hunk from the start of lines.
 /// Returns the parsed hunk and the number of lines parsed (or a ParseError).
+#[cfg(test)]
 fn parse_one_hunk(lines: &[&str], line_number: usize) -> Result<(Hunk, usize), ParseError> {
     let first_line = lines[0].trim();
     if let Some(path) = first_line.strip_prefix(ADD_FILE_MARKER) {
@@ -305,7 +282,7 @@ fn parse_one_hunk(lines: &[&str], line_number: usize) -> Result<(Hunk, usize), P
             }
         }
         return Ok((
-            AddFile {
+            Hunk::AddFile {
                 path: PathBuf::from(path),
                 contents,
             },
@@ -313,7 +290,7 @@ fn parse_one_hunk(lines: &[&str], line_number: usize) -> Result<(Hunk, usize), P
         ));
     } else if let Some(path) = first_line.strip_prefix(DELETE_FILE_MARKER) {
         return Ok((
-            DeleteFile {
+            Hunk::DeleteFile {
                 path: PathBuf::from(path),
             },
             1,
@@ -363,7 +340,7 @@ fn parse_one_hunk(lines: &[&str], line_number: usize) -> Result<(Hunk, usize), P
         }
 
         return Ok((
-            UpdateFile {
+            Hunk::UpdateFile {
                 path: PathBuf::from(path),
                 move_path: move_path.map(PathBuf::from),
                 chunks,
@@ -380,6 +357,7 @@ fn parse_one_hunk(lines: &[&str], line_number: usize) -> Result<(Hunk, usize), P
     })
 }
 
+#[cfg(test)]
 fn parse_update_file_chunk(
     lines: &[&str],
     line_number: usize,
@@ -739,6 +717,30 @@ fn test_parse_patch() {
                 is_end_of_file: false,
             }],
         }]
+    );
+}
+
+#[test]
+fn test_parse_patch_preserves_end_of_file_marker() {
+    let patch =
+        "*** Begin Patch\n*** Update File: file.txt\n@@\n+quux\n*** End of File\n\n*** End Patch";
+    assert_eq!(
+        parse_patch(patch),
+        Ok(ApplyPatchArgs {
+            hunks: vec![UpdateFile {
+                path: PathBuf::from("file.txt"),
+                move_path: None,
+                chunks: vec![UpdateFileChunk {
+                    change_context: None,
+                    old_lines: Vec::new(),
+                    new_lines: vec!["quux".to_string()],
+                    is_end_of_file: true,
+                }],
+            }],
+            patch: patch.to_string(),
+            workdir: None,
+            environment_id: None,
+        })
     );
 }
 

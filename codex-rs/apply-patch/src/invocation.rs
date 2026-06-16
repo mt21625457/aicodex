@@ -20,6 +20,7 @@ use crate::MaybeApplyPatchVerified;
 use crate::parser::Hunk;
 use crate::parser::ParseError;
 use crate::parser::parse_patch;
+use crate::text_file::read_patchable_text_file;
 use crate::unified_diff_from_chunks;
 use std::str::Utf8Error;
 use tree_sitter::LanguageError;
@@ -185,8 +186,8 @@ pub async fn verify_apply_patch_args(
                 );
             }
             Hunk::DeleteFile { .. } => {
-                let content = match fs.read_file_text(&path, sandbox).await {
-                    Ok(content) => content,
+                let content = match read_patchable_text_file(&path, fs, sandbox).await {
+                    Ok(file) => file.contents,
                     Err(e) => {
                         return MaybeApplyPatchVerified::CorrectnessError(
                             ApplyPatchError::IoError(IoError {
@@ -812,6 +813,124 @@ PATCH"#,
                 cwd: AbsolutePathBuf::from_absolute_path(session_dir.path()).unwrap(),
             })
         );
+    }
+
+    #[tokio::test]
+    async fn test_apply_patch_verifies_gbk_update_file() {
+        let session_dir = tempdir().unwrap();
+        let path = session_dir.path().join("gbk.cpp");
+        fs::write(&path, b"// \xc4\xe3\xba\xc3\nint value = 1;\n").unwrap();
+        let argv = vec![
+            "apply_patch".to_string(),
+            format!(
+                r#"*** Begin Patch
+*** Update File: {}
+@@
+-int value = 1;
++int value = 2;
+*** End Patch"#,
+                path.display()
+            ),
+        ];
+
+        let result = maybe_parse_apply_patch_verified(
+            &argv,
+            &AbsolutePathBuf::from_absolute_path(session_dir.path()).unwrap(),
+            LOCAL_FS.as_ref(),
+            /*sandbox*/ None,
+        )
+        .await;
+        let action = match result {
+            MaybeApplyPatchVerified::Body(action) => action,
+            other => panic!("expected verified body, got {other:?}"),
+        };
+        let change = action
+            .changes()
+            .get(path.as_path())
+            .expect("GBK file change should verify");
+
+        match change {
+            ApplyPatchFileChange::Update {
+                unified_diff,
+                move_path,
+                new_content,
+            } => {
+                assert_eq!(move_path, &None);
+                assert_eq!(new_content, "// 你好\nint value = 2;\n");
+                assert!(unified_diff.contains("// 你好"));
+                assert!(unified_diff.contains("-int value = 1;"));
+                assert!(unified_diff.contains("+int value = 2;"));
+            }
+            other => panic!("expected update change, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_apply_patch_verifies_gbk_delete_file() {
+        let session_dir = tempdir().unwrap();
+        let path = session_dir.path().join("gbk-delete.cpp");
+        fs::write(&path, b"// \xc4\xe3\xba\xc3\n").unwrap();
+        let argv = vec![
+            "apply_patch".to_string(),
+            format!(
+                "*** Begin Patch\n*** Delete File: {}\n*** End Patch",
+                path.display()
+            ),
+        ];
+
+        let result = maybe_parse_apply_patch_verified(
+            &argv,
+            &AbsolutePathBuf::from_absolute_path(session_dir.path()).unwrap(),
+            LOCAL_FS.as_ref(),
+            /*sandbox*/ None,
+        )
+        .await;
+        let action = match result {
+            MaybeApplyPatchVerified::Body(action) => action,
+            other => panic!("expected verified body, got {other:?}"),
+        };
+
+        assert_eq!(
+            action.changes().get(path.as_path()),
+            Some(&ApplyPatchFileChange::Delete {
+                content: "// 你好\n".to_string(),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn test_apply_patch_verification_rejects_gbk_unrepresentable_update() {
+        let session_dir = tempdir().unwrap();
+        let path = session_dir.path().join("gbk.cpp");
+        fs::write(&path, b"// \xc4\xe3\xba\xc3\n").unwrap();
+        let argv = vec![
+            "apply_patch".to_string(),
+            format!(
+                r#"*** Begin Patch
+*** Update File: {}
+@@
+-// 你好
++// 你好 🙂
+*** End Patch"#,
+                path.display()
+            ),
+        ];
+
+        let result = maybe_parse_apply_patch_verified(
+            &argv,
+            &AbsolutePathBuf::from_absolute_path(session_dir.path()).unwrap(),
+            LOCAL_FS.as_ref(),
+            /*sandbox*/ None,
+        )
+        .await;
+
+        match result {
+            MaybeApplyPatchVerified::CorrectnessError(error) => {
+                assert!(error.to_string().contains("Failed to encode updated file"));
+            }
+            other => panic!("expected correctness error, got {other:?}"),
+        }
+        assert_eq!(fs::read(&path).unwrap(), b"// \xc4\xe3\xba\xc3\n");
     }
 
     #[tokio::test]

@@ -731,6 +731,7 @@ impl ClaudeStreamState {
                 role: "assistant".to_string(),
                 content: Vec::new(),
                 phase: None,
+                metadata: None,
             })))
             .await
             .map_err(|err| ApiError::Stream(err.to_string()))
@@ -751,6 +752,7 @@ impl ClaudeStreamState {
                     summary: Vec::new(),
                     content: Some(Vec::new()),
                     encrypted_content: None,
+                    metadata: None,
                 },
             )))
             .await
@@ -819,6 +821,7 @@ impl ClaudeStreamState {
                     call_id,
                     name: info.name.clone(),
                     input: String::new(),
+                    metadata: None,
                 },
             )))
             .await
@@ -949,6 +952,7 @@ impl ClaudeStreamState {
                         role: "assistant".to_string(),
                         content,
                         phase: None,
+                        metadata: None,
                     }]);
                 }
                 Ok(Vec::new())
@@ -991,6 +995,7 @@ impl ClaudeStreamState {
             summary: Vec::new(),
             content: Some(vec![ReasoningItemContent::ReasoningText { text }]),
             encrypted_content: signature,
+            metadata: None,
         }
     }
 
@@ -1025,6 +1030,7 @@ impl ClaudeStreamState {
                 namespace: info.namespace,
                 arguments: stringify_tool_input(&input),
                 call_id,
+                metadata: None,
             },
             ClaudeToolCallKind::Custom => match custom_tool_input(&info.name, &input) {
                 Ok(input) => ResponseItem::CustomToolCall {
@@ -1033,6 +1039,7 @@ impl ClaudeStreamState {
                     call_id,
                     name: info.name,
                     input,
+                    metadata: None,
                 },
                 Err(message) => ResponseItem::CustomToolCall {
                     id: Some(call_id.clone()),
@@ -1042,6 +1049,7 @@ impl ClaudeStreamState {
                     call_id,
                     name: info.name,
                     input: String::new(),
+                    metadata: None,
                 },
             },
             ClaudeToolCallKind::ToolSearch => ResponseItem::ToolSearchCall {
@@ -1050,6 +1058,7 @@ impl ClaudeStreamState {
                 status: None,
                 execution: "client".to_string(),
                 arguments: input,
+                metadata: None,
             },
         }))
     }
@@ -1073,6 +1082,7 @@ impl ClaudeStreamState {
             id: Some(call_id),
             status: None,
             action: web_search_action_from_claude_input(&input),
+            metadata: None,
         }))
     }
 
@@ -1081,6 +1091,7 @@ impl ClaudeStreamState {
             .get(&index)
             .map(|value| ResponseItem::Compaction {
                 encrypted_content: value.to_string(),
+                metadata: None,
             })
     }
 
@@ -2654,6 +2665,7 @@ mod tests {
                 summary,
                 content: Some(content),
                 encrypted_content: None,
+                ..
             }) if id == "msg_1_reasoning_0" && summary.is_empty() && content.is_empty()
         )));
         assert!(
@@ -2877,7 +2889,9 @@ mod tests {
 
         assert!(events.iter().any(|event| matches!(
             event,
-            ResponseEvent::OutputItemDone(ResponseItem::Compaction { encrypted_content })
+            ResponseEvent::OutputItemDone(ResponseItem::Compaction {
+                encrypted_content, ..
+            })
                 if encrypted_content == &compaction.to_string()
         )));
         assert!(events.iter().any(|event| matches!(
@@ -2932,7 +2946,9 @@ mod tests {
         )));
         assert!(events.iter().any(|event| matches!(
             event,
-            ResponseEvent::OutputItemDone(ResponseItem::Compaction { encrypted_content })
+            ResponseEvent::OutputItemDone(ResponseItem::Compaction {
+                encrypted_content, ..
+            })
                 if serde_json::from_str::<Value>(encrypted_content).ok() == Some(json!({
                     "type": "server_tool_use",
                     "id": "srvtoolu_1",
@@ -2974,7 +2990,9 @@ mod tests {
 
         assert!(events.iter().any(|event| matches!(
             event,
-            ResponseEvent::OutputItemDone(ResponseItem::Compaction { encrypted_content })
+            ResponseEvent::OutputItemDone(ResponseItem::Compaction {
+                encrypted_content, ..
+            })
                 if serde_json::from_str::<Value>(encrypted_content).ok().as_ref() == Some(&search_result)
         )));
     }
@@ -3046,9 +3064,10 @@ mod tests {
         let preserved = events
             .iter()
             .filter_map(|event| match event {
-                ResponseEvent::OutputItemDone(ResponseItem::Compaction { encrypted_content }) => {
-                    serde_json::from_str::<Value>(encrypted_content).ok()
-                }
+                ResponseEvent::OutputItemDone(ResponseItem::Compaction {
+                    encrypted_content,
+                    ..
+                }) => serde_json::from_str::<Value>(encrypted_content).ok(),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -3082,7 +3101,9 @@ mod tests {
 
         assert!(events.iter().any(|event| matches!(
             event,
-            ResponseEvent::OutputItemDone(ResponseItem::Compaction { encrypted_content })
+            ResponseEvent::OutputItemDone(ResponseItem::Compaction {
+                encrypted_content, ..
+            })
                 if serde_json::from_str::<Value>(encrypted_content).ok().as_ref() == Some(&redacted)
         )));
         assert!(

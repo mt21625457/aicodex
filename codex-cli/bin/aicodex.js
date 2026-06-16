@@ -133,16 +133,6 @@ const { binaryPath, pathDir } = nativePackage;
 // and guarantees that when either the child terminates or the parent
 // receives a fatal signal, both processes exit in a predictable manner.
 
-function getUpdatedPath(newDirs) {
-  const pathSep = process.platform === "win32" ? ";" : ":";
-  const existingPath = process.env.PATH || "";
-  const updatedPath = [
-    ...newDirs,
-    ...existingPath.split(pathSep).filter(Boolean),
-  ].join(pathSep);
-  return updatedPath;
-}
-
 /**
  * Use heuristics to detect the package manager that was used to install AICodex
  * in order to give the user a hint about how to update it.
@@ -168,17 +158,24 @@ function detectPackageManager() {
   return userAgent ? "npm" : null;
 }
 
+function getUpdatedPath(newDirs) {
+  const pathSep = process.platform === "win32" ? ";" : ":";
+  const existingPath = process.env.PATH || "";
+  return [...newDirs, ...existingPath.split(pathSep).filter(Boolean)].join(
+    pathSep,
+  );
+}
+
 const additionalDirs = [];
 if (existsSync(pathDir)) {
   additionalDirs.push(pathDir);
 }
-const updatedPath = getUpdatedPath(additionalDirs);
 
-const env = { ...process.env, PATH: updatedPath };
 const packageManagerEnvVar =
   detectPackageManager() === "bun"
     ? "CODEX_MANAGED_BY_BUN"
     : "CODEX_MANAGED_BY_NPM";
+const env = { ...process.env, PATH: getUpdatedPath(additionalDirs) };
 env[packageManagerEnvVar] = "1";
 env.CODEX_MANAGED_PACKAGE_ROOT = realpathSync(path.join(__dirname, ".."));
 

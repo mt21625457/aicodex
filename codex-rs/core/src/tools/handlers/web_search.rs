@@ -1,7 +1,6 @@
 use crate::function_tool::FunctionCallError;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
-use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::parse_arguments;
@@ -100,7 +99,6 @@ struct WebSearchResult {
     snippet: String,
 }
 
-#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for WebSearchHandler {
     fn tool_name(&self) -> ToolName {
         ToolName::plain(WEB_SEARCH_TOOL_NAME)
@@ -110,58 +108,57 @@ impl ToolExecutor<ToolInvocation> for WebSearchHandler {
         self.spec.clone()
     }
 
-    async fn handle(
-        &self,
-        invocation: ToolInvocation,
-    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
-        let ToolInvocation {
-            session,
-            turn,
-            payload,
-            call_id,
-            ..
-        } = invocation;
-        let arguments = match payload {
-            ToolPayload::Function { arguments } => arguments,
-            _ => {
-                return Err(FunctionCallError::RespondToModel(
-                    "web_search handler received unsupported payload".to_string(),
-                ));
+    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(async move {
+            let ToolInvocation {
+                session,
+                turn,
+                payload,
+                call_id,
+                ..
+            } = invocation;
+            let arguments = match payload {
+                ToolPayload::Function { arguments } => arguments,
+                _ => {
+                    return Err(FunctionCallError::RespondToModel(
+                        "web_search handler received unsupported payload".to_string(),
+                    ));
+                }
+            };
+
+            if let Some(reason) = self.unsupported_reason {
+                return Err(FunctionCallError::RespondToModel(reason.to_string()));
             }
-        };
 
-        if let Some(reason) = self.unsupported_reason {
-            return Err(FunctionCallError::RespondToModel(reason.to_string()));
-        }
+            let args: WebSearchArgs = parse_arguments(&arguments)?;
+            let queries = normalize_queries(args)?;
+            let action = web_search_action_for_queries(&queries);
+            let query_detail = web_search_action_detail(&action);
+            let item = TurnItem::WebSearch(WebSearchItem {
+                id: call_id,
+                query: query_detail,
+                action,
+            });
+            session.emit_turn_item_started(turn.as_ref(), &item).await;
+            let result = run_web_searches(
+                &self.client,
+                &self.endpoint,
+                queries,
+                self.allowed_domains.as_slice(),
+                self.max_results_per_query,
+            )
+            .await;
+            session.emit_turn_item_completed(turn.as_ref(), item).await;
 
-        let args: WebSearchArgs = parse_arguments(&arguments)?;
-        let queries = normalize_queries(args)?;
-        let action = web_search_action_for_queries(&queries);
-        let query_detail = web_search_action_detail(&action);
-        let item = TurnItem::WebSearch(WebSearchItem {
-            id: call_id,
-            query: query_detail,
-            action,
-        });
-        session.emit_turn_item_started(turn.as_ref(), &item).await;
-        let result = run_web_searches(
-            &self.client,
-            &self.endpoint,
-            queries,
-            self.allowed_domains.as_slice(),
-            self.max_results_per_query,
-        )
-        .await;
-        session.emit_turn_item_completed(turn.as_ref(), item).await;
-
-        let response = result?;
-        let text = serde_json::to_string_pretty(&response).unwrap_or_else(|err| {
-            format!(r#"{{"error":"failed to serialize web search results: {err}"}}"#)
-        });
-        Ok(boxed_tool_output(FunctionToolOutput::from_text(
-            text,
-            Some(true),
-        )))
+            let response = result?;
+            let text = serde_json::to_string_pretty(&response).unwrap_or_else(|err| {
+                format!(r#"{{"error":"failed to serialize web search results: {err}"}}"#)
+            });
+            Ok(boxed_tool_output(FunctionToolOutput::from_text(
+                text,
+                Some(true),
+            )))
+        })
     }
 }
 

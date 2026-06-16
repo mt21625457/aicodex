@@ -253,7 +253,7 @@ pub(crate) fn build_claude_messages_request(
         .collect::<Result<Vec<_>, _>>()?;
     let tool_names = tool_names_by_identity(&tool_call_metadata);
 
-    for item in prompt.get_formatted_input() {
+    for item in prompt.get_formatted_input_for_request(false) {
         match item {
             ResponseItem::Message { role, content, .. } => {
                 if matches!(role.as_str(), "system" | "developer") {
@@ -360,7 +360,9 @@ pub(crate) fn build_claude_messages_request(
                     )],
                 );
             }
-            ResponseItem::FunctionCallOutput { call_id, output } => {
+            ResponseItem::FunctionCallOutput {
+                call_id, output, ..
+            } => {
                 push_message(
                     &mut messages,
                     ClaudeMessageRole::User,
@@ -414,12 +416,16 @@ pub(crate) fn build_claude_messages_request(
                     push_message(&mut messages, ClaudeMessageRole::Assistant, vec![block]);
                 }
             }
-            ResponseItem::Compaction { encrypted_content } => {
+            ResponseItem::Compaction {
+                encrypted_content, ..
+            } => {
                 if let Some(block) = provider_state_block(&encrypted_content) {
                     push_message(&mut messages, ClaudeMessageRole::Assistant, vec![block]);
                 }
             }
-            ResponseItem::ContextCompaction { encrypted_content } => {
+            ResponseItem::ContextCompaction {
+                encrypted_content, ..
+            } => {
                 if let Some(encrypted_content) = encrypted_content
                     && let Some(block) = provider_state_block(&encrypted_content)
                 {
@@ -430,7 +436,8 @@ pub(crate) fn build_claude_messages_request(
             | ResponseItem::ToolSearchOutput { .. }
             | ResponseItem::WebSearchCall { .. }
             | ResponseItem::ImageGenerationCall { .. }
-            | ResponseItem::CompactionTrigger
+            | ResponseItem::CompactionTrigger { .. }
+            | ResponseItem::AgentMessage { .. }
             | ResponseItem::Other => {}
         }
     }
@@ -518,11 +525,12 @@ pub(crate) fn build_claude_messages_request(
         ClaudeProviderCompat::DeepSeek => {
             let thinking = match options.reasoning_effort {
                 Some(ReasoningEffortConfig::None) => Some(ClaudeThinkingConfig::Disabled),
-                Some(_) => claude_thinking_config(options.reasoning_effort),
+                Some(_) => claude_thinking_config(options.reasoning_effort.clone()),
                 None => None,
             };
             let output_config = match options.reasoning_effort {
                 Some(ReasoningEffortConfig::None) | None => None,
+                Some(ReasoningEffortConfig::Custom(_)) => None,
                 Some(
                     ReasoningEffortConfig::Minimal
                     | ReasoningEffortConfig::Low
@@ -803,6 +811,7 @@ fn claude_thinking_config(
         ReasoningEffortConfig::Medium => CLAUDE_THINKING_MEDIUM_BUDGET_TOKENS,
         ReasoningEffortConfig::High => CLAUDE_THINKING_HIGH_BUDGET_TOKENS,
         ReasoningEffortConfig::XHigh => CLAUDE_THINKING_XHIGH_BUDGET_TOKENS,
+        ReasoningEffortConfig::Custom(_) => return None,
     };
     Some(ClaudeThinkingConfig::Enabled { budget_tokens })
 }
@@ -1691,6 +1700,8 @@ mod tests {
                     },
                 ],
                 phase: None,
+
+                metadata: None,
             }],
             tools: vec![ToolSpec::Namespace(ResponsesApiNamespace {
                 name: "mcp__demo__".to_string(),
@@ -1776,6 +1787,8 @@ mod tests {
                     text: "search".to_string(),
                 }],
                 phase: None,
+
+                metadata: None,
             }],
             tools: vec![ToolSpec::WebSearch {
                 external_web_access: Some(true),
@@ -1826,6 +1839,8 @@ mod tests {
                     text: "search".to_string(),
                 }],
                 phase: None,
+
+                metadata: None,
             }],
             tools: vec![ToolSpec::WebSearch {
                 external_web_access: Some(true),
@@ -1885,6 +1900,8 @@ mod tests {
                     text: "search".to_string(),
                 }],
                 phase: None,
+
+                metadata: None,
             }],
             tools: vec![ToolSpec::WebSearch {
                 external_web_access: Some(false),
@@ -1914,6 +1931,8 @@ mod tests {
                     text: "search".to_string(),
                 }],
                 phase: None,
+
+                metadata: None,
             }],
             tools: vec![ToolSpec::WebSearch {
                 external_web_access: Some(true),
@@ -1979,10 +1998,14 @@ mod tests {
                     namespace: None,
                     arguments: "{\"id\":1}".to_string(),
                     call_id: "call_1".to_string(),
+
+                    metadata: None,
                 },
                 ResponseItem::FunctionCallOutput {
                     call_id: "call_1".to_string(),
                     output: FunctionCallOutputPayload::from_text("ok".to_string()),
+
+                    metadata: None,
                 },
             ],
             ..Default::default()
@@ -2026,6 +2049,8 @@ mod tests {
                     namespace: None,
                     arguments: "{\"id\":1}".to_string(),
                     call_id: "call_1".to_string(),
+
+                    metadata: None,
                 },
                 ResponseItem::FunctionCallOutput {
                     call_id: "call_1".to_string(),
@@ -2033,6 +2058,8 @@ mod tests {
                         body: FunctionCallOutputBody::Text("city not found".to_string()),
                         success: Some(false),
                     },
+
+                    metadata: None,
                 },
             ],
             base_instructions: BaseInstructions {
@@ -2085,6 +2112,8 @@ mod tests {
                     namespace: None,
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
+
+                    metadata: None,
                 },
                 ResponseItem::FunctionCallOutput {
                     call_id: "call_1".to_string(),
@@ -2103,6 +2132,8 @@ mod tests {
                         ]),
                         success: Some(false),
                     },
+
+                    metadata: None,
                 },
             ],
             base_instructions: BaseInstructions {
@@ -2136,6 +2167,8 @@ mod tests {
                     namespace: None,
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
+
+                    metadata: None,
                 },
                 ResponseItem::FunctionCallOutput {
                     call_id: "call_1".to_string(),
@@ -2148,6 +2181,8 @@ mod tests {
                         ]),
                         success: Some(false),
                     },
+
+                    metadata: None,
                 },
             ],
             base_instructions: BaseInstructions {
@@ -2185,6 +2220,8 @@ mod tests {
                         detail: Some(ImageDetail::High),
                     }],
                     phase: None,
+
+                    metadata: None,
                 },
                 ResponseItem::FunctionCall {
                     id: None,
@@ -2192,6 +2229,8 @@ mod tests {
                     namespace: None,
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
+
+                    metadata: None,
                 },
                 ResponseItem::FunctionCallOutput {
                     call_id: "call_1".to_string(),
@@ -2208,6 +2247,8 @@ mod tests {
                             detail: Some(ImageDetail::High),
                         },
                     ]),
+
+                    metadata: None,
                 },
             ],
             base_instructions: BaseInstructions {
@@ -2290,6 +2331,8 @@ mod tests {
                     detail: Some(ImageDetail::High),
                 }],
                 phase: None,
+
+                metadata: None,
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
@@ -2326,6 +2369,8 @@ mod tests {
                     })
                     .collect(),
                 phase: None,
+
+                metadata: None,
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
@@ -2374,6 +2419,8 @@ mod tests {
                     namespace: None,
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
+
+                    metadata: None,
                 },
                 ResponseItem::FunctionCallOutput {
                     call_id: "call_1".to_string(),
@@ -2383,6 +2430,8 @@ mod tests {
                             detail: Some(ImageDetail::High),
                         },
                     ]),
+
+                    metadata: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -2394,6 +2443,8 @@ mod tests {
                         })
                         .collect(),
                     phase: None,
+
+                    metadata: None,
                 },
             ],
             base_instructions: BaseInstructions {
@@ -2435,6 +2486,8 @@ mod tests {
                         text: "first".to_string(),
                     }],
                     phase: None,
+
+                    metadata: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -2443,6 +2496,8 @@ mod tests {
                         text: "\n\n".to_string(),
                     }],
                     phase: None,
+
+                    metadata: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -2451,6 +2506,8 @@ mod tests {
                         text: "second".to_string(),
                     }],
                     phase: None,
+
+                    metadata: None,
                 },
             ],
             base_instructions: BaseInstructions {
@@ -2491,6 +2548,8 @@ mod tests {
                     text: "think".to_string(),
                 }],
                 phase: None,
+
+                metadata: None,
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
@@ -2541,6 +2600,8 @@ mod tests {
                     text: "think harder".to_string(),
                 }],
                 phase: None,
+
+                metadata: None,
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
@@ -2593,6 +2654,8 @@ mod tests {
                     text: "answer directly".to_string(),
                 }],
                 phase: None,
+
+                metadata: None,
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
@@ -2641,6 +2704,8 @@ mod tests {
                     text: "standard".to_string(),
                 }],
                 phase: None,
+
+                metadata: None,
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
@@ -2677,6 +2742,8 @@ mod tests {
                         text: "thinking".to_string(),
                     }]),
                     encrypted_content: Some("signature".to_string()),
+
+                    metadata: None,
                 },
                 ResponseItem::FunctionCall {
                     id: None,
@@ -2684,10 +2751,14 @@ mod tests {
                     namespace: None,
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
+
+                    metadata: None,
                 },
                 ResponseItem::FunctionCallOutput {
                     call_id: "call_1".to_string(),
                     output: FunctionCallOutputPayload::from_text("ok".to_string()),
+
+                    metadata: None,
                 },
             ],
             tools: vec![
@@ -2771,6 +2842,8 @@ mod tests {
                     }],
                     content: None,
                     encrypted_content: Some("openai-encrypted-content".to_string()),
+
+                    metadata: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -2779,6 +2852,8 @@ mod tests {
                         text: "continue".to_string(),
                     }],
                     phase: None,
+
+                    metadata: None,
                 },
             ],
             ..Default::default()
@@ -2808,6 +2883,8 @@ mod tests {
                 summary: Vec::new(),
                 content: None,
                 encrypted_content: Some("openai-encrypted-content".to_string()),
+
+                metadata: None,
             }],
             ..Default::default()
         };
@@ -2835,6 +2912,8 @@ mod tests {
                     text: String::new(),
                 }]),
                 encrypted_content: Some("claude-thinking-signature".to_string()),
+
+                metadata: None,
             }],
             ..Default::default()
         };
@@ -2866,6 +2945,8 @@ mod tests {
                         text: "continue".to_string(),
                     }],
                     phase: None,
+
+                    metadata: None,
                 },
                 ResponseItem::Reasoning {
                     id: "msg_1_reasoning_0".to_string(),
@@ -2874,6 +2955,8 @@ mod tests {
                         text: "stale thinking".to_string(),
                     }]),
                     encrypted_content: None,
+
+                    metadata: None,
                 },
             ],
             ..Default::default()
@@ -2906,6 +2989,8 @@ mod tests {
                         text: "answer".to_string(),
                     }],
                     phase: None,
+
+                    metadata: None,
                 },
                 ResponseItem::Reasoning {
                     id: "msg_1_reasoning_0".to_string(),
@@ -2914,6 +2999,8 @@ mod tests {
                         text: "trailing thinking".to_string(),
                     }]),
                     encrypted_content: None,
+
+                    metadata: None,
                 },
             ],
             ..Default::default()
@@ -2947,6 +3034,8 @@ mod tests {
                     text: "visible reasoning".to_string(),
                 }]),
                 encrypted_content: Some("openai-encrypted-content".to_string()),
+
+                metadata: None,
             }],
             ..Default::default()
         };
@@ -2970,6 +3059,8 @@ mod tests {
             input: vec![ResponseItem::FunctionCallOutput {
                 call_id: "call_1".to_string(),
                 output: FunctionCallOutputPayload::from_text("ok".to_string()),
+
+                metadata: None,
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
@@ -3003,6 +3094,8 @@ mod tests {
                     namespace: None,
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
+
+                    metadata: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3011,10 +3104,14 @@ mod tests {
                         text: "too soon".to_string(),
                     }],
                     phase: None,
+
+                    metadata: None,
                 },
                 ResponseItem::FunctionCallOutput {
                     call_id: "call_1".to_string(),
                     output: FunctionCallOutputPayload::from_text("ok".to_string()),
+
+                    metadata: None,
                 },
             ],
             base_instructions: BaseInstructions {
@@ -3067,6 +3164,8 @@ mod tests {
                     namespace: None,
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
+
+                    metadata: None,
                 },
                 ResponseItem::FunctionCall {
                     id: None,
@@ -3074,14 +3173,20 @@ mod tests {
                     namespace: None,
                     arguments: "{}".to_string(),
                     call_id: "call_2".to_string(),
+
+                    metadata: None,
                 },
                 ResponseItem::FunctionCallOutput {
                     call_id: "call_2".to_string(),
                     output: FunctionCallOutputPayload::from_text("second first".to_string()),
+
+                    metadata: None,
                 },
                 ResponseItem::FunctionCallOutput {
                     call_id: "call_1".to_string(),
                     output: FunctionCallOutputPayload::from_text("first second".to_string()),
+
+                    metadata: None,
                 },
             ],
             base_instructions: BaseInstructions {
@@ -3142,6 +3247,8 @@ mod tests {
                 namespace: None,
                 arguments: "{}".to_string(),
                 call_id: "call_1".to_string(),
+
+                metadata: None,
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
@@ -3189,6 +3296,8 @@ mod tests {
                     namespace: None,
                     arguments: "{\"id\":1}".to_string(),
                     call_id: "call_1".to_string(),
+
+                    metadata: None,
                 },
                 ResponseItem::FunctionCall {
                     id: None,
@@ -3196,10 +3305,14 @@ mod tests {
                     namespace: None,
                     arguments: "{\"id\":2}".to_string(),
                     call_id: "call_1".to_string(),
+
+                    metadata: None,
                 },
                 ResponseItem::FunctionCallOutput {
                     call_id: "call_1".to_string(),
                     output: FunctionCallOutputPayload::from_text("ok".to_string()),
+
+                    metadata: None,
                 },
             ],
             base_instructions: BaseInstructions {
@@ -3246,6 +3359,8 @@ mod tests {
                     text: "hello".to_string(),
                 }],
                 phase: None,
+
+                metadata: None,
             }],
             base_instructions: BaseInstructions {
                 text: "stable system".to_string(),
@@ -3290,6 +3405,8 @@ mod tests {
                         text: "stable prior context".to_string(),
                     }],
                     phase: None,
+
+                    metadata: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3298,6 +3415,8 @@ mod tests {
                         text: "prior answer".to_string(),
                     }],
                     phase: None,
+
+                    metadata: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3306,6 +3425,8 @@ mod tests {
                         text: "volatile current question".to_string(),
                     }],
                     phase: None,
+
+                    metadata: None,
                 },
             ],
             base_instructions: BaseInstructions {
@@ -3360,10 +3481,14 @@ mod tests {
                     namespace: None,
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
+
+                    metadata: None,
                 },
                 ResponseItem::FunctionCallOutput {
                     call_id: "call_1".to_string(),
                     output: FunctionCallOutputPayload::from_text("ok".to_string()),
+
+                    metadata: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3372,6 +3497,8 @@ mod tests {
                         text: "tool noted".to_string(),
                     }],
                     phase: None,
+
+                    metadata: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3380,6 +3507,8 @@ mod tests {
                         text: "stable prior context".to_string(),
                     }],
                     phase: None,
+
+                    metadata: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3388,6 +3517,8 @@ mod tests {
                         text: "prior answer".to_string(),
                     }],
                     phase: None,
+
+                    metadata: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3396,6 +3527,8 @@ mod tests {
                         text: "volatile current question".to_string(),
                     }],
                     phase: None,
+
+                    metadata: None,
                 },
             ],
             base_instructions: BaseInstructions {
@@ -3473,10 +3606,14 @@ mod tests {
                     namespace: None,
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
+
+                    metadata: None,
                 },
                 ResponseItem::FunctionCallOutput {
                     call_id: "call_1".to_string(),
                     output: FunctionCallOutputPayload::from_text("ok".to_string()),
+
+                    metadata: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3485,6 +3622,8 @@ mod tests {
                         text: "prior answer".to_string(),
                     }],
                     phase: None,
+
+                    metadata: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3493,6 +3632,8 @@ mod tests {
                         text: "current question".to_string(),
                     }],
                     phase: None,
+
+                    metadata: None,
                 },
             ],
             base_instructions: BaseInstructions {
@@ -3582,10 +3723,14 @@ mod tests {
                     namespace: None,
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
+
+                    metadata: None,
                 },
                 ResponseItem::FunctionCallOutput {
                     call_id: "call_1".to_string(),
                     output: FunctionCallOutputPayload::from_text("ok".to_string()),
+
+                    metadata: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3594,6 +3739,8 @@ mod tests {
                         text: "tool noted".to_string(),
                     }],
                     phase: None,
+
+                    metadata: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3602,6 +3749,8 @@ mod tests {
                         text: "stable prior context".to_string(),
                     }],
                     phase: None,
+
+                    metadata: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3610,6 +3759,8 @@ mod tests {
                         text: "prior answer".to_string(),
                     }],
                     phase: None,
+
+                    metadata: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3618,6 +3769,8 @@ mod tests {
                         text: "current question".to_string(),
                     }],
                     phase: None,
+
+                    metadata: None,
                 },
             ],
             base_instructions: BaseInstructions {
@@ -3703,6 +3856,8 @@ mod tests {
         let prompt = Prompt {
             input: vec![ResponseItem::Compaction {
                 encrypted_content: raw_compaction.to_string(),
+
+                metadata: None,
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
@@ -3732,6 +3887,8 @@ mod tests {
         let prompt = Prompt {
             input: vec![ResponseItem::ContextCompaction {
                 encrypted_content: Some(raw_compaction.to_string()),
+
+                metadata: None,
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
@@ -3775,15 +3932,23 @@ mod tests {
             input: vec![
                 ResponseItem::Compaction {
                     encrypted_content: stale_server_tool_result.to_string(),
+
+                    metadata: None,
                 },
                 ResponseItem::Compaction {
                     encrypted_content: compaction.to_string(),
+
+                    metadata: None,
                 },
                 ResponseItem::Compaction {
                     encrypted_content: redacted_thinking.to_string(),
+
+                    metadata: None,
                 },
                 ResponseItem::Compaction {
                     encrypted_content: unknown_provider_state.to_string(),
+
+                    metadata: None,
                 },
             ],
             base_instructions: BaseInstructions {
@@ -3824,9 +3989,13 @@ mod tests {
             input: vec![
                 ResponseItem::Compaction {
                     encrypted_content: web_search_tool_result.to_string(),
+
+                    metadata: None,
                 },
                 ResponseItem::Compaction {
                     encrypted_content: web_search_citation.to_string(),
+
+                    metadata: None,
                 },
             ],
             tools: vec![ToolSpec::WebSearch {
@@ -3875,9 +4044,13 @@ mod tests {
             input: vec![
                 ResponseItem::Compaction {
                     encrypted_content: server_tool_use.to_string(),
+
+                    metadata: None,
                 },
                 ResponseItem::Compaction {
                     encrypted_content: web_search_tool_result.to_string(),
+
+                    metadata: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3886,6 +4059,8 @@ mod tests {
                         text: "follow up".to_string(),
                     }],
                     phase: None,
+
+                    metadata: None,
                 },
             ],
             tools: vec![ToolSpec::WebSearch {
@@ -3931,6 +4106,8 @@ mod tests {
             input: vec![
                 ResponseItem::Compaction {
                     encrypted_content: web_search_tool_result.to_string(),
+
+                    metadata: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3939,6 +4116,8 @@ mod tests {
                         text: "continue".to_string(),
                     }],
                     phase: None,
+
+                    metadata: None,
                 },
             ],
             tools: vec![ToolSpec::WebSearch {
@@ -3984,6 +4163,8 @@ mod tests {
             input: vec![
                 ResponseItem::Compaction {
                     encrypted_content: web_search_tool_result.to_string(),
+
+                    metadata: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3992,6 +4173,8 @@ mod tests {
                         text: "continue".to_string(),
                     }],
                     phase: None,
+
+                    metadata: None,
                 },
             ],
             tools: vec![ToolSpec::WebSearch {

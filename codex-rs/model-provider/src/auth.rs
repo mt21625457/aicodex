@@ -9,11 +9,15 @@ use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::WireApi;
+use codex_protocol::error::CodexErr;
 use http::HeaderMap;
 use http::HeaderValue;
 
 use crate::anthropic_auth_provider::AnthropicAuthProvider;
 use crate::bearer_auth_provider::BearerAuthProvider;
+
+const BEDROCK_API_KEY_UNSUPPORTED_MESSAGE: &str =
+    "Bedrock API key auth is only supported by the Amazon Bedrock model provider";
 
 #[derive(Clone, Debug)]
 struct AgentIdentityAuthProvider {
@@ -81,6 +85,12 @@ pub(crate) fn resolve_provider_auth(
     auth: Option<&CodexAuth>,
     provider: &ModelProviderInfo,
 ) -> codex_protocol::error::Result<SharedAuthProvider> {
+    if matches!(auth, Some(CodexAuth::BedrockApiKey(_))) {
+        return Err(CodexErr::UnsupportedOperation(
+            BEDROCK_API_KEY_UNSUPPORTED_MESSAGE.to_string(),
+        ));
+    }
+
     if provider.wire_api == WireApi::Claude {
         return Ok(Arc::new(anthropic_auth_for_provider(auth, provider)?));
     }
@@ -133,20 +143,24 @@ pub fn auth_provider_from_auth(auth: &CodexAuth) -> SharedAuthProvider {
         CodexAuth::AgentIdentity(auth) => {
             Arc::new(AgentIdentityAuthProvider { auth: auth.clone() })
         }
-        CodexAuth::ApiKey(_) | CodexAuth::Chatgpt(_) | CodexAuth::ChatgptAuthTokens(_) => {
-            Arc::new(BearerAuthProvider {
-                token: auth.get_token().ok(),
-                account_id: auth.get_account_id(),
-                is_fedramp_account: auth.is_fedramp_account(),
-            })
-        }
+        CodexAuth::BedrockApiKey(_) => unreachable!("{BEDROCK_API_KEY_UNSUPPORTED_MESSAGE}"),
+        CodexAuth::ApiKey(_)
+        | CodexAuth::Chatgpt(_)
+        | CodexAuth::ChatgptAuthTokens(_)
+        | CodexAuth::PersonalAccessToken(_) => Arc::new(BearerAuthProvider {
+            token: auth.get_token().ok(),
+            account_id: auth.get_account_id(),
+            is_fedramp_account: auth.is_fedramp_account(),
+        }),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use codex_login::auth::BedrockApiKeyAuth;
     use codex_model_provider_info::WireApi;
     use codex_model_provider_info::create_oss_provider_with_base_url;
+    use pretty_assertions::assert_eq;
 
     use super::*;
 
@@ -208,5 +222,22 @@ mod tests {
             Some("Bearer provider-command-token")
         );
         assert_eq!(headers.get("x-api-key"), None);
+    }
+
+    #[test]
+    fn openai_provider_rejects_bedrock_api_key_auth() {
+        let provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
+        let auth = CodexAuth::BedrockApiKey(BedrockApiKeyAuth {
+            api_key: "bedrock-api-key-test".to_string(),
+            region: "us-east-1".to_string(),
+        });
+
+        match resolve_provider_auth(Some(&auth), &provider) {
+            Err(CodexErr::UnsupportedOperation(message)) => {
+                assert_eq!(message, BEDROCK_API_KEY_UNSUPPORTED_MESSAGE);
+            }
+            Err(err) => panic!("unexpected auth error: {err:?}"),
+            Ok(_) => panic!("Bedrock API key auth should be rejected"),
+        }
     }
 }

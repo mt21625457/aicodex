@@ -28,6 +28,7 @@ use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::protocol::ExecCommandSource;
 use codex_shell_command::is_safe_command::is_known_safe_command;
 use codex_tools::ToolName;
+use codex_utils_path_uri::PathUri;
 
 mod shell_command;
 mod shell_file_changes;
@@ -156,8 +157,9 @@ async fn run_exec_like(args: RunExecLikeArgs) -> Result<FunctionToolOutput, Func
         return Ok(output);
     }
 
+    let exec_cwd_uri = PathUri::from_abs_path(&exec_params.cwd);
     let shell_file_change_sandbox = turn_environment.environment.is_remote().then(|| {
-        turn.file_system_sandbox_context(/*additional_permissions*/ None, &exec_params.cwd)
+        turn.file_system_sandbox_context(/*additional_permissions*/ None, &exec_cwd_uri)
     });
     let shell_file_snapshot_before = if is_known_safe_command(&exec_params.command) {
         None
@@ -180,7 +182,6 @@ async fn run_exec_like(args: RunExecLikeArgs) -> Result<FunctionToolOutput, Func
     );
     emitter.begin(event_ctx).await;
 
-    let file_system_sandbox_policy = turn.file_system_sandbox_policy();
     let exec_approval_requirement = session
         .services
         .exec_policy
@@ -188,9 +189,7 @@ async fn run_exec_like(args: RunExecLikeArgs) -> Result<FunctionToolOutput, Func
             command: &exec_params.command,
             approval_policy: turn.approval_policy.value(),
             permission_profile: turn.permission_profile(),
-            file_system_sandbox_policy: &file_system_sandbox_policy,
-            #[allow(deprecated)]
-            sandbox_cwd: turn.cwd.as_path(),
+            windows_sandbox_level: turn.windows_sandbox_level,
             sandbox_permissions: if effective_additional_permissions.permissions_preapproved {
                 codex_protocol::models::SandboxPermissions::UseDefault
             } else {
@@ -202,6 +201,7 @@ async fn run_exec_like(args: RunExecLikeArgs) -> Result<FunctionToolOutput, Func
 
     let req = ShellRequest {
         command: exec_params.command.clone(),
+        turn_environment: turn_environment.clone(),
         shell_type,
         hook_command,
         cwd: exec_params.cwd.clone(),
@@ -266,7 +266,14 @@ async fn run_exec_like(args: RunExecLikeArgs) -> Result<FunctionToolOutput, Func
         .finish(event_ctx, out, /*applied_patch_delta*/ None)
         .await;
     if let Some(changes) = shell_file_changes {
-        emit_shell_file_changes(session.as_ref(), turn.as_ref(), &call_id, changes).await;
+        emit_shell_file_changes(
+            session.as_ref(),
+            turn.as_ref(),
+            &call_id,
+            &turn_environment.environment_id,
+            changes,
+        )
+        .await;
     }
     let content = content?;
     Ok(FunctionToolOutput {
@@ -282,10 +289,15 @@ async fn emit_shell_file_changes(
     session: &crate::session::session::Session,
     turn: &TurnContext,
     shell_call_id: &str,
+    environment_id: &str,
     changes: std::collections::HashMap<std::path::PathBuf, codex_protocol::protocol::FileChange>,
 ) {
     let call_id = format!("{shell_call_id}-file-change");
-    let emitter = ToolEmitter::apply_patch(changes, /*auto_approved*/ true);
+    let emitter = ToolEmitter::apply_patch_for_environment(
+        changes,
+        /*auto_approved*/ true,
+        environment_id.to_string(),
+    );
     let event_ctx = ToolEventCtx::new(session, turn, &call_id, /*turn_diff_tracker*/ None);
     emitter.begin(event_ctx).await;
 

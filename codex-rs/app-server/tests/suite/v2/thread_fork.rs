@@ -72,6 +72,7 @@ async fn list_threads(mcp: &mut TestAppServer) -> Result<ThreadListResponse> {
             cwd: None,
             use_state_db_only: false,
             search_term: None,
+            parent_thread_id: None,
         })
         .await?;
     let list_resp: JSONRPCResponse = timeout(
@@ -490,6 +491,13 @@ async fn thread_fork_tracks_thread_initialized_analytics() -> Result<()> {
         "mock-model",
         "forked",
         "user",
+    );
+    assert_eq!(
+        event["event_params"]["forked_from_thread_id"],
+        thread
+            .forked_from_id
+            .as_deref()
+            .expect("forked thread has a source thread")
     );
     Ok(())
 }
