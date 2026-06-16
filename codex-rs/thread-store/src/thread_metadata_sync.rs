@@ -272,6 +272,7 @@ impl ThreadMetadataSync {
                 RolloutItem::SessionMeta(_)
                 | RolloutItem::EventMsg(_)
                 | RolloutItem::ResponseItem(_)
+                | RolloutItem::InterAgentCommunication(_)
                 | RolloutItem::Compacted(_) => {}
             }
         }
@@ -474,6 +475,7 @@ mod tests {
         let item = RolloutItem::Compacted(CompactedItem {
             message: "compacted".to_string(),
             replacement_history: None,
+            window_id: None,
         });
 
         let first = sync
