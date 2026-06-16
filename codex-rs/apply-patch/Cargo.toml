@@ -18,8 +18,11 @@ workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+chardetng = { workspace = true }
 codex-exec-server = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
+codex-utils-path-uri = { workspace = true }
+encoding_rs = { workspace = true }
 similar = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }

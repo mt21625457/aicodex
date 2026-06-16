@@ -32,6 +32,7 @@ use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::test_codex::TestCodex;
+use core_test_support::test_codex::local;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
@@ -52,7 +53,7 @@ where
 {
     test.codex
         .submit(Op::UserTurn {
-            environments: None,
+            environments: Some(vec![local(test.config.cwd.clone())]),
             items: vec![UserInput::Text {
                 text: prompt.into(),
                 text_elements: Vec::new(),
@@ -83,7 +84,6 @@ where
 async fn submit_user_input_without_waiting(test: &TestCodex, prompt: &str) -> anyhow::Result<()> {
     test.codex
         .submit(Op::UserInput {
-            environments: None,
             items: vec![UserInput::Text {
                 text: prompt.into(),
                 text_elements: Vec::new(),
@@ -493,7 +493,7 @@ async fn claude_wire_emits_in_flight_estimate_before_final_context_usage() -> an
 
     test.codex
         .submit(Op::UserTurn {
-            environments: None,
+            environments: Some(vec![local(test.config.cwd.clone())]),
             items: vec![UserInput::Text {
                 text: "show a running Claude context estimate".into(),
                 text_elements: Vec::new(),
@@ -1114,7 +1114,7 @@ async fn claude_wire_apply_patch_wrapper_streams_raw_patch_update() -> anyhow::R
 
     test.codex
         .submit(Op::UserTurn {
-            environments: None,
+            environments: Some(vec![local(test.config.cwd.clone())]),
             items: vec![UserInput::Text {
                 text: "stream an apply_patch tool call".into(),
                 text_elements: Vec::new(),
@@ -1462,7 +1462,7 @@ async fn claude_wire_native_bash_uses_existing_approval_denial_flow() -> anyhow:
     );
     test.codex
         .submit(Op::UserTurn {
-            environments: None,
+            environments: Some(vec![local(test.config.cwd.clone())]),
             items: vec![UserInput::Text {
                 text: "run an escalated Claude native bash command".into(),
                 text_elements: Vec::new(),
@@ -1546,7 +1546,7 @@ async fn claude_wire_exec_command_uses_existing_approval_flow() -> anyhow::Resul
     );
     test.codex
         .submit(Op::UserTurn {
-            environments: None,
+            environments: Some(vec![local(test.config.cwd.clone())]),
             items: vec![UserInput::Text {
                 text: "run an escalated Claude shell command".into(),
                 text_elements: Vec::new(),
@@ -1793,7 +1793,6 @@ async fn claude_wire_caps_repeated_pause_turn_continuations() -> anyhow::Result<
 
     test.codex
         .submit(Op::UserInput {
-            environments: None,
             items: vec![UserInput::Text {
                 text: "trigger repeated pause_turn".into(),
                 text_elements: Vec::new(),

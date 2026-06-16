@@ -148,7 +148,6 @@ impl From<ShellCommandBackendConfig> for ShellCommandHandler {
     }
 }
 
-#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for ShellCommandHandler {
     fn tool_name(&self) -> ToolName {
         ToolName::plain("shell_command")
@@ -165,7 +164,13 @@ impl ToolExecutor<ToolInvocation> for ShellCommandHandler {
         true
     }
 
-    async fn handle(
+    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(self.handle_call(invocation))
+    }
+}
+
+impl ShellCommandHandler {
+    async fn handle_call(
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
@@ -206,7 +211,7 @@ impl ToolExecutor<ToolInvocation> for ShellCommandHandler {
             session.thread_id,
             turn.config.permissions.allow_login_shell,
         )?;
-        let shell_type = Some(session.user_shell().shell_type.clone());
+        let shell_type = Some(session.user_shell().shell_type);
         run_exec_like(RunExecLikeArgs {
             tool_name,
             exec_params,
@@ -226,7 +231,6 @@ impl ToolExecutor<ToolInvocation> for ShellCommandHandler {
     }
 }
 
-#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for ClaudeBashHandler {
     fn tool_name(&self) -> ToolName {
         ToolName::plain(CLAUDE_BASH_TOOL_NAME)
@@ -243,71 +247,70 @@ impl ToolExecutor<ToolInvocation> for ClaudeBashHandler {
         })
     }
 
-    async fn handle(
-        &self,
-        invocation: ToolInvocation,
-    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
-        let ToolInvocation {
-            session,
-            turn,
-            cancellation_token,
-            tracker,
-            call_id,
-            payload,
-            ..
-        } = invocation;
+    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(async move {
+            let ToolInvocation {
+                session,
+                turn,
+                cancellation_token,
+                tracker,
+                call_id,
+                payload,
+                ..
+            } = invocation;
 
-        let ToolPayload::Function { arguments } = payload else {
-            return Err(FunctionCallError::RespondToModel(format!(
-                "unsupported payload for Claude bash handler: {}",
-                self.tool_name()
-            )));
-        };
-        let params: ClaudeBashToolCallParams = parse_arguments(&arguments)?;
-        let shell_params = ShellCommandToolCallParams {
-            command: params.command,
-            workdir: params.workdir,
-            timeout_ms: params.timeout_ms,
-            sandbox_permissions: params
-                .sandbox_permissions
-                .or(Some(SandboxPermissions::UseDefault)),
-            additional_permissions: None,
-            justification: params.justification,
-            login: Some(false),
-            prefix_rule: None,
-        };
-        #[allow(deprecated)]
-        let workdir = turn.resolve_path(shell_params.workdir.clone());
-        maybe_emit_implicit_skill_invocation(
-            session.as_ref(),
-            turn.as_ref(),
-            &shell_params.command,
-            &workdir,
-        )
-        .await;
-        let exec_params = ShellCommandHandler::to_exec_params(
-            &shell_params,
-            session.as_ref(),
-            turn.as_ref(),
-            session.thread_id,
-            self.options.allow_login_shell,
-        )?;
-        run_exec_like(RunExecLikeArgs {
-            tool_name: self.tool_name(),
-            exec_params,
-            cancellation_token,
-            hook_command: shell_params.command,
-            shell_type: Some(session.user_shell().shell_type.clone()),
-            additional_permissions: None,
-            prefix_rule: None,
-            session,
-            turn,
-            tracker,
-            call_id,
-            shell_runtime_backend: self.inner.shell_runtime_backend(),
+            let ToolPayload::Function { arguments } = payload else {
+                return Err(FunctionCallError::RespondToModel(format!(
+                    "unsupported payload for Claude bash handler: {}",
+                    self.tool_name()
+                )));
+            };
+            let params: ClaudeBashToolCallParams = parse_arguments(&arguments)?;
+            let shell_params = ShellCommandToolCallParams {
+                command: params.command,
+                workdir: params.workdir,
+                timeout_ms: params.timeout_ms,
+                sandbox_permissions: params
+                    .sandbox_permissions
+                    .or(Some(SandboxPermissions::UseDefault)),
+                additional_permissions: None,
+                justification: params.justification,
+                login: Some(false),
+                prefix_rule: None,
+            };
+            #[allow(deprecated)]
+            let workdir = turn.resolve_path(shell_params.workdir.clone());
+            maybe_emit_implicit_skill_invocation(
+                session.as_ref(),
+                turn.as_ref(),
+                &shell_params.command,
+                &workdir,
+            )
+            .await;
+            let exec_params = ShellCommandHandler::to_exec_params(
+                &shell_params,
+                session.as_ref(),
+                turn.as_ref(),
+                session.thread_id,
+                self.options.allow_login_shell,
+            )?;
+            run_exec_like(RunExecLikeArgs {
+                tool_name: self.tool_name(),
+                exec_params,
+                cancellation_token,
+                hook_command: shell_params.command,
+                shell_type: Some(session.user_shell().shell_type),
+                additional_permissions: None,
+                prefix_rule: None,
+                session,
+                turn,
+                tracker,
+                call_id,
+                shell_runtime_backend: self.inner.shell_runtime_backend(),
+            })
+            .await
+            .map(boxed_tool_output)
         })
-        .await
-        .map(boxed_tool_output)
     }
 }
 

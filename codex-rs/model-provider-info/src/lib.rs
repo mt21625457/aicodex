@@ -246,7 +246,12 @@ impl ModelProviderInfo {
             "https://api.anthropic.com/v1"
         } else if matches!(
             auth_mode,
-            Some(AuthMode::Chatgpt | AuthMode::ChatgptAuthTokens | AuthMode::AgentIdentity)
+            Some(
+                AuthMode::Chatgpt
+                    | AuthMode::ChatgptAuthTokens
+                    | AuthMode::AgentIdentity
+                    | AuthMode::PersonalAccessToken
+            )
         ) {
             CHATGPT_CODEX_BASE_URL
         } else {

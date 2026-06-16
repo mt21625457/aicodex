@@ -3,6 +3,7 @@ mod parser;
 mod seek_sequence;
 mod standalone_executable;
 mod streaming_parser;
+mod text_file;
 
 use std::collections::HashMap;
 use std::io;
@@ -16,6 +17,7 @@ use codex_exec_server::ExecutorFileSystem;
 use codex_exec_server::FileSystemSandboxContext;
 use codex_exec_server::RemoveOptions;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_path_uri::PathUri;
 pub use parser::Hunk;
 pub use parser::ParseError;
 use parser::ParseError::*;
@@ -30,6 +32,8 @@ pub use invocation::verify_apply_patch_args;
 pub use standalone_executable::main;
 
 use crate::invocation::ExtractHeredocError;
+use crate::text_file::PatchableTextFile;
+use crate::text_file::read_patchable_text_file;
 
 /// Special argv[1] flag used when the Codex executable self-invokes to run the
 /// internal `apply_patch` path.
@@ -390,6 +394,7 @@ async fn apply_hunks_to_files(
     for hunk in hunks {
         let affected_path = hunk.path().to_path_buf();
         let path_abs = hunk.resolve_path(cwd);
+        let path_uri = PathUri::from_abs_path(&path_abs);
         match hunk {
             Hunk::AddFile { contents, .. } => {
                 let overwritten_content =
@@ -415,7 +420,10 @@ async fn apply_hunks_to_files(
             }
             Hunk::DeleteFile { .. } => {
                 note_existing_path_delta_support(&path_abs, fs, sandbox, &mut delta.exact).await;
-                let deleted_content = fs.read_file_text(&path_abs, sandbox).await.ok();
+                let deleted_content = read_patchable_text_file(&path_abs, fs, sandbox)
+                    .await
+                    .map(|file| file.contents)
+                    .ok();
                 if deleted_content.is_none() {
                     delta.exact = false;
                 }
@@ -424,7 +432,7 @@ async fn apply_hunks_to_files(
                     .with_context(|| format!("Failed to delete file {}", path_abs.display()))?;
                 if let Err(error) = fs
                     .remove(
-                        &path_abs,
+                        &path_uri,
                         RemoveOptions {
                             recursive: false,
                             force: false,
@@ -458,6 +466,7 @@ async fn apply_hunks_to_files(
                 let AppliedPatch {
                     original_contents,
                     new_contents,
+                    new_bytes,
                 } = derive_new_contents_from_chunks(&path_abs, chunks, fs, sandbox).await?;
                 if let Some(dest) = move_path {
                     let dest_abs = AbsolutePathBuf::resolve_path_against_base(dest, cwd);
@@ -468,7 +477,7 @@ async fn apply_hunks_to_files(
                         write_file_with_missing_parent_retry(
                             fs,
                             &dest_abs,
-                            new_contents.clone().into_bytes(),
+                            new_bytes.clone(),
                             sandbox,
                         )
                         .await
@@ -488,7 +497,7 @@ async fn apply_hunks_to_files(
                         })?;
                     if let Err(error) = fs
                         .remove(
-                            &path_abs,
+                            &path_uri,
                             RemoveOptions {
                                 recursive: false,
                                 force: false,
@@ -521,7 +530,7 @@ async fn apply_hunks_to_files(
                     modified.push(affected_path);
                 } else {
                     try_write!(
-                        fs.write_file(&path_abs, new_contents.clone().into_bytes(), sandbox)
+                        fs.write_file(&path_uri, new_bytes, sandbox)
                             .await
                             .with_context(|| format!(
                                 "Failed to write file {}",
@@ -554,7 +563,8 @@ async fn ensure_not_directory(
     fs: &dyn ExecutorFileSystem,
     sandbox: Option<&FileSystemSandboxContext>,
 ) -> io::Result<()> {
-    let metadata = fs.get_metadata(path, sandbox).await?;
+    let path_uri = PathUri::from_abs_path(path);
+    let metadata = fs.get_metadata(&path_uri, sandbox).await?;
     if metadata.is_directory {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -571,10 +581,9 @@ async fn remove_failure_was_side_effect_free(
     sandbox: Option<&FileSystemSandboxContext>,
 ) -> bool {
     match expected_content {
-        Some(expected_content) => fs
-            .read_file_text(path, sandbox)
+        Some(expected_content) => read_patchable_text_file(path, fs, sandbox)
             .await
-            .is_ok_and(|content| content == expected_content),
+            .is_ok_and(|file| file.contents == expected_content),
         None => false,
     }
 }
@@ -586,8 +595,8 @@ async fn read_optional_file_text_for_delta(
     exact: &mut bool,
 ) -> Option<String> {
     note_existing_path_delta_support(path, fs, sandbox, exact).await;
-    match fs.read_file_text(path, sandbox).await {
-        Ok(content) => Some(content),
+    match read_patchable_text_file(path, fs, sandbox).await {
+        Ok(file) => Some(file.contents),
         Err(source) if source.kind() == io::ErrorKind::NotFound => None,
         Err(_) => {
             *exact = false;
@@ -602,7 +611,8 @@ async fn note_existing_path_delta_support(
     sandbox: Option<&FileSystemSandboxContext>,
     exact: &mut bool,
 ) {
-    match fs.get_metadata(path, sandbox).await {
+    let path_uri = PathUri::from_abs_path(path);
+    match fs.get_metadata(&path_uri, sandbox).await {
         Ok(metadata) if metadata.is_file && !metadata.is_symlink => {}
         Ok(_) => *exact = false,
         Err(source) if source.kind() == io::ErrorKind::NotFound => {}
@@ -616,12 +626,14 @@ async fn write_file_with_missing_parent_retry(
     contents: Vec<u8>,
     sandbox: Option<&FileSystemSandboxContext>,
 ) -> anyhow::Result<()> {
-    match fs.write_file(path_abs, contents.clone(), sandbox).await {
+    let path_uri = PathUri::from_abs_path(path_abs);
+    match fs.write_file(&path_uri, contents.clone(), sandbox).await {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
             if let Some(parent_abs) = path_abs.parent() {
+                let parent_uri = PathUri::from_abs_path(&parent_abs);
                 fs.create_directory(
-                    &parent_abs,
+                    &parent_uri,
                     CreateDirectoryOptions { recursive: true },
                     sandbox,
                 )
@@ -633,7 +645,7 @@ async fn write_file_with_missing_parent_retry(
                     )
                 })?;
             }
-            fs.write_file(path_abs, contents, sandbox)
+            fs.write_file(&path_uri, contents, sandbox)
                 .await
                 .with_context(|| format!("Failed to write file {}", path_abs.display()))?;
             Ok(())
@@ -647,6 +659,7 @@ async fn write_file_with_missing_parent_retry(
 struct AppliedPatch {
     original_contents: String,
     new_contents: String,
+    new_bytes: Vec<u8>,
 }
 
 /// Return *only* the new file contents (joined into a single `String`) after
@@ -657,12 +670,18 @@ async fn derive_new_contents_from_chunks(
     fs: &dyn ExecutorFileSystem,
     sandbox: Option<&FileSystemSandboxContext>,
 ) -> std::result::Result<AppliedPatch, ApplyPatchError> {
-    let original_contents = fs.read_file_text(path_abs, sandbox).await.map_err(|err| {
-        ApplyPatchError::IoError(IoError {
-            context: format!("Failed to read file to update {}", path_abs.display()),
-            source: err,
-        })
-    })?;
+    let original_file = read_patchable_text_file(path_abs, fs, sandbox)
+        .await
+        .map_err(|err| {
+            ApplyPatchError::IoError(IoError {
+                context: format!("Failed to read file to update {}", path_abs.display()),
+                source: err,
+            })
+        })?;
+    let PatchableTextFile {
+        contents: original_contents,
+        encoding,
+    } = original_file;
 
     let mut original_lines: Vec<String> = original_contents.split('\n').map(String::from).collect();
 
@@ -679,9 +698,16 @@ async fn derive_new_contents_from_chunks(
         new_lines.push(String::new());
     }
     let new_contents = new_lines.join("\n");
+    let new_bytes = encoding.encode(&new_contents).map_err(|err| {
+        ApplyPatchError::IoError(IoError {
+            context: format!("Failed to encode updated file {}", path_abs.display()),
+            source: err,
+        })
+    })?;
     Ok(AppliedPatch {
         original_contents,
         new_contents,
+        new_bytes,
     })
 }
 
@@ -833,6 +859,7 @@ pub async fn unified_diff_from_chunks_with_context(
     let AppliedPatch {
         original_contents,
         new_contents,
+        ..
     } = derive_new_contents_from_chunks(path_abs, chunks, fs, sandbox).await?;
     let text_diff = TextDiff::from_lines(&original_contents, &new_contents);
     let unified_diff = text_diff.unified_diff().context_radius(context).to_string();
@@ -1014,6 +1041,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_delete_file_hunk_records_gbk_content_delta() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("gbk-delete.cpp");
+        fs::write(&path, b"// \xc4\xe3\xba\xc3\n").unwrap();
+        let patch = wrap_patch(&format!("*** Delete File: {}", path.display()));
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let delta = apply_patch(
+            &patch,
+            &AbsolutePathBuf::from_absolute_path(dir.path()).unwrap(),
+            &mut stdout,
+            &mut stderr,
+            LOCAL_FS.as_ref(),
+            /*sandbox*/ None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(String::from_utf8(stderr).unwrap(), "");
+        assert_eq!(
+            delta,
+            AppliedPatchDelta::new(
+                vec![AppliedPatchChange {
+                    path: path.clone(),
+                    change: AppliedPatchFileChange::Delete {
+                        content: "// 你好\n".to_string(),
+                    },
+                }],
+                /*exact*/ true,
+            )
+        );
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
     async fn test_update_file_hunk_modifies_content() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("update.txt");
@@ -1049,6 +1111,70 @@ mod tests {
         assert_eq!(stderr_str, "");
         let contents = fs::read_to_string(&path).unwrap();
         assert_eq!(contents, "foo\nbaz\n");
+    }
+
+    #[tokio::test]
+    async fn test_update_file_hunk_preserves_gbk_encoding() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("gbk.cpp");
+        fs::write(&path, b"// \xc4\xe3\xba\xc3\nint value = 1;\n").unwrap();
+        let patch = wrap_patch(&format!(
+            r#"*** Update File: {}
+@@
+-int value = 1;
++int value = 2;"#,
+            path.display()
+        ));
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        apply_patch(
+            &patch,
+            &AbsolutePathBuf::from_absolute_path(dir.path()).unwrap(),
+            &mut stdout,
+            &mut stderr,
+            LOCAL_FS.as_ref(),
+            /*sandbox*/ None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(String::from_utf8(stderr).unwrap(), "");
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            b"// \xc4\xe3\xba\xc3\nint value = 2;\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_file_hunk_rejects_gbk_unrepresentable_update() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("gbk.cpp");
+        let original_bytes = b"// \xc4\xe3\xba\xc3\nint value = 1;\n";
+        fs::write(&path, original_bytes).unwrap();
+        let patch = wrap_patch(&format!(
+            r#"*** Update File: {}
+@@
+-// 你好
++// 你好 🙂"#,
+            path.display()
+        ));
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let failure = apply_patch(
+            &patch,
+            &AbsolutePathBuf::from_absolute_path(dir.path()).unwrap(),
+            &mut stdout,
+            &mut stderr,
+            LOCAL_FS.as_ref(),
+            /*sandbox*/ None,
+        )
+        .await
+        .expect_err("emoji cannot be represented in the original GBK encoding");
+
+        let (error, delta) = failure.into_parts();
+        assert!(error.to_string().contains("Failed to encode updated file"));
+        assert!(delta.is_empty());
+        assert_eq!(fs::read(&path).unwrap(), original_bytes);
     }
 
     #[tokio::test]
@@ -1090,6 +1216,42 @@ mod tests {
         assert!(!src.exists());
         let contents = fs::read_to_string(&dest).unwrap();
         assert_eq!(contents, "line2\n");
+    }
+
+    #[tokio::test]
+    async fn test_update_file_hunk_moves_gbk_file_preserving_encoding() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("gbk-src.cpp");
+        let dest = dir.path().join("gbk-dst.cpp");
+        fs::write(&src, b"// \xc4\xe3\xba\xc3\nint value = 1;\n").unwrap();
+        let patch = wrap_patch(&format!(
+            r#"*** Update File: {}
+*** Move to: {}
+@@
+-int value = 1;
++int value = 2;"#,
+            src.display(),
+            dest.display()
+        ));
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        apply_patch(
+            &patch,
+            &AbsolutePathBuf::from_absolute_path(dir.path()).unwrap(),
+            &mut stdout,
+            &mut stderr,
+            LOCAL_FS.as_ref(),
+            /*sandbox*/ None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(String::from_utf8(stderr).unwrap(), "");
+        assert!(!src.exists());
+        assert_eq!(
+            fs::read(&dest).unwrap(),
+            b"// \xc4\xe3\xba\xc3\nint value = 2;\n"
+        );
     }
 
     #[cfg(unix)]

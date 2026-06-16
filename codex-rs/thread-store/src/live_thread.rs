@@ -117,7 +117,11 @@ impl LiveThread {
             {
                 Ok(history) => params.history = Some(history.items),
                 Err(err) => {
-                    let _ = thread_store.discard_thread(thread_id).await;
+                    if let Err(discard_err) = thread_store.discard_thread(thread_id).await {
+                        warn!(
+                            "failed to discard thread persistence after resume history load failed: {discard_err}"
+                        );
+                    }
                     return Err(err);
                 }
             }

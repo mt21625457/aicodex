@@ -8,6 +8,7 @@ use codex_exec_server::ExecutorFileSystem;
 use codex_exec_server::FileSystemSandboxContext;
 use codex_protocol::protocol::FileChange;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_path_uri::PathUri;
 
 const MAX_SCANNED_DIRS: usize = 1024;
 const MAX_SCANNED_FILES: usize = 20_000;
@@ -63,7 +64,8 @@ async fn try_snapshot_shell_files(
             return Err(SnapshotLimit::DirectoryCount);
         }
 
-        let Ok(mut entries) = fs.read_directory(&abs_dir, sandbox).await else {
+        let abs_dir_uri = PathUri::from_abs_path(&abs_dir);
+        let Ok(mut entries) = fs.read_directory(&abs_dir_uri, sandbox).await else {
             continue;
         };
         entries.sort_by(|left, right| left.file_name.cmp(&right.file_name));
@@ -81,7 +83,8 @@ async fn try_snapshot_shell_files(
                 if should_skip_dir(&name) {
                     continue;
                 }
-                let Ok(metadata) = fs.get_metadata(&abs_path, sandbox).await else {
+                let abs_path_uri = PathUri::from_abs_path(&abs_path);
+                let Ok(metadata) = fs.get_metadata(&abs_path_uri, sandbox).await else {
                     continue;
                 };
                 if metadata.is_symlink {
@@ -97,7 +100,8 @@ async fn try_snapshot_shell_files(
             if files.len() >= MAX_SCANNED_FILES {
                 return Err(SnapshotLimit::FileCount);
             }
-            let Ok(metadata) = fs.get_metadata(&abs_path, sandbox).await else {
+            let abs_path_uri = PathUri::from_abs_path(&abs_path);
+            let Ok(metadata) = fs.get_metadata(&abs_path_uri, sandbox).await else {
                 continue;
             };
             if !metadata.is_file || metadata.is_symlink {

@@ -77,6 +77,9 @@ pub(super) async fn append_items(
     store: &LocalThreadStore,
     params: AppendThreadItemsParams,
 ) -> ThreadStoreResult<()> {
+    if params.items.is_empty() {
+        return Ok(());
+    }
     let recorder = store.live_recorder(params.thread_id).await?;
     recorder
         .record_canonical_items(params.items.as_slice())

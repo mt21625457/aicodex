@@ -8,6 +8,7 @@ use codex_tools::ResponsesApiTool;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_path_uri::PathUri;
 use serde::Deserialize;
 
 use crate::function_tool::FunctionCallError;
@@ -65,7 +66,6 @@ struct ResolvedTextEditorPath {
     patch_path: String,
 }
 
-#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for ClaudeTextEditorHandler {
     fn tool_name(&self) -> ToolName {
         ToolName::plain(CLAUDE_TEXT_EDITOR_TOOL_NAME)
@@ -82,92 +82,98 @@ impl ToolExecutor<ToolInvocation> for ClaudeTextEditorHandler {
         })
     }
 
-    async fn handle(
-        &self,
-        invocation: ToolInvocation,
-    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
-        let turn = invocation.turn.clone();
-        let arguments = match &invocation.payload {
-            ToolPayload::Function { arguments } => arguments.clone(),
-            _ => {
-                return Err(FunctionCallError::RespondToModel(
-                    "Claude text editor received unsupported payload".to_string(),
-                ));
-            }
-        };
-        let args: ClaudeTextEditorArgs = parse_arguments(&arguments)?;
-        let Some(turn_environment) = turn.environments.primary() else {
-            return Err(FunctionCallError::RespondToModel(
-                "Claude text editor is unavailable in this session".to_string(),
-            ));
-        };
-        let path = resolve_text_editor_path(turn_environment, &args.path)?;
-        let fs = turn_environment.environment.get_filesystem();
-        let sandbox = turn.file_system_sandbox_context(
-            /*additional_permissions*/ None,
-            &turn_environment.cwd,
-        );
-
-        match args.command {
-            ClaudeTextEditorCommand::View => {
-                view_path(fs.as_ref(), &path.absolute, args.view_range.as_deref(), Some(&sandbox))
-                    .await
-            }
-            ClaudeTextEditorCommand::Create => {
-                let file_text = required_arg(args.file_text, "file_text", "create")?;
-                apply_generated_patch(
-                    invocation,
-                    self.multi_environment,
-                    create_file_patch(&path.patch_path, &file_text),
-                )
-                .await
-            }
-            ClaudeTextEditorCommand::StrReplace => {
-                let old_str = required_arg(args.old_str, "old_str", "str_replace")?;
-                let new_str = required_arg(args.new_str, "new_str", "str_replace")?;
-                let current = fs
-                    .read_file_text(&path.absolute, Some(&sandbox))
-                    .await
-                    .map_err(text_editor_io_error)?;
-                let matches = current.matches(&old_str).count();
-                if matches != 1 {
-                    return Err(FunctionCallError::RespondToModel(format!(
-                        "Claude text editor str_replace expected exactly one match, found {matches}"
-                    )));
+    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        Box::pin(async move {
+            let turn = invocation.turn.clone();
+            let arguments = match &invocation.payload {
+                ToolPayload::Function { arguments } => arguments.clone(),
+                _ => {
+                    return Err(FunctionCallError::RespondToModel(
+                        "Claude text editor received unsupported payload".to_string(),
+                    ));
                 }
-                let updated = current.replacen(&old_str, &new_str, 1);
-                apply_generated_patch(
-                    invocation,
-                    self.multi_environment,
-                    update_file_patch(&path.patch_path, &current, &updated),
-                )
-                .await
-            }
-            ClaudeTextEditorCommand::Insert => {
-                let insert_line = args.insert_line.ok_or_else(|| {
-                    FunctionCallError::RespondToModel(
-                        "Claude text editor insert requires `insert_line`".to_string(),
+            };
+            let args: ClaudeTextEditorArgs = parse_arguments(&arguments)?;
+            let Some(turn_environment) = turn.environments.primary() else {
+                return Err(FunctionCallError::RespondToModel(
+                    "Claude text editor is unavailable in this session".to_string(),
+                ));
+            };
+            let path = resolve_text_editor_path(turn_environment, &args.path)?;
+            let fs = turn_environment.environment.get_filesystem();
+            let sandbox = turn.file_system_sandbox_context(
+                /*additional_permissions*/ None,
+                turn_environment.cwd_uri(),
+            );
+
+            match args.command {
+                ClaudeTextEditorCommand::View => {
+                    view_path(
+                        fs.as_ref(),
+                        &path.absolute,
+                        args.view_range.as_deref(),
+                        Some(&sandbox),
                     )
-                })?;
-                let new_str = required_arg(args.new_str, "new_str", "insert")?;
-                let current = fs
-                    .read_file_text(&path.absolute, Some(&sandbox))
                     .await
-                    .map_err(text_editor_io_error)?;
-                let updated = insert_after_line(&current, insert_line, &new_str)?;
-                apply_generated_patch(
-                    invocation,
-                    self.multi_environment,
-                    update_file_patch(&path.patch_path, &current, &updated),
-                )
-                .await
+                }
+                ClaudeTextEditorCommand::Create => {
+                    let file_text = required_arg(args.file_text, "file_text", "create")?;
+                    apply_generated_patch(
+                        invocation,
+                        self.multi_environment,
+                        create_file_patch(&path.patch_path, &file_text),
+                    )
+                    .await
+                }
+                ClaudeTextEditorCommand::StrReplace => {
+                    let old_str = required_arg(args.old_str, "old_str", "str_replace")?;
+                    let new_str = required_arg(args.new_str, "new_str", "str_replace")?;
+                    let path_uri = PathUri::from_abs_path(&path.absolute);
+                    let current = fs
+                        .read_file_text(&path_uri, Some(&sandbox))
+                        .await
+                        .map_err(text_editor_io_error)?;
+                    let matches = current.matches(&old_str).count();
+                    if matches != 1 {
+                        return Err(FunctionCallError::RespondToModel(format!(
+                            "Claude text editor str_replace expected exactly one match, found {matches}"
+                        )));
+                    }
+                    let updated = current.replacen(&old_str, &new_str, 1);
+                    apply_generated_patch(
+                        invocation,
+                        self.multi_environment,
+                        update_file_patch(&path.patch_path, &current, &updated),
+                    )
+                    .await
+                }
+                ClaudeTextEditorCommand::Insert => {
+                    let insert_line = args.insert_line.ok_or_else(|| {
+                        FunctionCallError::RespondToModel(
+                            "Claude text editor insert requires `insert_line`".to_string(),
+                        )
+                    })?;
+                    let new_str = required_arg(args.new_str, "new_str", "insert")?;
+                    let path_uri = PathUri::from_abs_path(&path.absolute);
+                    let current = fs
+                        .read_file_text(&path_uri, Some(&sandbox))
+                        .await
+                        .map_err(text_editor_io_error)?;
+                    let updated = insert_after_line(&current, insert_line, &new_str)?;
+                    apply_generated_patch(
+                        invocation,
+                        self.multi_environment,
+                        update_file_patch(&path.patch_path, &current, &updated),
+                    )
+                    .await
+                }
+                ClaudeTextEditorCommand::UndoEdit => Err(FunctionCallError::RespondToModel(
+                    "Claude text editor undo_edit is not available for the active native text editor tool version"
+                        .to_string(),
+                )),
             }
-            ClaudeTextEditorCommand::UndoEdit => Err(FunctionCallError::RespondToModel(
-                "Claude text editor undo_edit is not available for the active native text editor tool version"
-                    .to_string(),
-            )),
-        }
-        .map(boxed_tool_output)
+            .map(boxed_tool_output)
+        })
     }
 }
 
@@ -187,7 +193,7 @@ fn resolve_text_editor_path(
             "Claude text editor path must not be empty".to_string(),
         ));
     }
-    let cwd = &turn_environment.cwd;
+    let cwd = turn_environment.cwd();
     let absolute = AbsolutePathBuf::resolve_path_against_base(Path::new(trimmed), cwd.as_path());
     let relative = absolute
         .as_path()
@@ -226,13 +232,14 @@ async fn view_path(
     view_range: Option<&[i64]>,
     sandbox: Option<&codex_exec_server::FileSystemSandboxContext>,
 ) -> Result<FunctionToolOutput, FunctionCallError> {
+    let path_uri = PathUri::from_abs_path(path);
     let metadata = fs
-        .get_metadata(path, sandbox)
+        .get_metadata(&path_uri, sandbox)
         .await
         .map_err(text_editor_io_error)?;
     if metadata.is_directory {
         let mut entries = fs
-            .read_directory(path, sandbox)
+            .read_directory(&path_uri, sandbox)
             .await
             .map_err(text_editor_io_error)?;
         entries.sort_by(|left, right| left.file_name.cmp(&right.file_name));
@@ -252,7 +259,7 @@ async fn view_path(
         ));
     }
     let text = fs
-        .read_file_text(path, sandbox)
+        .read_file_text(&path_uri, sandbox)
         .await
         .map_err(text_editor_io_error)?;
     Ok(FunctionToolOutput::from_text(

@@ -3,7 +3,6 @@ use app_test_support::TestAppServer;
 use app_test_support::create_fake_rollout_with_text_elements;
 use app_test_support::create_mock_responses_server_repeating_assistant;
 use app_test_support::rollout_path;
-use app_test_support::run_large_stack_async_test;
 use app_test_support::test_absolute_path;
 use app_test_support::to_response;
 use codex_app_server::in_process;
@@ -75,7 +74,10 @@ use tempfile::TempDir;
 use tokio::time::timeout;
 use uuid::Uuid;
 
-const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+#[cfg(windows)]
+const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
+#[cfg(not(windows))]
+const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[tokio::test]
 async fn thread_read_returns_summary_without_turns() -> Result<()> {
@@ -192,70 +194,6 @@ async fn thread_read_can_include_turns() -> Result<()> {
         other => panic!("expected user message item, got {other:?}"),
     }
     assert_eq!(thread.status, ThreadStatus::NotLoaded);
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn thread_read_supports_requested_items_view() -> Result<()> {
-    let server = create_mock_responses_server_repeating_assistant("Done").await;
-    let codex_home = TempDir::new()?;
-    create_config_toml(codex_home.path(), &server.uri())?;
-
-    let filename_ts = "2025-01-05T12-00-00";
-    let conversation_id = create_fake_rollout_with_text_elements(
-        codex_home.path(),
-        filename_ts,
-        "2025-01-05T12:00:00Z",
-        "first",
-        vec![],
-        Some("mock_provider"),
-        /*git_info*/ None,
-    )?;
-    let rollout_path = rollout_path(codex_home.path(), filename_ts, &conversation_id);
-    append_agent_message(rollout_path.as_path(), "2025-01-05T12:01:00Z", "draft")?;
-    append_agent_message(rollout_path.as_path(), "2025-01-05T12:02:00Z", "final")?;
-
-    let mut mcp = TestAppServer::new(codex_home.path()).await?;
-    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
-
-    let default_full =
-        read_thread_single_turn_items_view(&mut mcp, conversation_id.as_str(), None).await?;
-    assert_eq!(default_full.items_view, TurnItemsView::Full);
-    assert_eq!(
-        turn_agent_texts(std::slice::from_ref(&default_full)),
-        vec!["draft", "final"]
-    );
-
-    let summary = read_thread_single_turn_items_view(
-        &mut mcp,
-        conversation_id.as_str(),
-        Some(TurnItemsView::Summary),
-    )
-    .await?;
-    assert_eq!(summary.items_view, TurnItemsView::Summary);
-    assert_eq!(
-        turn_user_texts(std::slice::from_ref(&summary)),
-        vec!["first"]
-    );
-    assert_eq!(
-        turn_agent_texts(std::slice::from_ref(&summary)),
-        vec!["final"]
-    );
-
-    let not_loaded = read_thread_single_turn_items_view(
-        &mut mcp,
-        conversation_id.as_str(),
-        Some(TurnItemsView::NotLoaded),
-    )
-    .await?;
-    assert_eq!(not_loaded.items_view, TurnItemsView::NotLoaded);
-    assert!(not_loaded.items.is_empty());
-    assert_eq!(not_loaded.id, default_full.id);
-    assert_eq!(not_loaded.status, default_full.status);
-    assert_eq!(not_loaded.started_at, default_full.started_at);
-    assert_eq!(not_loaded.completed_at, default_full.completed_at);
-    assert_eq!(not_loaded.duration_ms, default_full.duration_ms);
 
     Ok(())
 }
@@ -417,243 +355,236 @@ async fn thread_turns_list_supports_requested_items_view() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn thread_turns_list_reads_store_history_without_rollout_path() -> Result<()> {
-    run_large_stack_async_test("thread-turns-list-pathless-store", || async {
-        let codex_home = TempDir::new()?;
-        let thread_id =
-            codex_protocol::ThreadId::from_string("00000000-0000-4000-8000-000000000123")?;
-        let store_id = Uuid::new_v4().to_string();
-        create_config_toml_with_thread_store(codex_home.path(), &store_id)?;
-        let store = InMemoryThreadStore::for_id(store_id.clone());
-        let _in_memory_store = InMemoryThreadStoreId { store_id };
-        seed_pathless_store_thread(&store, thread_id).await?;
+#[tokio::test]
+async fn thread_turns_list_reads_store_history_without_rollout_path() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let thread_id = codex_protocol::ThreadId::from_string("00000000-0000-4000-8000-000000000123")?;
+    let store_id = Uuid::new_v4().to_string();
+    create_config_toml_with_thread_store(codex_home.path(), &store_id)?;
+    let store = InMemoryThreadStore::for_id(store_id.clone());
+    let _in_memory_store = InMemoryThreadStoreId { store_id };
+    seed_pathless_store_thread(&store, thread_id).await?;
 
-        let loader_overrides = LoaderOverrides::without_managed_config_for_tests();
-        let config = ConfigBuilder::default()
-            .codex_home(codex_home.path().to_path_buf())
-            .fallback_cwd(Some(codex_home.path().to_path_buf()))
-            .loader_overrides(loader_overrides.clone())
-            .build()
-            .await?;
-        let client = in_process::start(InProcessStartArgs {
-            arg0_paths: Arg0DispatchPaths::default(),
-            config: Arc::new(config),
-            cli_overrides: Vec::new(),
-            loader_overrides,
-            strict_config: false,
-            cloud_config_bundle: CloudConfigBundleLoader::default(),
-            thread_config_loader: Arc::new(codex_config::NoopThreadConfigLoader),
-            feedback: CodexFeedback::new(),
-            log_db: None,
-            state_db: None,
-            environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
-            config_warnings: Vec::new(),
-            session_source: SessionSource::Cli.into(),
-            enable_codex_api_key_env: false,
-            initialize: InitializeParams {
-                client_info: ClientInfo {
-                    name: "codex-app-server-tests".to_string(),
-                    title: None,
-                    version: "0.1.0".to_string(),
-                },
-                capabilities: Some(InitializeCapabilities {
-                    experimental_api: true,
-                    ..Default::default()
-                }),
-            },
-            channel_capacity: in_process::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
-        })
+    let loader_overrides = LoaderOverrides::without_managed_config_for_tests();
+    let config = ConfigBuilder::default()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .loader_overrides(loader_overrides.clone())
+        .build()
         .await?;
-
-        let result = client
-            .request(ClientRequest::ThreadTurnsList {
-                request_id: RequestId::Integer(1),
-                params: ThreadTurnsListParams {
-                    thread_id: thread_id.to_string(),
-                    cursor: None,
-                    limit: Some(10),
-                    sort_direction: Some(SortDirection::Asc),
-                    items_view: None,
-                },
-            })
-            .await?
-            .expect("thread/turns/list should succeed");
-        let ThreadTurnsListResponse { data, .. } = serde_json::from_value(result)?;
-
-        assert_eq!(turn_user_texts(&data), vec!["history from store"]);
-
-        client.shutdown().await?;
-        Ok(())
+    let client = in_process::start(InProcessStartArgs {
+        arg0_paths: Arg0DispatchPaths::default(),
+        config: Arc::new(config),
+        cli_overrides: Vec::new(),
+        loader_overrides,
+        strict_config: false,
+        cloud_config_bundle: CloudConfigBundleLoader::default(),
+        thread_config_loader: Arc::new(codex_config::NoopThreadConfigLoader),
+        feedback: CodexFeedback::new(),
+        log_db: None,
+        state_db: None,
+        environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
+        config_warnings: Vec::new(),
+        session_source: SessionSource::Cli.into(),
+        enable_codex_api_key_env: false,
+        initialize: InitializeParams {
+            client_info: ClientInfo {
+                name: "codex-app-server-tests".to_string(),
+                title: None,
+                version: "0.1.0".to_string(),
+            },
+            capabilities: Some(InitializeCapabilities {
+                experimental_api: true,
+                ..Default::default()
+            }),
+        },
+        channel_capacity: in_process::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
     })
+    .await?;
+
+    let result = client
+        .request(ClientRequest::ThreadTurnsList {
+            request_id: RequestId::Integer(1),
+            params: ThreadTurnsListParams {
+                thread_id: thread_id.to_string(),
+                cursor: None,
+                limit: Some(10),
+                sort_direction: Some(SortDirection::Asc),
+                items_view: None,
+            },
+        })
+        .await?
+        .expect("thread/turns/list should succeed");
+    let ThreadTurnsListResponse { data, .. } = serde_json::from_value(result)?;
+
+    assert_eq!(turn_user_texts(&data), vec!["history from store"]);
+
+    client.shutdown().await?;
+    Ok(())
 }
 
-#[test]
-fn thread_read_loaded_include_turns_reads_store_history_without_rollout_path() -> Result<()> {
-    run_large_stack_async_test("thread-read-include-turns-pathless-store", || async {
-        let codex_home = TempDir::new()?;
-        let store_id = Uuid::new_v4().to_string();
-        create_config_toml_with_thread_store(codex_home.path(), &store_id)?;
-        let store = InMemoryThreadStore::for_id(store_id.clone());
-        let _in_memory_store = InMemoryThreadStoreId { store_id };
+#[tokio::test]
+async fn thread_read_loaded_include_turns_reads_store_history_without_rollout_path() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let store_id = Uuid::new_v4().to_string();
+    create_config_toml_with_thread_store(codex_home.path(), &store_id)?;
+    let store = InMemoryThreadStore::for_id(store_id.clone());
+    let _in_memory_store = InMemoryThreadStoreId { store_id };
 
-        let loader_overrides = LoaderOverrides::without_managed_config_for_tests();
-        let config = ConfigBuilder::default()
-            .codex_home(codex_home.path().to_path_buf())
-            .fallback_cwd(Some(codex_home.path().to_path_buf()))
-            .loader_overrides(loader_overrides.clone())
-            .build()
-            .await?;
-        let client = in_process::start(InProcessStartArgs {
-            arg0_paths: Arg0DispatchPaths::default(),
-            config: Arc::new(config),
-            cli_overrides: Vec::new(),
-            loader_overrides,
-            strict_config: false,
-            cloud_config_bundle: CloudConfigBundleLoader::default(),
-            thread_config_loader: Arc::new(codex_config::NoopThreadConfigLoader),
-            feedback: CodexFeedback::new(),
-            log_db: None,
-            state_db: None,
-            environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
-            config_warnings: Vec::new(),
-            session_source: SessionSource::Cli.into(),
-            enable_codex_api_key_env: false,
-            initialize: InitializeParams {
-                client_info: ClientInfo {
-                    name: "codex-app-server-tests".to_string(),
-                    title: None,
-                    version: "0.1.0".to_string(),
-                },
-                capabilities: Some(InitializeCapabilities {
-                    experimental_api: true,
-                    ..Default::default()
-                }),
+    let loader_overrides = LoaderOverrides::without_managed_config_for_tests();
+    let config = ConfigBuilder::default()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .loader_overrides(loader_overrides.clone())
+        .build()
+        .await?;
+    let client = in_process::start(InProcessStartArgs {
+        arg0_paths: Arg0DispatchPaths::default(),
+        config: Arc::new(config),
+        cli_overrides: Vec::new(),
+        loader_overrides,
+        strict_config: false,
+        cloud_config_bundle: CloudConfigBundleLoader::default(),
+        thread_config_loader: Arc::new(codex_config::NoopThreadConfigLoader),
+        feedback: CodexFeedback::new(),
+        log_db: None,
+        state_db: None,
+        environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
+        config_warnings: Vec::new(),
+        session_source: SessionSource::Cli.into(),
+        enable_codex_api_key_env: false,
+        initialize: InitializeParams {
+            client_info: ClientInfo {
+                name: "codex-app-server-tests".to_string(),
+                title: None,
+                version: "0.1.0".to_string(),
             },
-            channel_capacity: in_process::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+            capabilities: Some(InitializeCapabilities {
+                experimental_api: true,
+                ..Default::default()
+            }),
+        },
+        channel_capacity: in_process::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+    })
+    .await?;
+
+    let result = client
+        .request(ClientRequest::ThreadStart {
+            request_id: RequestId::Integer(1),
+            params: ThreadStartParams {
+                model: Some("mock-model".to_string()),
+                ..Default::default()
+            },
+        })
+        .await?
+        .expect("thread/start should succeed");
+    let ThreadStartResponse { thread, .. } = serde_json::from_value(result)?;
+    assert_eq!(thread.path, None);
+
+    let thread_id = codex_protocol::ThreadId::from_string(&thread.id)?;
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id,
+            items: store_history_items(),
         })
         .await?;
 
-        let result = client
-            .request(ClientRequest::ThreadStart {
-                request_id: RequestId::Integer(1),
-                params: ThreadStartParams {
-                    model: Some("mock-model".to_string()),
-                    ..Default::default()
-                },
-            })
-            .await?
-            .expect("thread/start should succeed");
-        let ThreadStartResponse { thread, .. } = serde_json::from_value(result)?;
-        assert_eq!(thread.path, None);
+    let result = client
+        .request(ClientRequest::ThreadRead {
+            request_id: RequestId::Integer(2),
+            params: ThreadReadParams {
+                thread_id: thread.id,
+                include_turns: true,
+                items_view: None,
+            },
+        })
+        .await?
+        .expect("thread/read should succeed");
+    let ThreadReadResponse { thread, .. } = serde_json::from_value(result)?;
 
-        let thread_id = codex_protocol::ThreadId::from_string(&thread.id)?;
-        store
-            .append_items(AppendThreadItemsParams {
-                thread_id,
-                items: store_history_items(),
-            })
-            .await?;
+    assert_eq!(turn_user_texts(&thread.turns), vec!["history from store"]);
 
-        let result = client
-            .request(ClientRequest::ThreadRead {
-                request_id: RequestId::Integer(2),
-                params: ThreadReadParams {
-                    thread_id: thread.id,
-                    include_turns: true,
-                    items_view: None,
-                },
-            })
-            .await?
-            .expect("thread/read should succeed");
-        let ThreadReadResponse { thread, .. } = serde_json::from_value(result)?;
-
-        assert_eq!(turn_user_texts(&thread.turns), vec!["history from store"]);
-
-        client.shutdown().await?;
-        Ok(())
-    })
+    client.shutdown().await?;
+    Ok(())
 }
 
-#[test]
-fn thread_list_includes_store_thread_without_rollout_path() -> Result<()> {
-    run_large_stack_async_test("thread-list-pathless-store", || async {
-        let codex_home = TempDir::new()?;
-        let thread_id =
-            codex_protocol::ThreadId::from_string("00000000-0000-4000-8000-000000000124")?;
-        let store_id = Uuid::new_v4().to_string();
-        create_config_toml_with_thread_store(codex_home.path(), &store_id)?;
-        let store = InMemoryThreadStore::for_id(store_id.clone());
-        let _in_memory_store = InMemoryThreadStoreId { store_id };
-        seed_pathless_store_thread(&store, thread_id).await?;
+#[tokio::test]
+async fn thread_list_includes_store_thread_without_rollout_path() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let thread_id = codex_protocol::ThreadId::from_string("00000000-0000-4000-8000-000000000124")?;
+    let store_id = Uuid::new_v4().to_string();
+    create_config_toml_with_thread_store(codex_home.path(), &store_id)?;
+    let store = InMemoryThreadStore::for_id(store_id.clone());
+    let _in_memory_store = InMemoryThreadStoreId { store_id };
+    seed_pathless_store_thread(&store, thread_id).await?;
 
-        let loader_overrides = LoaderOverrides::without_managed_config_for_tests();
-        let config = ConfigBuilder::default()
-            .codex_home(codex_home.path().to_path_buf())
-            .fallback_cwd(Some(codex_home.path().to_path_buf()))
-            .loader_overrides(loader_overrides.clone())
-            .build()
-            .await?;
-        let client = in_process::start(InProcessStartArgs {
-            arg0_paths: Arg0DispatchPaths::default(),
-            config: Arc::new(config),
-            cli_overrides: Vec::new(),
-            loader_overrides,
-            strict_config: false,
-            cloud_config_bundle: CloudConfigBundleLoader::default(),
-            thread_config_loader: Arc::new(codex_config::NoopThreadConfigLoader),
-            feedback: CodexFeedback::new(),
-            log_db: None,
-            state_db: None,
-            environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
-            config_warnings: Vec::new(),
-            session_source: SessionSource::Cli.into(),
-            enable_codex_api_key_env: false,
-            initialize: InitializeParams {
-                client_info: ClientInfo {
-                    name: "codex-app-server-tests".to_string(),
-                    title: None,
-                    version: "0.1.0".to_string(),
-                },
-                capabilities: Some(InitializeCapabilities {
-                    experimental_api: true,
-                    ..Default::default()
-                }),
-            },
-            channel_capacity: in_process::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
-        })
+    let loader_overrides = LoaderOverrides::without_managed_config_for_tests();
+    let config = ConfigBuilder::default()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .loader_overrides(loader_overrides.clone())
+        .build()
         .await?;
-
-        let result = client
-            .request(ClientRequest::ThreadList {
-                request_id: RequestId::Integer(1),
-                params: ThreadListParams {
-                    cursor: None,
-                    limit: Some(10),
-                    sort_key: None,
-                    sort_direction: None,
-                    model_providers: Some(Vec::new()),
-                    source_kinds: None,
-                    archived: None,
-                    cwd: None,
-                    use_state_db_only: false,
-                    search_term: None,
-                },
-            })
-            .await?
-            .expect("thread/list should succeed");
-        let ThreadListResponse { data, .. } = serde_json::from_value(result)?;
-
-        assert_eq!(data.len(), 1);
-        let thread = &data[0];
-        assert_eq!(thread.id, thread_id.to_string());
-        assert_eq!(thread.path, None);
-        assert_eq!(thread.preview, "");
-        assert_eq!(thread.name.as_deref(), Some("named pathless thread"));
-
-        client.shutdown().await?;
-        Ok(())
+    let client = in_process::start(InProcessStartArgs {
+        arg0_paths: Arg0DispatchPaths::default(),
+        config: Arc::new(config),
+        cli_overrides: Vec::new(),
+        loader_overrides,
+        strict_config: false,
+        cloud_config_bundle: CloudConfigBundleLoader::default(),
+        thread_config_loader: Arc::new(codex_config::NoopThreadConfigLoader),
+        feedback: CodexFeedback::new(),
+        log_db: None,
+        state_db: None,
+        environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
+        config_warnings: Vec::new(),
+        session_source: SessionSource::Cli.into(),
+        enable_codex_api_key_env: false,
+        initialize: InitializeParams {
+            client_info: ClientInfo {
+                name: "codex-app-server-tests".to_string(),
+                title: None,
+                version: "0.1.0".to_string(),
+            },
+            capabilities: Some(InitializeCapabilities {
+                experimental_api: true,
+                ..Default::default()
+            }),
+        },
+        channel_capacity: in_process::DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
     })
+    .await?;
+
+    let result = client
+        .request(ClientRequest::ThreadList {
+            request_id: RequestId::Integer(1),
+            params: ThreadListParams {
+                cursor: None,
+                limit: Some(10),
+                sort_key: None,
+                sort_direction: None,
+                model_providers: Some(Vec::new()),
+                source_kinds: None,
+                archived: None,
+                cwd: None,
+                use_state_db_only: false,
+                search_term: None,
+                parent_thread_id: None,
+            },
+        })
+        .await?
+        .expect("thread/list should succeed");
+    let ThreadListResponse { data, .. } = serde_json::from_value(result)?;
+
+    assert_eq!(data.len(), 1);
+    let thread = &data[0];
+    assert_eq!(thread.id, thread_id.to_string());
+    assert_eq!(thread.path, None);
+    assert_eq!(thread.preview, "");
+    assert_eq!(thread.name.as_deref(), Some("named pathless thread"));
+
+    client.shutdown().await?;
+    Ok(())
 }
 
 #[tokio::test]
@@ -1037,6 +968,7 @@ async fn thread_name_set_is_reflected_in_read_list_and_resume() -> Result<()> {
             cwd: None,
             use_state_db_only: false,
             search_term: None,
+            parent_thread_id: None,
         })
         .await?;
     let list_resp: JSONRPCResponse = timeout(
@@ -1391,28 +1323,6 @@ async fn read_single_turn_items_view(
     Ok(data.remove(0))
 }
 
-async fn read_thread_single_turn_items_view(
-    mcp: &mut TestAppServer,
-    thread_id: &str,
-    items_view: Option<TurnItemsView>,
-) -> anyhow::Result<codex_app_server_protocol::Turn> {
-    let read_id = mcp
-        .send_thread_read_request(ThreadReadParams {
-            thread_id: thread_id.to_string(),
-            include_turns: true,
-            items_view,
-        })
-        .await?;
-    let read_resp: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(read_id)),
-    )
-    .await??;
-    let ThreadReadResponse { mut thread, .. } = to_response::<ThreadReadResponse>(read_resp)?;
-    assert_eq!(thread.turns.len(), 1);
-    Ok(thread.turns.remove(0))
-}
-
 fn turn_user_texts(turns: &[codex_app_server_protocol::Turn]) -> Vec<&str> {
     turns
         .iter()
@@ -1457,6 +1367,7 @@ async fn seed_pathless_store_thread(
     store
         .create_thread(CreateThreadParams {
             thread_id,
+            extra_config: None,
             forked_from_id: None,
             parent_thread_id: None,
             source: ProtocolSessionSource::Cli,

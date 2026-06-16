@@ -1,6 +1,7 @@
-#![expect(clippy::expect_used)]
+#![allow(clippy::expect_used)]
 
 use anyhow::Context as _;
+use anyhow::bail;
 use anyhow::ensure;
 use codex_arg0::Arg0PathEntryGuard;
 use codex_utils_cargo_bin::CargoBinError;
@@ -15,12 +16,19 @@ use codex_core::CodexThread;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigOverrides;
+pub use codex_core::test_support::TestCodexResponsesRequestKind;
+pub use codex_core::test_support::responses_metadata;
 use codex_features::Feature;
 use codex_utils_absolute_path::AbsolutePathBuf;
 pub use codex_utils_absolute_path::test_support::PathBufExt;
 pub use codex_utils_absolute_path::test_support::PathExt;
 use regex_lite::Regex;
+use std::path::Path;
 use std::path::PathBuf;
+use std::process::Stdio;
+use std::thread;
+use std::time::Duration;
+use std::time::Instant;
 
 pub mod apps_test_server;
 pub mod context_snapshot;
@@ -30,8 +38,13 @@ pub mod responses;
 pub mod streaming_sse;
 pub mod test_codex;
 pub mod test_codex_exec;
+mod test_environment;
 pub mod tracing;
 pub mod zsh_fork;
+
+pub use test_environment::TestEnvironment;
+pub use test_environment::get_remote_test_env;
+pub use test_environment::test_environment;
 
 static TEST_ARG0_PATH_ENTRY: OnceLock<Option<Arg0PathEntryGuard>> = OnceLock::new();
 const LOOPBACK_NO_PROXY_VALUE: &str = "localhost,127.0.0.1,::1";
@@ -96,12 +109,10 @@ fn ensure_loopback_no_proxy(key: &str) {
 
 #[track_caller]
 pub fn assert_regex_match<'s>(pattern: &str, actual: &'s str) -> regex_lite::Captures<'s> {
-    let regex = Regex::new(pattern).unwrap_or_else(|err| {
-        panic!("failed to compile regex {pattern:?}: {err}");
-    });
+    let regex = Regex::new(pattern).expect("failed to compile regex");
     regex
         .captures(actual)
-        .unwrap_or_else(|| panic!("regex {pattern:?} did not match {actual:?}"))
+        .expect("regex did not match actual value")
 }
 
 pub fn test_path_buf_with_windows(unix_path: &str, windows_path: Option<&str>) -> PathBuf {
@@ -139,6 +150,20 @@ pub fn test_absolute_path(unix_path: &str) -> AbsolutePathBuf {
     test_absolute_path_with_windows(unix_path, /*windows_path*/ None)
 }
 
+#[cfg(unix)]
+#[allow(clippy::expect_used)]
+pub fn create_directory_symlink(source: &Path, link: &Path) {
+    std::os::unix::fs::symlink(source, link).expect("create directory symlink");
+}
+
+#[cfg(windows)]
+#[allow(clippy::expect_used)]
+pub fn create_directory_symlink(source: &Path, link: &Path) {
+    // Running this test locally may require Windows Developer Mode or an elevated process.
+    std::os::windows::fs::symlink_dir(source, link)
+        .expect("create directory symlink; enable Developer Mode or run the test elevated");
+}
+
 pub trait TempDirExt {
     fn abs(&self) -> AbsolutePathBuf;
 }
@@ -167,12 +192,45 @@ pub fn fetch_dotslash_file(
     if let Some(dotslash_cache) = dotslash_cache {
         command.env("DOTSLASH_CACHE", dotslash_cache);
     }
-    let output = command.output().with_context(|| {
-        format!(
-            "failed to run dotslash to fetch resource {}",
-            dotslash_file.display()
-        )
-    })?;
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| {
+            format!(
+                "failed to run dotslash to fetch resource {}",
+                dotslash_file.display()
+            )
+        })?;
+    let output = {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if child.try_wait()?.is_some() {
+                break child.wait_with_output().with_context(|| {
+                    format!(
+                        "failed to wait for dotslash fetch of {}",
+                        dotslash_file.display()
+                    )
+                })?;
+            }
+
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let output = child.wait_with_output().ok();
+                let stderr = output
+                    .as_ref()
+                    .map(|output| String::from_utf8_lossy(&output.stderr))
+                    .unwrap_or_default();
+                bail!(
+                    "dotslash fetch timed out after 30s for {}: {}",
+                    dotslash_file.display(),
+                    stderr.trim()
+                );
+            }
+
+            thread::sleep(Duration::from_millis(100));
+        }
+    };
     ensure!(
         output.status.success(),
         "dotslash fetch failed for {}: {}",
@@ -218,6 +276,7 @@ pub async fn load_default_config_for_test_with_cloud_config_bundle(
         .build()
         .await
         .expect("defaults for test should always succeed");
+    config.sqlite_home = codex_home.path().to_path_buf();
     let _ = config.features.disable(Feature::Apps);
     config
 }
@@ -369,33 +428,6 @@ pub fn sandbox_env_var() -> &'static str {
 
 pub fn sandbox_network_env_var() -> &'static str {
     codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
-}
-
-const REMOTE_ENV_ENV_VAR: &str = "CODEX_TEST_REMOTE_ENV";
-
-pub fn remote_env_env_var() -> &'static str {
-    REMOTE_ENV_ENV_VAR
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RemoteEnvConfig {
-    pub container_name: String,
-}
-
-pub fn get_remote_test_env() -> Option<RemoteEnvConfig> {
-    if std::env::var_os(REMOTE_ENV_ENV_VAR).is_none() {
-        eprintln!("Skipping test because {REMOTE_ENV_ENV_VAR} is not set.");
-        return None;
-    }
-
-    let container_name = std::env::var(REMOTE_ENV_ENV_VAR)
-        .unwrap_or_else(|_| panic!("{REMOTE_ENV_ENV_VAR} must be set"));
-    assert!(
-        !container_name.trim().is_empty(),
-        "{REMOTE_ENV_ENV_VAR} must not be empty"
-    );
-
-    Some(RemoteEnvConfig { container_name })
 }
 
 pub fn format_with_current_shell(command: &str) -> Vec<String> {
@@ -611,27 +643,55 @@ macro_rules! skip_if_no_network {
     }};
 }
 
+// Exported so the public skip macros can expand in downstream test crates.
+// Call `skip_if_remote!` or `skip_if_wine_exec!` instead.
 #[macro_export]
-macro_rules! skip_if_remote {
-    ($reason:expr $(,)?) => {{
-        if ::std::env::var_os($crate::remote_env_env_var()).is_some() {
-            eprintln!(
-                "Skipping test under {}: {}",
-                $crate::remote_env_env_var(),
-                $reason
-            );
+#[doc(hidden)]
+macro_rules! skip_if_test_environment {
+    ($pattern:pat, $reason:expr $(,)?) => {{
+        let environment = $crate::test_environment();
+        if ::std::matches!(&environment, $pattern) {
+            eprintln!("Skipping test in {environment:?}: {}", $reason);
             return;
         }
     }};
-    ($return_value:expr, $reason:expr $(,)?) => {{
-        if ::std::env::var_os($crate::remote_env_env_var()).is_some() {
-            eprintln!(
-                "Skipping test under {}: {}",
-                $crate::remote_env_env_var(),
-                $reason
-            );
+    ($return_value:expr, $pattern:pat, $reason:expr $(,)?) => {{
+        let environment = $crate::test_environment();
+        if ::std::matches!(&environment, $pattern) {
+            eprintln!("Skipping test in {environment:?}: {}", $reason);
             return $return_value;
         }
+    }};
+}
+
+#[macro_export]
+macro_rules! skip_if_remote {
+    ($reason:expr $(,)?) => {{
+        $crate::skip_if_test_environment!(
+            $crate::TestEnvironment::Docker { .. } | $crate::TestEnvironment::WineExec,
+            $reason,
+        );
+    }};
+    ($return_value:expr, $reason:expr $(,)?) => {{
+        $crate::skip_if_test_environment!(
+            $return_value,
+            $crate::TestEnvironment::Docker { .. } | $crate::TestEnvironment::WineExec,
+            $reason,
+        );
+    }};
+}
+
+#[macro_export]
+macro_rules! skip_if_wine_exec {
+    ($reason:expr $(,)?) => {{
+        $crate::skip_if_test_environment!($crate::TestEnvironment::WineExec, $reason);
+    }};
+    ($return_value:expr, $reason:expr $(,)?) => {{
+        $crate::skip_if_test_environment!(
+            $return_value,
+            $crate::TestEnvironment::WineExec,
+            $reason,
+        );
     }};
 }
 
