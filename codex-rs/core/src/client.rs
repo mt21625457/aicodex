@@ -244,6 +244,7 @@ pub struct ModelClient {
 pub struct ModelClientSession {
     client: ModelClient,
     websocket_session: WebsocketSession,
+    claude_count_tokens_cache: StdMutex<HashMap<String, i64>>,
     /// Turn state for sticky routing.
     ///
     /// This is an `OnceLock` that stores the turn state value received from the server
@@ -437,6 +438,7 @@ impl ModelClient {
         ModelClientSession {
             client: self.clone(),
             websocket_session: self.take_cached_websocket_session(),
+            claude_count_tokens_cache: StdMutex::new(HashMap::new()),
             turn_state: Arc::new(OnceLock::new()),
         }
     }
@@ -492,6 +494,7 @@ impl ModelClient {
         ModelClientSession {
             client: scoped_client,
             websocket_session: WebsocketSession::default(),
+            claude_count_tokens_cache: StdMutex::new(HashMap::new()),
             turn_state: Arc::new(OnceLock::new()),
         }
     }
@@ -1680,9 +1683,26 @@ impl ModelClientSession {
             client_setup.api_auth,
         )
         .with_telemetry(Some(request_telemetry), None);
+        let count_request = ApiClaudeCountTokensRequest::from(&request);
+        let cache_key = match serde_json::to_string(&count_request) {
+            Ok(cache_key) => Some(cache_key),
+            Err(err) => {
+                trace!("failed to serialize Claude count_tokens request for cache key: {err}");
+                None
+            }
+        };
+        if let Some(tokens) = cache_key.as_ref().and_then(|cache_key| {
+            self.claude_count_tokens_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(cache_key)
+                .copied()
+        }) {
+            return Ok(tokens);
+        }
         let response = client
             .count_tokens_request(
-                ApiClaudeCountTokensRequest::from(&request),
+                count_request,
                 ApiClaudeMessagesOptions {
                     conversation_id: Some(self.client.state.thread_id.to_string()),
                     extra_headers: ApiHeaderMap::new(),
@@ -1690,6 +1710,13 @@ impl ModelClientSession {
             )
             .await
             .map_err(|err| self.client.state.provider.map_api_error(err))?;
+
+        if let Some(cache_key) = cache_key {
+            self.claude_count_tokens_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(cache_key, response.input_tokens);
+        }
 
         Ok(response.input_tokens)
     }

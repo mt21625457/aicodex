@@ -28,6 +28,7 @@ use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::approx_tokens_from_byte_count_i64;
 use codex_utils_output_truncation::truncate_function_output_items_with_policy;
 use codex_utils_output_truncation::truncate_text;
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -41,6 +42,12 @@ pub(crate) struct ContextManager {
     /// Bumped whenever history is rewritten, such as compaction or rollback.
     history_version: u64,
     token_info: Option<TokenUsageInfo>,
+    /// Index of custom tool calls already retained in history.
+    ///
+    /// `record_items` needs this to decide whether a name-less custom tool output belongs to
+    /// code mode. Keeping the index avoids a backwards history scan for each output in long
+    /// sessions.
+    custom_tool_call_names_by_call_id: HashMap<String, String>,
     /// Reference context snapshot used for diffing and producing model-visible
     /// settings update items.
     ///
@@ -64,6 +71,7 @@ impl ContextManager {
             token_info: TokenUsageInfo::new_or_append(
                 &None, &None, /*model_context_window*/ None,
             ),
+            custom_tool_call_names_by_call_id: HashMap::new(),
             reference_context_item: None,
             world_state_baseline: None,
         }
@@ -123,6 +131,7 @@ impl ContextManager {
             }
 
             let processed = self.process_item(item_ref, policy);
+            self.track_custom_tool_call_name(&processed);
             self.items.push(processed);
         }
     }
@@ -186,12 +195,14 @@ impl ContextManager {
             // its corresponding counterpart to keep the invariants intact without
             // running a full normalization pass.
             normalize::remove_corresponding_for(&mut self.items, &removed);
+            self.rebuild_custom_tool_call_name_index();
             self.world_state_baseline = None;
         }
     }
 
     pub(crate) fn replace(&mut self, items: Vec<ResponseItem>) {
         self.items = items;
+        self.rebuild_custom_tool_call_name_index();
         self.history_version = self.history_version.saturating_add(1);
         self.world_state_baseline = None;
     }
@@ -418,17 +429,12 @@ impl ContextManager {
                 output,
                 internal_chat_message_metadata_passthrough: metadata,
             } if name.as_deref() == Some(codex_code_mode::PUBLIC_TOOL_NAME)
-                || self.items.iter().rev().any(|history_item| {
-                    matches!(
-                        history_item,
-                        ResponseItem::CustomToolCall {
-                            call_id: existing_call_id,
-                            name: existing_name,
-                            ..
-                        } if existing_call_id == call_id
-                            && existing_name == codex_code_mode::PUBLIC_TOOL_NAME
-                    )
-                }) =>
+                || self
+                    .custom_tool_call_names_by_call_id
+                    .get(call_id)
+                    .is_some_and(|existing_name| {
+                        existing_name.as_str() == codex_code_mode::PUBLIC_TOOL_NAME
+                    }) =>
             {
                 ResponseItem::CustomToolCallOutput {
                     id: id.clone(),
@@ -465,6 +471,23 @@ impl ContextManager {
             | ResponseItem::CompactionTrigger { .. }
             | ResponseItem::ContextCompaction { .. }
             | ResponseItem::Other => item.clone(),
+        }
+    }
+
+    fn track_custom_tool_call_name(&mut self, item: &ResponseItem) {
+        if let ResponseItem::CustomToolCall { call_id, name, .. } = item {
+            self.custom_tool_call_names_by_call_id
+                .insert(call_id.clone(), name.clone());
+        }
+    }
+
+    fn rebuild_custom_tool_call_name_index(&mut self) {
+        self.custom_tool_call_names_by_call_id.clear();
+        for item in &self.items {
+            if let ResponseItem::CustomToolCall { call_id, name, .. } = item {
+                self.custom_tool_call_names_by_call_id
+                    .insert(call_id.clone(), name.clone());
+            }
         }
     }
 

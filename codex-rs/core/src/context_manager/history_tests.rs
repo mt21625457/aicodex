@@ -1204,6 +1204,73 @@ fn record_items_preserves_code_mode_exec_output_content() {
 }
 
 #[test]
+fn record_items_preserves_code_mode_exec_output_after_history_replace() {
+    let mut history = ContextManager::new();
+    let policy = TruncationPolicy::Tokens(10);
+    let long_output =
+        "code mode output that has already been truncated by its runtime\n".repeat(2_500);
+    let call = ResponseItem::CustomToolCall {
+        id: None,
+        status: None,
+        call_id: "exec-call".to_string(),
+        name: codex_code_mode::PUBLIC_TOOL_NAME.to_string(),
+        input: "text('hello')".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let output = ResponseItem::CustomToolCallOutput {
+        id: None,
+        call_id: "exec-call".to_string(),
+        name: None,
+        output: FunctionCallOutputPayload::from_text(long_output),
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    history.replace(vec![call.clone()]);
+    history.record_items([&output], policy);
+
+    assert_eq!(history.items, vec![call, output]);
+}
+
+#[test]
+fn record_items_drops_code_mode_exec_index_when_call_is_removed() {
+    let mut history = ContextManager::new();
+    let policy = TruncationPolicy::Tokens(10);
+    let long_output =
+        "ordinary custom output after the matching code-mode call was removed\n".repeat(2_500);
+    let call = ResponseItem::CustomToolCall {
+        id: None,
+        status: None,
+        call_id: "exec-call".to_string(),
+        name: codex_code_mode::PUBLIC_TOOL_NAME.to_string(),
+        input: "text('hello')".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let output = ResponseItem::CustomToolCallOutput {
+        id: None,
+        call_id: "exec-call".to_string(),
+        name: None,
+        output: FunctionCallOutputPayload::from_text(long_output.clone()),
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    history.record_items([&call], policy);
+    history.remove_first_item();
+    history.record_items([&output], policy);
+
+    match &history.items[0] {
+        ResponseItem::CustomToolCallOutput { output, .. } => {
+            let output = output.text_content().unwrap_or_default();
+            assert_ne!(output, long_output);
+            assert!(
+                output.contains("tokens truncated") || output.contains("bytes truncated"),
+                "expected truncation marker, got {output}"
+            );
+        }
+        other => panic!("unexpected history item: {other:?}"),
+    }
+}
+
+#[test]
 fn record_items_respects_custom_token_limit() {
     let mut history = ContextManager::new();
     let policy = TruncationPolicy::Tokens(10);
