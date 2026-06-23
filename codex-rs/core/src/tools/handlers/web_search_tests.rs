@@ -109,6 +109,7 @@ async fn run_web_searches_uses_configured_endpoint_and_returns_results() {
 fn handler_uses_web_search_spec_for_allowed_domains() {
     let spec = ToolSpec::WebSearch {
         external_web_access: Some(true),
+        index_gated_web_access: None,
         filters: Some(ResponsesApiWebSearchFilters {
             allowed_domains: Some(vec!["*.Example.com".to_string(), "bad/domain".to_string()]),
         }),
@@ -131,6 +132,7 @@ async fn handler_rejects_unsupported_local_semantics_before_network_search() {
     let endpoint = Url::parse(&format!("{}/html/", server.uri())).expect("mock endpoint");
     let spec = ToolSpec::WebSearch {
         external_web_access: Some(false),
+        index_gated_web_access: None,
         filters: None,
         user_location: None,
         search_context_size: None,
@@ -163,6 +165,7 @@ async fn handler_rejects_unsupported_local_semantics_before_network_search() {
 fn local_web_search_rejects_non_text_content_types() {
     let spec = ToolSpec::WebSearch {
         external_web_access: Some(true),
+        index_gated_web_access: None,
         filters: None,
         user_location: None,
         search_context_size: None,

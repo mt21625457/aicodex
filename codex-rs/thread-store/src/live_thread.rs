@@ -134,6 +134,11 @@ impl LiveThread {
         })
     }
 
+    #[tracing::instrument(
+        level = "trace",
+        skip_all,
+        fields(item_count = items.len())
+    )]
     pub async fn append_items(&self, items: &[RolloutItem]) -> ThreadStoreResult<()> {
         self.append_items_with_persistence_mode(items, EventPersistenceMode::Limited)
             .await

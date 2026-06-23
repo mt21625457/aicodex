@@ -78,7 +78,7 @@ mod tests {
         let items_err = store
             .list_items(ListItemsParams {
                 thread_id,
-                turn_id: "turn_1".to_string(),
+                turn_id: None,
                 include_archived: true,
                 cursor: None,
                 page_size: 10,
@@ -109,6 +109,7 @@ mod tests {
         ] {
             store
                 .create_thread(CreateThreadParams {
+                    session_id: thread_id.into(),
                     thread_id,
                     extra_config: None,
                     forked_from_id: None,
@@ -230,6 +231,7 @@ impl InMemoryThreadStore {
         let mut state = self.state.lock().await;
         state.calls.create_thread += 1;
         let session_meta = SessionMeta {
+            session_id: params.session_id,
             id: params.thread_id,
             forked_from_id: params.forked_from_id,
             parent_thread_id: params.parent_thread_id,
@@ -532,6 +534,9 @@ fn stored_thread_from_state(
             .unwrap_or_else(Utc::now),
         updated_at: metadata
             .and_then(|metadata| metadata.updated_at)
+            .unwrap_or_else(Utc::now),
+        recency_at: metadata
+            .and_then(|metadata| metadata.advance_recency_at.or(metadata.updated_at))
             .unwrap_or_else(Utc::now),
         archived_at: None,
         cwd: metadata

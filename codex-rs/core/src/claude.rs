@@ -410,9 +410,11 @@ pub(crate) fn build_claude_messages_request(
                 encrypted_content,
                 ..
             } => {
-                if let Some(block) =
-                    thinking_block(&id, content.as_deref(), encrypted_content.as_ref())
-                {
+                if let Some(block) = thinking_block(
+                    id.as_deref().unwrap_or_default(),
+                    content.as_deref(),
+                    encrypted_content.as_ref(),
+                ) {
                     push_message(&mut messages, ClaudeMessageRole::Assistant, vec![block]);
                 }
             }
@@ -1701,7 +1703,7 @@ mod tests {
                 ],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             tools: vec![ToolSpec::Namespace(ResponsesApiNamespace {
                 name: "mcp__demo__".to_string(),
@@ -1788,10 +1790,11 @@ mod tests {
                 }],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             tools: vec![ToolSpec::WebSearch {
                 external_web_access: Some(true),
+                index_gated_web_access: None,
                 filters: Some(codex_tools::ResponsesApiWebSearchFilters {
                     allowed_domains: Some(vec!["example.com".to_string()]),
                 }),
@@ -1840,10 +1843,11 @@ mod tests {
                 }],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             tools: vec![ToolSpec::WebSearch {
                 external_web_access: Some(true),
+                index_gated_web_access: None,
                 filters: Some(codex_tools::ResponsesApiWebSearchFilters {
                     allowed_domains: Some(vec!["example.com".to_string()]),
                 }),
@@ -1901,10 +1905,11 @@ mod tests {
                 }],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             tools: vec![ToolSpec::WebSearch {
                 external_web_access: Some(false),
+                index_gated_web_access: None,
                 filters: None,
                 user_location: None,
                 search_context_size: None,
@@ -1932,10 +1937,11 @@ mod tests {
                 }],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             tools: vec![ToolSpec::WebSearch {
                 external_web_access: Some(true),
+                index_gated_web_access: None,
                 filters: Some(codex_tools::ResponsesApiWebSearchFilters {
                     allowed_domains: Some(vec!["example.com".to_string()]),
                 }),
@@ -1999,13 +2005,14 @@ mod tests {
                     arguments: "{\"id\":1}".to_string(),
                     call_id: "call_1".to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
+                    id: None,
                     call_id: "call_1".to_string(),
                     output: FunctionCallOutputPayload::from_text("ok".to_string()),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             ..Default::default()
@@ -2050,16 +2057,17 @@ mod tests {
                     arguments: "{\"id\":1}".to_string(),
                     call_id: "call_1".to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
+                    id: None,
                     call_id: "call_1".to_string(),
                     output: FunctionCallOutputPayload {
                         body: FunctionCallOutputBody::Text("city not found".to_string()),
                         success: Some(false),
                     },
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             base_instructions: BaseInstructions {
@@ -2113,9 +2121,10 @@ mod tests {
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
+                    id: None,
                     call_id: "call_1".to_string(),
                     output: FunctionCallOutputPayload {
                         body: FunctionCallOutputBody::ContentItems(vec![
@@ -2133,7 +2142,7 @@ mod tests {
                         success: Some(false),
                     },
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             base_instructions: BaseInstructions {
@@ -2168,9 +2177,10 @@ mod tests {
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
+                    id: None,
                     call_id: "call_1".to_string(),
                     output: FunctionCallOutputPayload {
                         body: FunctionCallOutputBody::ContentItems(vec![
@@ -2182,7 +2192,7 @@ mod tests {
                         success: Some(false),
                     },
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             base_instructions: BaseInstructions {
@@ -2221,7 +2231,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCall {
                     id: None,
@@ -2230,9 +2240,10 @@ mod tests {
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
+                    id: None,
                     call_id: "call_1".to_string(),
                     output: FunctionCallOutputPayload::from_content_items(vec![
                         FunctionCallOutputContentItem::InputText {
@@ -2248,7 +2259,7 @@ mod tests {
                         },
                     ]),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             base_instructions: BaseInstructions {
@@ -2332,7 +2343,7 @@ mod tests {
                 }],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
@@ -2370,7 +2381,7 @@ mod tests {
                     .collect(),
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
@@ -2420,9 +2431,10 @@ mod tests {
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
+                    id: None,
                     call_id: "call_1".to_string(),
                     output: FunctionCallOutputPayload::from_content_items(vec![
                         FunctionCallOutputContentItem::InputImage {
@@ -2431,7 +2443,7 @@ mod tests {
                         },
                     ]),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -2444,7 +2456,7 @@ mod tests {
                         .collect(),
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             base_instructions: BaseInstructions {
@@ -2487,7 +2499,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -2497,7 +2509,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -2507,7 +2519,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             base_instructions: BaseInstructions {
@@ -2549,7 +2561,7 @@ mod tests {
                 }],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
@@ -2601,7 +2613,7 @@ mod tests {
                 }],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
@@ -2655,7 +2667,7 @@ mod tests {
                 }],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
@@ -2705,7 +2717,7 @@ mod tests {
                 }],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
@@ -2736,14 +2748,14 @@ mod tests {
         let prompt = Prompt {
             input: vec![
                 ResponseItem::Reasoning {
-                    id: "msg_1_reasoning_0".to_string(),
+                    id: Some("msg_1_reasoning_0".to_string()),
                     summary: Vec::new(),
                     content: Some(vec![ReasoningItemContent::ReasoningText {
                         text: "thinking".to_string(),
                     }]),
                     encrypted_content: Some("signature".to_string()),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCall {
                     id: None,
@@ -2752,13 +2764,14 @@ mod tests {
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
+                    id: None,
                     call_id: "call_1".to_string(),
                     output: FunctionCallOutputPayload::from_text("ok".to_string()),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             tools: vec![
@@ -2836,14 +2849,14 @@ mod tests {
         let prompt = Prompt {
             input: vec![
                 ResponseItem::Reasoning {
-                    id: "rs_1".to_string(),
+                    id: Some("rs_1".to_string()),
                     summary: vec![ReasoningItemReasoningSummary::SummaryText {
                         text: "OpenAI reasoning summary".to_string(),
                     }],
                     content: None,
                     encrypted_content: Some("openai-encrypted-content".to_string()),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -2853,7 +2866,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             ..Default::default()
@@ -2879,12 +2892,12 @@ mod tests {
     fn builds_claude_history_without_summaryless_openai_encrypted_reasoning_as_signature() {
         let prompt = Prompt {
             input: vec![ResponseItem::Reasoning {
-                id: "rs_1".to_string(),
+                id: Some("rs_1".to_string()),
                 summary: Vec::new(),
                 content: None,
                 encrypted_content: Some("openai-encrypted-content".to_string()),
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             ..Default::default()
         };
@@ -2906,14 +2919,14 @@ mod tests {
     fn builds_claude_history_with_omitted_thinking_signature_only_block() {
         let prompt = Prompt {
             input: vec![ResponseItem::Reasoning {
-                id: "msg_1_reasoning_0".to_string(),
+                id: Some("msg_1_reasoning_0".to_string()),
                 summary: Vec::new(),
                 content: Some(vec![ReasoningItemContent::ReasoningText {
                     text: String::new(),
                 }]),
                 encrypted_content: Some("claude-thinking-signature".to_string()),
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             ..Default::default()
         };
@@ -2946,17 +2959,17 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Reasoning {
-                    id: "msg_1_reasoning_0".to_string(),
+                    id: Some("msg_1_reasoning_0".to_string()),
                     summary: Vec::new(),
                     content: Some(vec![ReasoningItemContent::ReasoningText {
                         text: "stale thinking".to_string(),
                     }]),
                     encrypted_content: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             ..Default::default()
@@ -2990,17 +3003,17 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Reasoning {
-                    id: "msg_1_reasoning_0".to_string(),
+                    id: Some("msg_1_reasoning_0".to_string()),
                     summary: Vec::new(),
                     content: Some(vec![ReasoningItemContent::ReasoningText {
                         text: "trailing thinking".to_string(),
                     }]),
                     encrypted_content: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             ..Default::default()
@@ -3026,7 +3039,7 @@ mod tests {
     fn builds_claude_history_without_openai_reasoning_as_thinking_block() {
         let prompt = Prompt {
             input: vec![ResponseItem::Reasoning {
-                id: "rs_1".to_string(),
+                id: Some("rs_1".to_string()),
                 summary: vec![ReasoningItemReasoningSummary::SummaryText {
                     text: "OpenAI reasoning summary".to_string(),
                 }],
@@ -3035,7 +3048,7 @@ mod tests {
                 }]),
                 encrypted_content: Some("openai-encrypted-content".to_string()),
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             ..Default::default()
         };
@@ -3057,10 +3070,11 @@ mod tests {
     fn repairs_claude_tool_result_without_preceding_tool_use() {
         let prompt = Prompt {
             input: vec![ResponseItem::FunctionCallOutput {
+                id: None,
                 call_id: "call_1".to_string(),
                 output: FunctionCallOutputPayload::from_text("ok".to_string()),
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
@@ -3095,7 +3109,7 @@ mod tests {
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3105,13 +3119,14 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
+                    id: None,
                     call_id: "call_1".to_string(),
                     output: FunctionCallOutputPayload::from_text("ok".to_string()),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             base_instructions: BaseInstructions {
@@ -3165,7 +3180,7 @@ mod tests {
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCall {
                     id: None,
@@ -3174,19 +3189,21 @@ mod tests {
                     arguments: "{}".to_string(),
                     call_id: "call_2".to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
+                    id: None,
                     call_id: "call_2".to_string(),
                     output: FunctionCallOutputPayload::from_text("second first".to_string()),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
+                    id: None,
                     call_id: "call_1".to_string(),
                     output: FunctionCallOutputPayload::from_text("first second".to_string()),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             base_instructions: BaseInstructions {
@@ -3248,7 +3265,7 @@ mod tests {
                 arguments: "{}".to_string(),
                 call_id: "call_1".to_string(),
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
@@ -3297,7 +3314,7 @@ mod tests {
                     arguments: "{\"id\":1}".to_string(),
                     call_id: "call_1".to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCall {
                     id: None,
@@ -3306,13 +3323,14 @@ mod tests {
                     arguments: "{\"id\":2}".to_string(),
                     call_id: "call_1".to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
+                    id: None,
                     call_id: "call_1".to_string(),
                     output: FunctionCallOutputPayload::from_text("ok".to_string()),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             base_instructions: BaseInstructions {
@@ -3360,7 +3378,7 @@ mod tests {
                 }],
                 phase: None,
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             base_instructions: BaseInstructions {
                 text: "stable system".to_string(),
@@ -3406,7 +3424,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3416,7 +3434,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3426,7 +3444,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             base_instructions: BaseInstructions {
@@ -3482,13 +3500,14 @@ mod tests {
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
+                    id: None,
                     call_id: "call_1".to_string(),
                     output: FunctionCallOutputPayload::from_text("ok".to_string()),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3498,7 +3517,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3508,7 +3527,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3518,7 +3537,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3528,7 +3547,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             base_instructions: BaseInstructions {
@@ -3607,13 +3626,14 @@ mod tests {
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
+                    id: None,
                     call_id: "call_1".to_string(),
                     output: FunctionCallOutputPayload::from_text("ok".to_string()),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3623,7 +3643,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3633,7 +3653,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             base_instructions: BaseInstructions {
@@ -3724,13 +3744,14 @@ mod tests {
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
+                    id: None,
                     call_id: "call_1".to_string(),
                     output: FunctionCallOutputPayload::from_text("ok".to_string()),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3740,7 +3761,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3750,7 +3771,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3760,7 +3781,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -3770,7 +3791,7 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             base_instructions: BaseInstructions {
@@ -3855,9 +3876,10 @@ mod tests {
         });
         let prompt = Prompt {
             input: vec![ResponseItem::Compaction {
+                id: None,
                 encrypted_content: raw_compaction.to_string(),
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
@@ -3886,9 +3908,10 @@ mod tests {
         });
         let prompt = Prompt {
             input: vec![ResponseItem::ContextCompaction {
+                id: None,
                 encrypted_content: Some(raw_compaction.to_string()),
 
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
@@ -3931,24 +3954,28 @@ mod tests {
         let prompt = Prompt {
             input: vec![
                 ResponseItem::Compaction {
+                    id: None,
                     encrypted_content: stale_server_tool_result.to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Compaction {
+                    id: None,
                     encrypted_content: compaction.to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Compaction {
+                    id: None,
                     encrypted_content: redacted_thinking.to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Compaction {
+                    id: None,
                     encrypted_content: unknown_provider_state.to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             base_instructions: BaseInstructions {
@@ -3988,18 +4015,21 @@ mod tests {
         let prompt = Prompt {
             input: vec![
                 ResponseItem::Compaction {
+                    id: None,
                     encrypted_content: web_search_tool_result.to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Compaction {
+                    id: None,
                     encrypted_content: web_search_citation.to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             tools: vec![ToolSpec::WebSearch {
                 external_web_access: Some(true),
+                index_gated_web_access: None,
                 filters: None,
                 user_location: None,
                 search_context_size: None,
@@ -4043,14 +4073,16 @@ mod tests {
         let prompt = Prompt {
             input: vec![
                 ResponseItem::Compaction {
+                    id: None,
                     encrypted_content: server_tool_use.to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Compaction {
+                    id: None,
                     encrypted_content: web_search_tool_result.to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -4060,11 +4092,12 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             tools: vec![ToolSpec::WebSearch {
                 external_web_access: Some(true),
+                index_gated_web_access: None,
                 filters: None,
                 user_location: None,
                 search_context_size: None,
@@ -4105,9 +4138,10 @@ mod tests {
         let prompt = Prompt {
             input: vec![
                 ResponseItem::Compaction {
+                    id: None,
                     encrypted_content: web_search_tool_result.to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -4117,11 +4151,12 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             tools: vec![ToolSpec::WebSearch {
                 external_web_access: Some(true),
+                index_gated_web_access: None,
                 filters: None,
                 user_location: None,
                 search_context_size: None,
@@ -4162,9 +4197,10 @@ mod tests {
         let prompt = Prompt {
             input: vec![
                 ResponseItem::Compaction {
+                    id: None,
                     encrypted_content: web_search_tool_result.to_string(),
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
                     id: None,
@@ -4174,11 +4210,12 @@ mod tests {
                     }],
                     phase: None,
 
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             ],
             tools: vec![ToolSpec::WebSearch {
                 external_web_access: Some(true),
+                index_gated_web_access: None,
                 filters: None,
                 user_location: None,
                 search_context_size: Some(codex_protocol::config_types::WebSearchContextSize::High),

@@ -49,6 +49,7 @@ mod app_cmd;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod desktop_app;
 mod doctor;
+mod exec_server_telemetry;
 mod marketplace_cmd;
 mod mcp_cmd;
 mod plugin_cmd;
@@ -1668,7 +1669,7 @@ fn profile_v2_for_subcommand<'a>(
             subcommand: DebugSubcommand::PromptInput(_),
         }) => Ok(Some(profile_v2)),
         _ => anyhow::bail!(
-            "--profile only applies to runtime commands and `codex mcp`: `codex`, `codex exec`, `codex review`, `codex resume`, `codex archive`, `codex delete`, `codex unarchive`, `codex fork`, `codex mcp`, `codex sandbox`, and `codex debug prompt-input`."
+            "--profile only applies to runtime commands and `aicodex mcp`: `aicodex`, `aicodex exec`, `aicodex review`, `aicodex resume`, `aicodex archive`, `aicodex delete`, `aicodex unarchive`, `aicodex fork`, `aicodex mcp`, `aicodex sandbox`, and `aicodex debug prompt-input`."
         ),
     }
 }
@@ -1692,6 +1693,9 @@ async fn run_exec_server_command(
             .environment_id
             .ok_or_else(|| anyhow::anyhow!("--environment-id is required when --remote is set"))?;
         let config = load_exec_server_config(root_config_overrides, strict_config).await?;
+        let _otel = exec_server_telemetry::init(Some(&config))
+            .inspect_err(|err| eprintln!("Could not create otel exporter: {err}"))
+            .ok();
         let auth_provider =
             load_exec_server_remote_auth_provider(&config, &base_url, cmd.use_agent_identity_auth)
                 .await?;
@@ -1706,12 +1710,15 @@ async fn run_exec_server_command(
         codex_exec_server::run_remote_environment(remote_config, runtime_paths).await?;
         Ok(())
     } else {
-        if strict_config {
-            // Local exec-server startup does not consume Config, but strict
-            // mode should still reject unknown fields before opening a listener.
-            let _validated_config =
-                load_exec_server_config(root_config_overrides, strict_config).await?;
-        }
+        let config_result = load_exec_server_config(root_config_overrides, strict_config).await;
+        let config = if strict_config {
+            Some(config_result?)
+        } else {
+            config_result.ok()
+        };
+        let _otel = exec_server_telemetry::init(config.as_ref())
+            .inspect_err(|err| eprintln!("Could not create otel exporter: {err}"))
+            .ok();
         let listen_url = cmd
             .listen
             .as_deref()
@@ -1731,9 +1738,13 @@ async fn load_exec_server_remote_auth_provider(
         let agent_identity_jwt = read_codex_access_token_from_env().ok_or_else(|| {
             anyhow::anyhow!("CODEX_ACCESS_TOKEN is required when --use-agent-identity-auth is set")
         })?;
-        let auth =
-            CodexAuth::from_agent_identity_jwt(&agent_identity_jwt, Some(&config.chatgpt_base_url))
-                .await?;
+        let auth_route_config = config.auth_route_config();
+        let auth = CodexAuth::from_agent_identity_jwt(
+            &agent_identity_jwt,
+            Some(&config.chatgpt_base_url),
+            auth_route_config.as_ref(),
+        )
+        .await?;
         return Ok(codex_model_provider::auth_provider_from_auth(&auth));
     }
 
@@ -3123,7 +3134,7 @@ mod tests {
             lines,
             vec![
                 "Token usage: total=2 input=0 output=2".to_string(),
-                "To continue this session, run codex resume 123e4567-e89b-12d3-a456-426614174000"
+                "To continue this session, run aicodex resume 123e4567-e89b-12d3-a456-426614174000"
                     .to_string(),
             ]
         );

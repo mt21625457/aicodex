@@ -103,7 +103,7 @@ impl ToolExecutor<ToolInvocation> for ClaudeTextEditorHandler {
             let fs = turn_environment.environment.get_filesystem();
             let sandbox = turn.file_system_sandbox_context(
                 /*additional_permissions*/ None,
-                turn_environment.cwd_uri(),
+                turn_environment.cwd(),
             );
 
             match args.command {
@@ -193,7 +193,11 @@ fn resolve_text_editor_path(
             "Claude text editor path must not be empty".to_string(),
         ));
     }
-    let cwd = turn_environment.cwd();
+    let cwd = turn_environment.cwd().to_abs_path().map_err(|_| {
+        FunctionCallError::RespondToModel(
+            "Claude text editor is unavailable for this workspace path".to_string(),
+        )
+    })?;
     let absolute = AbsolutePathBuf::resolve_path_against_base(Path::new(trimmed), cwd.as_path());
     let relative = absolute
         .as_path()

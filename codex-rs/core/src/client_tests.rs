@@ -16,10 +16,12 @@ use crate::test_support::TestCodexResponsesRequestKind;
 use crate::test_support::responses_metadata as test_responses_metadata;
 use codex_api::ApiError;
 use codex_api::ResponseEvent;
+use codex_api::TransportError;
 use codex_app_server_protocol::AuthMode;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider::BearerAuthProvider;
+use codex_model_provider::SharedModelProvider;
 use codex_model_provider::create_model_provider;
 use codex_model_provider_info::CHATGPT_CODEX_BASE_URL;
 use codex_model_provider_info::ModelProviderInfo;
@@ -80,8 +82,13 @@ fn test_model_client(session_source: SessionSource) -> ModelClient {
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
+        /*item_ids_enabled*/ false,
         /*attestation_provider*/ None,
     )
+}
+
+fn test_model_provider() -> SharedModelProvider {
+    test_model_client(SessionSource::Cli).state.provider.clone()
 }
 
 fn test_responses_metadata_for_client(
@@ -229,14 +236,14 @@ fn output_message(id: &str, text: &str) -> ResponseItem {
             text: text.to_string(),
         }],
         phase: None,
-        metadata: None,
+        internal_chat_message_metadata_passthrough: None,
     }
 }
 
 #[test]
 fn strips_provider_specific_reasoning_state_before_responses_serialization() {
     let mut input = vec![ResponseItem::Reasoning {
-        id: "msg_1_reasoning_0".to_string(),
+        id: Some("msg_1_reasoning_0".to_string()),
         summary: vec![ReasoningItemReasoningSummary::SummaryText {
             text: "summary".to_string(),
         }],
@@ -245,10 +252,10 @@ fn strips_provider_specific_reasoning_state_before_responses_serialization() {
         }]),
         encrypted_content: Some("encrypted-reasoning".to_string()),
 
-        metadata: None,
+        internal_chat_message_metadata_passthrough: None,
     }];
 
-    strip_reasoning_content_for_responses_input(&mut input);
+    strip_reasoning_content_for_responses_input(&mut input, /*is_openai_provider*/ true);
 
     let serialized = serde_json::to_value(&input[0]).expect("serialize reasoning item");
     assert_eq!(serialized["type"], "reasoning");
@@ -266,17 +273,17 @@ fn strips_provider_specific_reasoning_state_before_responses_serialization() {
 #[test]
 fn preserves_openai_encrypted_reasoning_state_without_raw_content_for_responses_serialization() {
     let mut input = vec![ResponseItem::Reasoning {
-        id: "rs_1".to_string(),
+        id: Some("rs_1".to_string()),
         summary: vec![ReasoningItemReasoningSummary::SummaryText {
             text: "summary".to_string(),
         }],
         content: None,
         encrypted_content: Some("encrypted-reasoning".to_string()),
 
-        metadata: None,
+        internal_chat_message_metadata_passthrough: None,
     }];
 
-    strip_reasoning_content_for_responses_input(&mut input);
+    strip_reasoning_content_for_responses_input(&mut input, /*is_openai_provider*/ true);
 
     let serialized = serde_json::to_value(&input[0]).expect("serialize reasoning item");
     assert_eq!(serialized["type"], "reasoning");
@@ -294,7 +301,7 @@ fn preserves_openai_encrypted_reasoning_state_without_raw_content_for_responses_
 #[test]
 fn preserves_openai_encrypted_reasoning_state_with_raw_content_for_responses_serialization() {
     let mut input = vec![ResponseItem::Reasoning {
-        id: "rs_1".to_string(),
+        id: Some("rs_1".to_string()),
         summary: vec![ReasoningItemReasoningSummary::SummaryText {
             text: "summary".to_string(),
         }],
@@ -303,10 +310,10 @@ fn preserves_openai_encrypted_reasoning_state_with_raw_content_for_responses_ser
         }]),
         encrypted_content: Some("encrypted-reasoning".to_string()),
 
-        metadata: None,
+        internal_chat_message_metadata_passthrough: None,
     }];
 
-    strip_reasoning_content_for_responses_input(&mut input);
+    strip_reasoning_content_for_responses_input(&mut input, /*is_openai_provider*/ true);
 
     let serialized = serde_json::to_value(&input[0]).expect("serialize reasoning item");
     assert_eq!(serialized["type"], "reasoning");
@@ -323,17 +330,17 @@ fn preserves_openai_encrypted_reasoning_state_with_raw_content_for_responses_ser
 #[test]
 fn strips_unknown_raw_reasoning_state_before_responses_serialization() {
     let mut input = vec![ResponseItem::Reasoning {
-        id: String::new(),
+        id: Some(String::new()),
         summary: Vec::new(),
         content: Some(vec![ReasoningItemContent::ReasoningText {
             text: "raw provider reasoning".to_string(),
         }]),
         encrypted_content: Some("provider-specific-state".to_string()),
 
-        metadata: None,
+        internal_chat_message_metadata_passthrough: None,
     }];
 
-    strip_reasoning_content_for_responses_input(&mut input);
+    strip_reasoning_content_for_responses_input(&mut input, /*is_openai_provider*/ true);
 
     let serialized = serde_json::to_value(&input[0]).expect("serialize reasoning item");
     assert!(
@@ -343,6 +350,34 @@ fn strips_unknown_raw_reasoning_state_before_responses_serialization() {
     assert!(
         serialized.get("encrypted_content").is_none(),
         "unknown-origin raw reasoning state must not be replayed as OpenAI encrypted_content: {serialized}"
+    );
+}
+
+#[test]
+fn strips_raw_reasoning_encrypted_content_for_non_openai_responses_providers() {
+    let mut input = vec![ResponseItem::Reasoning {
+        id: Some("reasoning-id".to_string()),
+        summary: vec![ReasoningItemReasoningSummary::SummaryText {
+            text: "summary".to_string(),
+        }],
+        content: Some(vec![ReasoningItemContent::ReasoningText {
+            text: "raw provider reasoning".to_string(),
+        }]),
+        encrypted_content: Some("provider-specific-state".to_string()),
+
+        internal_chat_message_metadata_passthrough: None,
+    }];
+
+    strip_reasoning_content_for_responses_input(&mut input, /*is_openai_provider*/ false);
+
+    let serialized = serde_json::to_value(&input[0]).expect("serialize reasoning item");
+    assert!(
+        serialized.get("content").is_none(),
+        "raw reasoning content must not be replayed as Responses input: {serialized}"
+    );
+    assert!(
+        serialized.get("encrypted_content").is_none(),
+        "non-OpenAI Responses providers must not receive encrypted provider reasoning: {serialized}"
     );
 }
 
@@ -529,6 +564,7 @@ async fn dropped_response_stream_traces_cancelled_partial_output() -> anyhow::Re
         api_stream,
         test_session_telemetry(),
         attempt,
+        test_model_provider(),
     );
 
     let observed = stream
@@ -579,6 +615,7 @@ async fn response_stream_records_last_model_feedback_ids() {
         api_stream,
         test_session_telemetry(),
         InferenceTraceAttempt::disabled(),
+        test_model_provider(),
     );
 
     while stream.next().await.is_some() {}
@@ -591,6 +628,39 @@ async fn response_stream_records_last_model_feedback_ids() {
     assert_eq!(
         tags.get("last_model_response_id").map(String::as_str),
         Some("\"resp-123\"")
+    );
+}
+
+#[tokio::test]
+async fn bedrock_unauthorized_error_uses_provider_mapping() {
+    let provider = create_model_provider(
+        ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None),
+        /*auth_manager*/ None,
+    );
+    let mut auth_recovery = None;
+    let url = "https://bedrock-mantle.us-east-2.api.aws/openai/v1/responses";
+    let error = super::handle_unauthorized(
+        TransportError::Http {
+            status: http::StatusCode::UNAUTHORIZED,
+            url: Some(url.to_string()),
+            headers: None,
+            body: Some(
+                "Signature expired: 20260609T133205Z is now earlier than 20260614T062525Z"
+                    .to_string(),
+            ),
+        },
+        &mut auth_recovery,
+        &test_session_telemetry(),
+        &provider,
+    )
+    .await
+    .expect_err("expired Bedrock signature should fail");
+
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "Amazon Bedrock rejected the request because its AWS signature has expired. Refresh your AWS credentials and retry. If `AWS_BEARER_TOKEN_BEDROCK` is set, update or unset it, then restart Codex, url: {url}"
+        )
     );
 }
 
@@ -620,6 +690,7 @@ async fn dropped_backpressured_response_stream_traces_cancelled_partial_output()
         api_stream,
         test_session_telemetry(),
         attempt,
+        test_model_provider(),
     );
 
     // Fill the mapper channel with non-terminal events, then yield one output
@@ -706,6 +777,7 @@ fn model_client_with_counting_attestation(
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
+        /*item_ids_enabled*/ false,
         Some(Arc::new(CountingAttestationProvider {
             calls: attestation_calls.clone(),
         })),

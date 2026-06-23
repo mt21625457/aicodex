@@ -90,6 +90,7 @@ async fn append_items_with_extended_persistence_keeps_command_completion() {
 
 fn create_thread_params(thread_id: ThreadId) -> CreateThreadParams {
     CreateThreadParams {
+        session_id: thread_id.into(),
         thread_id,
         extra_config: None,
         forked_from_id: None,
@@ -114,10 +115,10 @@ fn exec_command_end_item() -> RolloutItem {
         turn_id: "turn-1".to_string(),
         completed_at_ms: 1,
         command: vec!["echo".to_string(), "hello".to_string()],
-        cwd: std::env::current_dir()
-            .expect("current dir")
-            .try_into()
-            .expect("absolute cwd"),
+        cwd: serde_json::from_value(serde_json::json!(
+            std::env::current_dir().expect("current dir")
+        ))
+        .expect("absolute cwd"),
         parsed_cmd: Vec::new(),
         source: ExecCommandSource::UserShell,
         interaction_input: None,

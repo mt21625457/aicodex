@@ -1,5 +1,6 @@
 use super::*;
 use codex_protocol::approvals::ElicitationRequest as CoreElicitationRequest;
+use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
 use codex_protocol::items::FileChangeItem;
@@ -38,7 +39,8 @@ use codex_protocol::user_input::UserInput as CoreUserInput;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::test_support::PathBufExt;
 use codex_utils_absolute_path::test_support::test_path_buf;
-use codex_utils_path_uri::ApiPathString;
+use codex_utils_path_uri::LegacyAppPathString;
+use codex_utils_path_uri::PathUri;
 use pretty_assertions::assert_eq;
 use serde_json::Value as JsonValue;
 use serde_json::json;
@@ -354,6 +356,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
             model_provider: "openai".to_string(),
             created_at: 1,
             updated_at: 1,
+            recency_at: Some(1),
             status: ThreadStatus::Idle,
             path: None,
             cwd: absolute_path("tmp"),
@@ -377,6 +380,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
         sandbox: SandboxPolicy::DangerFullAccess,
         active_permission_profile: None,
         reasoning_effort: None,
+        multi_agent_mode: Default::default(),
         initial_turns_page: Some(TurnsPage {
             data: Vec::new(),
             next_cursor: Some("cursor_next".to_string()),
@@ -555,6 +559,7 @@ fn external_agent_config_import_params_accept_legacy_plugin_details() {
                     ..Default::default()
                 }),
             }],
+            source: None,
         }
     );
 }
@@ -759,8 +764,8 @@ fn additional_file_system_permissions_populates_entries_for_legacy_roots() {
     );
 
     let permissions = AdditionalFileSystemPermissions::from(core_permissions.clone());
-    let read_only_api_path = ApiPathString::from_abs_path(&read_only_path);
-    let read_write_api_path = ApiPathString::from_abs_path(&read_write_path);
+    let read_only_api_path = LegacyAppPathString::from_abs_path(&read_only_path);
+    let read_write_api_path = LegacyAppPathString::from_abs_path(&read_write_path);
 
     assert_eq!(
         permissions,
@@ -2080,6 +2085,40 @@ fn mcp_server_elicitation_request_from_core_form_request() {
 }
 
 #[test]
+fn mcp_server_elicitation_request_from_core_openai_form_request() {
+    let requested_schema = json!({
+        "type": "object",
+        "properties": {
+            "template": {
+                "type": "openai/imagePicker",
+                "title": "Template",
+                "items": [{
+                    "id": "monthly-review",
+                    "title": "Monthly review",
+                    "image": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4=",
+                }],
+            },
+        },
+        "required": ["template"],
+    });
+    let request = McpServerElicitationRequest::try_from(CoreElicitationRequest::OpenAiForm {
+        meta: None,
+        message: "Choose a report".to_string(),
+        requested_schema: requested_schema.clone(),
+    })
+    .expect("OpenAI form request should convert");
+
+    assert_eq!(
+        request,
+        McpServerElicitationRequest::OpenAiForm {
+            meta: None,
+            message: "Choose a report".to_string(),
+            requested_schema,
+        }
+    );
+}
+
+#[test]
 fn mcp_elicitation_schema_matches_mcp_2025_11_25_primitives() {
     let schema: McpElicitationSchema = serde_json::from_value(json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2759,7 +2798,9 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         server: "server".to_string(),
         tool: "tool".to_string(),
         arguments: json!({"arg": "value"}),
+        connector_id: Some("calendar".to_string()),
         mcp_app_resource_uri: Some("app://connector".to_string()),
+        link_id: Some("link_calendar".to_string()),
         plugin_id: Some("sample@test".to_string()),
         status: CoreMcpToolCallStatus::InProgress,
         result: None,
@@ -2775,6 +2816,11 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             tool: "tool".to_string(),
             status: McpToolCallStatus::InProgress,
             arguments: json!({"arg": "value"}),
+            app_context: Some(McpToolCallAppContext {
+                connector_id: "calendar".to_string(),
+                link_id: Some("link_calendar".to_string()),
+                resource_uri: Some("app://connector".to_string()),
+            }),
             mcp_app_resource_uri: Some("app://connector".to_string()),
             plugin_id: Some("sample@test".to_string()),
             result: None,
@@ -2788,7 +2834,9 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         server: "server".to_string(),
         tool: "tool".to_string(),
         arguments: JsonValue::Null,
+        connector_id: None,
         mcp_app_resource_uri: None,
+        link_id: None,
         plugin_id: None,
         status: CoreMcpToolCallStatus::Completed,
         result: Some(CallToolResult {
@@ -2809,6 +2857,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             tool: "tool".to_string(),
             status: McpToolCallStatus::Completed,
             arguments: JsonValue::Null,
+            app_context: None,
             mcp_app_resource_uri: None,
             plugin_id: None,
             result: Some(Box::new(McpToolCallResult {
@@ -2819,6 +2868,49 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             error: None,
             duration_ms: Some(42),
         }
+    );
+}
+
+#[test]
+fn mcp_tool_call_app_context_serializes_connector_id() {
+    let item = ThreadItem::McpToolCall {
+        id: "mcp-1".to_string(),
+        server: "codex_apps".to_string(),
+        tool: "calendar.create_event".to_string(),
+        status: McpToolCallStatus::InProgress,
+        arguments: json!({}),
+        app_context: Some(McpToolCallAppContext {
+            connector_id: "calendar".to_string(),
+            link_id: Some("link_calendar".to_string()),
+            resource_uri: Some("app://connector".to_string()),
+        }),
+        mcp_app_resource_uri: Some("app://connector".to_string()),
+        plugin_id: None,
+        result: None,
+        error: None,
+        duration_ms: None,
+    };
+
+    assert_eq!(
+        serde_json::to_value(item).expect("MCP tool call should serialize"),
+        json!({
+            "type": "mcpToolCall",
+            "id": "mcp-1",
+            "server": "codex_apps",
+            "tool": "calendar.create_event",
+            "status": "inProgress",
+            "arguments": {},
+            "appContext": {
+                "connectorId": "calendar",
+                "linkId": "link_calendar",
+                "resourceUri": "app://connector",
+            },
+            "mcpAppResourceUri": "app://connector",
+            "pluginId": null,
+            "result": null,
+            "error": null,
+            "durationMs": null,
+        })
     );
 }
 
@@ -3026,6 +3118,13 @@ fn plugin_interface_serializes_local_paths_and_remote_urls_separately() {
     };
     let composer_icon = AbsolutePathBuf::try_from(PathBuf::from(composer_icon)).unwrap();
     let composer_icon_json = composer_icon.as_path().display().to_string();
+    let logo_dark = if cfg!(windows) {
+        r"C:\plugins\linear\logo-dark.png"
+    } else {
+        "/plugins/linear/logo-dark.png"
+    };
+    let logo_dark = AbsolutePathBuf::try_from(PathBuf::from(logo_dark)).unwrap();
+    let logo_dark_json = logo_dark.as_path().display().to_string();
 
     let interface = PluginInterface {
         display_name: Some("Linear".to_string()),
@@ -3042,7 +3141,9 @@ fn plugin_interface_serializes_local_paths_and_remote_urls_separately() {
         composer_icon: Some(composer_icon),
         composer_icon_url: Some("https://example.com/linear/icon.png".to_string()),
         logo: None,
+        logo_dark: Some(logo_dark),
         logo_url: Some("https://example.com/linear/logo.png".to_string()),
+        logo_url_dark: Some("https://example.com/linear/logo-dark.png".to_string()),
         screenshots: Vec::new(),
         screenshot_urls: vec!["https://example.com/linear/screenshot.png".to_string()],
     };
@@ -3064,7 +3165,9 @@ fn plugin_interface_serializes_local_paths_and_remote_urls_separately() {
             "composerIcon": composer_icon_json,
             "composerIconUrl": "https://example.com/linear/icon.png",
             "logo": null,
+            "logoDark": logo_dark_json,
             "logoUrl": "https://example.com/linear/logo.png",
+            "logoUrlDark": "https://example.com/linear/logo-dark.png",
             "screenshots": [],
             "screenshotUrls": ["https://example.com/linear/screenshot.png"],
         }),
@@ -3776,16 +3879,69 @@ fn thread_lifecycle_responses_default_missing_optional_fields() {
         serde_json::from_value(response.clone()).expect("thread/start response");
     let resume: ThreadResumeResponse =
         serde_json::from_value(response.clone()).expect("thread/resume response");
-    let fork: ThreadForkResponse = serde_json::from_value(response).expect("thread/fork response");
+    let fork: ThreadForkResponse =
+        serde_json::from_value(response.clone()).expect("thread/fork response");
 
-    assert_eq!(start.instruction_sources, Vec::<AbsolutePathBuf>::new());
+    assert_eq!(start.instruction_sources, Vec::<LegacyAppPathString>::new());
     assert_eq!(start.thread.parent_thread_id, None);
-    assert_eq!(resume.instruction_sources, Vec::<AbsolutePathBuf>::new());
-    assert_eq!(fork.instruction_sources, Vec::<AbsolutePathBuf>::new());
+    assert_eq!(start.thread.recency_at, None);
+    assert_eq!(
+        resume.instruction_sources,
+        Vec::<LegacyAppPathString>::new()
+    );
+    assert_eq!(fork.instruction_sources, Vec::<LegacyAppPathString>::new());
     assert_eq!(start.active_permission_profile, None);
     assert_eq!(resume.active_permission_profile, None);
     assert_eq!(resume.initial_turns_page, None);
     assert_eq!(fork.active_permission_profile, None);
+    assert_eq!(
+        (
+            start.multi_agent_mode,
+            resume.multi_agent_mode,
+            fork.multi_agent_mode,
+        ),
+        (
+            MultiAgentMode::ExplicitRequestOnly,
+            MultiAgentMode::ExplicitRequestOnly,
+            MultiAgentMode::ExplicitRequestOnly,
+        )
+    );
+
+    let foreign_source: LegacyAppPathString =
+        serde_json::from_value(json!(r"C:\workspace\AGENTS.md")).expect("foreign source");
+    let mut response_with_foreign_source = response;
+    response_with_foreign_source["instructionSources"] = json!([foreign_source.as_str()]);
+    let start: ThreadStartResponse = serde_json::from_value(response_with_foreign_source.clone())
+        .expect("thread/start response with foreign source");
+    let resume: ThreadResumeResponse = serde_json::from_value(response_with_foreign_source.clone())
+        .expect("thread/resume response with foreign source");
+    let fork: ThreadForkResponse = serde_json::from_value(response_with_foreign_source)
+        .expect("thread/fork response with foreign source");
+    assert_eq!(start.instruction_sources, vec![foreign_source.clone()]);
+    assert_eq!(resume.instruction_sources, vec![foreign_source.clone()]);
+    assert_eq!(fork.instruction_sources, vec![foreign_source]);
+    let foreign_source_uri =
+        PathUri::parse("file:///C:/workspace/AGENTS.md").expect("foreign source URI");
+    assert_eq!(
+        start.instruction_source_path_uris(),
+        vec![foreign_source_uri.clone()]
+    );
+    assert_eq!(
+        resume.instruction_source_path_uris(),
+        vec![foreign_source_uri.clone()]
+    );
+    assert_eq!(
+        fork.instruction_source_path_uris(),
+        vec![foreign_source_uri]
+    );
+}
+
+#[test]
+fn thread_recency_sort_key_serializes_as_snake_case() {
+    assert_eq!(
+        serde_json::to_value(ThreadSortKey::RecencyAt).expect("sort key should serialize"),
+        json!("recency_at")
+    );
 }
 
 #[test]
@@ -3824,6 +3980,7 @@ fn turn_start_params_preserve_explicit_null_service_tier() {
         summary: None,
         output_schema: None,
         collaboration_mode: None,
+        multi_agent_mode: None,
         personality: None,
     };
     let serialized_without_override =
@@ -3851,6 +4008,50 @@ fn turn_start_params_round_trip_model_provider() {
     assert_eq!(
         serialized.get("modelProvider"),
         Some(&json!("aicodex_gateway_claude"))
+    );
+}
+
+#[test]
+fn turn_start_params_round_trip_multi_agent_mode() {
+    let params: TurnStartParams = serde_json::from_value(json!({
+        "threadId": "thread_123",
+        "input": [],
+        "multiAgentMode": "proactive"
+    }))
+    .expect("params should deserialize");
+
+    assert_eq!(
+        params.multi_agent_mode,
+        Some(codex_protocol::config_types::MultiAgentMode::Proactive)
+    );
+    assert_eq!(
+        crate::experimental_api::ExperimentalApi::experimental_reason(&params),
+        Some("turn/start.multiAgentMode")
+    );
+    assert_eq!(
+        serde_json::to_value(params).expect("params should serialize")["multiAgentMode"],
+        "proactive"
+    );
+}
+
+#[test]
+fn thread_start_params_round_trip_multi_agent_mode() {
+    let params: ThreadStartParams = serde_json::from_value(json!({
+        "multiAgentMode": "proactive"
+    }))
+    .expect("params should deserialize");
+
+    assert_eq!(
+        params.multi_agent_mode,
+        Some(codex_protocol::config_types::MultiAgentMode::Proactive)
+    );
+    assert_eq!(
+        crate::experimental_api::ExperimentalApi::experimental_reason(&params),
+        Some("thread/start.multiAgentMode")
+    );
+    assert_eq!(
+        serde_json::to_value(params).expect("params should serialize")["multiAgentMode"],
+        "proactive"
     );
 }
 
@@ -3927,7 +4128,14 @@ fn thread_settings_update_params_preserve_field_level_experimental_gates() {
 
 #[test]
 fn turn_start_params_round_trip_environments() {
-    let cwd = test_absolute_path();
+    // Use a path foreign to the test host so this exercises syntax preservation instead of the
+    // host-native conversion performed by test_absolute_path().
+    #[cfg(windows)]
+    let raw_cwd = "/workspace";
+    #[cfg(not(windows))]
+    let raw_cwd = r"C:\workspace";
+    let cwd: LegacyAppPathString =
+        serde_json::from_value(json!(raw_cwd)).expect("API path should deserialize");
     let params: TurnStartParams = serde_json::from_value(json!({
         "threadId": "thread_123",
         "input": [],
@@ -4006,27 +4214,6 @@ fn turn_start_params_treat_null_or_omitted_environments_as_default() {
     assert_eq!(
         crate::experimental_api::ExperimentalApi::experimental_reason(&omitted_environments),
         None
-    );
-}
-
-#[test]
-fn turn_start_params_reject_relative_environment_cwd() {
-    let err = serde_json::from_value::<TurnStartParams>(json!({
-        "threadId": "thread_123",
-        "input": [],
-        "environments": [
-            {
-                "environmentId": "local",
-                "cwd": "relative"
-            }
-        ],
-    }))
-    .expect_err("relative environment cwd should fail");
-
-    assert!(
-        err.to_string()
-            .contains("AbsolutePathBuf deserialized without a base path"),
-        "unexpected error: {err}"
     );
 }
 

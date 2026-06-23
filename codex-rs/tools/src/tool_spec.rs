@@ -91,6 +91,8 @@ pub enum ToolSpec {
         #[serde(skip_serializing_if = "Option::is_none")]
         external_web_access: Option<bool>,
         #[serde(skip_serializing_if = "Option::is_none")]
+        index_gated_web_access: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         filters: Option<ResponsesApiWebSearchFilters>,
         #[serde(skip_serializing_if = "Option::is_none")]
         user_location: Option<ResponsesApiWebSearchUserLocation>,
@@ -298,6 +300,7 @@ pub fn create_tools_json_for_claude_messages_with_options(
             }
             ToolSpec::WebSearch {
                 external_web_access,
+                index_gated_web_access,
                 filters,
                 user_location,
                 search_context_size,
@@ -310,6 +313,7 @@ pub fn create_tools_json_for_claude_messages_with_options(
                             .any(|content_type| !content_type.eq_ignore_ascii_case("text"))
                     });
                 let native_mapping_is_lossless = !matches!(external_web_access, Some(false))
+                    && index_gated_web_access.is_none()
                     && search_context_size.is_none()
                     && !has_non_text_content_types;
                 let web_search_plan = match options.web_search_tool_kind {

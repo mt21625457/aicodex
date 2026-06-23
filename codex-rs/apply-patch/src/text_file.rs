@@ -3,7 +3,6 @@ use std::io;
 use chardetng::EncodingDetector;
 use codex_exec_server::ExecutorFileSystem;
 use codex_exec_server::FileSystemSandboxContext;
-use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use encoding_rs::EUC_KR;
 use encoding_rs::Encoding;
@@ -50,12 +49,11 @@ impl PatchableTextEncoding {
 }
 
 pub(crate) async fn read_patchable_text_file(
-    path: &AbsolutePathBuf,
+    path: &PathUri,
     fs: &dyn ExecutorFileSystem,
     sandbox: Option<&FileSystemSandboxContext>,
 ) -> io::Result<PatchableTextFile> {
-    let path_uri = PathUri::from_abs_path(path);
-    let bytes = fs.read_file(&path_uri, sandbox).await?;
+    let bytes = fs.read_file(path, sandbox).await?;
     decode_patchable_text(bytes)
 }
 

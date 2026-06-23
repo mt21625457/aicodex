@@ -177,6 +177,7 @@ pub struct AppsDefaultConfig {
     pub destructive_enabled: bool,
     #[serde(default = "default_enabled")]
     pub open_world_enabled: bool,
+    pub default_tools_approval_mode: Option<AppToolApproval>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -663,6 +664,9 @@ pub struct ExternalAgentConfigDetectParams {
 #[ts(export_to = "v2/")]
 pub struct ExternalAgentConfigImportParams {
     pub migration_items: Vec<ExternalAgentConfigMigrationItem>,
+    /// Source product that produced the migration items. Missing means unspecified.
+    #[ts(optional = nullable)]
+    pub source: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]

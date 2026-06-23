@@ -86,6 +86,7 @@ fn tool_spec_name_covers_all_variants() {
     assert_eq!(
         ToolSpec::WebSearch {
             external_web_access: Some(true),
+            index_gated_web_access: None,
             filters: None,
             user_location: None,
             search_context_size: None,
@@ -218,6 +219,7 @@ fn web_search_tool_spec_serializes_expected_wire_shape() {
     assert_eq!(
         serde_json::to_value(ToolSpec::WebSearch {
             external_web_access: Some(true),
+            index_gated_web_access: None,
             filters: Some(ResponsesApiWebSearchFilters {
                 allowed_domains: Some(vec!["example.com".to_string()]),
             }),
@@ -613,6 +615,7 @@ fn create_tools_json_for_claude_messages_maps_web_search_and_omits_image_generat
     let result = create_tools_json_for_claude_messages(&[
         ToolSpec::WebSearch {
             external_web_access: Some(true),
+            index_gated_web_access: None,
             filters: Some(ResponsesApiWebSearchFilters {
                 allowed_domains: Some(vec![
                     "example.com".to_string(),
@@ -698,6 +701,7 @@ fn create_tools_json_for_claude_messages_falls_back_when_web_search_context_size
 {
     let result = create_tools_json_for_claude_messages(&[ToolSpec::WebSearch {
         external_web_access: Some(true),
+        index_gated_web_access: None,
         filters: Some(ResponsesApiWebSearchFilters {
             allowed_domains: Some(vec!["example.com".to_string()]),
         }),
@@ -766,6 +770,7 @@ fn create_tools_json_for_claude_messages_disables_native_web_search_when_no_safe
     for tool in [
         ToolSpec::WebSearch {
             external_web_access: Some(false),
+            index_gated_web_access: None,
             filters: None,
             user_location: None,
             search_context_size: None,
@@ -773,6 +778,7 @@ fn create_tools_json_for_claude_messages_disables_native_web_search_when_no_safe
         },
         ToolSpec::WebSearch {
             external_web_access: Some(true),
+            index_gated_web_access: None,
             filters: None,
             user_location: None,
             search_context_size: None,
@@ -805,6 +811,7 @@ fn create_tools_json_for_claude_messages_can_map_web_search_to_local_function() 
     let result = crate::create_tools_json_for_claude_messages_with_options(
         &[ToolSpec::WebSearch {
             external_web_access: Some(true),
+            index_gated_web_access: None,
             filters: None,
             user_location: None,
             search_context_size: None,

@@ -731,7 +731,7 @@ impl ClaudeStreamState {
                 role: "assistant".to_string(),
                 content: Vec::new(),
                 phase: None,
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             })))
             .await
             .map_err(|err| ApiError::Stream(err.to_string()))
@@ -748,11 +748,11 @@ impl ClaudeStreamState {
         tx_event
             .send(Ok(ResponseEvent::OutputItemAdded(
                 ResponseItem::Reasoning {
-                    id: self.reasoning_id_for_block(index),
+                    id: Some(self.reasoning_id_for_block(index)),
                     summary: Vec::new(),
                     content: Some(Vec::new()),
                     encrypted_content: None,
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             )))
             .await
@@ -821,7 +821,7 @@ impl ClaudeStreamState {
                     call_id,
                     name: info.name.clone(),
                     input: String::new(),
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             )))
             .await
@@ -952,7 +952,7 @@ impl ClaudeStreamState {
                         role: "assistant".to_string(),
                         content,
                         phase: None,
-                        metadata: None,
+                        internal_chat_message_metadata_passthrough: None,
                     }]);
                 }
                 Ok(Vec::new())
@@ -991,11 +991,11 @@ impl ClaudeStreamState {
             .filter(|signature| !signature.trim().is_empty())
             .cloned();
         ResponseItem::Reasoning {
-            id: self.reasoning_id_for_block(index),
+            id: Some(self.reasoning_id_for_block(index)),
             summary: Vec::new(),
             content: Some(vec![ReasoningItemContent::ReasoningText { text }]),
             encrypted_content: signature,
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         }
     }
 
@@ -1030,7 +1030,7 @@ impl ClaudeStreamState {
                 namespace: info.namespace,
                 arguments: stringify_tool_input(&input),
                 call_id,
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             },
             ClaudeToolCallKind::Custom => match custom_tool_input(&info.name, &input) {
                 Ok(input) => ResponseItem::CustomToolCall {
@@ -1039,7 +1039,7 @@ impl ClaudeStreamState {
                     call_id,
                     name: info.name,
                     input,
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
                 Err(message) => ResponseItem::CustomToolCall {
                     id: Some(call_id.clone()),
@@ -1049,7 +1049,7 @@ impl ClaudeStreamState {
                     call_id,
                     name: info.name,
                     input: String::new(),
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 },
             },
             ClaudeToolCallKind::ToolSearch => ResponseItem::ToolSearchCall {
@@ -1058,7 +1058,7 @@ impl ClaudeStreamState {
                 status: None,
                 execution: "client".to_string(),
                 arguments: input,
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             },
         }))
     }
@@ -1082,7 +1082,7 @@ impl ClaudeStreamState {
             id: Some(call_id),
             status: None,
             action: web_search_action_from_claude_input(&input),
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         }))
     }
 
@@ -1090,8 +1090,9 @@ impl ClaudeStreamState {
         self.provider_state_blocks
             .get(&index)
             .map(|value| ResponseItem::Compaction {
+                id: None,
                 encrypted_content: value.to_string(),
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             })
     }
 
@@ -2666,7 +2667,9 @@ mod tests {
                 content: Some(content),
                 encrypted_content: None,
                 ..
-            }) if id == "msg_1_reasoning_0" && summary.is_empty() && content.is_empty()
+            }) if id.as_deref() == Some("msg_1_reasoning_0")
+                && summary.is_empty()
+                && content.is_empty()
         )));
         assert!(
             !events
@@ -3247,7 +3250,7 @@ mod tests {
 
         let item_label = |item: &ResponseItem| match item {
             ResponseItem::Message { id, .. } => id.as_ref().map(|id| format!("message:{id}")),
-            ResponseItem::Reasoning { id, .. } => Some(format!("reasoning:{id}")),
+            ResponseItem::Reasoning { id, .. } => id.as_ref().map(|id| format!("reasoning:{id}")),
             _ => None,
         };
         let added = events

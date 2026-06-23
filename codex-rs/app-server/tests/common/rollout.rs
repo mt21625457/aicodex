@@ -1,4 +1,5 @@
 use anyhow::Result;
+use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::ContextTokenUsageSource;
 use codex_protocol::protocol::EventMsg;
@@ -130,11 +131,12 @@ pub fn create_fake_rollout_with_source(
         model_provider,
         git_info,
         source,
+        /*session_id*/ None,
         /*parent_thread_id*/ None,
     )
 }
 
-/// Create a minimal rollout file with an explicit session source and control parent.
+/// Create a minimal rollout file with an explicit root session and control parent.
 #[allow(clippy::too_many_arguments)]
 pub fn create_fake_parented_rollout_with_source(
     codex_home: &Path,
@@ -144,6 +146,7 @@ pub fn create_fake_parented_rollout_with_source(
     model_provider: Option<&str>,
     git_info: Option<GitInfo>,
     source: SessionSource,
+    session_id: SessionId,
     parent_thread_id: ThreadId,
 ) -> Result<String> {
     create_fake_rollout_with_source_and_parent_thread_id(
@@ -154,6 +157,7 @@ pub fn create_fake_parented_rollout_with_source(
         model_provider,
         git_info,
         source,
+        Some(session_id),
         Some(parent_thread_id),
     )
 }
@@ -167,11 +171,13 @@ fn create_fake_rollout_with_source_and_parent_thread_id(
     model_provider: Option<&str>,
     git_info: Option<GitInfo>,
     source: SessionSource,
+    session_id: Option<SessionId>,
     parent_thread_id: Option<ThreadId>,
 ) -> Result<String> {
     let uuid = Uuid::new_v4();
     let uuid_str = uuid.to_string();
     let conversation_id = ThreadId::from_string(&uuid_str)?;
+    let session_id = session_id.unwrap_or_else(|| conversation_id.into());
 
     let file_path = rollout_path(codex_home, filename_ts, &uuid_str);
     let dir = file_path
@@ -181,6 +187,7 @@ fn create_fake_rollout_with_source_and_parent_thread_id(
 
     // Build JSONL lines
     let meta = SessionMeta {
+        session_id,
         id: conversation_id,
         forked_from_id: None,
         parent_thread_id,
@@ -267,6 +274,7 @@ pub fn create_fake_rollout_with_text_elements(
 
     // Build JSONL lines
     let meta = SessionMeta {
+        session_id: conversation_id.into(),
         id: conversation_id,
         forked_from_id: None,
         parent_thread_id: None,

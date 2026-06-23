@@ -5,7 +5,7 @@ import type { CodexConfigObject } from "../src/codexOptions";
 
 export const codexExecPath =
   process.env.CODEX_EXEC_PATH ??
-  path.join(process.cwd(), "..", "..", "codex-rs", "target", "debug", "codex");
+  path.join(process.cwd(), "..", "..", "codex-rs", "target", "debug", "aicodex");
 
 type CreateTestClientOptions = {
   apiKey?: string;
