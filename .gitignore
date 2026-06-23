@@ -15,6 +15,7 @@ build/
 out/
 storybook-static/
 /aicodex
+.codegraph/
 
 # ignore README for publishing
 codex-cli/README.md
