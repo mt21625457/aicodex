@@ -37,6 +37,10 @@ pub use thread_metadata::ThreadsPage;
 
 pub(crate) use agent_job::AgentJobItemRow;
 pub(crate) use agent_job::AgentJobRow;
+#[cfg(test)]
+pub(crate) use log::MAX_PERSISTED_LOG_BODY_BYTES;
+pub(crate) use log::bounded_persisted_log_body;
+pub(crate) use log::truncate_persisted_log_body;
 pub(crate) use thread_goal::ThreadGoalRow;
 pub(crate) use thread_metadata::ThreadRow;
 pub(crate) use thread_metadata::anchor_from_item;

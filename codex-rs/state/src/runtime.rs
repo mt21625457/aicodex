@@ -88,14 +88,19 @@ pub use recovery::sqlite_error_detail_is_lock;
 pub use remote_control::RemoteControlEnrollmentRecord;
 pub use threads::ThreadFilterOptions;
 
-// "Partition" is the retained-log-content bucket we cap at 10 MiB:
-// - one bucket per non-null thread_id
-// - one bucket per threadless (thread_id IS NULL) non-null process_uuid
-// - one bucket for threadless rows with process_uuid IS NULL
-// This budget tracks each row's persisted rendered log body plus non-body
-// metadata, rather than the exact sum of all persisted SQLite column bytes.
+// Retained-log-content budgets track each row's persisted rendered log body plus
+// non-body metadata, rather than the exact sum of all persisted SQLite column
+// bytes.
+//
+// Thread rows keep a larger per-thread budget because they are useful support
+// evidence. Threadless rows are keyed by process UUID, which changes frequently,
+// so they need a much smaller per-process budget to avoid multiplying retained
+// logs across restarts.
 const LOG_PARTITION_SIZE_LIMIT_BYTES: i64 = 10 * 1024 * 1024;
+const LOG_THREADLESS_PROCESS_SIZE_LIMIT_BYTES: i64 = 2 * 1024 * 1024;
 const LOG_PARTITION_ROW_LIMIT: i64 = 1_000;
+const LOG_TOTAL_SIZE_LIMIT_BYTES: i64 = 256 * 1024 * 1024;
+const LOG_TOTAL_ROW_LIMIT: i64 = 200_000;
 
 #[derive(Clone, Copy)]
 struct RuntimeDbSpec {

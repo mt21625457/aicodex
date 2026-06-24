@@ -1,6 +1,21 @@
 use super::*;
+use crate::model::bounded_persisted_log_body;
+use std::borrow::Cow;
 
 const LOG_RETENTION_DAYS: i64 = 10;
+
+struct PersistedLogEntry<'a> {
+    ts: i64,
+    ts_nanos: i64,
+    level: &'a str,
+    target: &'a str,
+    feedback_log_body: Option<Cow<'a, str>>,
+    thread_id: Option<&'a str>,
+    process_uuid: Option<&'a str>,
+    module_path: Option<&'a str>,
+    file: Option<&'a str>,
+    line: Option<i64>,
+}
 
 impl StateRuntime {
     pub async fn insert_log(&self, entry: &LogEntry) -> anyhow::Result<()> {
@@ -17,31 +32,53 @@ impl StateRuntime {
         let mut builder = QueryBuilder::<Sqlite>::new(
             "INSERT INTO logs (ts, ts_nanos, level, target, feedback_log_body, thread_id, process_uuid, module_path, file, line, estimated_bytes) ",
         );
-        builder.push_values(entries, |mut row, entry| {
-            let feedback_log_body = entry.feedback_log_body.as_ref().or(entry.message.as_ref());
+        let persisted_entries: Vec<_> = entries
+            .iter()
+            .map(|entry| PersistedLogEntry {
+                ts: entry.ts,
+                ts_nanos: entry.ts_nanos,
+                level: &entry.level,
+                target: &entry.target,
+                feedback_log_body: entry
+                    .feedback_log_body
+                    .as_deref()
+                    .or(entry.message.as_deref())
+                    .map(bounded_persisted_log_body),
+                thread_id: entry.thread_id.as_deref(),
+                process_uuid: entry.process_uuid.as_deref(),
+                module_path: entry.module_path.as_deref(),
+                file: entry.file.as_deref(),
+                line: entry.line,
+            })
+            .collect();
+        builder.push_values(persisted_entries.iter(), |mut row, entry| {
             // Keep about 10 MiB of reader-visible log content per partition.
             // Both `query_logs` and `/feedback` read the persisted
             // `feedback_log_body`, while `LogEntry.message` is only a write-time
             // fallback for callers that still populate the old field.
-            let estimated_bytes = feedback_log_body.map_or(0, String::len) as i64
+            let estimated_bytes = entry
+                .feedback_log_body
+                .as_ref()
+                .map_or(0, |body| body.len()) as i64
                 + entry.level.len() as i64
                 + entry.target.len() as i64
-                + entry.module_path.as_ref().map_or(0, String::len) as i64
-                + entry.file.as_ref().map_or(0, String::len) as i64;
+                + entry.module_path.map_or(0, str::len) as i64
+                + entry.file.map_or(0, str::len) as i64;
             row.push_bind(entry.ts)
                 .push_bind(entry.ts_nanos)
-                .push_bind(&entry.level)
-                .push_bind(&entry.target)
-                .push_bind(feedback_log_body)
-                .push_bind(&entry.thread_id)
-                .push_bind(&entry.process_uuid)
-                .push_bind(&entry.module_path)
-                .push_bind(&entry.file)
+                .push_bind(entry.level)
+                .push_bind(entry.target)
+                .push_bind(entry.feedback_log_body.as_deref())
+                .push_bind(entry.thread_id)
+                .push_bind(entry.process_uuid)
+                .push_bind(entry.module_path)
+                .push_bind(entry.file)
                 .push_bind(entry.line)
                 .push_bind(estimated_bytes);
         });
         builder.build().execute(&mut *tx).await?;
         self.prune_logs_after_insert(entries, &mut tx).await?;
+        prune_global_logs(&mut tx, LOG_TOTAL_SIZE_LIMIT_BYTES, LOG_TOTAL_ROW_LIMIT).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -164,7 +201,7 @@ WHERE id IN (
             over_limit_processes_query.push(") GROUP BY process_uuid HAVING SUM(");
             over_limit_processes_query.push("estimated_bytes");
             over_limit_processes_query.push(") > ");
-            over_limit_processes_query.push_bind(LOG_PARTITION_SIZE_LIMIT_BYTES);
+            over_limit_processes_query.push_bind(LOG_THREADLESS_PROCESS_SIZE_LIMIT_BYTES);
             over_limit_processes_query.push(" OR COUNT(*) > ");
             over_limit_processes_query.push_bind(LOG_PARTITION_ROW_LIMIT);
             let over_limit_process_uuids: Vec<String> = over_limit_processes_query
@@ -217,7 +254,7 @@ WHERE id IN (
     WHERE cumulative_bytes >
 "#,
                 );
-                prune_threadless_process_logs.push_bind(LOG_PARTITION_SIZE_LIMIT_BYTES);
+                prune_threadless_process_logs.push_bind(LOG_THREADLESS_PROCESS_SIZE_LIMIT_BYTES);
                 prune_threadless_process_logs.push(" OR row_number > ");
                 prune_threadless_process_logs.push_bind(LOG_PARTITION_ROW_LIMIT);
                 prune_threadless_process_logs.push("\n)");
@@ -240,7 +277,7 @@ WHERE id IN (
                 null_process_usage.try_get("total_bytes")?;
             let null_process_row_count: i64 = null_process_usage.try_get("row_count")?;
 
-            if total_null_process_bytes.unwrap_or(0) > LOG_PARTITION_SIZE_LIMIT_BYTES
+            if total_null_process_bytes.unwrap_or(0) > LOG_THREADLESS_PROCESS_SIZE_LIMIT_BYTES
                 || null_process_row_count > LOG_PARTITION_ROW_LIMIT
             {
                 let mut prune_threadless_null_process_logs = QueryBuilder::<Sqlite>::new(
@@ -272,7 +309,8 @@ WHERE id IN (
     WHERE cumulative_bytes >
 "#,
                 );
-                prune_threadless_null_process_logs.push_bind(LOG_PARTITION_SIZE_LIMIT_BYTES);
+                prune_threadless_null_process_logs
+                    .push_bind(LOG_THREADLESS_PROCESS_SIZE_LIMIT_BYTES);
                 prune_threadless_null_process_logs.push(" OR row_number > ");
                 prune_threadless_null_process_logs.push_bind(LOG_PARTITION_ROW_LIMIT);
                 prune_threadless_null_process_logs.push("\n)");
@@ -446,6 +484,48 @@ WHERE cumulative_estimated_bytes <=
     }
 }
 
+async fn prune_global_logs(
+    tx: &mut SqliteConnection,
+    size_limit_bytes: i64,
+    row_limit: i64,
+) -> anyhow::Result<()> {
+    let usage =
+        sqlx::query("SELECT SUM(estimated_bytes) AS total_bytes, COUNT(*) AS row_count FROM logs")
+            .fetch_one(&mut *tx)
+            .await?;
+    let total_bytes: Option<i64> = usage.try_get("total_bytes")?;
+    let row_count: i64 = usage.try_get("row_count")?;
+    if total_bytes.unwrap_or(0) <= size_limit_bytes && row_count <= row_limit {
+        return Ok(());
+    }
+
+    sqlx::query(
+        r#"
+DELETE FROM logs
+WHERE id IN (
+    SELECT id
+    FROM (
+        SELECT
+            id,
+            SUM(estimated_bytes) OVER (
+                ORDER BY ts DESC, ts_nanos DESC, id DESC
+            ) AS cumulative_bytes,
+            ROW_NUMBER() OVER (
+                ORDER BY ts DESC, ts_nanos DESC, id DESC
+            ) AS row_number
+        FROM logs
+    )
+    WHERE cumulative_bytes > ? OR row_number > ?
+)
+"#,
+    )
+    .bind(size_limit_bytes)
+    .bind(row_limit)
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
+}
+
 #[derive(sqlx::FromRow)]
 struct FeedbackLogRow {
     ts: i64,
@@ -542,18 +622,42 @@ fn push_like_filters(builder: &mut QueryBuilder<Sqlite>, column: &str, filters: 
 mod tests {
     use super::StateRuntime;
     use super::format_feedback_log_line;
+    use super::prune_global_logs;
     use super::test_support::unique_temp_dir;
     use crate::LogEntry;
     use crate::LogQuery;
     use crate::logs_db_path;
     use crate::migrations::LOGS_MIGRATOR;
+    use crate::model::MAX_PERSISTED_LOG_BODY_BYTES;
     use chrono::Utc;
     use pretty_assertions::assert_eq;
+    use sqlx::Row;
     use sqlx::SqlitePool;
     use sqlx::migrate::Migrator;
     use sqlx::sqlite::SqliteConnectOptions;
     use std::borrow::Cow;
     use std::path::Path;
+
+    fn test_log_entry(
+        ts: i64,
+        message: String,
+        thread_id: Option<&str>,
+        process_uuid: Option<&str>,
+    ) -> LogEntry {
+        LogEntry {
+            ts,
+            ts_nanos: 0,
+            level: "INFO".to_string(),
+            target: "cli".to_string(),
+            message: Some(message),
+            feedback_log_body: None,
+            thread_id: thread_id.map(ToString::to_string),
+            process_uuid: process_uuid.map(ToString::to_string),
+            file: Some("main.rs".to_string()),
+            line: Some(ts),
+            module_path: Some("mod".to_string()),
+        }
+    }
 
     async fn open_db_pool(path: &Path) -> SqlitePool {
         SqlitePool::connect_with(
@@ -602,6 +706,55 @@ mod tests {
         let logs_count = log_row_count(logs_db_path(codex_home.as_path()).as_path()).await;
 
         assert_eq!(logs_count, 1);
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn insert_logs_truncates_direct_feedback_log_body_before_persisting() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("initialize runtime");
+        let original = format!(
+            "{}secret-tail",
+            "\u{1f600}".repeat(MAX_PERSISTED_LOG_BODY_BYTES)
+        );
+
+        runtime
+            .insert_logs(&[LogEntry {
+                ts: 1,
+                ts_nanos: 0,
+                level: "INFO".to_string(),
+                target: "cli".to_string(),
+                message: Some("fallback-message".to_string()),
+                feedback_log_body: Some(original.clone()),
+                thread_id: Some("thread-1".to_string()),
+                process_uuid: Some("proc-1".to_string()),
+                module_path: Some("mod".to_string()),
+                file: Some("main.rs".to_string()),
+                line: Some(7),
+            }])
+            .await
+            .expect("insert oversized log body");
+
+        let row = sqlx::query("SELECT feedback_log_body, estimated_bytes FROM logs")
+            .fetch_one(runtime.logs_pool.as_ref())
+            .await
+            .expect("fetch persisted log row");
+        let persisted: String = row.try_get("feedback_log_body").expect("feedback log body");
+        let estimated_bytes: i64 = row.try_get("estimated_bytes").expect("estimated bytes");
+
+        assert!(persisted.len() <= MAX_PERSISTED_LOG_BODY_BYTES);
+        assert!(persisted.ends_with(&format!(
+            "... [truncated, original_bytes={}]",
+            original.len()
+        )));
+        assert!(!persisted.contains("secret-tail"));
+        assert_eq!(
+            estimated_bytes,
+            (persisted.len() + "INFO".len() + "cli".len() + "mod".len() + "main.rs".len()) as i64
+        );
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
@@ -894,36 +1047,12 @@ mod tests {
             .await
             .expect("initialize runtime");
 
-        let six_mebibytes = "a".repeat(6 * 1024 * 1024);
+        let retained_body = "a".repeat(MAX_PERSISTED_LOG_BODY_BYTES);
+        let entries: Vec<LogEntry> = (1..=161)
+            .map(|ts| test_log_entry(ts, retained_body.clone(), Some("thread-1"), Some("proc-1")))
+            .collect();
         runtime
-            .insert_logs(&[
-                LogEntry {
-                    ts: 1,
-                    ts_nanos: 0,
-                    level: "INFO".to_string(),
-                    target: "cli".to_string(),
-                    message: Some("small".to_string()),
-                    feedback_log_body: Some(six_mebibytes.clone()),
-                    thread_id: Some("thread-1".to_string()),
-                    process_uuid: Some("proc-1".to_string()),
-                    file: Some("main.rs".to_string()),
-                    line: Some(1),
-                    module_path: Some("mod".to_string()),
-                },
-                LogEntry {
-                    ts: 2,
-                    ts_nanos: 0,
-                    level: "INFO".to_string(),
-                    target: "cli".to_string(),
-                    message: Some("small".to_string()),
-                    feedback_log_body: Some(six_mebibytes.clone()),
-                    thread_id: Some("thread-1".to_string()),
-                    process_uuid: Some("proc-1".to_string()),
-                    file: Some("main.rs".to_string()),
-                    line: Some(2),
-                    module_path: Some("mod".to_string()),
-                },
-            ])
+            .insert_logs(&entries)
             .await
             .expect("insert test logs");
 
@@ -935,46 +1064,17 @@ mod tests {
             .await
             .expect("query thread logs");
 
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].ts, 2);
-
-        let _ = tokio::fs::remove_dir_all(codex_home).await;
-    }
-
-    #[tokio::test]
-    async fn insert_logs_prunes_single_thread_row_when_it_exceeds_size_limit() {
-        let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
-            .await
-            .expect("initialize runtime");
-
-        let eleven_mebibytes = "d".repeat(11 * 1024 * 1024);
-        runtime
-            .insert_logs(&[LogEntry {
-                ts: 1,
-                ts_nanos: 0,
-                level: "INFO".to_string(),
-                target: "cli".to_string(),
-                message: Some("small".to_string()),
-                feedback_log_body: Some(eleven_mebibytes),
-                thread_id: Some("thread-oversized".to_string()),
-                process_uuid: Some("proc-1".to_string()),
-                file: Some("main.rs".to_string()),
-                line: Some(1),
-                module_path: Some("mod".to_string()),
-            }])
-            .await
-            .expect("insert test log");
-
-        let rows = runtime
-            .query_logs(&LogQuery {
-                thread_ids: vec!["thread-oversized".to_string()],
-                ..Default::default()
-            })
-            .await
-            .expect("query thread logs");
-
-        assert!(rows.is_empty());
+        let timestamps: Vec<i64> = rows.into_iter().map(|row| row.ts).collect();
+        assert!(timestamps.len() < entries.len());
+        assert!(!timestamps.contains(&1));
+        assert_eq!(timestamps.last().copied(), Some(161));
+        let retained_bytes: i64 =
+            sqlx::query_scalar("SELECT SUM(estimated_bytes) FROM logs WHERE thread_id = ?")
+                .bind("thread-1")
+                .fetch_one(runtime.logs_pool.as_ref())
+                .await
+                .expect("sum retained thread bytes");
+        assert!(retained_bytes <= 10 * 1024 * 1024);
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
@@ -986,49 +1086,25 @@ mod tests {
             .await
             .expect("initialize runtime");
 
-        let six_mebibytes = "b".repeat(6 * 1024 * 1024);
+        let retained_body = "b".repeat(MAX_PERSISTED_LOG_BODY_BYTES);
+        let mut entries: Vec<LogEntry> = (1..=33)
+            .map(|ts| {
+                test_log_entry(
+                    ts,
+                    retained_body.clone(),
+                    /*thread_id*/ None,
+                    Some("proc-1"),
+                )
+            })
+            .collect();
+        entries.push(test_log_entry(
+            /*ts*/ 100,
+            "thread row stays in the thread partition".to_string(),
+            Some("thread-1"),
+            Some("proc-1"),
+        ));
         runtime
-            .insert_logs(&[
-                LogEntry {
-                    ts: 1,
-                    ts_nanos: 0,
-                    level: "INFO".to_string(),
-                    target: "cli".to_string(),
-                    message: Some(six_mebibytes.clone()),
-                    feedback_log_body: None,
-                    thread_id: None,
-                    process_uuid: Some("proc-1".to_string()),
-                    file: Some("main.rs".to_string()),
-                    line: Some(1),
-                    module_path: Some("mod".to_string()),
-                },
-                LogEntry {
-                    ts: 2,
-                    ts_nanos: 0,
-                    level: "INFO".to_string(),
-                    target: "cli".to_string(),
-                    message: Some(six_mebibytes.clone()),
-                    feedback_log_body: None,
-                    thread_id: None,
-                    process_uuid: Some("proc-1".to_string()),
-                    file: Some("main.rs".to_string()),
-                    line: Some(2),
-                    module_path: Some("mod".to_string()),
-                },
-                LogEntry {
-                    ts: 3,
-                    ts_nanos: 0,
-                    level: "INFO".to_string(),
-                    target: "cli".to_string(),
-                    message: Some(six_mebibytes),
-                    feedback_log_body: None,
-                    thread_id: Some("thread-1".to_string()),
-                    process_uuid: Some("proc-1".to_string()),
-                    file: Some("main.rs".to_string()),
-                    line: Some(3),
-                    module_path: Some("mod".to_string()),
-                },
-            ])
+            .insert_logs(&entries)
             .await
             .expect("insert test logs");
 
@@ -1043,45 +1119,10 @@ mod tests {
 
         let mut timestamps: Vec<i64> = rows.into_iter().map(|row| row.ts).collect();
         timestamps.sort_unstable();
-        assert_eq!(timestamps, vec![2, 3]);
-
-        let _ = tokio::fs::remove_dir_all(codex_home).await;
-    }
-
-    #[tokio::test]
-    async fn insert_logs_prunes_single_threadless_process_row_when_it_exceeds_size_limit() {
-        let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
-            .await
-            .expect("initialize runtime");
-
-        let eleven_mebibytes = "e".repeat(11 * 1024 * 1024);
-        runtime
-            .insert_logs(&[LogEntry {
-                ts: 1,
-                ts_nanos: 0,
-                level: "INFO".to_string(),
-                target: "cli".to_string(),
-                message: Some("small".to_string()),
-                feedback_log_body: Some(eleven_mebibytes),
-                thread_id: None,
-                process_uuid: Some("proc-oversized".to_string()),
-                file: Some("main.rs".to_string()),
-                line: Some(1),
-                module_path: Some("mod".to_string()),
-            }])
-            .await
-            .expect("insert test log");
-
-        let rows = runtime
-            .query_logs(&LogQuery {
-                include_threadless: true,
-                ..Default::default()
-            })
-            .await
-            .expect("query threadless logs");
-
-        assert!(rows.is_empty());
+        assert!(!timestamps.contains(&1));
+        assert!(!timestamps.contains(&2));
+        assert!(timestamps.contains(&33));
+        assert!(timestamps.contains(&100));
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
@@ -1093,49 +1134,25 @@ mod tests {
             .await
             .expect("initialize runtime");
 
-        let six_mebibytes = "c".repeat(6 * 1024 * 1024);
+        let retained_body = "c".repeat(MAX_PERSISTED_LOG_BODY_BYTES);
+        let mut entries: Vec<LogEntry> = (1..=33)
+            .map(|ts| {
+                test_log_entry(
+                    ts,
+                    retained_body.clone(),
+                    /*thread_id*/ None,
+                    /*process_uuid*/ None,
+                )
+            })
+            .collect();
+        entries.push(test_log_entry(
+            /*ts*/ 100,
+            "separate process row stays".to_string(),
+            /*thread_id*/ None,
+            Some("proc-1"),
+        ));
         runtime
-            .insert_logs(&[
-                LogEntry {
-                    ts: 1,
-                    ts_nanos: 0,
-                    level: "INFO".to_string(),
-                    target: "cli".to_string(),
-                    message: Some(six_mebibytes.clone()),
-                    feedback_log_body: None,
-                    thread_id: None,
-                    process_uuid: None,
-                    file: Some("main.rs".to_string()),
-                    line: Some(1),
-                    module_path: Some("mod".to_string()),
-                },
-                LogEntry {
-                    ts: 2,
-                    ts_nanos: 0,
-                    level: "INFO".to_string(),
-                    target: "cli".to_string(),
-                    message: Some(six_mebibytes),
-                    feedback_log_body: None,
-                    thread_id: None,
-                    process_uuid: None,
-                    file: Some("main.rs".to_string()),
-                    line: Some(2),
-                    module_path: Some("mod".to_string()),
-                },
-                LogEntry {
-                    ts: 3,
-                    ts_nanos: 0,
-                    level: "INFO".to_string(),
-                    target: "cli".to_string(),
-                    message: Some("small".to_string()),
-                    feedback_log_body: None,
-                    thread_id: None,
-                    process_uuid: Some("proc-1".to_string()),
-                    file: Some("main.rs".to_string()),
-                    line: Some(3),
-                    module_path: Some("mod".to_string()),
-                },
-            ])
+            .insert_logs(&entries)
             .await
             .expect("insert test logs");
 
@@ -1149,45 +1166,10 @@ mod tests {
 
         let mut timestamps: Vec<i64> = rows.into_iter().map(|row| row.ts).collect();
         timestamps.sort_unstable();
-        assert_eq!(timestamps, vec![2, 3]);
-
-        let _ = tokio::fs::remove_dir_all(codex_home).await;
-    }
-
-    #[tokio::test]
-    async fn insert_logs_prunes_single_threadless_null_process_row_when_it_exceeds_limit() {
-        let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
-            .await
-            .expect("initialize runtime");
-
-        let eleven_mebibytes = "f".repeat(11 * 1024 * 1024);
-        runtime
-            .insert_logs(&[LogEntry {
-                ts: 1,
-                ts_nanos: 0,
-                level: "INFO".to_string(),
-                target: "cli".to_string(),
-                message: Some("small".to_string()),
-                feedback_log_body: Some(eleven_mebibytes),
-                thread_id: None,
-                process_uuid: None,
-                file: Some("main.rs".to_string()),
-                line: Some(1),
-                module_path: Some("mod".to_string()),
-            }])
-            .await
-            .expect("insert test log");
-
-        let rows = runtime
-            .query_logs(&LogQuery {
-                include_threadless: true,
-                ..Default::default()
-            })
-            .await
-            .expect("query threadless logs");
-
-        assert!(rows.is_empty());
+        assert!(!timestamps.contains(&1));
+        assert!(!timestamps.contains(&2));
+        assert!(timestamps.contains(&33));
+        assert!(timestamps.contains(&100));
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
@@ -1330,6 +1312,92 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn prune_global_logs_keeps_newest_rows_within_row_limit() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("initialize runtime");
+
+        let entries: Vec<LogEntry> = (1..=5)
+            .map(|ts| LogEntry {
+                ts,
+                ts_nanos: 0,
+                level: "INFO".to_string(),
+                target: "cli".to_string(),
+                message: Some(format!("global-row-{ts}")),
+                feedback_log_body: None,
+                thread_id: Some(format!("thread-{ts}")),
+                process_uuid: Some("proc-1".to_string()),
+                file: Some("main.rs".to_string()),
+                line: Some(ts),
+                module_path: Some("mod".to_string()),
+            })
+            .collect();
+        runtime
+            .insert_logs(&entries)
+            .await
+            .expect("insert test logs");
+
+        let mut tx = runtime.logs_pool.begin().await.expect("begin transaction");
+        prune_global_logs(&mut tx, i64::MAX, /*row_limit*/ 3)
+            .await
+            .expect("prune global logs");
+        tx.commit().await.expect("commit transaction");
+
+        let rows = runtime
+            .query_logs(&LogQuery::default())
+            .await
+            .expect("query logs");
+        let timestamps: Vec<i64> = rows.into_iter().map(|row| row.ts).collect();
+        assert_eq!(timestamps, vec![3, 4, 5]);
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn prune_global_logs_keeps_newest_rows_within_size_limit() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("initialize runtime");
+
+        let entries: Vec<LogEntry> = (1..=5)
+            .map(|ts| LogEntry {
+                ts,
+                ts_nanos: 0,
+                level: "INFO".to_string(),
+                target: "cli".to_string(),
+                message: Some("x".repeat(100)),
+                feedback_log_body: None,
+                thread_id: Some(format!("thread-{ts}")),
+                process_uuid: Some("proc-1".to_string()),
+                file: Some("main.rs".to_string()),
+                line: Some(ts),
+                module_path: Some("mod".to_string()),
+            })
+            .collect();
+        runtime
+            .insert_logs(&entries)
+            .await
+            .expect("insert test logs");
+
+        let mut tx = runtime.logs_pool.begin().await.expect("begin transaction");
+        prune_global_logs(&mut tx, /*size_limit_bytes*/ 250, i64::MAX)
+            .await
+            .expect("prune global logs");
+        tx.commit().await.expect("commit transaction");
+
+        let rows = runtime
+            .query_logs(&LogQuery::default())
+            .await
+            .expect("query logs");
+        let timestamps: Vec<i64> = rows.into_iter().map(|row| row.ts).collect();
+        assert_eq!(timestamps, vec![4, 5]);
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
     async fn query_feedback_logs_returns_newest_lines_within_limit_in_order() {
         let codex_home = unique_temp_dir();
         let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
@@ -1395,56 +1463,6 @@ mod tests {
             ]
             .concat()
         );
-
-        let _ = tokio::fs::remove_dir_all(codex_home).await;
-    }
-
-    #[tokio::test]
-    async fn query_feedback_logs_excludes_oversized_newest_row() {
-        let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
-            .await
-            .expect("initialize runtime");
-        let eleven_mebibytes = "z".repeat(11 * 1024 * 1024);
-
-        runtime
-            .insert_logs(&[
-                LogEntry {
-                    ts: 1,
-                    ts_nanos: 0,
-                    level: "INFO".to_string(),
-                    target: "cli".to_string(),
-                    message: Some("small".to_string()),
-                    feedback_log_body: None,
-                    thread_id: Some("thread-oversized".to_string()),
-                    process_uuid: Some("proc-1".to_string()),
-                    file: None,
-                    line: None,
-                    module_path: None,
-                },
-                LogEntry {
-                    ts: 2,
-                    ts_nanos: 0,
-                    level: "INFO".to_string(),
-                    target: "cli".to_string(),
-                    message: Some(eleven_mebibytes),
-                    feedback_log_body: None,
-                    thread_id: Some("thread-oversized".to_string()),
-                    process_uuid: Some("proc-1".to_string()),
-                    file: None,
-                    line: None,
-                    module_path: None,
-                },
-            ])
-            .await
-            .expect("insert test logs");
-
-        let bytes = runtime
-            .query_feedback_logs("thread-oversized")
-            .await
-            .expect("query feedback logs");
-
-        assert_eq!(bytes, Vec::<u8>::new());
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
@@ -1651,58 +1669,28 @@ mod tests {
         let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("initialize runtime");
-        let thread_marker = "thread-scoped-oldest";
-        let threadless_older_marker = "threadless-older";
-        let threadless_newer_marker = "threadless-newer";
-        let five_mebibytes = format!("{threadless_older_marker} {}", "a".repeat(5 * 1024 * 1024));
-        let four_and_half_mebibytes = format!(
-            "{threadless_newer_marker} {}",
-            "b".repeat((9 * 1024 * 1024) / 2)
-        );
-        let one_mebibyte = format!("{thread_marker} {}", "c".repeat(1024 * 1024));
 
+        let retained_body = "c".repeat(MAX_PERSISTED_LOG_BODY_BYTES);
+        let mut entries: Vec<LogEntry> = (1..=159)
+            .map(|ts| {
+                test_log_entry(
+                    ts,
+                    format!("thread-marker-{ts:03} {retained_body}"),
+                    Some("thread-1"),
+                    Some("proc-1"),
+                )
+            })
+            .collect();
+        entries.extend((160..=190).map(|ts| {
+            test_log_entry(
+                ts,
+                format!("threadless-marker-{ts:03} {retained_body}"),
+                /*thread_id*/ None,
+                Some("proc-1"),
+            )
+        }));
         runtime
-            .insert_logs(&[
-                LogEntry {
-                    ts: 1,
-                    ts_nanos: 0,
-                    level: "INFO".to_string(),
-                    target: "cli".to_string(),
-                    message: Some(one_mebibyte.clone()),
-                    feedback_log_body: None,
-                    thread_id: Some("thread-1".to_string()),
-                    process_uuid: Some("proc-1".to_string()),
-                    file: None,
-                    line: None,
-                    module_path: None,
-                },
-                LogEntry {
-                    ts: 2,
-                    ts_nanos: 0,
-                    level: "INFO".to_string(),
-                    target: "cli".to_string(),
-                    message: Some(five_mebibytes),
-                    feedback_log_body: None,
-                    thread_id: None,
-                    process_uuid: Some("proc-1".to_string()),
-                    file: None,
-                    line: None,
-                    module_path: None,
-                },
-                LogEntry {
-                    ts: 3,
-                    ts_nanos: 0,
-                    level: "INFO".to_string(),
-                    target: "cli".to_string(),
-                    message: Some(four_and_half_mebibytes),
-                    feedback_log_body: None,
-                    thread_id: None,
-                    process_uuid: Some("proc-1".to_string()),
-                    file: None,
-                    line: None,
-                    module_path: None,
-                },
-            ])
+            .insert_logs(&entries)
             .await
             .expect("insert test logs");
 
@@ -1712,10 +1700,11 @@ mod tests {
             .expect("query feedback logs");
         let logs = String::from_utf8(bytes).expect("valid utf-8");
 
-        assert!(!logs.contains(thread_marker));
-        assert!(logs.contains(threadless_older_marker));
-        assert!(logs.contains(threadless_newer_marker));
-        assert_eq!(logs.matches('\n').count(), 2);
+        assert!(!logs.contains("thread-marker-001 "));
+        assert!(logs.contains("thread-marker-159 "));
+        assert!(logs.contains("threadless-marker-160 "));
+        assert!(logs.contains("threadless-marker-190 "));
+        assert!(logs.matches('\n').count() < entries.len());
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }

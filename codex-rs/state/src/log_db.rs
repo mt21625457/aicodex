@@ -45,6 +45,7 @@ use uuid::Uuid;
 
 use crate::LogEntry;
 use crate::StateRuntime;
+use crate::model::truncate_persisted_log_body;
 
 const LOG_QUEUE_CAPACITY: usize = 512;
 const LOG_BATCH_SIZE: usize = 128;
@@ -216,7 +217,8 @@ where
             .thread_id
             .clone()
             .or_else(|| event_thread_id(event, &ctx));
-        let feedback_log_body = format_feedback_log_body(event, &ctx);
+        let message = visitor.message.map(truncate_persisted_log_body);
+        let feedback_log_body = truncate_persisted_log_body(format_feedback_log_body(event, &ctx));
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -226,7 +228,7 @@ where
             ts_nanos: now.subsec_nanos() as i64,
             level: metadata.level().as_str().to_string(),
             target: metadata.target().to_string(),
-            message: visitor.message,
+            message,
             feedback_log_body: Some(feedback_log_body),
             thread_id,
             process_uuid: Some(self.process_uuid.clone()),
@@ -488,6 +490,8 @@ mod tests {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
 
+    use crate::model::MAX_PERSISTED_LOG_BODY_BYTES;
+
     use super::*;
 
     fn temp_codex_home() -> std::path::PathBuf {
@@ -527,6 +531,23 @@ mod tests {
             file: Some("file.rs".to_string()),
             line: Some(7),
         }
+    }
+
+    #[test]
+    fn persisted_log_body_truncation_preserves_utf8_boundary() {
+        let original = format!(
+            "{}tail",
+            "\u{1f600}".repeat(MAX_PERSISTED_LOG_BODY_BYTES / 2)
+        );
+
+        let truncated = truncate_persisted_log_body(original.clone());
+
+        assert!(truncated.len() <= MAX_PERSISTED_LOG_BODY_BYTES);
+        assert!(truncated.ends_with(&format!(
+            "... [truncated, original_bytes={}]",
+            original.len()
+        )));
+        assert!(!truncated.contains("tail"));
     }
 
     #[derive(Clone, Default)]
@@ -623,6 +644,47 @@ mod tests {
             without_timestamps(&sqlite_logs),
             without_timestamps(&feedback_logs)
         );
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn sqlite_sink_truncates_large_feedback_log_body() {
+        let codex_home = temp_codex_home();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("initialize runtime");
+        let layer = start(runtime.clone());
+        let long_message = format!(
+            "{}secret-tail",
+            "x".repeat(MAX_PERSISTED_LOG_BODY_BYTES * 2)
+        );
+
+        let guard = tracing_subscriber::registry()
+            .with(
+                layer
+                    .clone()
+                    .with_filter(Targets::new().with_default(tracing::Level::TRACE)),
+            )
+            .set_default();
+
+        tracing::info!("{long_message}");
+
+        layer.flush().await;
+        drop(guard);
+
+        let logs = runtime
+            .query_logs(&crate::LogQuery::default())
+            .await
+            .expect("query logs after flush");
+        assert_eq!(logs.len(), 1);
+        let persisted = logs[0].message.as_deref().expect("persisted log body");
+        assert!(persisted.len() <= MAX_PERSISTED_LOG_BODY_BYTES);
+        assert!(persisted.ends_with(&format!(
+            "... [truncated, original_bytes={}]",
+            long_message.len()
+        )));
+        assert!(!persisted.contains("secret-tail"));
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }

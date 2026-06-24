@@ -14,6 +14,8 @@ use tracing::Level;
 use tracing::enabled;
 use tracing::trace;
 
+const TRACE_BODY_PREVIEW_BYTES: usize = 2 * 1024;
+
 pub type ByteStream = BoxStream<'static, Result<Bytes, TransportError>>;
 
 pub struct StreamResponse {
@@ -84,12 +86,35 @@ impl ReqwestTransport {
 
 fn request_body_for_trace(req: &Request) -> String {
     match req.body.as_ref() {
-        Some(RequestBody::Json(body)) => body.to_string(),
+        Some(RequestBody::Json(body)) => bounded_body_trace("json", body.to_string().as_bytes()),
         Some(RequestBody::EncodedJson(body)) => {
-            String::from_utf8_lossy(body.trace_bytes()).into_owned()
+            bounded_body_trace("encoded_json", body.trace_bytes())
         }
-        Some(RequestBody::Raw(body)) => format!("<raw body: {} bytes>", body.len()),
-        None => String::new(),
+        Some(RequestBody::Raw(body)) => bounded_body_trace("raw", body),
+        None => bounded_body_trace("none", &[]),
+    }
+}
+
+fn bounded_body_trace(body_kind: &str, bytes: &[u8]) -> String {
+    let preview_bytes = trace_preview_bytes(bytes);
+    let preview = String::from_utf8_lossy(&bytes[..preview_bytes]);
+    let truncated = bytes.len() > preview_bytes;
+    let original_bytes = bytes.len();
+    format!(
+        "body_kind={body_kind} original_bytes={original_bytes} preview_bytes={preview_bytes} truncated={truncated} preview={preview:?}"
+    )
+}
+
+fn trace_preview_bytes(bytes: &[u8]) -> usize {
+    if bytes.len() <= TRACE_BODY_PREVIEW_BYTES {
+        return bytes.len();
+    }
+
+    let preview_bytes = TRACE_BODY_PREVIEW_BYTES;
+    match std::str::from_utf8(&bytes[..preview_bytes]) {
+        Ok(_) => preview_bytes,
+        Err(err) if err.error_len().is_none() => err.valid_up_to(),
+        Err(_) => preview_bytes,
     }
 }
 
@@ -160,3 +185,7 @@ impl HttpTransport for ReqwestTransport {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "transport_tests.rs"]
+mod tests;

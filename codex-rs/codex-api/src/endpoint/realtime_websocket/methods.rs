@@ -48,6 +48,29 @@ use url::Url;
 
 const REALTIME_WIRE_LOG_TARGET: &str = "codex_api::realtime_websocket::wire";
 
+#[derive(Debug, PartialEq, Eq)]
+struct RealtimeRequestTraceSummary {
+    request_type: &'static str,
+    payload_bytes: usize,
+}
+
+fn realtime_request_trace_summary(
+    message: &RealtimeOutboundMessage,
+    payload_bytes: usize,
+) -> RealtimeRequestTraceSummary {
+    let request_type = match message {
+        RealtimeOutboundMessage::InputAudioBufferAppend { .. } => "input_audio_buffer.append",
+        RealtimeOutboundMessage::ConversationHandoffAppend { .. } => "conversation.handoff.append",
+        RealtimeOutboundMessage::ResponseCreate => "response.create",
+        RealtimeOutboundMessage::SessionUpdate { .. } => "session.update",
+        RealtimeOutboundMessage::ConversationItemCreate { .. } => "conversation.item.create",
+    };
+    RealtimeRequestTraceSummary {
+        request_type,
+        payload_bytes,
+    }
+}
+
 struct WsStream {
     tx_command: mpsc::Sender<WsCommand>,
     pump_task: tokio::task::JoinHandle<()>,
@@ -370,7 +393,12 @@ impl RealtimeWebsocketWriter {
     async fn send_json(&self, message: &RealtimeOutboundMessage) -> Result<(), ApiError> {
         let payload = serde_json::to_string(message)
             .map_err(|err| ApiError::Stream(format!("failed to encode realtime request: {err}")))?;
-        debug!(?message, "realtime websocket request");
+        let trace_summary = realtime_request_trace_summary(message, payload.len());
+        debug!(
+            request_type = trace_summary.request_type,
+            payload_bytes = trace_summary.payload_bytes,
+            "realtime websocket request"
+        );
         self.send_payload(payload).await
     }
 
@@ -381,7 +409,11 @@ impl RealtimeWebsocketWriter {
             ));
         }
 
-        trace!(target: REALTIME_WIRE_LOG_TARGET, "realtime websocket request: {payload}");
+        trace!(
+            target: REALTIME_WIRE_LOG_TARGET,
+            payload_bytes = payload.len(),
+            "realtime websocket request"
+        );
         self.stream
             .send(Message::Text(payload.into()))
             .await
@@ -871,6 +903,27 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio_tungstenite::accept_async;
     use tokio_tungstenite::tungstenite::Message;
+
+    #[test]
+    fn realtime_request_trace_summary_omits_payload_content() {
+        let secret_audio = format!("{}secret-audio", "a".repeat(4096));
+        let message = RealtimeOutboundMessage::InputAudioBufferAppend {
+            audio: secret_audio.clone(),
+        };
+        let payload = serde_json::to_string(&message).expect("serialize realtime message");
+        assert!(payload.contains(&secret_audio));
+
+        let summary = realtime_request_trace_summary(&message, payload.len());
+
+        assert_eq!(
+            summary,
+            RealtimeRequestTraceSummary {
+                request_type: "input_audio_buffer.append",
+                payload_bytes: payload.len(),
+            }
+        );
+        assert!(!format!("{summary:?}").contains(&secret_audio));
+    }
 
     #[test]
     fn parse_session_updated_event() {

@@ -226,6 +226,19 @@ impl ResponsesWebsocketConnection {
         let server_model = self.server_model.clone();
         let telemetry = self.telemetry.clone();
         let request_text = serialize_websocket_request(&request)?;
+        let trace_summary = websocket_request_trace_summary(&request, request_text.len());
+        trace!(
+            request_type = trace_summary.request_type,
+            model = trace_summary.model,
+            request_bytes = trace_summary.request_bytes,
+            input_count = trace_summary.input_count,
+            tools_count = trace_summary.tools_count,
+            include_count = trace_summary.include_count,
+            has_previous_response_id = trace_summary.has_previous_response_id,
+            store = trace_summary.store,
+            stream = trace_summary.stream,
+            "websocket request"
+        );
 
         let current_span = Span::current();
         tokio::spawn(
@@ -771,8 +784,6 @@ async fn send_websocket_request(
     telemetry: Option<&Arc<dyn WebsocketTelemetry>>,
     connection_reused: bool,
 ) -> Result<(), ApiError> {
-    trace!("websocket request: {request_text}");
-
     let request_start = Instant::now();
     let result = tokio::time::timeout(
         idle_timeout,
@@ -800,6 +811,38 @@ async fn send_websocket_request(
 fn serialize_websocket_request(request: &ResponsesWsRequest) -> Result<String, ApiError> {
     serde_json::to_string(request)
         .map_err(|err| ApiError::Stream(format!("failed to encode websocket request: {err}")))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct WebsocketRequestTraceSummary<'a> {
+    request_type: &'static str,
+    model: &'a str,
+    request_bytes: usize,
+    input_count: usize,
+    tools_count: usize,
+    include_count: usize,
+    has_previous_response_id: bool,
+    store: bool,
+    stream: bool,
+}
+
+fn websocket_request_trace_summary(
+    request: &ResponsesWsRequest,
+    request_bytes: usize,
+) -> WebsocketRequestTraceSummary<'_> {
+    match request {
+        ResponsesWsRequest::ResponseCreate(request) => WebsocketRequestTraceSummary {
+            request_type: "response.create",
+            model: &request.model,
+            request_bytes,
+            input_count: request.input.len(),
+            tools_count: request.tools.len(),
+            include_count: request.include.len(),
+            has_previous_response_id: request.previous_response_id.is_some(),
+            store: request.store,
+            stream: request.stream,
+        },
+    }
 }
 
 #[cfg(test)]
@@ -861,6 +904,70 @@ mod tests {
     fn websocket_config_enables_permessage_deflate() {
         let config = websocket_config();
         assert!(config.extensions.permessage_deflate.is_some());
+    }
+
+    #[test]
+    fn websocket_request_trace_summary_omits_payload_content() {
+        let secret_input = format!("{}secret-input", "a".repeat(4096));
+        let secret_tool_description = "secret tool description must not be logged";
+        let request = ResponsesWsRequest::ResponseCreate(ResponseCreateWsRequest {
+            model: "gpt-test".to_string(),
+            instructions: "Use the available tools.".to_string(),
+            previous_response_id: Some("resp-1".to_string()),
+            input: vec![ResponseItem::Message {
+                id: Some("msg-1".to_string()),
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: secret_input.clone(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            }],
+            tools: vec![json!({
+                "type": "function",
+                "name": "lookup",
+                "description": secret_tool_description,
+                "parameters": {"type": "object"}
+            })],
+            tool_choice: "auto".to_string(),
+            parallel_tool_calls: true,
+            reasoning: None,
+            store: false,
+            stream: true,
+            include: vec![
+                "reasoning.encrypted_content".to_string(),
+                "file_search_call.results".to_string(),
+            ],
+            service_tier: Some("priority".to_string()),
+            prompt_cache_key: Some("cache-key".to_string()),
+            text: None,
+            generate: Some(false),
+            client_metadata: None,
+        });
+        let request_text =
+            serialize_websocket_request(&request).expect("serialize websocket request");
+        assert!(request_text.contains(&secret_input));
+        assert!(request_text.contains(secret_tool_description));
+
+        let summary = websocket_request_trace_summary(&request, request_text.len());
+
+        assert_eq!(
+            summary,
+            WebsocketRequestTraceSummary {
+                request_type: "response.create",
+                model: "gpt-test",
+                request_bytes: request_text.len(),
+                input_count: 1,
+                tools_count: 1,
+                include_count: 2,
+                has_previous_response_id: true,
+                store: false,
+                stream: true,
+            }
+        );
+        let rendered_summary = format!("{summary:?}");
+        assert!(!rendered_summary.contains(&secret_input));
+        assert!(!rendered_summary.contains(secret_tool_description));
     }
 
     #[test]
