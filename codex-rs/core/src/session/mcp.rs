@@ -370,13 +370,15 @@ impl Session {
             elicitation_reviewer,
         )
         .await;
-        {
-            let current_manager = self.services.mcp_connection_manager.load_full();
-            refreshed_manager.set_elicitations_auto_deny(current_manager.elicitations_auto_deny());
-        }
-        self.services
+        let elicitations_auto_deny = self
+            .services
             .mcp_connection_manager
-            .store(Arc::new(refreshed_manager));
+            .load_full()
+            .elicitations_auto_deny();
+        refreshed_manager.set_elicitations_auto_deny(elicitations_auto_deny);
+        self.services
+            .replace_mcp_connection_manager(refreshed_manager, "refresh")
+            .await;
     }
 
     pub(crate) async fn refresh_mcp_servers_if_requested(

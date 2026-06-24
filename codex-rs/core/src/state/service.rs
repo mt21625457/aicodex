@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 use crate::SkillsService;
 use crate::agent::AgentControl;
@@ -39,7 +40,11 @@ use codex_thread_store::ThreadStore;
 use std::path::PathBuf;
 use tokio::runtime::Handle;
 use tokio::sync::Mutex;
+use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
+use tracing::warn;
+
+const MCP_MANAGER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) struct SessionServices {
     /// The latest manager; callers retain an owned handle while performing MCP I/O.
@@ -89,16 +94,50 @@ pub(crate) struct SessionServices {
 }
 
 impl SessionServices {
+    pub(crate) async fn replace_mcp_connection_manager(
+        &self,
+        manager: McpConnectionManager,
+        reason: &'static str,
+    ) -> Arc<McpConnectionManager> {
+        let manager = Arc::new(manager);
+        let previous_manager = self.mcp_connection_manager.swap(Arc::clone(&manager));
+        shutdown_replaced_mcp_connection_manager(previous_manager, reason).await;
+        manager
+    }
+
     /// Installs the manager before validating required servers so startup-time elicitation can
     /// resolve through the session's manager while validation waits.
     pub(crate) async fn install_mcp_connection_manager(
         &self,
         manager: McpConnectionManager,
     ) -> Result<()> {
-        self.mcp_connection_manager.store(Arc::new(manager));
-        self.mcp_connection_manager
-            .load_full()
-            .validate_required_servers()
-            .await
+        let manager = self
+            .replace_mcp_connection_manager(manager, "session_start")
+            .await;
+        let validation = manager.validate_required_servers().await;
+        if validation.is_err() {
+            shutdown_replaced_mcp_connection_manager(manager, "required_server_validation").await;
+        }
+        validation
+    }
+}
+
+async fn shutdown_replaced_mcp_connection_manager(
+    manager: Arc<McpConnectionManager>,
+    reason: &'static str,
+) {
+    if !manager.has_servers() {
+        return;
+    }
+
+    if timeout(MCP_MANAGER_SHUTDOWN_TIMEOUT, manager.shutdown())
+        .await
+        .is_err()
+    {
+        warn!(
+            reason,
+            timeout_seconds = MCP_MANAGER_SHUTDOWN_TIMEOUT.as_secs(),
+            "timed out shutting down replaced MCP connection manager"
+        );
     }
 }

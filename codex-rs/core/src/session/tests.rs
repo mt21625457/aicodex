@@ -148,12 +148,20 @@ use core_test_support::PathExt;
 use core_test_support::context_snapshot;
 use core_test_support::context_snapshot::ContextSnapshotOptions;
 use core_test_support::context_snapshot::ContextSnapshotRenderMode;
+#[cfg(unix)]
+use core_test_support::process::process_is_alive;
+#[cfg(unix)]
+use core_test_support::process::wait_for_pid_file;
+#[cfg(unix)]
+use core_test_support::process::wait_for_process_exit;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::responses::strip_metadata_from_items;
+#[cfg(unix)]
+use core_test_support::stdio_server_bin;
 use core_test_support::test_codex::local;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_path_buf;
@@ -7459,6 +7467,71 @@ async fn refresh_mcp_servers_is_deferred_until_next_turn() {
     );
     let new_token = session.mcp_startup_cancellation_token().await;
     assert!(!new_token.is_cancelled());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn refresh_mcp_servers_shuts_down_replaced_stdio_server_process() -> anyhow::Result<()> {
+    let (session, turn_context) = make_session_and_context().await;
+    let rmcp_test_server_bin = stdio_server_bin()?;
+    let temp_dir = tempfile::tempdir()?;
+    let pid_file = temp_dir.path().join("mcp-server.pid");
+
+    let server_config = codex_config::types::McpServerConfig {
+        transport: codex_config::types::McpServerTransportConfig::Stdio {
+            command: rmcp_test_server_bin,
+            args: Vec::new(),
+            env: Some(HashMap::from([(
+                "MCP_TEST_PID_FILE".to_string(),
+                pid_file.to_string_lossy().into_owned(),
+            )])),
+            env_vars: Vec::new(),
+            cwd: None,
+        },
+        environment_id: "local".to_string(),
+        enabled: true,
+        required: false,
+        supports_parallel_tool_calls: false,
+        disabled_reason: None,
+        startup_timeout_sec: Some(Duration::from_secs(10)),
+        tool_timeout_sec: None,
+        default_tools_approval_mode: None,
+        enabled_tools: None,
+        disabled_tools: None,
+        scopes: None,
+        oauth: None,
+        oauth_resource: None,
+        tools: HashMap::new(),
+    };
+
+    session
+        .refresh_mcp_servers_now(
+            &turn_context,
+            HashMap::from([("leaky_stdio".to_string(), server_config)]),
+            OAuthCredentialsStoreMode::Auto,
+            AuthKeyringBackendKind::Secrets,
+            /*elicitation_reviewer*/ None,
+        )
+        .await;
+
+    let server_pid = wait_for_pid_file(&pid_file).await?;
+    assert!(
+        process_is_alive(&server_pid)?,
+        "expected MCP server process {server_pid} to be running before refresh"
+    );
+
+    session
+        .refresh_mcp_servers_now(
+            &turn_context,
+            HashMap::new(),
+            OAuthCredentialsStoreMode::Auto,
+            AuthKeyringBackendKind::Secrets,
+            /*elicitation_reviewer*/ None,
+        )
+        .await;
+
+    wait_for_process_exit(&server_pid).await?;
+    Ok(())
 }
 
 #[tokio::test]
