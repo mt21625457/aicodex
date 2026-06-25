@@ -3783,6 +3783,114 @@ async fn snapshot_request_shape_mid_turn_continuation_compaction() {
     );
 }
 
+#[test]
+fn pre_sampling_admission_compacts_after_tool_output_estimate_crosses_limit() -> Result<()> {
+    let handle = std::thread::Builder::new()
+        .name(
+            "pre_sampling_admission_compacts_after_tool_output_estimate_crosses_limit".to_string(),
+        )
+        .stack_size(/*size*/ 8 * 1024 * 1024)
+        .spawn(|| -> Result<()> {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_stack_size(8 * 1024 * 1024)
+                .enable_all()
+                .build()?;
+            runtime.block_on(Box::pin(
+                pre_sampling_admission_compacts_after_tool_output_estimate_crosses_limit_inner(),
+            ));
+            Ok(())
+        })?;
+
+    match handle.join() {
+        Ok(result) => result,
+        Err(_) => Err(anyhow!(
+            "pre_sampling_admission_compacts_after_tool_output_estimate_crosses_limit thread panicked"
+        )),
+    }
+}
+
+async fn pre_sampling_admission_compacts_after_tool_output_estimate_crosses_limit_inner() {
+    skip_if_no_network!();
+
+    let server = start_mock_server().await;
+    let call_id = "call-admission-compact";
+    let large_tool_name = format!("unsupported_{}", "tool_payload_".repeat(120));
+
+    let first_turn = sse(vec![
+        ev_function_call(call_id, &large_tool_name, "{}"),
+        ev_completed_with_tokens("r1", /*total_tokens*/ 60),
+    ]);
+    let auto_compact_turn = sse(vec![
+        ev_assistant_message("m2", "ADMISSION_SUMMARY"),
+        ev_completed_with_tokens("r2", /*total_tokens*/ 100),
+    ]);
+    let post_auto_compact_turn = sse(vec![
+        ev_assistant_message("m3", FINAL_REPLY),
+        ev_completed_with_tokens("r3", /*total_tokens*/ 100),
+    ]);
+    let request_log = mount_sse_sequence(
+        &server,
+        vec![first_turn, auto_compact_turn, post_auto_compact_turn],
+    )
+    .await;
+
+    let model_provider = non_openai_model_provider(&server);
+    let codex = test_codex()
+        .with_config(move |config| {
+            config.model_provider = model_provider;
+            set_test_compact_prompt(config);
+            config.model_auto_compact_token_limit = Some(9_500);
+            config.model_auto_compact_token_limit_scope =
+                AutoCompactTokenLimitScope::BodyAfterPrefix;
+        })
+        .build(&server)
+        .await
+        .expect("build codex")
+        .codex;
+
+    Box::pin(codex.submit(Op::UserInput {
+        items: vec![UserInput::Text {
+            text: "trigger a large unsupported tool call".to_string(),
+            text_elements: Vec::new(),
+        }],
+        final_output_json_schema: None,
+        responsesapi_client_metadata: None,
+        additional_context: Default::default(),
+        thread_settings: Default::default(),
+    }))
+    .await
+    .expect("submit user input");
+    wait_for_event(&codex, |msg| matches!(msg, EventMsg::TurnComplete(_))).await;
+
+    let requests = request_log.requests();
+    assert_eq!(
+        requests.len(),
+        3,
+        "expected initial request, admission compact, and post-compact continuation"
+    );
+    let compact_request = &requests[1];
+    let compact_body = compact_request.body_json().to_string();
+    assert!(
+        body_contains_text(&compact_body, SUMMARIZATION_PROMPT),
+        "second request should compact before sampling after local estimate crosses the limit"
+    );
+    let function_call_output = compact_request.function_call_output(call_id);
+    let output_text = function_call_output
+        .get("output")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    assert!(
+        output_text.contains(&large_tool_name),
+        "admission compact should include the large tool output that pushed the estimate over the limit"
+    );
+    let continuation_body = requests[2].body_json().to_string();
+    assert!(
+        body_contains_text(&continuation_body, "ADMISSION_SUMMARY"),
+        "post-compact continuation should carry the admission summary"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn auto_compaction_feature_disabled_skips_mid_turn_compaction() {
     skip_if_no_network!();

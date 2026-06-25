@@ -129,6 +129,7 @@ use tracing::trace_span;
 use tracing::warn;
 
 const MAX_CLAUDE_PAUSE_TURN_CONTINUATIONS: usize = 3;
+const MAX_PRE_SAMPLING_ADMISSION_COMPACTIONS_PER_TURN: usize = 3;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum EmptyInputTurnPolicy {
@@ -245,7 +246,7 @@ pub(crate) async fn run_turn(
     let mut can_drain_pending_input = input.is_empty();
     let mut pending_input_deferred_for_model_follow_up = false;
     let mut claude_pause_turn_continuations = 0usize;
-    let mut pre_sampling_admission_compact_attempted = false;
+    let mut pre_sampling_admission_compactions = 0usize;
     let mut context_window_recovery_attempted = false;
 
     loop {
@@ -262,23 +263,39 @@ pub(crate) async fn run_turn(
             break;
         }
 
-        if turn_context.provider.info().wire_api == WireApi::Claude
-            && !pre_sampling_admission_compact_attempted
-            && let Err(err) =
-                run_pre_sampling_admission_compact(&sess, &turn_context, &mut client_session).await
-        {
-            if matches!(err, CodexErr::TurnAborted) {
-                return Err(err);
+        if pre_sampling_admission_compactions < MAX_PRE_SAMPLING_ADMISSION_COMPACTIONS_PER_TURN {
+            match Box::pin(run_pre_sampling_admission_compact(
+                &sess,
+                &turn_context,
+                &mut client_session,
+            ))
+            .await
+            {
+                Ok(true) => {
+                    pre_sampling_admission_compactions += 1;
+                    continue;
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    if matches!(err, CodexErr::TurnAborted) {
+                        return Err(err);
+                    }
+                    let error = err.to_codex_protocol_error();
+                    if error == CodexErrorInfo::UsageLimitExceeded {
+                        sess.emit_turn_error_lifecycle(turn_context.as_ref(), error)
+                            .await;
+                    }
+                    error!("Failed to run pre-sampling admission compact");
+                    return Ok(None);
+                }
             }
-            let error = err.to_codex_protocol_error();
-            if error == CodexErrorInfo::UsageLimitExceeded {
-                sess.emit_turn_error_lifecycle(turn_context.as_ref(), error)
-                    .await;
-            }
-            error!("Failed to run pre-sampling admission compact");
-            return Ok(None);
+        } else {
+            warn!(
+                turn_id = %turn_context.sub_id,
+                max_compactions = MAX_PRE_SAMPLING_ADMISSION_COMPACTIONS_PER_TURN,
+                "Skipping pre-sampling admission compact after repeated compactions in one turn"
+            );
         }
-        pre_sampling_admission_compact_attempted = true;
 
         let window_id = sess.current_window_id().await;
         super::rollout_budget::maybe_record_reminder(
@@ -1092,7 +1109,15 @@ async fn run_pre_sampling_admission_compact(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
     client_session: &mut ModelClientSession,
-) -> CodexResult<()> {
+) -> CodexResult<bool> {
+    if !turn_context
+        .config
+        .features
+        .enabled(Feature::AutoCompaction)
+    {
+        return Ok(false);
+    }
+
     let admission_status =
         pre_sampling_admission_status(sess.as_ref(), turn_context.as_ref()).await;
 
@@ -1111,7 +1136,6 @@ async fn run_pre_sampling_admission_compact(
         token_limit_reached = admission_status.token_limit_reached,
         "pre sampling context admission"
     );
-
     if admission_status.token_limit_reached {
         run_auto_compact(
             sess,
@@ -1122,8 +1146,9 @@ async fn run_pre_sampling_admission_compact(
             CompactionPhase::PreTurn,
         )
         .await?;
+        return Ok(true);
     }
-    Ok(())
+    Ok(false)
 }
 
 /// Returns true only when both turns declare compaction compatibility hashes and they differ.
