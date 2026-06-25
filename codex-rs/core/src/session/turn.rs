@@ -1373,7 +1373,8 @@ async fn update_claude_token_usage_after_completion(
         .await
         .for_prompt(&turn_context.model_info.input_modalities);
     let context_prompt = prompt_for_current_context(context_input, prompt);
-    let fallback_description = if provider_compat == crate::claude::ClaudeProviderCompat::DeepSeek {
+    let is_compatible_claude = provider_compat == crate::claude::ClaudeProviderCompat::Compatible;
+    let fallback_description = if is_compatible_claude {
         "streamed usage or local estimate"
     } else {
         "local estimate"
@@ -1412,13 +1413,13 @@ async fn update_claude_token_usage_after_completion(
         }
     };
     if counted_tokens.is_none()
-        && provider_compat == crate::claude::ClaudeProviderCompat::DeepSeek
+        && is_compatible_claude
         && let Some(tokens) = streamed_token_usage
             .map(|usage| usage.total_tokens)
             .filter(|tokens| *tokens > 0)
     {
         counted_tokens = Some(tokens);
-        context_source = Some(ContextTokenUsageSource::DeepseekStreamUsage);
+        context_source = Some(ContextTokenUsageSource::ProviderUsage);
     }
     if counted_tokens.is_none() {
         counted_tokens = sess.get_estimated_context_token_count().await;
