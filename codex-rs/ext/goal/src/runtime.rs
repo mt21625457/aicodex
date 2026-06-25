@@ -34,6 +34,10 @@ pub(crate) struct GoalRuntimeConfig {
 pub(crate) enum ActiveGoalStopReason {
     TurnError,
     UsageLimit,
+    /// Infrastructure / transient errors that should not change the goal
+    /// status. The turn's token and time usage are still accounted, but the
+    /// goal remains Active so automatic continuation can retry.
+    TransientError,
 }
 
 struct GoalRuntimeInner {
@@ -267,6 +271,17 @@ impl GoalRuntimeHandle {
             }
             ActiveGoalStopReason::UsageLimit => {
                 ("usage-limit", codex_state::ThreadGoalStatus::UsageLimited)
+            }
+            ActiveGoalStopReason::TransientError => {
+                self.account_active_goal_progress(
+                    turn_id,
+                    &format!("{turn_id}:transient-error-progress"),
+                    codex_state::GoalAccountingMode::ActiveOnly,
+                    BudgetLimitedGoalDisposition::ClearActive,
+                )
+                .await?;
+                self.inner.accounting_state.clear_active_goal();
+                return Ok(());
             }
         };
         self.account_active_goal_progress(

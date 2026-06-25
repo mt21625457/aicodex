@@ -304,10 +304,21 @@ where
 
             let reason = match input.error {
                 CodexErrorInfo::UsageLimitExceeded => ActiveGoalStopReason::UsageLimit,
-                // The turn has ended because the error was non-retryable or its
-                // retries were exhausted. Block the goal to prevent automatic
-                // continuation from looping and consuming tokens, as can happen
-                // with compaction errors.
+                // Infrastructure and transient errors: account usage but keep
+                // the goal Active so automatic continuation can retry. Do not
+                // burn a "blocked" slot on transient failures such as context
+                // overflow, network blips, or server overload.
+                CodexErrorInfo::ContextWindowExceeded
+                | CodexErrorInfo::ServerOverloaded
+                | CodexErrorInfo::HttpConnectionFailed { .. }
+                | CodexErrorInfo::ResponseStreamConnectionFailed { .. }
+                | CodexErrorInfo::InternalServerError
+                | CodexErrorInfo::ResponseStreamDisconnected { .. }
+                | CodexErrorInfo::ResponseTooManyFailedAttempts { .. } => {
+                    ActiveGoalStopReason::TransientError
+                }
+                // Genuine blockers: errors that indicate the agent cannot make
+                // progress without user intervention or a configuration change.
                 _ => ActiveGoalStopReason::TurnError,
             };
             if let Err(err) = runtime
