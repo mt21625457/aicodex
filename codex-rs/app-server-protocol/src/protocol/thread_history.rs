@@ -428,29 +428,67 @@ impl ThreadHistoryBuilder {
     }
 
     fn handle_response_item(&mut self, item: &codex_protocol::models::ResponseItem) {
-        let codex_protocol::models::ResponseItem::Message {
-            role, content, id, ..
-        } = item
-        else {
-            return;
-        };
+        match item {
+            codex_protocol::models::ResponseItem::Message {
+                role, content, id, ..
+            } => {
+                if role != "user" {
+                    return;
+                }
 
-        if role != "user" {
-            return;
+                let Some(hook_prompt) = parse_hook_prompt_message(id.as_ref(), content) else {
+                    return;
+                };
+
+                self.push_item_in_current_turn(ThreadItem::HookPrompt {
+                    id: hook_prompt.id,
+                    fragments: hook_prompt
+                        .fragments
+                        .into_iter()
+                        .map(crate::protocol::v2::HookPromptFragment::from)
+                        .collect(),
+                });
+            }
+            codex_protocol::models::ResponseItem::Reasoning {
+                id,
+                summary,
+                content,
+                ..
+            } => {
+                let summary = summary
+                    .iter()
+                    .map(|entry| match entry {
+                        codex_protocol::models::ReasoningItemReasoningSummary::SummaryText {
+                            text,
+                        } => text.clone(),
+                    })
+                    .filter(|text| !text.is_empty())
+                    .collect::<Vec<_>>();
+                let content = content
+                    .as_ref()
+                    .into_iter()
+                    .flatten()
+                    .map(|entry| match entry {
+                        codex_protocol::models::ReasoningItemContent::ReasoningText { text }
+                        | codex_protocol::models::ReasoningItemContent::Text { text } => {
+                            text.clone()
+                        }
+                    })
+                    .filter(|text| !text.is_empty())
+                    .collect::<Vec<_>>();
+                if summary.is_empty() && content.is_empty() {
+                    return;
+                }
+
+                let id = id.clone().unwrap_or_else(|| self.next_item_id());
+                self.upsert_reasoning_item_in_current_turn(ThreadItem::Reasoning {
+                    id,
+                    summary,
+                    content,
+                });
+            }
+            _ => {}
         }
-
-        let Some(hook_prompt) = parse_hook_prompt_message(id.as_ref(), content) else {
-            return;
-        };
-
-        self.push_item_in_current_turn(ThreadItem::HookPrompt {
-            id: hook_prompt.id,
-            fragments: hook_prompt
-                .fragments
-                .into_iter()
-                .map(crate::protocol::v2::HookPromptFragment::from)
-                .collect(),
-        });
     }
 
     fn handle_user_message(&mut self, payload: &UserMessageEvent) {
@@ -1386,6 +1424,52 @@ impl ThreadHistoryBuilder {
         }
     }
 
+    fn upsert_reasoning_item_in_current_turn(&mut self, item: ThreadItem) {
+        let ThreadItem::Reasoning {
+            id,
+            summary,
+            content,
+        } = item
+        else {
+            self.upsert_item_in_current_turn(item);
+            return;
+        };
+
+        let tracking_changes = self.is_tracking_changes();
+        let changed_item = {
+            let turn = self.ensure_turn();
+            if let Some(ThreadItem::Reasoning {
+                id: existing_id,
+                summary: existing_summary,
+                content: existing_content,
+            }) = turn.items.last_mut()
+                && (existing_id == &id
+                    || reasoning_texts_equivalent(existing_content, &content)
+                    || reasoning_texts_equivalent(existing_summary, &summary))
+            {
+                merge_reasoning_texts(existing_summary, summary);
+                merge_reasoning_texts(existing_content, content);
+                tracking_changes.then(|| {
+                    turn.items
+                        .last()
+                        .cloned()
+                        .map(|item| (turn.id.clone(), item))
+                })
+            } else {
+                let item = ThreadItem::Reasoning {
+                    id,
+                    summary,
+                    content,
+                };
+                let item = upsert_turn_item(&mut turn.items, item);
+                Some(tracking_changes.then(|| (turn.id.clone(), item.clone())))
+            }
+        };
+        if let Some(Some((turn_id, item))) = changed_item {
+            self.record_changed_item(turn_id, item);
+        }
+    }
+
     fn is_tracking_changes(&self) -> bool {
         self.active_change_set.is_some()
     }
@@ -1492,6 +1576,24 @@ fn upsert_turn_item(items: &mut Vec<ThreadItem>, item: ThreadItem) -> &ThreadIte
     let inserted_item_index = items.len();
     items.push(item);
     &items[inserted_item_index]
+}
+
+fn reasoning_texts_equivalent(left: &[String], right: &[String]) -> bool {
+    if left.is_empty() || right.is_empty() {
+        return false;
+    }
+    left.concat() == right.concat()
+}
+
+fn merge_reasoning_texts(existing: &mut Vec<String>, incoming: Vec<String>) {
+    if incoming.is_empty() || reasoning_texts_equivalent(existing, &incoming) {
+        return;
+    }
+    for text in incoming {
+        if !text.is_empty() && !existing.iter().any(|entry| entry == &text) {
+            existing.push(text);
+        }
+    }
 }
 
 struct PendingTurn {
@@ -3789,6 +3891,134 @@ mod tests {
         let turns = build_turns_from_rollout_items(&items);
         assert_eq!(turns.len(), 1);
         assert!(turns[0].items.is_empty());
+    }
+
+    #[test]
+    fn restores_reasoning_response_items_in_rollout_replay() {
+        let items = vec![
+            RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-a".into(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            })),
+            RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
+                message: "hello".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+                ..Default::default()
+            })),
+            RolloutItem::ResponseItem(codex_protocol::models::ResponseItem::Reasoning {
+                id: Some("reasoning-1".into()),
+                summary: vec![
+                    codex_protocol::models::ReasoningItemReasoningSummary::SummaryText {
+                        text: "short thought".into(),
+                    },
+                ],
+                content: Some(vec![
+                    codex_protocol::models::ReasoningItemContent::ReasoningText {
+                        text: "full private reasoning".into(),
+                    },
+                ]),
+                encrypted_content: Some("signature".into()),
+                internal_chat_message_metadata_passthrough: None,
+            }),
+            RolloutItem::EventMsg(EventMsg::AgentMessage(AgentMessageEvent {
+                message: "done".into(),
+                phase: None,
+                memory_citation: None,
+            })),
+            RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-a".into(),
+                last_agent_message: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            })),
+        ];
+
+        let turns = build_turns_from_rollout_items(&items);
+
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].items.len(), 3);
+        assert_eq!(
+            turns[0].items[1],
+            ThreadItem::Reasoning {
+                id: "reasoning-1".into(),
+                summary: vec!["short thought".into()],
+                content: vec!["full private reasoning".into()],
+            }
+        );
+    }
+
+    #[test]
+    fn deduplicates_reasoning_response_items_after_raw_reasoning_events() {
+        let items = vec![
+            RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-a".into(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            })),
+            RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
+                message: "hello".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+                ..Default::default()
+            })),
+            RolloutItem::EventMsg(EventMsg::AgentReasoningRawContent(
+                AgentReasoningRawContentEvent {
+                    text: "full ".into(),
+                },
+            )),
+            RolloutItem::EventMsg(EventMsg::AgentReasoningRawContent(
+                AgentReasoningRawContentEvent {
+                    text: "private reasoning".into(),
+                },
+            )),
+            RolloutItem::ResponseItem(codex_protocol::models::ResponseItem::Reasoning {
+                id: Some("reasoning-1".into()),
+                summary: Vec::new(),
+                content: Some(vec![
+                    codex_protocol::models::ReasoningItemContent::ReasoningText {
+                        text: "full private reasoning".into(),
+                    },
+                ]),
+                encrypted_content: Some("signature".into()),
+                internal_chat_message_metadata_passthrough: None,
+            }),
+            RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-a".into(),
+                last_agent_message: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            })),
+        ];
+
+        let turns = build_turns_from_rollout_items(&items);
+
+        assert_eq!(turns.len(), 1);
+        let reasoning_items = turns[0]
+            .items
+            .iter()
+            .filter(|item| matches!(item, ThreadItem::Reasoning { .. }))
+            .collect::<Vec<_>>();
+        assert_eq!(reasoning_items.len(), 1);
+        assert_eq!(
+            reasoning_items[0],
+            &ThreadItem::Reasoning {
+                id: "item-2".into(),
+                summary: Vec::new(),
+                content: vec!["full ".into(), "private reasoning".into()],
+            }
+        );
     }
 
     #[test]
