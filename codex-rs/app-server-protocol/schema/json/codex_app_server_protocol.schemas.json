@@ -6190,6 +6190,16 @@
           "itemId": {
             "type": "string"
           },
+          "phase": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/MessagePhase"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "threadId": {
             "type": "string"
           },

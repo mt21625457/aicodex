@@ -868,6 +868,7 @@ async fn live_app_server_stream_recovery_restores_previous_status_header() {
                 turn_id: "turn-1".to_string(),
                 item_id: "item-1".to_string(),
                 delta: "hello".to_string(),
+                phase: None,
             },
         ),
         /*replay_kind*/ None,

@@ -1222,6 +1222,7 @@ mod tests {
                 turn_id: "turn".to_string(),
                 item_id: "item".to_string(),
                 delta: delta.to_string(),
+                phase: None,
             },
         )
     }
@@ -2195,6 +2196,7 @@ mod tests {
                         turn_id: "turn".to_string(),
                         item_id: "item".to_string(),
                         delta: "hello".to_string(),
+                        phase: None,
                     }
                 )
             )

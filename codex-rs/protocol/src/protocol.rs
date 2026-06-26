@@ -1885,6 +1885,9 @@ pub struct AgentMessageContentDeltaEvent {
     pub turn_id: String,
     pub item_id: String,
     pub delta: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub phase: Option<MessagePhase>,
 }
 
 impl HasLegacyEvent for AgentMessageContentDeltaEvent {

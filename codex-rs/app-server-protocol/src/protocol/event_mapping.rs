@@ -357,13 +357,18 @@ pub fn item_event_to_server_notification(
             })
         }
         EventMsg::AgentMessageContentDelta(event) => {
-            let codex_protocol::protocol::AgentMessageContentDeltaEvent { item_id, delta, .. } =
-                event;
+            let codex_protocol::protocol::AgentMessageContentDeltaEvent {
+                item_id,
+                delta,
+                phase,
+                ..
+            } = event;
             ServerNotification::AgentMessageDelta(AgentMessageDeltaNotification {
                 thread_id,
                 turn_id,
                 item_id,
                 delta,
+                phase,
             })
         }
         EventMsg::PlanDelta(event) => ServerNotification::PlanDelta(PlanDeltaNotification {
@@ -467,6 +472,8 @@ pub fn item_event_to_server_notification(
 mod tests {
     use super::*;
     use codex_protocol::ThreadId;
+    use codex_protocol::models::MessagePhase;
+    use codex_protocol::protocol::AgentMessageContentDeltaEvent;
     use codex_protocol::protocol::CollabResumeBeginEvent;
     use codex_protocol::protocol::CollabResumeEndEvent;
     use codex_protocol::protocol::ExecCommandOutputDeltaEvent;
@@ -502,6 +509,32 @@ mod tests {
                 assert_eq!(payload, expected)
             }
             other => panic!("expected command execution output delta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_message_delta_preserves_phase() {
+        let notification = item_event_to_server_notification(
+            EventMsg::AgentMessageContentDelta(AgentMessageContentDeltaEvent {
+                thread_id: "thread-core".to_string(),
+                turn_id: "turn-core".to_string(),
+                item_id: "assistant-1".to_string(),
+                delta: "thinking aloud".to_string(),
+                phase: Some(MessagePhase::Commentary),
+            }),
+            "thread-1",
+            "turn-1",
+        );
+
+        match notification {
+            ServerNotification::AgentMessageDelta(payload) => {
+                assert_eq!(payload.thread_id, "thread-1");
+                assert_eq!(payload.turn_id, "turn-1");
+                assert_eq!(payload.item_id, "assistant-1");
+                assert_eq!(payload.delta, "thinking aloud");
+                assert_eq!(payload.phase, Some(MessagePhase::Commentary));
+            }
+            other => panic!("expected agent message delta, got {other:?}"),
         }
     }
 

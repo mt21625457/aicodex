@@ -2042,6 +2042,7 @@ async fn handle_plan_segments(
                     turn_id: turn_context.sub_id.clone(),
                     item_id: item_id.to_string(),
                     delta,
+                    phase: Some(MessagePhase::Commentary),
                 };
                 sess.send_event(turn_context, EventMsg::AgentMessageContentDelta(event))
                     .await;
@@ -2096,6 +2097,7 @@ async fn emit_streamed_assistant_text_delta(
         turn_id: turn_context.sub_id.clone(),
         item_id: item_id.to_string(),
         delta: parsed.visible_text,
+        phase: Some(MessagePhase::FinalAnswer),
     };
     sess.send_event(turn_context, EventMsg::AgentMessageContentDelta(event))
         .await;
@@ -2736,6 +2738,7 @@ async fn try_run_sampling_request(
                             turn_id: turn_context.sub_id.clone(),
                             item_id,
                             delta,
+                            phase: Some(MessagePhase::FinalAnswer),
                         };
                         sess.send_event(&turn_context, EventMsg::AgentMessageContentDelta(event))
                             .await;
