@@ -559,7 +559,7 @@ async fn claude_wire_emits_in_flight_estimate_before_final_context_usage() -> an
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn deepseek_count_tokens_success_updates_context_usage() -> anyhow::Result<()> {
+async fn compatible_count_tokens_success_updates_context_usage() -> anyhow::Result<()> {
     let server = start_mock_server().await;
     let responses = mount_claude_sse_sequence(
         &server,
@@ -574,13 +574,13 @@ async fn deepseek_count_tokens_success_updates_context_usage() -> anyhow::Result
     .await;
 
     let test = test_codex()
-        .with_config(configure_deepseek_claude_provider)
+        .with_config(configure_compatible_claude_provider)
         .build(&server)
         .await?;
 
     let token_event = submit_turn_and_wait_for_token_event(
         &test,
-        "count this DeepSeek Claude context",
+        "count this compatible Claude context",
         |event| {
             matches!(
                 event,
@@ -619,7 +619,7 @@ async fn deepseek_count_tokens_success_updates_context_usage() -> anyhow::Result
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn deepseek_count_tokens_error_uses_stream_usage() -> anyhow::Result<()> {
+async fn compatible_count_tokens_error_uses_stream_usage() -> anyhow::Result<()> {
     let server = start_mock_server().await;
     let responses = mount_claude_sse_sequence(
         &server,
@@ -639,13 +639,13 @@ async fn deepseek_count_tokens_error_uses_stream_usage() -> anyhow::Result<()> {
     .await;
 
     let test = test_codex()
-        .with_config(configure_deepseek_claude_provider)
+        .with_config(configure_compatible_claude_provider)
         .build(&server)
         .await?;
 
     let token_event = submit_turn_and_wait_for_token_event(
         &test,
-        "count this DeepSeek Claude context",
+        "count this compatible Claude context",
         |event| {
             matches!(
                 event,
@@ -653,7 +653,7 @@ async fn deepseek_count_tokens_error_uses_stream_usage() -> anyhow::Result<()> {
                     if payload.info.as_ref().is_some_and(|info| {
                         info.context_tokens == Some(345)
                             && info.context_source
-                                == Some(ContextTokenUsageSource::DeepseekStreamUsage)
+                                == Some(ContextTokenUsageSource::ProviderUsage)
                             && info.last_token_usage.total_tokens == 345
                     })
             )
@@ -667,7 +667,7 @@ async fn deepseek_count_tokens_error_uses_stream_usage() -> anyhow::Result<()> {
     assert_eq!(info.context_tokens, Some(345));
     assert_eq!(
         info.context_source,
-        Some(ContextTokenUsageSource::DeepseekStreamUsage)
+        Some(ContextTokenUsageSource::ProviderUsage)
     );
 
     assert_eq!(responses.requests().len(), 1);
@@ -1228,16 +1228,16 @@ async fn claude_wire_stream_close_after_tool_input_does_not_retry() -> anyhow::R
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn deepseek_claude_wire_exposes_apply_patch_for_fallback_model() -> anyhow::Result<()> {
+async fn compatible_claude_wire_exposes_apply_patch_for_fallback_model() -> anyhow::Result<()> {
     let server = start_mock_server().await;
     let responses = mount_claude_sse_sequence(
         &server,
         vec![
             claude_custom_tool_use_sse(
-                "toolu_deepseek_patch",
+                "toolu_compatible_patch",
                 "apply_patch",
                 json!({
-                    "input": "*** Begin Patch\n*** Add File: deepseek_patch.txt\n+hello from deepseek\n*** End Patch"
+                    "input": "*** Begin Patch\n*** Add File: compatible_patch.txt\n+hello from compatible claude\n*** End Patch"
                 }),
             ),
             claude_text_sse("msg_2", "done"),
@@ -1246,11 +1246,11 @@ async fn deepseek_claude_wire_exposes_apply_patch_for_fallback_model() -> anyhow
     .await;
 
     let test = test_codex()
-        .with_config(configure_deepseek_claude_provider_with_fallback_model)
+        .with_config(configure_compatible_claude_provider_with_fallback_model)
         .build(&server)
         .await?;
 
-    test.submit_turn("edit a file through DeepSeek Claude")
+    test.submit_turn("edit a file through compatible Claude")
         .await?;
 
     let requests = responses.requests();
@@ -1261,7 +1261,7 @@ async fn deepseek_claude_wire_exposes_apply_patch_for_fallback_model() -> anyhow
     let first_tool_names = tool_names(&first);
     assert!(
         first_tool_names.iter().any(|name| name == "apply_patch"),
-        "DeepSeek Claude request should advertise apply_patch for fallback model metadata: {first_tool_names:?}"
+        "compatible Claude request should advertise apply_patch for fallback model metadata: {first_tool_names:?}"
     );
     assert!(
         !first["tools"]
@@ -1275,24 +1275,24 @@ async fn deepseek_claude_wire_exposes_apply_patch_for_fallback_model() -> anyhow
                         tool_type.starts_with("text_editor_") || tool_type == "bash_20250124"
                     })
             }),
-        "DeepSeek Claude request must stay on fallback tools: {first}"
+        "compatible Claude request must stay on fallback tools: {first}"
     );
     let apply_patch_tool = first["tools"]
         .as_array()
         .expect("tools array")
         .iter()
         .find(|tool| tool.get("name").and_then(Value::as_str) == Some("apply_patch"))
-        .unwrap_or_else(|| panic!("DeepSeek Claude request should include apply_patch: {first}"));
+        .unwrap_or_else(|| panic!("compatible Claude request should include apply_patch: {first}"));
     assert_eq!(
         apply_patch_tool["input_schema"]["required"],
         json!(["input"])
     );
 
     let second = requests[1].body_json();
-    let tool_result = tool_result_block(&second, "toolu_deepseek_patch");
+    let tool_result = tool_result_block(&second, "toolu_compatible_patch");
     assert_ne!(tool_result["is_error"].as_bool(), Some(true));
-    let written = std::fs::read_to_string(test.config.cwd.join("deepseek_patch.txt"))?;
-    assert_eq!(written, "hello from deepseek\n");
+    let written = std::fs::read_to_string(test.config.cwd.join("compatible_patch.txt"))?;
+    assert_eq!(written, "hello from compatible claude\n");
 
     Ok(())
 }
@@ -2287,13 +2287,13 @@ fn configure_claude_provider_with_web_search_context_size(config: &mut Config) {
     });
 }
 
-fn configure_deepseek_claude_provider(config: &mut Config) {
+fn configure_compatible_claude_provider(config: &mut Config) {
     configure_claude_provider(config);
-    config.model_provider.name = "DeepSeek".to_string();
+    config.model_provider.name = "aicodex_gateway_claude".to_string();
 }
 
-fn configure_deepseek_claude_provider_with_fallback_model(config: &mut Config) {
-    configure_deepseek_claude_provider(config);
+fn configure_compatible_claude_provider_with_fallback_model(config: &mut Config) {
+    configure_compatible_claude_provider(config);
     config.model = Some("deepseek-v4-pro".to_string());
 }
 

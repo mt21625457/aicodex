@@ -10,8 +10,6 @@ use codex_api::ClaudeMcpServer as ApiClaudeMcpServer;
 use codex_api::ClaudeMessage;
 use codex_api::ClaudeMessageRole;
 use codex_api::ClaudeMessagesApiRequest;
-use codex_api::ClaudeOutputConfig;
-use codex_api::ClaudeOutputEffort;
 use codex_api::ClaudeServiceTier;
 use codex_api::ClaudeSystemPrompt;
 use codex_api::ClaudeThinkingConfig;
@@ -70,6 +68,9 @@ struct ClaudeToolHistoryRepairStats {
     duplicate_tool_results_dropped: usize,
     orphan_tool_results_dropped: usize,
     synthetic_tool_results_inserted: usize,
+    orphan_provider_state_tool_uses_dropped: usize,
+    orphan_provider_state_tool_results_dropped: usize,
+    advisor_provider_state_dropped: usize,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -123,7 +124,7 @@ pub(crate) struct ClaudeRequestOptions {
 pub(crate) enum ClaudeProviderCompat {
     #[default]
     Anthropic,
-    DeepSeek,
+    Compatible,
 }
 
 pub(crate) fn provider_compat_for_base_url(base_url: Option<&str>) -> ClaudeProviderCompat {
@@ -131,34 +132,32 @@ pub(crate) fn provider_compat_for_base_url(base_url: Option<&str>) -> ClaudeProv
         return ClaudeProviderCompat::Anthropic;
     };
     let Ok(url) = Url::parse(base_url) else {
-        return ClaudeProviderCompat::Anthropic;
+        return ClaudeProviderCompat::Compatible;
     };
     if url
         .host_str()
-        .is_some_and(|host| host.eq_ignore_ascii_case("api.deepseek.com"))
-        && matches!(
-            url.path().trim_end_matches('/'),
-            "/anthropic" | "/anthropic/v1"
-        )
+        .is_some_and(|host| host.eq_ignore_ascii_case("api.anthropic.com"))
     {
-        ClaudeProviderCompat::DeepSeek
-    } else {
         ClaudeProviderCompat::Anthropic
+    } else {
+        ClaudeProviderCompat::Compatible
     }
 }
 
 pub(crate) fn provider_compat_for_provider(
     provider_name: &str,
     base_url: Option<&str>,
-    model_slug: Option<&str>,
+    _model_slug: Option<&str>,
 ) -> ClaudeProviderCompat {
-    if provider_compat_for_base_url(base_url) == ClaudeProviderCompat::DeepSeek
-        || looks_like_deepseek_identifier(provider_name)
-        || model_slug.is_some_and(looks_like_deepseek_identifier)
+    let base_compat = provider_compat_for_base_url(base_url);
+    if looks_like_claude_compatible_gateway_identifier(provider_name) {
+        ClaudeProviderCompat::Compatible
+    } else if looks_like_anthropic_identifier(provider_name)
+        && (base_compat == ClaudeProviderCompat::Anthropic || is_loopback_base_url(base_url))
     {
-        ClaudeProviderCompat::DeepSeek
-    } else {
         ClaudeProviderCompat::Anthropic
+    } else {
+        base_compat
     }
 }
 
@@ -168,17 +167,38 @@ pub(crate) fn cache_editing_options_for_provider(
     ClaudeCacheEditingOptions {
         capability: match provider_compat {
             ClaudeProviderCompat::Anthropic => ClaudeCacheEditingCapability::Enabled,
-            ClaudeProviderCompat::DeepSeek => ClaudeCacheEditingCapability::Disabled,
+            ClaudeProviderCompat::Compatible => ClaudeCacheEditingCapability::Disabled,
         },
         ..Default::default()
     }
 }
 
-fn looks_like_deepseek_identifier(value: &str) -> bool {
+fn looks_like_anthropic_identifier(value: &str) -> bool {
     value
         .to_ascii_lowercase()
         .replace([' ', '-', '_'], "")
-        .contains("deepseek")
+        .contains("anthropic")
+}
+
+fn looks_like_claude_compatible_gateway_identifier(value: &str) -> bool {
+    let normalized = value.to_ascii_lowercase().replace([' ', '-', '_'], "");
+    normalized.contains("aicodex")
+        && normalized.contains("gateway")
+        && normalized.contains("claude")
+}
+
+fn is_loopback_base_url(base_url: Option<&str>) -> bool {
+    let Some(base_url) = base_url else {
+        return false;
+    };
+    let Ok(url) = Url::parse(base_url) else {
+        return false;
+    };
+    url.host_str().is_some_and(|host| {
+        host.eq_ignore_ascii_case("localhost")
+            || host.eq_ignore_ascii_case("127.0.0.1")
+            || host.eq_ignore_ascii_case("::1")
+    })
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -230,7 +250,7 @@ pub(crate) fn build_claude_messages_request(
         ClaudeMessagesToolOptions {
             web_search_tool_kind: match options.provider_compat {
                 ClaudeProviderCompat::Anthropic => ClaudeWebSearchToolKind::NativeServerTool,
-                ClaudeProviderCompat::DeepSeek => ClaudeWebSearchToolKind::LocalFunctionTool,
+                ClaudeProviderCompat::Compatible => ClaudeWebSearchToolKind::LocalFunctionTool,
             },
             native_tool_selection: native_tool_selection_for_prompt(
                 &prompt.tools,
@@ -247,6 +267,8 @@ pub(crate) fn build_claude_messages_request(
         history_requirements,
         ..
     } = tools_json;
+    let preserve_advisor_provider_state =
+        beta_headers.contains(&codex_tools::ClaudeBetaFeature::AdvisorTool20260301);
     let mut tools = tools
         .into_iter()
         .map(serde_json::from_value::<ClaudeTool>)
@@ -444,7 +466,26 @@ pub(crate) fn build_claude_messages_request(
         }
     }
 
-    let (repaired_messages, repair_stats) = repair_tool_result_history(messages);
+    let (provider_state_repaired_messages, mut repair_stats) =
+        repair_server_tool_provider_state_history(messages);
+    let (provider_state_repaired_messages, advisor_repair_stats) =
+        if preserve_advisor_provider_state {
+            (
+                provider_state_repaired_messages,
+                ClaudeToolHistoryRepairStats::default(),
+            )
+        } else {
+            strip_advisor_provider_state_history(provider_state_repaired_messages)
+        };
+    repair_stats.advisor_provider_state_dropped =
+        advisor_repair_stats.advisor_provider_state_dropped;
+    let (repaired_messages, tool_repair_stats) =
+        repair_tool_result_history(provider_state_repaired_messages);
+    repair_stats.duplicate_tool_uses_dropped = tool_repair_stats.duplicate_tool_uses_dropped;
+    repair_stats.duplicate_tool_results_dropped = tool_repair_stats.duplicate_tool_results_dropped;
+    repair_stats.orphan_tool_results_dropped = tool_repair_stats.orphan_tool_results_dropped;
+    repair_stats.synthetic_tool_results_inserted =
+        tool_repair_stats.synthetic_tool_results_inserted;
     let (normalized_messages, first_normalization_stats) =
         normalize_claude_messages_with_stats(repaired_messages, &history_requirements);
     messages = normalized_messages;
@@ -522,43 +563,19 @@ pub(crate) fn build_claude_messages_request(
         "Claude protocol processing detailed counters"
     );
     validate_tool_result_history(&messages)?;
-    let (thinking, output_config) = match options.provider_compat {
-        ClaudeProviderCompat::Anthropic => (claude_thinking_config(options.reasoning_effort), None),
-        ClaudeProviderCompat::DeepSeek => {
-            let thinking = match options.reasoning_effort {
-                Some(ReasoningEffortConfig::None) => Some(ClaudeThinkingConfig::Disabled),
-                Some(_) => claude_thinking_config(options.reasoning_effort.clone()),
-                None => None,
-            };
-            let output_config = match options.reasoning_effort {
-                Some(ReasoningEffortConfig::None) | None => None,
-                Some(ReasoningEffortConfig::Custom(_)) => None,
-                Some(
-                    ReasoningEffortConfig::Minimal
-                    | ReasoningEffortConfig::Low
-                    | ReasoningEffortConfig::Medium
-                    | ReasoningEffortConfig::High,
-                ) => Some(ClaudeOutputConfig {
-                    effort: ClaudeOutputEffort::High,
-                }),
-                Some(ReasoningEffortConfig::XHigh) => Some(ClaudeOutputConfig {
-                    effort: ClaudeOutputEffort::Max,
-                }),
-            };
-            (thinking, output_config)
-        }
-    };
+    let max_tokens = DEFAULT_MAX_TOKENS;
+    let thinking = claude_thinking_config(options.reasoning_effort, max_tokens);
 
     Ok(ClaudeMessagesApiRequest {
         model: model_info.slug.clone(),
-        max_tokens: DEFAULT_MAX_TOKENS,
+        max_tokens,
         messages,
         system: system_prompt(system, options.prompt_cache),
         tools,
         mcp_servers: mcp_servers.into_iter().map(api_claude_mcp_server).collect(),
         tool_choice,
         thinking,
-        output_config,
+        output_config: None,
         service_tier: claude_service_tier(options.service_tier),
         context_management: options.context_management,
         stream: true,
@@ -577,7 +594,7 @@ fn native_tool_selection_for_prompt(
 ) -> ClaudeNativeToolSelection {
     let provider_platform = match provider_compat {
         ClaudeProviderCompat::Anthropic => ClaudeProviderPlatform::AnthropicApi,
-        ClaudeProviderCompat::DeepSeek => ClaudeProviderPlatform::DeepSeekCompatible,
+        ClaudeProviderCompat::Compatible => ClaudeProviderPlatform::Unknown,
     };
     let mut selection = ClaudeNativeToolSelection {
         provider_platform,
@@ -804,8 +821,9 @@ fn system_prompt(system: String, options: ClaudePromptCacheOptions) -> Option<Cl
 
 fn claude_thinking_config(
     reasoning_effort: Option<ReasoningEffortConfig>,
+    max_tokens: u64,
 ) -> Option<ClaudeThinkingConfig> {
-    let budget_tokens = match reasoning_effort? {
+    let budget_tokens = match reasoning_effort.unwrap_or(ReasoningEffortConfig::High) {
         ReasoningEffortConfig::None => return None,
         ReasoningEffortConfig::Minimal | ReasoningEffortConfig::Low => {
             CLAUDE_THINKING_MIN_BUDGET_TOKENS
@@ -815,6 +833,11 @@ fn claude_thinking_config(
         ReasoningEffortConfig::XHigh => CLAUDE_THINKING_XHIGH_BUDGET_TOKENS,
         ReasoningEffortConfig::Custom(_) => return None,
     };
+    let max_budget = u32::try_from(max_tokens.saturating_sub(1)).unwrap_or(u32::MAX);
+    let budget_tokens = budget_tokens.min(max_budget);
+    if budget_tokens == 0 {
+        return None;
+    }
     Some(ClaudeThinkingConfig::Enabled { budget_tokens })
 }
 
@@ -1120,6 +1143,92 @@ fn validate_tool_result_history(messages: &[ClaudeMessage]) -> codex_protocol::e
     Ok(())
 }
 
+fn repair_server_tool_provider_state_history(
+    messages: Vec<ClaudeMessage>,
+) -> (Vec<ClaudeMessage>, ClaudeToolHistoryRepairStats) {
+    let mut repaired = Vec::with_capacity(messages.len());
+    let mut stats = ClaudeToolHistoryRepairStats::default();
+
+    for message in messages {
+        if message.role != ClaudeMessageRole::Assistant {
+            repaired.push(message);
+            continue;
+        }
+
+        let provider_state_tool_use_ids = message
+            .content
+            .iter()
+            .filter_map(provider_state_tool_use_id)
+            .map(str::to_string)
+            .collect::<HashSet<_>>();
+        let provider_state_tool_result_ids = message
+            .content
+            .iter()
+            .filter_map(provider_state_tool_result_id)
+            .map(str::to_string)
+            .collect::<HashSet<_>>();
+
+        let mut content = Vec::with_capacity(message.content.len());
+        for block in message.content {
+            let mut keep = true;
+            if let Some(id) = provider_state_tool_use_id(&block)
+                && !provider_state_tool_result_ids.contains(id)
+            {
+                stats.orphan_provider_state_tool_uses_dropped += 1;
+                keep = false;
+            }
+            if let Some(id) = provider_state_tool_result_id(&block)
+                && !provider_state_tool_use_ids.is_empty()
+                && !provider_state_tool_use_ids.contains(id)
+            {
+                stats.orphan_provider_state_tool_results_dropped += 1;
+                keep = false;
+            }
+            if keep {
+                content.push(block);
+            }
+        }
+
+        if !content.is_empty() {
+            repaired.push(ClaudeMessage {
+                role: message.role,
+                content,
+            });
+        }
+    }
+
+    (repaired, stats)
+}
+
+fn strip_advisor_provider_state_history(
+    messages: Vec<ClaudeMessage>,
+) -> (Vec<ClaudeMessage>, ClaudeToolHistoryRepairStats) {
+    let mut repaired = Vec::with_capacity(messages.len());
+    let mut stats = ClaudeToolHistoryRepairStats::default();
+
+    for message in messages {
+        let mut content = Vec::with_capacity(message.content.len());
+        for block in message.content {
+            if let ClaudeContentBlock::ProviderState { value } = &block
+                && is_advisor_provider_state(value)
+            {
+                stats.advisor_provider_state_dropped += 1;
+                continue;
+            }
+            content.push(block);
+        }
+
+        if !content.is_empty() {
+            repaired.push(ClaudeMessage {
+                role: message.role,
+                content,
+            });
+        }
+    }
+
+    (repaired, stats)
+}
+
 fn repair_tool_result_history(
     messages: Vec<ClaudeMessage>,
 ) -> (Vec<ClaudeMessage>, ClaudeToolHistoryRepairStats) {
@@ -1358,6 +1467,64 @@ fn tool_use_id(block: &ClaudeContentBlock) -> Option<&str> {
         ClaudeContentBlock::ToolUse { id, .. } => Some(id.as_str()),
         _ => None,
     }
+}
+
+fn provider_state_tool_use_id(block: &ClaudeContentBlock) -> Option<&str> {
+    let ClaudeContentBlock::ProviderState { value } = block else {
+        return None;
+    };
+    match provider_state_kind(value)? {
+        "server_tool_use" | "mcp_tool_use" => provider_state_string_field(value, "id"),
+        _ => None,
+    }
+}
+
+fn provider_state_tool_result_id(block: &ClaudeContentBlock) -> Option<&str> {
+    let ClaudeContentBlock::ProviderState { value } = block else {
+        return None;
+    };
+    if is_provider_state_tool_result_kind(provider_state_kind(value)?) {
+        provider_state_string_field(value, "tool_use_id")
+    } else {
+        None
+    }
+}
+
+fn provider_state_kind(value: &Value) -> Option<&str> {
+    value
+        .as_object()
+        .and_then(|object| object.get("type"))
+        .and_then(Value::as_str)
+}
+
+fn is_advisor_provider_state(value: &Value) -> bool {
+    match provider_state_kind(value) {
+        Some("advisor_tool_result" | "advisor_tool_result_error") => true,
+        Some("server_tool_use") => provider_state_string_field(value, "name") == Some("advisor"),
+        _ => false,
+    }
+}
+
+fn provider_state_string_field<'a>(value: &'a Value, field: &str) -> Option<&'a str> {
+    value
+        .as_object()
+        .and_then(|object| object.get(field))
+        .and_then(Value::as_str)
+}
+
+fn is_provider_state_tool_result_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "mcp_tool_result"
+            | "web_search_tool_result"
+            | "web_fetch_tool_result"
+            | "code_execution_tool_result"
+            | "bash_code_execution_tool_result"
+            | "text_editor_code_execution_tool_result"
+            | "tool_search_tool_result"
+            | "advisor_tool_result"
+            | "advisor_tool_result_error"
+    )
 }
 
 fn invalid_claude_history<T>(message: String) -> codex_protocol::error::Result<T> {
@@ -1600,6 +1767,8 @@ mod tests {
     use codex_protocol::models::ReasoningItemContent;
     use codex_protocol::models::ReasoningItemReasoningSummary;
     use codex_tools::AdditionalProperties;
+    use codex_tools::FreeformTool;
+    use codex_tools::FreeformToolFormat;
     use codex_tools::JsonSchema;
     use codex_tools::ResponsesApiNamespace;
     use codex_tools::ResponsesApiNamespaceTool;
@@ -1637,22 +1806,22 @@ mod tests {
     }
 
     #[test]
-    fn detects_deepseek_anthropic_base_url() {
+    fn detects_claude_provider_compat() {
         assert_eq!(
             provider_compat_for_base_url(Some("https://api.deepseek.com/anthropic")),
-            ClaudeProviderCompat::DeepSeek
+            ClaudeProviderCompat::Compatible
         );
         assert_eq!(
             provider_compat_for_base_url(Some("https://api.deepseek.com/anthropic/")),
-            ClaudeProviderCompat::DeepSeek
+            ClaudeProviderCompat::Compatible
         );
         assert_eq!(
             provider_compat_for_base_url(Some("https://api.deepseek.com/anthropic/v1")),
-            ClaudeProviderCompat::DeepSeek
+            ClaudeProviderCompat::Compatible
         );
         assert_eq!(
             provider_compat_for_base_url(Some("https://api.deepseek.com/anthropic/v1/")),
-            ClaudeProviderCompat::DeepSeek
+            ClaudeProviderCompat::Compatible
         );
         assert_eq!(
             provider_compat_for_base_url(Some("https://api.anthropic.com/v1")),
@@ -1660,11 +1829,11 @@ mod tests {
         );
         assert_eq!(
             provider_compat_for_base_url(Some("https://notapi.deepseek.com/anthropic")),
-            ClaudeProviderCompat::Anthropic
+            ClaudeProviderCompat::Compatible
         );
         assert_eq!(
             provider_compat_for_base_url(Some("https://api.deepseek.com/other")),
-            ClaudeProviderCompat::Anthropic
+            ClaudeProviderCompat::Compatible
         );
         assert_eq!(
             provider_compat_for_base_url(Some(
@@ -1673,8 +1842,16 @@ mod tests {
             ClaudeProviderCompat::Anthropic
         );
         assert_eq!(
+            provider_compat_for_provider("Anthropic", Some("http://localhost/v1"), None),
+            ClaudeProviderCompat::Anthropic
+        );
+        assert_eq!(
+            provider_compat_for_provider("Anthropic", Some("https://ai.leagsoft.com/v1"), None),
+            ClaudeProviderCompat::Compatible
+        );
+        assert_eq!(
             provider_compat_for_provider("DeepSeek", Some("http://localhost/v1"), None),
-            ClaudeProviderCompat::DeepSeek
+            ClaudeProviderCompat::Compatible
         );
         assert_eq!(
             provider_compat_for_provider(
@@ -1682,7 +1859,19 @@ mod tests {
                 Some("http://localhost/v1"),
                 Some("deepseek-v4-pro")
             ),
-            ClaudeProviderCompat::DeepSeek
+            ClaudeProviderCompat::Compatible
+        );
+        assert_eq!(
+            provider_compat_for_provider(
+                "aicodex_gateway_claude",
+                Some("https://ai.leagsoft.com/v1"),
+                Some("deepseek-v4-pro")
+            ),
+            ClaudeProviderCompat::Compatible
+        );
+        assert_eq!(
+            provider_compat_for_provider("aicodex-claude-gateway", None, None),
+            ClaudeProviderCompat::Compatible
         );
     }
 
@@ -1772,6 +1961,10 @@ mod tests {
                 "tool_choice": {
                     "type": "auto",
                     "disable_parallel_tool_use": true
+                },
+                "thinking": {
+                    "type": "enabled",
+                    "budget_tokens": CLAUDE_THINKING_HIGH_BUDGET_TOKENS
                 },
                 "stream": true
             })
@@ -1927,7 +2120,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_deepseek_request_with_local_web_search_function_tool() {
+    fn builds_compatible_request_with_local_web_search_function_tool() {
         let prompt = Prompt {
             input: vec![ResponseItem::Message {
                 id: None,
@@ -1956,7 +2149,7 @@ mod tests {
             &prompt,
             &model_info(),
             ClaudeRequestOptions {
-                provider_compat: ClaudeProviderCompat::DeepSeek,
+                provider_compat: ClaudeProviderCompat::Compatible,
                 ..Default::default()
             },
         )
@@ -1983,6 +2176,150 @@ mod tests {
                     "additionalProperties": false
                 }
             }])
+        );
+        assert_eq!(
+            request.tool_call_info.get("web_search"),
+            Some(&ApiClaudeToolCallInfo {
+                name: "web_search".to_string(),
+                namespace: None,
+                kind: ApiClaudeToolCallKind::Function,
+            })
+        );
+    }
+
+    #[test]
+    fn builds_compatible_request_with_existing_local_tool_mappings() {
+        let string_params = JsonSchema::object(
+            BTreeMap::from([(
+                "query".to_string(),
+                JsonSchema::string(/*description*/ None),
+            )]),
+            Some(vec!["query".to_string()]),
+            Some(AdditionalProperties::Boolean(false)),
+        );
+        let prompt = Prompt {
+            input: vec![ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "use tools".to_string(),
+                }],
+                phase: None,
+
+                internal_chat_message_metadata_passthrough: None,
+            }],
+            tools: vec![
+                ToolSpec::Function(ResponsesApiTool {
+                    name: "lookup".to_string(),
+                    description: "Lookup".to_string(),
+                    strict: false,
+                    defer_loading: None,
+                    parameters: string_params.clone(),
+                    output_schema: None,
+                }),
+                ToolSpec::Namespace(ResponsesApiNamespace {
+                    name: "mcp__demo__".to_string(),
+                    description: "Demo MCP".to_string(),
+                    tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
+                        name: "read".to_string(),
+                        description: "Read".to_string(),
+                        strict: false,
+                        defer_loading: None,
+                        parameters: string_params.clone(),
+                        output_schema: None,
+                    })],
+                }),
+                ToolSpec::ToolSearch {
+                    execution: "client".to_string(),
+                    description: "Search available tools".to_string(),
+                    parameters: string_params,
+                },
+                ToolSpec::Freeform(FreeformTool {
+                    name: "exec".to_string(),
+                    description: "Execute raw input".to_string(),
+                    format: FreeformToolFormat {
+                        r#type: "grammar".to_string(),
+                        syntax: "lark".to_string(),
+                        definition: "start: /.+/".to_string(),
+                    },
+                }),
+                ToolSpec::WebSearch {
+                    external_web_access: Some(true),
+                    index_gated_web_access: None,
+                    filters: None,
+                    user_location: None,
+                    search_context_size: None,
+                    search_content_types: None,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let request = build_claude_messages_request(
+            &prompt,
+            &model_info(),
+            ClaudeRequestOptions {
+                provider_compat: ClaudeProviderCompat::Compatible,
+                ..Default::default()
+            },
+        )
+        .expect("request");
+
+        let tool_values = serde_json::to_value(&request.tools).expect("serialize tools");
+        let tools = tool_values.as_array().expect("tools array");
+        let tool_names = tools
+            .iter()
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+            .collect::<HashSet<_>>();
+        assert_eq!(
+            tool_names,
+            HashSet::from([
+                "lookup",
+                "mcp__demo__read",
+                "tool_search",
+                "exec",
+                "web_search"
+            ])
+        );
+        assert!(
+            tools.iter().all(|tool| {
+                tool.get("type")
+                    .and_then(Value::as_str)
+                    .is_none_or(|tool_type| !tool_type.contains("_202"))
+            }),
+            "compatible tools must stay on local tool schemas: {tool_values}"
+        );
+        assert_eq!(
+            request.tool_call_info.get("lookup"),
+            Some(&ApiClaudeToolCallInfo {
+                name: "lookup".to_string(),
+                namespace: None,
+                kind: ApiClaudeToolCallKind::Function,
+            })
+        );
+        assert_eq!(
+            request.tool_call_info.get("mcp__demo__read"),
+            Some(&ApiClaudeToolCallInfo {
+                name: "read".to_string(),
+                namespace: Some("mcp__demo__".to_string()),
+                kind: ApiClaudeToolCallKind::Function,
+            })
+        );
+        assert_eq!(
+            request.tool_call_info.get("tool_search"),
+            Some(&ApiClaudeToolCallInfo {
+                name: "tool_search".to_string(),
+                namespace: None,
+                kind: ApiClaudeToolCallKind::ToolSearch,
+            })
+        );
+        assert_eq!(
+            request.tool_call_info.get("exec"),
+            Some(&ApiClaudeToolCallInfo {
+                name: "exec".to_string(),
+                namespace: None,
+                kind: ApiClaudeToolCallKind::Custom,
+            })
         );
         assert_eq!(
             request.tool_call_info.get("web_search"),
@@ -2105,6 +2442,10 @@ mod tests {
                         }]
                     }
                 ],
+                "thinking": {
+                    "type": "enabled",
+                    "budget_tokens": CLAUDE_THINKING_HIGH_BUDGET_TOKENS
+                },
                 "stream": true
             })
         );
@@ -2326,6 +2667,10 @@ mod tests {
                         }]
                     }
                 ],
+                "thinking": {
+                    "type": "enabled",
+                    "budget_tokens": CLAUDE_THINKING_HIGH_BUDGET_TOKENS
+                },
                 "stream": true
             })
         );
@@ -2603,7 +2948,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_deepseek_anthropic_request_with_output_config_effort() {
+    fn builds_compatible_request_with_standard_thinking_without_output_config() {
         let prompt = Prompt {
             input: vec![ResponseItem::Message {
                 id: None,
@@ -2626,7 +2971,7 @@ mod tests {
             &model_info(),
             ClaudeRequestOptions {
                 reasoning_effort: Some(ReasoningEffortConfig::XHigh),
-                provider_compat: ClaudeProviderCompat::DeepSeek,
+                provider_compat: ClaudeProviderCompat::Compatible,
                 ..Default::default()
             },
         )
@@ -2648,16 +2993,27 @@ mod tests {
                     "type": "enabled",
                     "budget_tokens": CLAUDE_THINKING_XHIGH_BUDGET_TOKENS
                 },
-                "output_config": {
-                    "effort": "max"
-                },
                 "stream": true
             })
         );
     }
 
     #[test]
-    fn builds_deepseek_anthropic_request_with_disabled_thinking() {
+    fn caps_thinking_budget_below_max_tokens() {
+        assert_eq!(
+            claude_thinking_config(Some(ReasoningEffortConfig::XHigh), 2_048),
+            Some(ClaudeThinkingConfig::Enabled {
+                budget_tokens: 2_047,
+            })
+        );
+        assert_eq!(
+            claude_thinking_config(Some(ReasoningEffortConfig::High), 1),
+            None
+        );
+    }
+
+    #[test]
+    fn omits_compatible_request_thinking_when_disabled() {
         let prompt = Prompt {
             input: vec![ResponseItem::Message {
                 id: None,
@@ -2680,7 +3036,7 @@ mod tests {
             &model_info(),
             ClaudeRequestOptions {
                 reasoning_effort: Some(ReasoningEffortConfig::None),
-                provider_compat: ClaudeProviderCompat::DeepSeek,
+                provider_compat: ClaudeProviderCompat::Compatible,
                 ..Default::default()
             },
         )
@@ -2698,9 +3054,6 @@ mod tests {
                         "text": "answer directly"
                     }]
                 }],
-                "thinking": {
-                    "type": "disabled"
-                },
                 "stream": true
             })
         );
@@ -3734,7 +4087,7 @@ mod tests {
     }
 
     #[test]
-    fn does_not_emit_cache_edit_fields_for_deepseek_capability() {
+    fn does_not_emit_cache_edit_fields_for_compatible_capability() {
         let prompt = Prompt {
             input: vec![
                 ResponseItem::FunctionCall {
@@ -3799,7 +4152,8 @@ mod tests {
             },
             ..Default::default()
         };
-        let mut cache_editing = cache_editing_options_for_provider(ClaudeProviderCompat::DeepSeek);
+        let mut cache_editing =
+            cache_editing_options_for_provider(ClaudeProviderCompat::Compatible);
         cache_editing.new_delete_references = vec!["call_1".to_string()];
         cache_editing.pinned_deletes = vec![ClaudePinnedCacheEdits {
             user_message_index: 1,
@@ -3814,7 +4168,7 @@ mod tests {
                     mode: ClaudePromptCacheMode::Conversation,
                     ttl: None,
                 },
-                provider_compat: ClaudeProviderCompat::DeepSeek,
+                provider_compat: ClaudeProviderCompat::Compatible,
                 cache_editing,
                 ..Default::default()
             },
@@ -4129,7 +4483,237 @@ mod tests {
     }
 
     #[test]
-    fn drops_web_search_provider_state_for_deepseek_local_web_search() {
+    fn drops_advisor_provider_state_without_advisor_beta_even_when_server_history_is_preserved() {
+        let web_search_tool_use = json!({
+            "type": "server_tool_use",
+            "id": "srvu_1",
+            "name": "web_search",
+            "input": {"query": "claude protocol"}
+        });
+        let web_search_tool_result = json!({
+            "type": "web_search_tool_result",
+            "tool_use_id": "srvu_1",
+            "content": [{"type": "text", "text": "current result"}]
+        });
+        let advisor_tool_use = json!({
+            "type": "server_tool_use",
+            "id": "advisoru_1",
+            "name": "advisor",
+            "input": {}
+        });
+        let advisor_tool_result = json!({
+            "type": "advisor_tool_result",
+            "tool_use_id": "advisoru_1",
+            "content": {"type": "advisor_result", "text": "advisor result"}
+        });
+        let prompt = Prompt {
+            input: vec![
+                ResponseItem::Compaction {
+                    id: None,
+                    encrypted_content: advisor_tool_use.to_string(),
+
+                    internal_chat_message_metadata_passthrough: None,
+                },
+                ResponseItem::Compaction {
+                    id: None,
+                    encrypted_content: advisor_tool_result.to_string(),
+
+                    internal_chat_message_metadata_passthrough: None,
+                },
+                ResponseItem::Compaction {
+                    id: None,
+                    encrypted_content: web_search_tool_use.to_string(),
+
+                    internal_chat_message_metadata_passthrough: None,
+                },
+                ResponseItem::Compaction {
+                    id: None,
+                    encrypted_content: web_search_tool_result.to_string(),
+
+                    internal_chat_message_metadata_passthrough: None,
+                },
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "follow up".to_string(),
+                    }],
+                    phase: None,
+
+                    internal_chat_message_metadata_passthrough: None,
+                },
+            ],
+            tools: vec![ToolSpec::WebSearch {
+                external_web_access: Some(true),
+                index_gated_web_access: None,
+                filters: None,
+                user_location: None,
+                search_context_size: None,
+                search_content_types: None,
+            }],
+            base_instructions: BaseInstructions {
+                text: String::new(),
+            },
+            ..Default::default()
+        };
+
+        let request =
+            build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
+                .expect("request");
+
+        assert_eq!(
+            serde_json::to_value(&request.messages).expect("serialize messages"),
+            json!([
+                {
+                    "role": "assistant",
+                    "content": [web_search_tool_use, web_search_tool_result]
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "follow up"}]
+                }
+            ])
+        );
+    }
+
+    #[test]
+    fn drops_mismatched_server_tool_provider_state_for_native_web_search() {
+        let server_tool_use = json!({
+            "type": "server_tool_use",
+            "id": "tool_e8sSXpR3oWiqwPw2c56Lu7gy",
+            "name": "web_search",
+            "input": {"query": "claude protocol"}
+        });
+        let web_search_tool_result = json!({
+            "type": "web_search_tool_result",
+            "tool_use_id": "srvtoolu_d8uh3pvoi09rddr48qeg",
+            "content": [{"type": "text", "text": "mismatched result"}]
+        });
+        let prompt = Prompt {
+            input: vec![
+                ResponseItem::Compaction {
+                    id: None,
+                    encrypted_content: server_tool_use.to_string(),
+
+                    internal_chat_message_metadata_passthrough: None,
+                },
+                ResponseItem::Compaction {
+                    id: None,
+                    encrypted_content: web_search_tool_result.to_string(),
+
+                    internal_chat_message_metadata_passthrough: None,
+                },
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "follow up".to_string(),
+                    }],
+                    phase: None,
+
+                    internal_chat_message_metadata_passthrough: None,
+                },
+            ],
+            tools: vec![ToolSpec::WebSearch {
+                external_web_access: Some(true),
+                index_gated_web_access: None,
+                filters: None,
+                user_location: None,
+                search_context_size: None,
+                search_content_types: None,
+            }],
+            base_instructions: BaseInstructions {
+                text: String::new(),
+            },
+            ..Default::default()
+        };
+
+        let request =
+            build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
+                .expect("request");
+
+        assert_eq!(
+            serde_json::to_value(&request.messages).expect("serialize messages"),
+            json!([{
+                "role": "user",
+                "content": [{"type": "text", "text": "follow up"}]
+            }])
+        );
+    }
+
+    #[test]
+    fn drops_server_provider_state_for_compatible_local_web_search() {
+        let server_tool_use = json!({
+            "type": "server_tool_use",
+            "id": "srvu_1",
+            "name": "web_search",
+            "input": {"query": "claude protocol"}
+        });
+        let web_search_tool_result = json!({
+            "type": "web_search_tool_result",
+            "tool_use_id": "srvu_1",
+            "content": [{"type": "text", "text": "current result"}]
+        });
+        let prompt = Prompt {
+            input: vec![
+                ResponseItem::Compaction {
+                    id: None,
+                    encrypted_content: server_tool_use.to_string(),
+
+                    internal_chat_message_metadata_passthrough: None,
+                },
+                ResponseItem::Compaction {
+                    id: None,
+                    encrypted_content: web_search_tool_result.to_string(),
+
+                    internal_chat_message_metadata_passthrough: None,
+                },
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "continue".to_string(),
+                    }],
+                    phase: None,
+
+                    internal_chat_message_metadata_passthrough: None,
+                },
+            ],
+            tools: vec![ToolSpec::WebSearch {
+                external_web_access: Some(true),
+                index_gated_web_access: None,
+                filters: None,
+                user_location: None,
+                search_context_size: None,
+                search_content_types: None,
+            }],
+            base_instructions: BaseInstructions {
+                text: String::new(),
+            },
+            ..Default::default()
+        };
+
+        let request = build_claude_messages_request(
+            &prompt,
+            &model_info(),
+            ClaudeRequestOptions {
+                provider_compat: ClaudeProviderCompat::Compatible,
+                ..Default::default()
+            },
+        )
+        .expect("request");
+
+        assert_eq!(
+            serde_json::to_value(&request.messages).expect("serialize messages"),
+            json!([{
+                "role": "user",
+                "content": [{"type": "text", "text": "continue"}]
+            }])
+        );
+    }
+
+    #[test]
+    fn drops_web_search_provider_state_for_compatible_local_web_search() {
         let web_search_tool_result = json!({
             "type": "web_search_tool_result",
             "tool_use_id": "srvu_1",
@@ -4172,7 +4756,7 @@ mod tests {
             &prompt,
             &model_info(),
             ClaudeRequestOptions {
-                provider_compat: ClaudeProviderCompat::DeepSeek,
+                provider_compat: ClaudeProviderCompat::Compatible,
                 ..Default::default()
             },
         )
