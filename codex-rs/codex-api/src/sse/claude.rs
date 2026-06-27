@@ -1230,7 +1230,7 @@ impl ClaudeToolCallCompatibility {
 }
 
 fn claude_tool_call_aliases(canonical_claude_name: &str, info: &ClaudeToolCallInfo) -> Vec<String> {
-    let mut aliases = Vec::new();
+    let mut aliases = vec![format!("functions.{canonical_claude_name}")];
     if let Some(namespace) = info.namespace.as_deref() {
         aliases.extend(namespace_tool_aliases(namespace, &info.name));
     } else if COLLABORATION_TOOL_NAMES.contains(&info.name.as_str()) {
@@ -2073,6 +2073,69 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn claude_stream_maps_namespaced_alias_to_bare_multi_agent_v2_tool() {
+        let tool_call_info = HashMap::from([(
+            "spawn_agent".to_string(),
+            ClaudeToolCallInfo {
+                name: "spawn_agent".to_string(),
+                namespace: None,
+                kind: ClaudeToolCallKind::Function,
+            },
+        )]);
+
+        let events = run_events(
+            vec![
+                json!({
+                    "type": "message_start",
+                    "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": []}
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "multi_agent.spawn_agent",
+                        "input": {}
+                    }
+                }),
+                json!({
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "input_json_delta", "partial_json": "{\"task_name\":\"review\",\"message\":\"check\"}"}
+                }),
+                json!({
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "tool_use"}
+                }),
+                json!({"type": "message_stop"}),
+            ],
+            tool_call_info,
+        )
+        .await;
+
+        let mapped_call = events.iter().find_map(|event| match event {
+            ResponseEvent::OutputItemDone(ResponseItem::FunctionCall {
+                name,
+                namespace,
+                arguments,
+                call_id,
+                ..
+            }) if name == "spawn_agent" && namespace.is_none() && call_id == "toolu_1" => {
+                Some(arguments)
+            }
+            _ => None,
+        });
+        let Some(arguments) = mapped_call else {
+            panic!("expected namespaced alias to map to bare V2 spawn_agent; events: {events:?}");
+        };
+        assert_eq!(
+            serde_json::from_str::<Value>(arguments).expect("arguments should be JSON"),
+            json!({"task_name": "review", "message": "check"})
+        );
+    }
+
     #[test]
     fn claude_tool_call_compatibility_maps_bare_collaboration_tools_to_namespaced_aliases() {
         for tool_name in COLLABORATION_TOOL_NAMES {
@@ -2110,6 +2173,44 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn claude_tool_call_compatibility_maps_functions_prefix_for_any_claude_tool_name() {
+        let state = ClaudeStreamState::new(HashMap::from([
+            (
+                "apply_patch".to_string(),
+                ClaudeToolCallInfo {
+                    name: "apply_patch".to_string(),
+                    namespace: None,
+                    kind: ClaudeToolCallKind::Custom,
+                },
+            ),
+            (
+                "mcp__demo__search".to_string(),
+                ClaudeToolCallInfo {
+                    name: "search".to_string(),
+                    namespace: Some("mcp__demo__".to_string()),
+                    kind: ClaudeToolCallKind::Function,
+                },
+            ),
+        ]));
+
+        let apply_patch = state
+            .tool_call_info
+            .get("functions.apply_patch")
+            .expect("functions-prefixed custom tool should map");
+        assert_eq!(apply_patch.name, "apply_patch");
+        assert_eq!(apply_patch.namespace, None);
+        assert_eq!(apply_patch.kind, ClaudeToolCallKind::Custom);
+
+        let mcp_search = state
+            .tool_call_info
+            .get("functions.mcp__demo__search")
+            .expect("functions-prefixed flattened namespace tool should map");
+        assert_eq!(mcp_search.name, "search");
+        assert_eq!(mcp_search.namespace.as_deref(), Some("mcp__demo__"));
+        assert_eq!(mcp_search.kind, ClaudeToolCallKind::Function);
     }
 
     #[test]
