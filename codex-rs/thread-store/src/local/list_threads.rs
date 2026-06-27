@@ -9,6 +9,7 @@ use codex_rollout::parse_cursor;
 
 use super::LocalThreadStore;
 use super::helpers::distinct_thread_metadata_title;
+use super::helpers::hydrate_stored_thread_runtime_metadata_from_rollout;
 use super::helpers::set_thread_name_from_title;
 use super::helpers::stored_thread_from_rollout_item;
 use crate::ListThreadsParams;
@@ -100,6 +101,7 @@ pub(super) async fn list_threads(
         }
     }
     for thread in &mut items {
+        hydrate_stored_thread_runtime_metadata_from_rollout(thread).await;
         if let Some(title) = names.get(&thread.thread_id).cloned() {
             set_thread_name_from_title(thread, title);
         }

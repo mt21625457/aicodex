@@ -13,9 +13,11 @@ use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::GitInfo;
 use codex_protocol::protocol::NetworkAccess;
+use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_rollout::ARCHIVED_SESSIONS_SUBDIR;
+use codex_rollout::RolloutRecorder;
 use codex_rollout::ThreadItem;
 use codex_state::ThreadMetadata;
 
@@ -153,6 +155,21 @@ pub(super) fn stored_thread_from_rollout_item(
         first_user_message: item.first_user_message,
         history: None,
     })
+}
+
+pub(super) async fn hydrate_stored_thread_runtime_metadata_from_rollout(thread: &mut StoredThread) {
+    let Some(path) = thread.rollout_path.as_deref() else {
+        return;
+    };
+    let Ok((items, _, _)) = RolloutRecorder::load_rollout_items(path).await else {
+        return;
+    };
+    for item in items {
+        if let RolloutItem::TurnContext(turn_ctx) = item {
+            thread.model = Some(turn_ctx.model);
+            thread.reasoning_effort = turn_ctx.effort;
+        }
+    }
 }
 
 pub(super) fn permission_profile_from_metadata_value(value: &str, cwd: &Path) -> PermissionProfile {

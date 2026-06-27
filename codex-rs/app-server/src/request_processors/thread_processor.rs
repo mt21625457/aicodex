@@ -4190,6 +4190,37 @@ fn set_thread_name_from_title(thread: &mut Thread, title: String) {
     thread.name = Some(title);
 }
 
+fn infer_thread_wire_api(model: Option<&str>, model_provider: &str) -> Option<String> {
+    let model = model.unwrap_or_default().trim().to_ascii_lowercase();
+    if model.starts_with("claude-") || model.starts_with("deepseek-") || model.starts_with("kimi-")
+    {
+        return Some("claude".to_string());
+    }
+    if model.starts_with("gpt-") || model.starts_with("chatgpt-") {
+        return Some("responses".to_string());
+    }
+
+    let provider = model_provider.trim().to_ascii_lowercase();
+    if provider == "aicodex_gateway_claude"
+        || provider == "claude"
+        || provider.starts_with("claude_")
+        || provider.ends_with("_claude")
+        || provider.contains("claude_relay")
+    {
+        return Some("claude".to_string());
+    }
+    if provider == "aicodex_gateway"
+        || provider == "aicodex_gateway_responses"
+        || provider == "openai"
+        || provider.starts_with("openai_")
+        || provider.ends_with("_openai")
+        || provider.contains("responses")
+    {
+        return Some("responses".to_string());
+    }
+    None
+}
+
 pub(crate) fn thread_from_stored_thread(
     thread: StoredThread,
     fallback_provider: &str,
@@ -4215,6 +4246,12 @@ pub(crate) fn thread_from_stored_thread(
     );
     let history = thread.history;
     let thread_id = thread.thread_id.to_string();
+    let model_provider = if thread.model_provider.is_empty() {
+        fallback_provider.to_string()
+    } else {
+        thread.model_provider
+    };
+    let wire_api = infer_thread_wire_api(thread.model.as_deref(), model_provider.as_str());
     let thread = Thread {
         id: thread_id.clone(),
         session_id: thread_id,
@@ -4222,11 +4259,10 @@ pub(crate) fn thread_from_stored_thread(
         parent_thread_id: thread.parent_thread_id.map(|id| id.to_string()),
         preview: thread.preview,
         ephemeral: false,
-        model_provider: if thread.model_provider.is_empty() {
-            fallback_provider.to_string()
-        } else {
-            thread.model_provider
-        },
+        model_provider,
+        model_id: thread.model,
+        wire_api,
+        effort: thread.reasoning_effort,
         created_at: thread.created_at.timestamp(),
         updated_at: thread.updated_at.timestamp(),
         recency_at: Some(thread.recency_at.timestamp()),
@@ -4425,6 +4461,9 @@ fn build_thread_from_snapshot(
     path: Option<PathBuf>,
 ) -> Thread {
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let model_provider = config_snapshot.model_provider_id.clone();
+    let model_id = Some(config_snapshot.model.clone());
+    let wire_api = infer_thread_wire_api(model_id.as_deref(), model_provider.as_str());
     Thread {
         id: thread_id.to_string(),
         session_id,
@@ -4432,7 +4471,10 @@ fn build_thread_from_snapshot(
         parent_thread_id: config_snapshot.parent_thread_id.map(|id| id.to_string()),
         preview: String::new(),
         ephemeral: config_snapshot.ephemeral,
-        model_provider: config_snapshot.model_provider_id.clone(),
+        model_provider,
+        model_id,
+        wire_api,
+        effort: config_snapshot.reasoning_effort.clone(),
         created_at: now,
         updated_at: now,
         recency_at: Some(now),

@@ -11,6 +11,7 @@ use codex_rollout::search_rollout_matches;
 
 use super::LocalThreadStore;
 use super::helpers::distinct_thread_metadata_title;
+use super::helpers::hydrate_stored_thread_runtime_metadata_from_rollout;
 use super::helpers::set_thread_name_from_title;
 use super::helpers::stored_thread_from_rollout_item;
 use super::list_threads::list_rollout_threads;
@@ -168,6 +169,9 @@ pub(super) async fn search_threads(
             })
         })
         .collect::<Vec<_>>();
+    for item in &mut items {
+        hydrate_stored_thread_runtime_metadata_from_rollout(&mut item.thread).await;
+    }
     set_thread_search_result_names(store, &mut items).await;
 
     Ok(ThreadSearchPage { items, next_cursor })

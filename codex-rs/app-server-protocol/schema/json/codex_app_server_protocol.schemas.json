@@ -16922,6 +16922,17 @@
             ],
             "description": "Working directory captured for the thread."
           },
+          "effort": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ReasoningEffort"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Latest observed reasoning effort for this thread."
+          },
           "ephemeral": {
             "description": "Whether the thread is ephemeral and should not be materialized on disk.",
             "type": "boolean"
@@ -16946,6 +16957,13 @@
           },
           "id": {
             "type": "string"
+          },
+          "modelId": {
+            "description": "Latest observed model for this thread, when recorded in thread metadata.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "modelProvider": {
             "description": "Model provider used for this thread (for example, 'openai').",
@@ -17026,6 +17044,13 @@
             "description": "Unix timestamp (in seconds) when the thread was last updated.",
             "format": "int64",
             "type": "integer"
+          },
+          "wireApi": {
+            "description": "Wire protocol inferred for the recorded model/provider pair.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [

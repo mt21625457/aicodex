@@ -48,6 +48,7 @@ use codex_core::config::ConfigBuilder;
 use codex_exec_server::EnvironmentManager;
 use codex_feedback::CodexFeedback;
 use codex_protocol::models::BaseInstructions;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AgentMessageEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
@@ -1033,6 +1034,148 @@ async fn thread_name_set_is_reflected_in_read_list_and_resume() -> Result<()> {
         resumed_json.get("ephemeral").and_then(Value::as_bool),
         Some(false),
         "thread/resume must serialize `thread.ephemeral` on the wire"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_read_and_list_surface_recorded_model_metadata() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let start_id = mcp
+        .send_thread_start_request(ThreadStartParams {
+            model: Some("gpt-5.2".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let start_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(start_id)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(start_resp)?;
+
+    let turn_start_id = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id.clone(),
+            client_user_message_id: None,
+            input: vec![UserInput::Text {
+                text: "record model metadata".to_string(),
+                text_elements: Vec::new(),
+            }],
+            model: Some("gpt-5.2".to_string()),
+            effort: Some(ReasoningEffort::High),
+            ..Default::default()
+        })
+        .await?;
+    let turn_start_response: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turn_start_id)),
+    )
+    .await??;
+    let _: TurnStartResponse = to_response::<TurnStartResponse>(turn_start_response)?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let read_id = mcp
+        .send_thread_read_request(ThreadReadParams {
+            thread_id: thread.id.clone(),
+            include_turns: false,
+            items_view: None,
+        })
+        .await?;
+    let read_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(read_id)),
+    )
+    .await??;
+    let read_result = read_resp.result.clone();
+    let ThreadReadResponse { thread: read, .. } = to_response::<ThreadReadResponse>(read_resp)?;
+    assert_eq!(read.model_provider, "mock_provider");
+    assert_eq!(read.model_id.as_deref(), Some("gpt-5.2"));
+    assert_eq!(read.wire_api.as_deref(), Some("responses"));
+    assert_eq!(read.effort, Some(ReasoningEffort::High));
+    let read_thread_json = read_result
+        .get("thread")
+        .and_then(Value::as_object)
+        .expect("thread/read result.thread must be an object");
+    assert_eq!(
+        read_thread_json.get("modelId").and_then(Value::as_str),
+        Some("gpt-5.2"),
+        "thread/read must serialize the recorded model id"
+    );
+    assert_eq!(
+        read_thread_json.get("wireApi").and_then(Value::as_str),
+        Some("responses"),
+        "thread/read must serialize the inferred wire API"
+    );
+    assert_eq!(
+        read_thread_json.get("effort").and_then(Value::as_str),
+        Some("high"),
+        "thread/read must serialize the recorded reasoning effort"
+    );
+
+    let list_id = mcp
+        .send_thread_list_request(ThreadListParams {
+            cursor: None,
+            limit: Some(50),
+            sort_key: None,
+            sort_direction: None,
+            model_providers: Some(vec!["mock_provider".to_string()]),
+            source_kinds: None,
+            archived: None,
+            cwd: None,
+            use_state_db_only: false,
+            search_term: None,
+            parent_thread_id: None,
+        })
+        .await?;
+    let list_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(list_id)),
+    )
+    .await??;
+    let list_result = list_resp.result.clone();
+    let ThreadListResponse { data, .. } = to_response::<ThreadListResponse>(list_resp)?;
+    let listed = data
+        .iter()
+        .find(|listed| listed.id == thread.id)
+        .expect("thread/list should include the created thread");
+    assert_eq!(listed.model_provider, "mock_provider");
+    assert_eq!(listed.model_id.as_deref(), Some("gpt-5.2"));
+    assert_eq!(listed.wire_api.as_deref(), Some("responses"));
+    assert_eq!(listed.effort, Some(ReasoningEffort::High));
+    let listed_json = list_result
+        .get("data")
+        .and_then(Value::as_array)
+        .expect("thread/list result.data must be an array")
+        .iter()
+        .find(|candidate| candidate.get("id").and_then(Value::as_str) == Some(thread.id.as_str()))
+        .and_then(Value::as_object)
+        .expect("thread/list should include the created thread as an object");
+    assert_eq!(
+        listed_json.get("modelId").and_then(Value::as_str),
+        Some("gpt-5.2"),
+        "thread/list must serialize the recorded model id"
+    );
+    assert_eq!(
+        listed_json.get("wireApi").and_then(Value::as_str),
+        Some("responses"),
+        "thread/list must serialize the inferred wire API"
+    );
+    assert_eq!(
+        listed_json.get("effort").and_then(Value::as_str),
+        Some("high"),
+        "thread/list must serialize the recorded reasoning effort"
     );
 
     Ok(())

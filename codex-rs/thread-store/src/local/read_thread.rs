@@ -15,6 +15,7 @@ use codex_state::ThreadMetadata;
 use super::LocalThreadStore;
 use super::helpers::distinct_thread_metadata_title;
 use super::helpers::git_info_from_parts;
+use super::helpers::hydrate_stored_thread_runtime_metadata_from_rollout;
 use super::helpers::permission_profile_from_metadata_value;
 use super::helpers::rollout_path_is_archived;
 use super::helpers::set_thread_name_from_title;
@@ -55,6 +56,12 @@ pub(super) async fn read_thread(
             && (params.include_archived || rollout_thread.archived_at.is_none())
             && !rollout_thread.preview.is_empty()
         {
+            if rollout_thread.model.is_none() {
+                rollout_thread.model = thread.model.clone();
+            }
+            if rollout_thread.reasoning_effort.is_none() {
+                rollout_thread.reasoning_effort = thread.reasoning_effort.clone();
+            }
             rollout_thread.recency_at = thread.recency_at;
             if thread.name.is_some() {
                 rollout_thread.name = thread.name;
@@ -272,6 +279,7 @@ async fn read_thread_from_rollout_path(
             thread.model_provider = model_provider;
         }
     }
+    hydrate_stored_thread_runtime_metadata_from_rollout(&mut thread).await;
     if let Ok(Some(title)) =
         find_thread_name_by_id(store.config.codex_home.as_path(), &thread.thread_id).await
     {

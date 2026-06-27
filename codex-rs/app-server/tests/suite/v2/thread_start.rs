@@ -155,6 +155,10 @@ async fn thread_start_creates_thread_and_emits_started() -> Result<()> {
     );
     assert_eq!(thread.status, ThreadStatus::Idle);
     assert_eq!(thread.thread_source, Some(ThreadSource::User));
+    assert_eq!(thread.model_provider, "mock_provider");
+    assert_eq!(thread.model_id.as_deref(), Some("gpt-5.2"));
+    assert_eq!(thread.wire_api.as_deref(), Some("responses"));
+    assert_eq!(thread.effort, None);
     let thread_path = thread.path.clone().expect("thread path should be present");
     assert!(thread_path.is_absolute(), "thread path should be absolute");
     assert!(
@@ -191,6 +195,21 @@ async fn thread_start_creates_thread_and_emits_started() -> Result<()> {
         thread_json.get("threadSource").and_then(Value::as_str),
         Some("user"),
         "new threads should serialize the caller-supplied thread origin"
+    );
+    assert_eq!(
+        thread_json.get("modelId").and_then(Value::as_str),
+        Some("gpt-5.2"),
+        "new threads should serialize the configured model id"
+    );
+    assert_eq!(
+        thread_json.get("wireApi").and_then(Value::as_str),
+        Some("responses"),
+        "new threads should serialize the inferred wire API"
+    );
+    assert_eq!(
+        thread_json.get("effort"),
+        Some(&Value::Null),
+        "new threads should serialize `effort: null` when no reasoning effort is configured"
     );
     assert_eq!(thread.name, None);
 
@@ -239,6 +258,21 @@ async fn thread_start_creates_thread_and_emits_started() -> Result<()> {
             .and_then(Value::as_str),
         Some("user"),
         "thread/started should preserve the caller-supplied thread origin"
+    );
+    assert_eq!(
+        started_thread_json.get("modelId").and_then(Value::as_str),
+        Some("gpt-5.2"),
+        "thread/started should serialize the configured model id"
+    );
+    assert_eq!(
+        started_thread_json.get("wireApi").and_then(Value::as_str),
+        Some("responses"),
+        "thread/started should serialize the inferred wire API"
+    );
+    assert_eq!(
+        started_thread_json.get("effort"),
+        Some(&Value::Null),
+        "thread/started should serialize `effort: null` when no reasoning effort is configured"
     );
     let started: ThreadStartedNotification =
         serde_json::from_value(notif.params.expect("params must be present"))?;
@@ -652,10 +686,13 @@ model_reasoning_effort = "high"
     )
     .await??;
     let ThreadStartResponse {
-        reasoning_effort, ..
+        thread,
+        reasoning_effort,
+        ..
     } = to_response::<ThreadStartResponse>(resp)?;
 
     assert_eq!(reasoning_effort, Some(ReasoningEffort::High));
+    assert_eq!(thread.effort, Some(ReasoningEffort::High));
     Ok(())
 }
 
