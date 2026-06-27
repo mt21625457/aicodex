@@ -35,6 +35,18 @@ const REQUEST_ID_HEADER: &str = "x-request-id";
 const INVALID_CLAUDE_CUSTOM_TOOL_INPUT_STATUS_PREFIX: &str = "invalid_claude_custom_tool_input: ";
 const APPLY_PATCH_TOOL_NAME: &str = "apply_patch";
 const APPLY_PATCH_COMPAT_INPUT_FIELDS: &[&str] = &["patch", "body", "content", "command"];
+const COLLABORATION_TOOL_NAMES: &[&str] = &[
+    "spawn_agent",
+    "send_message",
+    "followup_task",
+    "wait_agent",
+    "interrupt_agent",
+    "list_agents",
+    "send_input",
+    "resume_agent",
+    "close_agent",
+];
+const COLLABORATION_TOOL_NAMESPACES: &[&str] = &["agents", "multi_agent", "multi_agent_v1"];
 
 pub fn spawn_claude_response_stream(
     stream_response: StreamResponse,
@@ -421,7 +433,7 @@ struct ToolUseState {
 impl ClaudeStreamState {
     fn new(tool_call_info: HashMap<String, ClaudeToolCallInfo>) -> Self {
         Self {
-            tool_call_info,
+            tool_call_info: with_namespace_tool_aliases(tool_call_info),
             ..Self::default()
         }
     }
@@ -1135,6 +1147,62 @@ impl ClaudeStreamState {
     fn reasoning_id_for_block(&self, index: usize) -> String {
         format!("{}_reasoning_{index}", self.response_id())
     }
+}
+
+fn with_namespace_tool_aliases(
+    mut tool_call_info: HashMap<String, ClaudeToolCallInfo>,
+) -> HashMap<String, ClaudeToolCallInfo> {
+    let originals = tool_call_info
+        .values()
+        .filter_map(|info| {
+            info.namespace
+                .as_deref()
+                .map(|namespace| (namespace.to_string(), info.clone()))
+        })
+        .collect::<Vec<_>>();
+    let mut aliases: HashMap<String, Option<ClaudeToolCallInfo>> = HashMap::new();
+
+    for (namespace, info) in originals {
+        for alias in namespace_tool_aliases(&namespace, &info.name) {
+            if tool_call_info.contains_key(&alias) {
+                continue;
+            }
+            match aliases.get_mut(&alias) {
+                Some(existing) if existing.as_ref() != Some(&info) => {
+                    *existing = None;
+                }
+                Some(_) => {}
+                None => {
+                    aliases.insert(alias, Some(info.clone()));
+                }
+            }
+        }
+    }
+
+    for (alias, info) in aliases {
+        if let Some(info) = info {
+            tool_call_info.entry(alias).or_insert(info);
+        }
+    }
+
+    tool_call_info
+}
+
+fn namespace_tool_aliases(namespace: &str, name: &str) -> Vec<String> {
+    let mut aliases = vec![
+        format!("{namespace}.{name}"),
+        format!("functions.{namespace}.{name}"),
+    ];
+    if !namespace.ends_with('_') && !name.starts_with('_') {
+        aliases.push(format!("{namespace}__{name}"));
+        aliases.push(format!("functions.{namespace}__{name}"));
+    }
+    if COLLABORATION_TOOL_NAMESPACES.contains(&namespace)
+        && COLLABORATION_TOOL_NAMES.contains(&name)
+    {
+        aliases.push(name.to_string());
+    }
+    aliases
 }
 
 impl ToolUseState {
@@ -1852,6 +1920,125 @@ mod tests {
             })
             .expect("completed event");
         assert_eq!(end_turn, Some(false));
+    }
+
+    #[tokio::test]
+    async fn claude_stream_maps_namespaced_multi_agent_tool_aliases() {
+        for alias in [
+            "multi_agent.spawn_agent",
+            "multi_agent__spawn_agent",
+            "functions.multi_agent.spawn_agent",
+            "spawn_agent",
+        ] {
+            let tool_call_info = HashMap::from([(
+                "multi_agent_spawn_agent".to_string(),
+                ClaudeToolCallInfo {
+                    name: "spawn_agent".to_string(),
+                    namespace: Some("multi_agent".to_string()),
+                    kind: ClaudeToolCallKind::Function,
+                },
+            )]);
+
+            let events = run_events(
+                vec![
+                    json!({
+                        "type": "message_start",
+                        "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": []}
+                    }),
+                    json!({
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": {
+                            "type": "tool_use",
+                            "id": "toolu_1",
+                            "name": alias,
+                            "input": {}
+                        }
+                    }),
+                    json!({
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "input_json_delta", "partial_json": "{\"task_name\":\"review\",\"message\":\"check\"}"}
+                    }),
+                    json!({
+                        "type": "message_delta",
+                        "delta": {"stop_reason": "tool_use"}
+                    }),
+                    json!({"type": "message_stop"}),
+                ],
+                tool_call_info,
+            )
+            .await;
+
+            let mapped_call = events.iter().find_map(|event| match event {
+                ResponseEvent::OutputItemDone(ResponseItem::FunctionCall {
+                    name,
+                    namespace,
+                    arguments,
+                    call_id,
+                    ..
+                }) if name == "spawn_agent"
+                    && namespace.as_deref() == Some("multi_agent")
+                    && call_id == "toolu_1" =>
+                {
+                    Some(arguments)
+                }
+                _ => None,
+            });
+            let Some(arguments) = mapped_call else {
+                panic!(
+                    "expected alias {alias} to map to multi_agent.spawn_agent; events: {events:?}"
+                );
+            };
+            assert_eq!(
+                serde_json::from_str::<Value>(arguments).expect("arguments should be JSON"),
+                json!({"task_name": "review", "message": "check"})
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn claude_stream_does_not_bare_alias_non_collaboration_namespace() {
+        let tool_call_info = HashMap::from([(
+            "mcp__demo__spawn_agent".to_string(),
+            ClaudeToolCallInfo {
+                name: "spawn_agent".to_string(),
+                namespace: Some("mcp__demo__".to_string()),
+                kind: ClaudeToolCallKind::Function,
+            },
+        )]);
+
+        let events = run_events(
+            vec![
+                json!({
+                    "type": "message_start",
+                    "message": {"id": "msg_1", "type": "message", "role": "assistant", "content": []}
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "spawn_agent",
+                        "input": {}
+                    }
+                }),
+                json!({"type": "message_stop"}),
+            ],
+            tool_call_info,
+        )
+        .await;
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ResponseEvent::OutputItemDone(ResponseItem::FunctionCall {
+                name,
+                namespace,
+                call_id,
+                ..
+            }) if name == "spawn_agent" && namespace.is_none() && call_id == "toolu_1"
+        )));
     }
 
     #[tokio::test]
