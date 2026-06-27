@@ -409,6 +409,14 @@ struct ClaudeStreamState {
     usage: ClaudeUsage,
     stop_reason: Option<ClaudeStopReason>,
     tool_call_info: HashMap<String, ClaudeToolCallInfo>,
+    tool_call_aliases: HashMap<String, ClaudeToolCallAlias>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClaudeToolCallAlias {
+    canonical_claude_name: String,
+    canonical_name: String,
+    canonical_namespace: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -432,8 +440,10 @@ struct ToolUseState {
 
 impl ClaudeStreamState {
     fn new(tool_call_info: HashMap<String, ClaudeToolCallInfo>) -> Self {
+        let compatibility = ClaudeToolCallCompatibility::new(tool_call_info);
         Self {
-            tool_call_info: with_namespace_tool_aliases(tool_call_info),
+            tool_call_info: compatibility.tool_call_info,
+            tool_call_aliases: compatibility.aliases,
             ..Self::default()
         }
     }
@@ -539,6 +549,7 @@ impl ClaudeStreamState {
             ClaudeStreamContentBlock::ToolUse { id, name, input } => {
                 self.block_kinds
                     .insert(index, ClaudeStreamBlockKind::ToolUse);
+                self.log_tool_call_alias_if_needed(&name);
                 let state = self.tool_blocks.entry(index).or_default();
                 state.id = Some(id);
                 state.name = Some(name);
@@ -556,6 +567,7 @@ impl ClaudeStreamState {
             } => {
                 self.block_kinds
                     .insert(index, ClaudeStreamBlockKind::ServerToolUse);
+                self.log_tool_call_alias_if_needed(&name);
                 let state = self.tool_blocks.entry(index).or_default();
                 state.id = Some(id);
                 state.name = Some(name);
@@ -838,6 +850,19 @@ impl ClaudeStreamState {
             )))
             .await
             .map_err(|err| ApiError::Stream(err.to_string()))
+    }
+
+    fn log_tool_call_alias_if_needed(&self, upstream_tool_name: &str) {
+        let Some(alias) = self.tool_call_aliases.get(upstream_tool_name) else {
+            return;
+        };
+        debug!(
+            upstream_tool_name,
+            canonical_claude_name = %alias.canonical_claude_name,
+            canonical_tool_name = %alias.canonical_name,
+            canonical_namespace = alias.canonical_namespace.as_deref().unwrap_or(""),
+            "Claude tool call alias resolved"
+        );
     }
 
     async fn maybe_send_custom_tool_input_delta(
@@ -1149,47 +1174,82 @@ impl ClaudeStreamState {
     }
 }
 
-fn with_namespace_tool_aliases(
-    mut tool_call_info: HashMap<String, ClaudeToolCallInfo>,
-) -> HashMap<String, ClaudeToolCallInfo> {
-    let originals = tool_call_info
-        .values()
-        .filter_map(|info| {
-            info.namespace
-                .as_deref()
-                .map(|namespace| (namespace.to_string(), info.clone()))
-        })
-        .collect::<Vec<_>>();
-    let mut aliases: HashMap<String, Option<ClaudeToolCallInfo>> = HashMap::new();
+#[derive(Default)]
+struct ClaudeToolCallCompatibility {
+    tool_call_info: HashMap<String, ClaudeToolCallInfo>,
+    aliases: HashMap<String, ClaudeToolCallAlias>,
+}
 
-    for (namespace, info) in originals {
-        for alias in namespace_tool_aliases(&namespace, &info.name) {
-            if tool_call_info.contains_key(&alias) {
-                continue;
-            }
-            match aliases.get_mut(&alias) {
-                Some(existing) if existing.as_ref() != Some(&info) => {
-                    *existing = None;
+impl ClaudeToolCallCompatibility {
+    fn new(mut tool_call_info: HashMap<String, ClaudeToolCallInfo>) -> Self {
+        let originals = tool_call_info
+            .iter()
+            .map(|(claude_name, info)| (claude_name.clone(), info.clone()))
+            .collect::<Vec<_>>();
+        let mut pending_aliases: HashMap<String, Option<(String, ClaudeToolCallInfo)>> =
+            HashMap::new();
+
+        for (canonical_claude_name, info) in originals {
+            for alias in claude_tool_call_aliases(&canonical_claude_name, &info) {
+                if tool_call_info.contains_key(&alias) {
+                    continue;
                 }
-                Some(_) => {}
-                None => {
-                    aliases.insert(alias, Some(info.clone()));
+                let candidate = (canonical_claude_name.clone(), info.clone());
+                match pending_aliases.get_mut(&alias) {
+                    Some(existing) if existing.as_ref() != Some(&candidate) => {
+                        *existing = None;
+                    }
+                    Some(_) => {}
+                    None => {
+                        pending_aliases.insert(alias, Some(candidate));
+                    }
                 }
             }
         }
-    }
 
-    for (alias, info) in aliases {
-        if let Some(info) = info {
-            tool_call_info.entry(alias).or_insert(info);
+        let mut aliases = HashMap::new();
+        for (alias, target) in pending_aliases {
+            if let Some((canonical_claude_name, info)) = target {
+                tool_call_info.insert(alias.clone(), info.clone());
+                aliases.insert(
+                    alias,
+                    ClaudeToolCallAlias {
+                        canonical_claude_name,
+                        canonical_name: info.name,
+                        canonical_namespace: info.namespace,
+                    },
+                );
+            }
+        }
+
+        Self {
+            tool_call_info,
+            aliases,
+        }
+    }
+}
+
+fn claude_tool_call_aliases(canonical_claude_name: &str, info: &ClaudeToolCallInfo) -> Vec<String> {
+    let mut aliases = Vec::new();
+    if let Some(namespace) = info.namespace.as_deref() {
+        aliases.extend(namespace_tool_aliases(namespace, &info.name));
+    } else if COLLABORATION_TOOL_NAMES.contains(&info.name.as_str()) {
+        for namespace in COLLABORATION_TOOL_NAMESPACES {
+            aliases.extend(namespace_tool_aliases(namespace, &info.name));
         }
     }
 
-    tool_call_info
+    aliases.sort();
+    aliases.dedup();
+    aliases
+        .into_iter()
+        .filter(|alias| alias != canonical_claude_name)
+        .collect()
 }
 
 fn namespace_tool_aliases(namespace: &str, name: &str) -> Vec<String> {
     let mut aliases = vec![
+        claude_namespace_tool_name(namespace, name),
         format!("{namespace}.{name}"),
         format!("functions.{namespace}.{name}"),
     ];
@@ -1203,6 +1263,20 @@ fn namespace_tool_aliases(namespace: &str, name: &str) -> Vec<String> {
         aliases.push(name.to_string());
     }
     aliases
+}
+
+fn claude_namespace_tool_name(namespace: &str, name: &str) -> String {
+    if namespace.ends_with('_')
+        || name.starts_with('_')
+        || namespace
+            .chars()
+            .last()
+            .is_some_and(|ch| !ch.is_ascii_alphanumeric())
+    {
+        format!("{namespace}{name}")
+    } else {
+        format!("{namespace}_{name}")
+    }
 }
 
 impl ToolUseState {
@@ -1925,9 +1999,11 @@ mod tests {
     #[tokio::test]
     async fn claude_stream_maps_namespaced_multi_agent_tool_aliases() {
         for alias in [
+            "multi_agent_spawn_agent",
             "multi_agent.spawn_agent",
             "multi_agent__spawn_agent",
             "functions.multi_agent.spawn_agent",
+            "functions.multi_agent__spawn_agent",
             "spawn_agent",
         ] {
             let tool_call_info = HashMap::from([(
@@ -1995,6 +2071,84 @@ mod tests {
                 json!({"task_name": "review", "message": "check"})
             );
         }
+    }
+
+    #[test]
+    fn claude_tool_call_compatibility_maps_bare_collaboration_tools_to_namespaced_aliases() {
+        for tool_name in COLLABORATION_TOOL_NAMES {
+            let state = ClaudeStreamState::new(HashMap::from([(
+                (*tool_name).to_string(),
+                ClaudeToolCallInfo {
+                    name: (*tool_name).to_string(),
+                    namespace: None,
+                    kind: ClaudeToolCallKind::Function,
+                },
+            )]));
+
+            for namespace in COLLABORATION_TOOL_NAMESPACES {
+                for alias in [
+                    format!("{namespace}_{tool_name}"),
+                    format!("{namespace}.{tool_name}"),
+                    format!("{namespace}__{tool_name}"),
+                    format!("functions.{namespace}.{tool_name}"),
+                    format!("functions.{namespace}__{tool_name}"),
+                ] {
+                    let info = state
+                        .tool_call_info
+                        .get(&alias)
+                        .unwrap_or_else(|| panic!("{alias} should map to {tool_name}"));
+                    assert_eq!(info.name, *tool_name);
+                    assert_eq!(info.namespace, None);
+
+                    let alias_info = state
+                        .tool_call_aliases
+                        .get(&alias)
+                        .unwrap_or_else(|| panic!("{alias} should be recorded as an alias"));
+                    assert_eq!(alias_info.canonical_claude_name, *tool_name);
+                    assert_eq!(alias_info.canonical_name, *tool_name);
+                    assert_eq!(alias_info.canonical_namespace, None);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn claude_tool_call_compatibility_drops_ambiguous_collaboration_aliases() {
+        let state = ClaudeStreamState::new(HashMap::from([
+            (
+                "spawn_agent".to_string(),
+                ClaudeToolCallInfo {
+                    name: "spawn_agent".to_string(),
+                    namespace: None,
+                    kind: ClaudeToolCallKind::Function,
+                },
+            ),
+            (
+                "multi_agent_spawn_agent".to_string(),
+                ClaudeToolCallInfo {
+                    name: "spawn_agent".to_string(),
+                    namespace: Some("multi_agent".to_string()),
+                    kind: ClaudeToolCallKind::Function,
+                },
+            ),
+        ]));
+
+        assert!(
+            !state.tool_call_info.contains_key("multi_agent.spawn_agent"),
+            "ambiguous dotted alias should not be auto-mapped"
+        );
+        assert!(
+            !state
+                .tool_call_info
+                .contains_key("multi_agent__spawn_agent"),
+            "ambiguous double-underscore alias should not be auto-mapped"
+        );
+        assert!(
+            !state
+                .tool_call_info
+                .contains_key("functions.multi_agent.spawn_agent"),
+            "ambiguous functions alias should not be auto-mapped"
+        );
     }
 
     #[tokio::test]
