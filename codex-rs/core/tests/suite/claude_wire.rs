@@ -39,7 +39,10 @@ use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
+use wiremock::Mock;
 use wiremock::ResponseTemplate;
+use wiremock::matchers::method;
+use wiremock::matchers::path;
 
 const EXISTING_ENV_VAR_WITH_NON_EMPTY_VALUE: &str = "PATH";
 
@@ -295,11 +298,23 @@ async fn claude_wire_local_web_search_fallback_posts_function_tool_result() -> a
     let responses = mount_claude_sse_sequence(
         &server,
         vec![
-            claude_custom_tool_use_sse("toolu_web_search", "web_search", json!({})),
+            claude_custom_tool_use_sse(
+                "toolu_web_search",
+                "web_search",
+                json!({"search_query": [{"q": "claude web search"}]}),
+            ),
             claude_text_sse("msg_2", "handled"),
         ],
     )
     .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/alpha/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "output": "OpenAI search handled claude web search"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
 
     let test = test_codex()
         .with_model("gpt-5.2")
@@ -323,21 +338,19 @@ async fn claude_wire_local_web_search_fallback_posts_function_tool_result() -> a
         web_search_tool
             .get("input_schema")
             .and_then(|schema| schema.get("properties"))
-            .and_then(|properties| properties.get("query"))
-            .and_then(|query| query.get("type"))
+            .and_then(|properties| properties.get("search_query"))
+            .and_then(|search_query| search_query.get("type"))
             .and_then(Value::as_str),
-        Some("string")
+        Some("array")
     );
 
     let second = requests[1].body_json();
     let tool_result = tool_result_block(&second, "toolu_web_search");
-    assert_eq!(tool_result["is_error"].as_bool(), Some(true));
-    let content = tool_result["content"]
-        .as_str()
-        .expect("tool_result error content");
+    assert_ne!(tool_result["is_error"].as_bool(), Some(true));
+    let content = tool_result_text(&tool_result);
     assert!(
-        content.contains("web_search requires `query` or `queries`"),
-        "unexpected error content: {content}"
+        content.contains("OpenAI search handled claude web search"),
+        "unexpected tool result content: {content}"
     );
 
     Ok(())
@@ -2277,6 +2290,14 @@ fn configure_claude_provider_without_stream_retries(config: &mut Config) {
 
 fn configure_claude_provider_with_web_search_context_size(config: &mut Config) {
     configure_claude_provider(config);
+    let mut openai_provider = codex_model_provider_info::ModelProviderInfo::create_openai_provider(
+        config.model_provider.base_url.clone(),
+    );
+    openai_provider.requires_openai_auth = false;
+    openai_provider.supports_websockets = false;
+    config
+        .model_providers
+        .insert("openai".to_string(), openai_provider);
     config
         .web_search_mode
         .set(WebSearchMode::Live)
@@ -2842,6 +2863,24 @@ fn tool_result_block(body: &Value, tool_use_id: &str) -> Value {
         .unwrap_or_else(|| {
             panic!("Claude request should include tool_result {tool_use_id}: {body}")
         })
+}
+
+fn tool_result_text(block: &Value) -> String {
+    if let Some(text) = block["content"].as_str() {
+        return text.to_string();
+    }
+
+    block["content"]
+        .as_array()
+        .unwrap_or_else(|| panic!("tool_result content should be text or blocks: {block}"))
+        .iter()
+        .filter_map(|content| {
+            content
+                .as_str()
+                .or_else(|| content.get("text").and_then(Value::as_str))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn assistant_message_content_blocks(body: &Value) -> Vec<Value> {

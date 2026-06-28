@@ -23,10 +23,12 @@ use crate::claude_native::ClaudeNativeToolKind;
 use crate::claude_native::ClaudeNativeToolPolicy;
 use crate::claude_native::ClaudeNativeToolSelection;
 use crate::claude_native::evaluate_native_tool;
+use codex_api::SearchCommands;
 use codex_protocol::config_types::WebSearchContextSize;
 use codex_protocol::config_types::WebSearchFilters as ConfigWebSearchFilters;
 use codex_protocol::config_types::WebSearchUserLocation as ConfigWebSearchUserLocation;
 use codex_protocol::config_types::WebSearchUserLocationType;
+use schemars::r#gen::SchemaSettings;
 use serde::Serialize;
 use serde_json::Map;
 use serde_json::Value;
@@ -178,7 +180,6 @@ pub enum ClaudeWebSearchToolKind {
 enum ClaudeWebSearchPlan {
     NativeLossless,
     LocalFallback(&'static str),
-    Disabled(&'static str),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -320,26 +321,14 @@ pub fn create_tools_json_for_claude_messages_with_options(
                     ClaudeWebSearchToolKind::NativeServerTool if native_mapping_is_lossless => {
                         ClaudeWebSearchPlan::NativeLossless
                     }
-                    ClaudeWebSearchToolKind::NativeServerTool
-                        if matches!(external_web_access, Some(false)) =>
-                    {
-                        ClaudeWebSearchPlan::Disabled(
-                            "Claude native web search is live-only and local fallback cannot honor cached-only web search",
-                        )
-                    }
-                    ClaudeWebSearchToolKind::NativeServerTool if has_non_text_content_types => {
-                        ClaudeWebSearchPlan::Disabled(
-                            "Claude web search local fallback only supports text search results",
-                        )
-                    }
                     ClaudeWebSearchToolKind::NativeServerTool => {
                         ClaudeWebSearchPlan::LocalFallback(
-                            "Claude native web search cannot represent all configured Responses web search fields; selected local web search function",
+                            "Claude native web search cannot represent all configured Responses web search fields; selected OpenAI web search function",
                         )
                     }
                     ClaudeWebSearchToolKind::LocalFunctionTool => {
                         ClaudeWebSearchPlan::LocalFallback(
-                            "provider compatibility selected local web search function",
+                            "provider compatibility selected OpenAI web search function",
                         )
                     }
                 };
@@ -360,7 +349,7 @@ pub fn create_tools_json_for_claude_messages_with_options(
                         );
                         claude_tools.push(claude_function_tool_json(
                             &claude_name,
-                            "Search the web using Codex's local web search handler and return relevant text results. Use `query` for one search or `queries` for a small batch.",
+                            "Access the web using Codex's OpenAI web search command surface. Supports search_query, image_query, open, click, find, screenshot, finance, weather, sports, time, and legacy query/queries aliases.",
                             claude_web_search_function_schema_json(),
                         ));
                         tool_call_info.push(ClaudeToolCallInfo {
@@ -382,16 +371,6 @@ pub fn create_tools_json_for_claude_messages_with_options(
                         history_requirements.preserve_server_tool_results = true;
                         history_requirements.preserve_structured_citations = true;
                         claude_tools.push(claude_web_search_tool_json(filters, user_location));
-                    }
-                    ClaudeWebSearchPlan::Disabled(reason) => {
-                        native_tool_policy
-                            .disabled_tools
-                            .insert(ClaudeNativeToolKind::WebSearch20250305);
-                        native_tool_policy.decisions.push(ClaudeNativeToolDecision {
-                            tool: ClaudeNativeToolKind::WebSearch20250305,
-                            outcome: ClaudeNativeToolDecisionOutcome::Disabled,
-                            reason,
-                        });
                     }
                 }
             }
@@ -759,21 +738,61 @@ fn claude_web_search_tool_json(
 }
 
 fn claude_web_search_function_schema_json() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "Search query."
-            },
-            "queries": {
-                "type": "array",
-                "description": "Optional batch of search queries. Use only when several closely related searches are needed.",
-                "items": { "type": "string" }
-            }
-        },
-        "additionalProperties": false
-    })
+    let schema = SchemaSettings::draft2019_09()
+        .with(|settings| {
+            settings.inline_subschemas = true;
+            settings.option_add_null_type = false;
+        })
+        .into_generator()
+        .into_root_schema_for::<SearchCommands>();
+    let schema = match serde_json::to_value(schema) {
+        Ok(schema) => schema,
+        Err(err) => panic!("Claude web_search command schema should serialize: {err}"),
+    };
+    let Value::Object(mut schema) = schema else {
+        unreachable!("Claude web_search command schema must be an object");
+    };
+
+    let mut tool_schema = Map::new();
+    for key in [
+        "properties",
+        "required",
+        "type",
+        "additionalProperties",
+        "$defs",
+        "definitions",
+    ] {
+        if let Some(value) = schema.remove(key) {
+            tool_schema.insert(key.to_string(), value);
+        }
+    }
+
+    let properties = tool_schema
+        .entry("properties".to_string())
+        .or_insert_with(|| json!({}));
+    let Value::Object(properties) = properties else {
+        unreachable!("Claude web_search schema properties must be an object");
+    };
+    properties.insert(
+        "query".to_string(),
+        json!({
+            "type": "string",
+            "description": "Legacy alias for one search_query item."
+        }),
+    );
+    properties.insert(
+        "queries".to_string(),
+        json!({
+            "type": "array",
+            "description": "Legacy alias for several search_query items.",
+            "items": { "type": "string" }
+        }),
+    );
+
+    tool_schema
+        .entry("additionalProperties".to_string())
+        .or_insert(json!(false));
+    Value::Object(tool_schema)
 }
 
 fn claude_freeform_tool_description(tool: &FreeformTool) -> String {

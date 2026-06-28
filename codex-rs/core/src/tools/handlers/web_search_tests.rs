@@ -1,7 +1,10 @@
 use super::*;
-use codex_protocol::config_types::WebSearchContextSize;
+use codex_model_provider_info::ModelProviderInfo;
+use codex_protocol::config_types::WebSearchContextSize as ConfigWebSearchContextSize;
 use codex_tools::ResponsesApiWebSearchFilters;
+use codex_tools::ResponsesApiWebSearchUserLocation;
 use pretty_assertions::assert_eq;
+use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -10,7 +13,6 @@ use wiremock::MockServer;
 use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
-use wiremock::matchers::query_param;
 
 use crate::session::tests::make_session_and_context;
 use crate::tools::context::ToolCallSource;
@@ -19,163 +21,218 @@ use crate::tools::context::ToolPayload;
 use crate::turn_diff_tracker::TurnDiffTracker;
 
 #[test]
-fn normalize_queries_accepts_single_and_batch_queries() {
-    let queries = normalize_queries(WebSearchArgs {
-        query: Some(" rust async ".to_string()),
-        queries: Some(vec![
-            "tokio runtime".to_string(),
-            "rust async".to_string(),
-            " ".to_string(),
-        ]),
-    })
-    .expect("queries should normalize");
-
-    assert_eq!(queries, vec!["rust async", "tokio runtime"]);
-}
-
-#[test]
-fn parse_duckduckgo_results_decodes_links_titles_and_snippets() {
-    let html = r#"
-        <div class="result">
-          <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Frust%3Fa%3D1&amp;rut=abc">
-            Rust &amp; async <b>guide</b>
-          </a>
-          <a class="result__snippet">Learn &lt;async&gt; Rust with examples.</a>
-        </div>
-    "#;
+fn parse_search_commands_accepts_openai_commands_and_legacy_aliases() {
+    let commands = parse_search_commands(
+        r#"{
+            "query": " rust async ",
+            "queries": ["tokio runtime", "rust async", " "],
+            "search_query": [{"q": "existing query", "recency": 7}],
+            "open": [{"ref_id": "https://example.com/docs", "lineno": 12}]
+        }"#,
+    )
+    .expect("commands should parse");
 
     assert_eq!(
-        parse_duckduckgo_results(html, 5),
-        vec![WebSearchResult {
-            title: "Rust & async guide".to_string(),
-            url: "https://example.com/rust?a=1".to_string(),
-            snippet: "Learn <async> Rust with examples.".to_string(),
-        }]
+        commands.search_query.as_ref().expect("search queries"),
+        &vec![
+            SearchQuery {
+                q: "rust async".to_string(),
+                recency: None,
+                domains: None,
+            },
+            SearchQuery {
+                q: "tokio runtime".to_string(),
+                recency: None,
+                domains: None,
+            },
+            SearchQuery {
+                q: "existing query".to_string(),
+                recency: Some(7),
+                domains: None,
+            },
+        ]
+    );
+    assert_eq!(
+        command_action(&commands),
+        WebSearchAction::Search {
+            query: None,
+            queries: Some(vec![
+                "rust async".to_string(),
+                "tokio runtime".to_string(),
+                "existing query".to_string()
+            ]),
+        }
     );
 }
 
 #[test]
-fn query_with_allowed_domains_adds_site_filter() {
+fn search_settings_preserve_openai_web_search_options() {
+    let spec = ToolSpec::WebSearch {
+        external_web_access: Some(true),
+        index_gated_web_access: Some(true),
+        filters: Some(ResponsesApiWebSearchFilters {
+            allowed_domains: Some(vec![
+                "example.com".to_string(),
+                "docs.example.com".to_string(),
+            ]),
+        }),
+        user_location: Some(ResponsesApiWebSearchUserLocation {
+            r#type: codex_protocol::config_types::WebSearchUserLocationType::Approximate,
+            country: Some("US".to_string()),
+            region: Some("California".to_string()),
+            city: Some("San Francisco".to_string()),
+            timezone: Some("America/Los_Angeles".to_string()),
+        }),
+        search_context_size: Some(ConfigWebSearchContextSize::High),
+        search_content_types: Some(vec!["text".to_string(), "image".to_string()]),
+    };
+
+    let settings = search_settings_from_spec(&spec);
+
+    assert_eq!(settings.search_context_size, Some(SearchContextSize::High));
     assert_eq!(
-        query_with_allowed_domains(
-            "rust async",
-            &["example.com".to_string(), "docs.example.com".to_string()]
-        ),
-        "rust async (site:example.com OR site:docs.example.com)"
+        settings.filters,
+        Some(SearchFilters {
+            allowed_domains: Some(vec![
+                "example.com".to_string(),
+                "docs.example.com".to_string()
+            ]),
+            blocked_domains: None,
+        })
+    );
+    assert_eq!(
+        settings.external_web_access,
+        Some(ExternalWebAccess::Mode(ExternalWebAccessMode::Indexed))
+    );
+    assert_eq!(
+        settings.user_location,
+        Some(ApproximateLocation {
+            r#type: LocationType::Approximate,
+            country: Some("US".to_string()),
+            region: Some("California".to_string()),
+            city: Some("San Francisco".to_string()),
+            timezone: Some("America/Los_Angeles".to_string()),
+        })
     );
 }
 
 #[tokio::test]
-async fn run_web_searches_uses_configured_endpoint_and_returns_results() {
+async fn handler_calls_openai_search_endpoint_and_returns_search_output() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/html/"))
-        .and(query_param("q", "rust async (site:example.com)"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(
-            r#"
-                <div class="result">
-                  <a class="result__a" href="https://example.com/rust">Rust async</a>
-                  <div class="result__snippet">Async Rust result.</div>
-                </div>
-            "#,
-        ))
+    Mock::given(method("POST"))
+        .and(path("/v1/alpha/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "output": "search result from OpenAI search"
+        })))
         .expect(1)
         .mount(&server)
         .await;
 
-    let endpoint = Url::parse(&format!("{}/html/", server.uri())).expect("mock endpoint");
-    let response = run_web_searches(
-        &reqwest::Client::new(),
-        &endpoint,
-        vec!["rust async".to_string()],
-        &["example.com".to_string()],
-        DEFAULT_RESULTS_PER_QUERY,
-    )
-    .await
-    .expect("web search should succeed");
-
-    assert_eq!(response.source, "duckduckgo_html");
-    assert_eq!(
-        response.searches[0].results,
-        vec![WebSearchResult {
-            title: "Rust async".to_string(),
-            url: "https://example.com/rust".to_string(),
-            snippet: "Async Rust result.".to_string(),
-        }]
-    );
-}
-
-#[test]
-fn handler_uses_web_search_spec_for_allowed_domains() {
     let spec = ToolSpec::WebSearch {
         external_web_access: Some(true),
         index_gated_web_access: None,
         filters: Some(ResponsesApiWebSearchFilters {
-            allowed_domains: Some(vec!["*.Example.com".to_string(), "bad/domain".to_string()]),
+            allowed_domains: Some(vec!["example.com".to_string()]),
         }),
         user_location: None,
-        search_context_size: Some(WebSearchContextSize::Low),
+        search_context_size: Some(ConfigWebSearchContextSize::Low),
         search_content_types: None,
     };
-    let endpoint = Url::parse("https://example.test/html/").expect("endpoint");
-    let handler = WebSearchHandler::new_for_test(spec.clone(), endpoint, reqwest::Client::new());
+    let mut provider =
+        ModelProviderInfo::create_openai_provider(Some(format!("{}/v1", server.uri())));
+    provider.requires_openai_auth = false;
+    provider.http_headers = None;
+    let handler = WebSearchHandler::new_for_test(spec, provider, "gpt-search-test");
 
-    assert_eq!(handler.spec(), spec);
-    assert_eq!(handler.allowed_domains, vec!["example.com"]);
-    assert_eq!(handler.max_results_per_query, 3);
-    assert_eq!(handler.unsupported_reason, None);
-}
-
-#[tokio::test]
-async fn handler_rejects_unsupported_local_semantics_before_network_search() {
-    let server = MockServer::start().await;
-    let endpoint = Url::parse(&format!("{}/html/", server.uri())).expect("mock endpoint");
-    let spec = ToolSpec::WebSearch {
-        external_web_access: Some(false),
-        index_gated_web_access: None,
-        filters: None,
-        user_location: None,
-        search_context_size: None,
-        search_content_types: None,
-    };
-    let handler = WebSearchHandler::new_for_test(spec, endpoint, reqwest::Client::new());
-
-    let Err(FunctionCallError::RespondToModel(message)) = handler
-        .handle(invocation_for_arguments(r#"{"query":"rust async"}"#).await)
+    let output = handler
+        .handle(invocation_for_arguments(r#"{"search_query":[{"q":"rust async"}]}"#).await)
         .await
-    else {
-        panic!("cached-only local fallback should return a model-correctable error")
-    };
+        .expect("web search should succeed");
 
-    assert!(
-        message.contains("cached-only"),
-        "unexpected error message: {message}"
+    assert_eq!(output.log_preview(), "[openai web search output]");
+    assert!(output.contains_external_context());
+    let response = output.to_response_item(
+        "call-web-search",
+        &ToolPayload::Function {
+            arguments: "{}".to_string(),
+        },
     );
     assert_eq!(
-        server
-            .received_requests()
-            .await
-            .expect("mock server should capture requests")
-            .len(),
-        0
+        response,
+        ResponseInputItem::FunctionCallOutput {
+            call_id: "call-web-search".to_string(),
+            output: FunctionCallOutputPayload::from_content_items(vec![
+                FunctionCallOutputContentItem::InputText {
+                    text: "search result from OpenAI search".to_string(),
+                },
+            ]),
+        }
+    );
+
+    let requests = server
+        .received_requests()
+        .await
+        .expect("mock server should capture requests");
+    let body: serde_json::Value = requests[0]
+        .body_json()
+        .expect("request body should be valid json");
+    assert_eq!(body["model"], json!("gpt-search-test"));
+    assert_eq!(
+        body["commands"]["search_query"][0]["q"],
+        json!("rust async")
+    );
+    assert_eq!(
+        body["settings"]["filters"]["allowed_domains"],
+        json!(["example.com"])
+    );
+    assert_eq!(body["settings"]["search_context_size"], json!("low"));
+    assert!(
+        body["max_output_tokens"]
+            .as_u64()
+            .is_some_and(|value| value > 0)
     );
 }
 
 #[test]
-fn local_web_search_rejects_non_text_content_types() {
-    let spec = ToolSpec::WebSearch {
-        external_web_access: Some(true),
-        index_gated_web_access: None,
-        filters: None,
-        user_location: None,
-        search_context_size: None,
-        search_content_types: Some(vec!["text".to_string(), "image".to_string()]),
-    };
+fn command_action_reports_queries_and_navigation_detail() {
+    let cases = [
+        (
+            r#"{"image_query":[{"q":"waterfalls"},{"q":"mountains"}]}"#,
+            WebSearchAction::Search {
+                query: None,
+                queries: Some(vec!["waterfalls".to_string(), "mountains".to_string()]),
+            },
+        ),
+        (
+            r#"{"open":[{"ref_id":"https://example.com/docs"}]}"#,
+            WebSearchAction::OpenPage {
+                url: Some("https://example.com/docs".to_string()),
+            },
+        ),
+        (
+            r#"{"find":[{"ref_id":"https://example.com/docs","pattern":"install"}]}"#,
+            WebSearchAction::FindInPage {
+                url: Some("https://example.com/docs".to_string()),
+                pattern: Some("install".to_string()),
+            },
+        ),
+        (
+            r#"{"find":[{"ref_id":"turn0search0","pattern":"install"}]}"#,
+            WebSearchAction::FindInPage {
+                url: None,
+                pattern: Some("install".to_string()),
+            },
+        ),
+        (
+            r#"{"open":[{"ref_id":"turn0search0"}]}"#,
+            WebSearchAction::Other,
+        ),
+    ];
 
-    assert_eq!(
-        unsupported_local_web_search_reason(&spec),
-        Some("web_search local fallback only supports text search results")
-    );
+    for (arguments, expected) in cases {
+        let commands = parse_search_commands(arguments).expect("valid search command arguments");
+        assert_eq!(command_action(&commands), expected);
+    }
 }
 
 async fn invocation_for_arguments(arguments: &str) -> ToolInvocation {

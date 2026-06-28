@@ -8,6 +8,7 @@ version.workspace = true
 workspace = true
 
 [dependencies]
+codex-api = { workspace = true }
 codex-app-server-protocol = { workspace = true }
 codex-code-mode = { workspace = true }
 codex-features = { workspace = true }
@@ -24,6 +25,7 @@ rmcp = { workspace = true, default-features = false, features = [
     "schemars",
     "server",
 ] }
+schemars = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

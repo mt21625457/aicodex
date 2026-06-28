@@ -4001,6 +4001,7 @@ dependencies = [
 name = "codex-tools"
 version = "0.1.11"
 dependencies = [
+ "codex-api",
  "codex-app-server-protocol",
  "codex-code-mode",
  "codex-features",
@@ -4014,6 +4015,7 @@ dependencies = [
  "jsonptr",
  "pretty_assertions",
  "rmcp",
+ "schemars 0.8.22",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

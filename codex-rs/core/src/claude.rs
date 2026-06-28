@@ -1805,6 +1805,93 @@ mod tests {
         .expect("deserialize model info")
     }
 
+    fn assert_openai_web_search_function_tool(tool: &Value) {
+        assert_eq!(tool["name"], json!("web_search"));
+        let description = tool["description"]
+            .as_str()
+            .unwrap_or_else(|| panic!("missing tool description in {tool}"));
+        assert!(
+            description.contains("OpenAI web search command surface"),
+            "unexpected web_search description: {description}"
+        );
+        assert_eq!(tool["input_schema"]["type"], json!("object"));
+        assert_eq!(tool["input_schema"]["additionalProperties"], json!(false));
+
+        let properties = tool["input_schema"]["properties"]
+            .as_object()
+            .unwrap_or_else(|| panic!("missing input_schema properties in {tool}"));
+        for property in [
+            "search_query",
+            "image_query",
+            "open",
+            "click",
+            "find",
+            "screenshot",
+            "finance",
+            "weather",
+            "sports",
+            "time",
+            "response_length",
+            "query",
+            "queries",
+        ] {
+            assert!(
+                properties.contains_key(property),
+                "expected web_search schema property {property} in {tool}"
+            );
+        }
+        assert_eq!(
+            tool["input_schema"]["properties"]["search_query"]["items"]["properties"]["q"]["type"],
+            json!("string")
+        );
+        assert_eq!(
+            tool["input_schema"]["properties"]["search_query"]["items"]["required"],
+            json!(["q"])
+        );
+        assert_eq!(
+            tool["input_schema"]["properties"]["open"]["items"]["properties"]["ref_id"]["type"],
+            json!("string")
+        );
+        assert_eq!(
+            tool["input_schema"]["properties"]["click"]["items"]["properties"]["id"]["type"],
+            json!("integer")
+        );
+        assert_json_array_contains(
+            &tool["input_schema"]["properties"]["find"]["items"]["required"],
+            &["ref_id", "pattern"],
+        );
+        assert_eq!(
+            tool["input_schema"]["properties"]["finance"]["items"]["properties"]["type"]["enum"],
+            json!(["equity", "fund", "crypto", "index"])
+        );
+        assert_eq!(
+            tool["input_schema"]["properties"]["weather"]["items"]["properties"]["location"]["type"],
+            json!("string")
+        );
+        assert_eq!(
+            tool["input_schema"]["properties"]["sports"]["items"]["properties"]["fn"]["enum"],
+            json!(["schedule", "standings"])
+        );
+        assert_eq!(
+            tool["input_schema"]["properties"]["time"]["items"]["properties"]["utc_offset"]["type"],
+            json!("string")
+        );
+    }
+
+    fn assert_json_array_contains(value: &Value, expected: &[&str]) {
+        let values = value
+            .as_array()
+            .unwrap_or_else(|| panic!("expected JSON array, got {value}"));
+        for expected_item in expected {
+            assert!(
+                values
+                    .iter()
+                    .any(|value| value.as_str() == Some(*expected_item)),
+                "expected JSON array {value} to contain {expected_item:?}"
+            );
+        }
+    }
+
     #[test]
     fn detects_claude_provider_compat() {
         assert_eq!(
@@ -2055,28 +2142,10 @@ mod tests {
             build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
                 .expect("request");
 
-        assert_eq!(
-            serde_json::to_value(&request.tools).expect("serialize tools"),
-            json!([{
-                "name": "web_search",
-                "description": "Search the web using Codex's local web search handler and return relevant text results. Use `query` for one search or `queries` for a small batch.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "Search query."
-                        },
-                        "queries": {
-                            "type": "array",
-                            "description": "Optional batch of search queries. Use only when several closely related searches are needed.",
-                            "items": { "type": "string" }
-                        }
-                    },
-                    "additionalProperties": false
-                }
-            }])
-        );
+        let tools = serde_json::to_value(&request.tools).expect("serialize tools");
+        let tools = tools.as_array().expect("tools should serialize as array");
+        assert_eq!(tools.len(), 1);
+        assert_openai_web_search_function_tool(&tools[0]);
         assert_eq!(
             request.tool_call_info.get("web_search"),
             Some(&ApiClaudeToolCallInfo {
@@ -2088,7 +2157,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_claude_request_without_web_search_when_no_safe_mapping_exists() {
+    fn builds_claude_request_with_local_web_search_when_native_is_not_lossless() {
         let prompt = Prompt {
             input: vec![ResponseItem::Message {
                 id: None,
@@ -2115,8 +2184,18 @@ mod tests {
             build_claude_messages_request(&prompt, &model_info(), ClaudeRequestOptions::default())
                 .expect("request");
 
-        assert!(request.tools.is_empty());
-        assert!(request.tool_call_info.is_empty());
+        let tools = serde_json::to_value(&request.tools).expect("serialize tools");
+        let tools = tools.as_array().expect("tools should serialize as array");
+        assert_eq!(tools.len(), 1);
+        assert_openai_web_search_function_tool(&tools[0]);
+        assert_eq!(
+            request.tool_call_info.get("web_search"),
+            Some(&ApiClaudeToolCallInfo {
+                name: "web_search".to_string(),
+                namespace: None,
+                kind: ApiClaudeToolCallKind::Function,
+            })
+        );
     }
 
     #[test]
@@ -2155,28 +2234,10 @@ mod tests {
         )
         .expect("request");
 
-        assert_eq!(
-            serde_json::to_value(&request.tools).expect("serialize tools"),
-            json!([{
-                "name": "web_search",
-                "description": "Search the web using Codex's local web search handler and return relevant text results. Use `query` for one search or `queries` for a small batch.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "Search query."
-                        },
-                        "queries": {
-                            "type": "array",
-                            "description": "Optional batch of search queries. Use only when several closely related searches are needed.",
-                            "items": { "type": "string" }
-                        }
-                    },
-                    "additionalProperties": false
-                }
-            }])
-        );
+        let tools = serde_json::to_value(&request.tools).expect("serialize tools");
+        let tools = tools.as_array().expect("tools should serialize as array");
+        assert_eq!(tools.len(), 1);
+        assert_openai_web_search_function_tool(&tools[0]);
         assert_eq!(
             request.tool_call_info.get("web_search"),
             Some(&ApiClaudeToolCallInfo {

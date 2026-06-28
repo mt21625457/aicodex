@@ -1,73 +1,156 @@
 use crate::function_tool::FunctionCallError;
-use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
+use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
-use crate::tools::handlers::parse_arguments;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
 use crate::web_search::web_search_action_detail;
+use codex_api::AllowedCaller;
+use codex_api::ApproximateLocation;
+use codex_api::ExternalWebAccess;
+use codex_api::ExternalWebAccessMode;
+use codex_api::LocationType;
+use codex_api::ReqwestTransport;
+use codex_api::SearchClient;
+use codex_api::SearchCommands;
+use codex_api::SearchContextSize;
+use codex_api::SearchFilters;
+use codex_api::SearchInput;
+use codex_api::SearchQuery;
+use codex_api::SearchRequest;
+use codex_api::SearchResponse;
+use codex_api::SearchSettings;
 use codex_login::default_client::build_reqwest_client;
+use codex_model_provider::create_model_provider;
+use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_protocol::config_types::WebSearchContextSize;
-use codex_protocol::items::TurnItem;
+use codex_protocol::items::TurnItem as ProtocolTurnItem;
 use codex_protocol::items::WebSearchItem;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputContentItem;
+use codex_protocol::models::FunctionCallOutputPayload;
+use codex_protocol::models::ResponseInputItem;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::models::WebSearchAction;
+use codex_protocol::models::plaintext_agent_message_content;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
-use regex_lite::Regex;
-use reqwest::header::ACCEPT;
-use reqwest::header::USER_AGENT;
+use codex_tools::retain_tail_from_last_n_user_messages;
+use codex_tools::truncate_assistant_output_text_to_token_budget;
 use serde::Deserialize;
-use serde::Serialize;
-use std::collections::HashSet;
-use std::time::Duration;
+use serde_json::Value;
 use url::Url;
 
 const WEB_SEARCH_TOOL_NAME: &str = "web_search";
-const DUCKDUCKGO_HTML_ENDPOINT: &str = "https://html.duckduckgo.com/html/";
-const WEB_SEARCH_USER_AGENT: &str = "aicodex-web-search/1.0";
-const WEB_SEARCH_TIMEOUT: Duration = Duration::from_secs(20);
-const MAX_WEB_SEARCH_QUERIES: usize = 5;
-const DEFAULT_RESULTS_PER_QUERY: usize = 5;
+const OPENAI_SEARCH_FALLBACK_MODEL: &str = "gpt-5.2-codex";
+const ASSISTANT_CONTEXT_TOKEN_LIMIT: usize = 1_000;
+const ASSISTANT_ROLE: &str = "assistant";
+const USER_ROLE: &str = "user";
 
 pub struct WebSearchHandler {
     spec: ToolSpec,
-    endpoint: Url,
-    client: reqwest::Client,
-    allowed_domains: Vec<String>,
-    max_results_per_query: usize,
-    unsupported_reason: Option<&'static str>,
+    settings: SearchSettings,
+    #[cfg(test)]
+    search_provider_override: Option<ModelProviderInfo>,
+    #[cfg(test)]
+    search_model_override: Option<String>,
 }
 
 impl WebSearchHandler {
     pub(crate) fn new(spec: ToolSpec) -> Self {
-        let endpoint = Url::parse(DUCKDUCKGO_HTML_ENDPOINT)
-            .expect("built-in DuckDuckGo HTML endpoint must parse");
-        let allowed_domains = allowed_domains_from_spec(&spec);
-        let max_results_per_query = max_results_per_query_from_spec(&spec);
-        let unsupported_reason = unsupported_local_web_search_reason(&spec);
+        let settings = search_settings_from_spec(&spec);
         Self {
             spec,
-            endpoint,
-            client: build_reqwest_client(),
-            allowed_domains,
-            max_results_per_query,
-            unsupported_reason,
+            settings,
+            #[cfg(test)]
+            search_provider_override: None,
+            #[cfg(test)]
+            search_model_override: None,
         }
     }
 
     #[cfg(test)]
-    fn new_for_test(spec: ToolSpec, endpoint: Url, client: reqwest::Client) -> Self {
-        let allowed_domains = allowed_domains_from_spec(&spec);
-        let max_results_per_query = max_results_per_query_from_spec(&spec);
-        let unsupported_reason = unsupported_local_web_search_reason(&spec);
+    fn new_for_test(
+        spec: ToolSpec,
+        search_provider_override: ModelProviderInfo,
+        search_model_override: impl Into<String>,
+    ) -> Self {
+        let settings = search_settings_from_spec(&spec);
         Self {
             spec,
-            endpoint,
-            client,
-            allowed_domains,
-            max_results_per_query,
-            unsupported_reason,
+            settings,
+            search_provider_override: Some(search_provider_override),
+            search_model_override: Some(search_model_override.into()),
+        }
+    }
+
+    async fn run_openai_web_search(
+        &self,
+        session: &crate::session::session::Session,
+        turn: &crate::session::turn_context::TurnContext,
+        commands: SearchCommands,
+    ) -> Result<SearchResponse, FunctionCallError> {
+        let provider_info = self.search_provider_info(turn);
+        let provider = create_model_provider(provider_info, turn.auth_manager.clone());
+        let api_provider = provider.api_provider().await.map_err(|err| {
+            FunctionCallError::RespondToModel(format!(
+                "web_search failed to initialize OpenAI search provider: {err}"
+            ))
+        })?;
+        let auth = provider.api_auth().await.map_err(|err| {
+            FunctionCallError::RespondToModel(format!(
+                "web_search failed to initialize OpenAI search auth: {err}"
+            ))
+        })?;
+        let client = SearchClient::new(
+            ReqwestTransport::new(build_reqwest_client()),
+            api_provider,
+            auth,
+        );
+        let history = session.clone_history().await;
+        let request = SearchRequest {
+            id: session.session_id().to_string(),
+            model: self.search_model(turn),
+            reasoning: None,
+            input: recent_input(history.raw_items()),
+            commands: Some(commands),
+            settings: Some(self.settings.clone()),
+            max_output_tokens: Some(search_output_token_budget(turn)),
+        };
+        client
+            .search(&request, http::HeaderMap::new())
+            .await
+            .map_err(|err| FunctionCallError::RespondToModel(format!("web_search failed: {err}")))
+    }
+
+    fn search_provider_info(
+        &self,
+        turn: &crate::session::turn_context::TurnContext,
+    ) -> ModelProviderInfo {
+        #[cfg(test)]
+        if let Some(provider) = &self.search_provider_override {
+            return provider.clone();
+        }
+
+        turn.config
+            .model_providers
+            .get(OPENAI_PROVIDER_ID)
+            .cloned()
+            .unwrap_or_else(|| ModelProviderInfo::create_openai_provider(/*base_url*/ None))
+    }
+
+    fn search_model(&self, turn: &crate::session::turn_context::TurnContext) -> String {
+        #[cfg(test)]
+        if let Some(model) = &self.search_model_override {
+            return model.clone();
+        }
+
+        if turn.provider.info().is_openai() {
+            turn.model_info.slug.clone()
+        } else {
+            OPENAI_SEARCH_FALLBACK_MODEL.to_string()
         }
     }
 }
@@ -80,23 +163,8 @@ struct WebSearchArgs {
     queries: Option<Vec<String>>,
 }
 
-#[derive(Debug, Serialize)]
-struct WebSearchResponse {
-    source: &'static str,
-    searches: Vec<WebSearchResultSet>,
-}
-
-#[derive(Debug, Serialize)]
-struct WebSearchResultSet {
-    query: String,
-    results: Vec<WebSearchResult>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-struct WebSearchResult {
-    title: String,
-    url: String,
-    snippet: String,
+struct OpenAiSearchOutput {
+    output: String,
 }
 
 impl ToolExecutor<ToolInvocation> for WebSearchHandler {
@@ -126,38 +194,24 @@ impl ToolExecutor<ToolInvocation> for WebSearchHandler {
                 }
             };
 
-            if let Some(reason) = self.unsupported_reason {
-                return Err(FunctionCallError::RespondToModel(reason.to_string()));
-            }
-
-            let args: WebSearchArgs = parse_arguments(&arguments)?;
-            let queries = normalize_queries(args)?;
-            let action = web_search_action_for_queries(&queries);
+            let commands = parse_search_commands(&arguments)?;
+            let action = command_action(&commands);
             let query_detail = web_search_action_detail(&action);
-            let item = TurnItem::WebSearch(WebSearchItem {
-                id: call_id,
+            let item = ProtocolTurnItem::WebSearch(WebSearchItem {
+                id: call_id.clone(),
                 query: query_detail,
                 action,
             });
             session.emit_turn_item_started(turn.as_ref(), &item).await;
-            let result = run_web_searches(
-                &self.client,
-                &self.endpoint,
-                queries,
-                self.allowed_domains.as_slice(),
-                self.max_results_per_query,
-            )
-            .await;
+            let result = self
+                .run_openai_web_search(session.as_ref(), turn.as_ref(), commands)
+                .await;
             session.emit_turn_item_completed(turn.as_ref(), item).await;
 
             let response = result?;
-            let text = serde_json::to_string_pretty(&response).unwrap_or_else(|err| {
-                format!(r#"{{"error":"failed to serialize web search results: {err}"}}"#)
-            });
-            Ok(boxed_tool_output(FunctionToolOutput::from_text(
-                text,
-                Some(true),
-            )))
+            Ok(boxed_tool_output(OpenAiSearchOutput {
+                output: response.output,
+            }))
         })
     }
 }
@@ -168,302 +222,248 @@ impl CoreToolRuntime for WebSearchHandler {
     }
 }
 
-fn allowed_domains_from_spec(spec: &ToolSpec) -> Vec<String> {
-    let ToolSpec::WebSearch { filters, .. } = spec else {
-        return Vec::new();
-    };
-
-    filters
-        .as_ref()
-        .and_then(|filters| filters.allowed_domains.as_ref())
-        .into_iter()
-        .flatten()
-        .filter_map(|domain| normalize_domain_filter(domain))
-        .collect()
-}
-
-fn max_results_per_query_from_spec(spec: &ToolSpec) -> usize {
+fn search_settings_from_spec(spec: &ToolSpec) -> SearchSettings {
     let ToolSpec::WebSearch {
+        external_web_access,
+        index_gated_web_access,
+        filters,
+        user_location,
         search_context_size,
         ..
     } = spec
     else {
-        return DEFAULT_RESULTS_PER_QUERY;
+        return SearchSettings::default();
     };
 
-    match search_context_size {
-        Some(WebSearchContextSize::Low) => 3,
-        Some(WebSearchContextSize::Medium) | None => DEFAULT_RESULTS_PER_QUERY,
-        Some(WebSearchContextSize::High) => 8,
+    SearchSettings {
+        user_location: user_location.as_ref().map(|location| ApproximateLocation {
+            r#type: LocationType::Approximate,
+            country: location.country.clone(),
+            region: location.region.clone(),
+            city: location.city.clone(),
+            timezone: location.timezone.clone(),
+        }),
+        search_context_size: search_context_size.map(|size| match size {
+            WebSearchContextSize::Low => SearchContextSize::Low,
+            WebSearchContextSize::Medium => SearchContextSize::Medium,
+            WebSearchContextSize::High => SearchContextSize::High,
+        }),
+        filters: filters.as_ref().map(|filters| SearchFilters {
+            allowed_domains: filters.allowed_domains.clone(),
+            blocked_domains: None,
+        }),
+        allowed_callers: Some(vec![AllowedCaller::Direct]),
+        external_web_access: external_web_access_for_spec(
+            *external_web_access,
+            *index_gated_web_access,
+        ),
+        ..Default::default()
     }
 }
 
-fn unsupported_local_web_search_reason(spec: &ToolSpec) -> Option<&'static str> {
-    let ToolSpec::WebSearch {
-        external_web_access,
-        search_content_types,
-        ..
-    } = spec
-    else {
-        return None;
-    };
-
-    if matches!(external_web_access, Some(false)) {
-        return Some(
-            "web_search local fallback cannot honor cached-only search; use live web search or disable web_search",
-        );
+fn external_web_access_for_spec(
+    external_web_access: Option<bool>,
+    index_gated_web_access: Option<bool>,
+) -> Option<ExternalWebAccess> {
+    if index_gated_web_access == Some(true) {
+        return Some(ExternalWebAccess::Mode(ExternalWebAccessMode::Indexed));
     }
-
-    if search_content_types.as_ref().is_some_and(|content_types| {
-        content_types
-            .iter()
-            .any(|content_type| !content_type.eq_ignore_ascii_case("text"))
-    }) {
-        return Some("web_search local fallback only supports text search results");
-    }
-
-    None
+    external_web_access.map(ExternalWebAccess::Boolean)
 }
 
-fn normalize_domain_filter(domain: &str) -> Option<String> {
-    let domain = domain.trim().trim_start_matches("*.").trim_end_matches('/');
-    if domain.is_empty()
-        || domain.contains('/')
-        || domain.contains(':')
-        || domain.chars().any(char::is_whitespace)
-    {
-        return None;
-    }
-    Some(domain.to_ascii_lowercase())
+fn search_output_token_budget(turn: &crate::session::turn_context::TurnContext) -> u64 {
+    let truncation_policy: codex_utils_output_truncation::TruncationPolicy =
+        turn.model_info.truncation_policy.into();
+    u64::try_from(truncation_policy.token_budget()).unwrap_or(u64::MAX)
 }
 
-fn normalize_queries(args: WebSearchArgs) -> Result<Vec<String>, FunctionCallError> {
+fn parse_search_commands(arguments: &str) -> Result<SearchCommands, FunctionCallError> {
+    if arguments.trim().is_empty() {
+        return Ok(SearchCommands::default());
+    }
+
+    let value: Value = serde_json::from_str(arguments).map_err(|err| {
+        FunctionCallError::RespondToModel(format!("failed to parse function arguments: {err}"))
+    })?;
+    let mut commands: SearchCommands = serde_json::from_value(value.clone()).map_err(|err| {
+        FunctionCallError::RespondToModel(format!("failed to parse web_search commands: {err}"))
+    })?;
+    let alias_queries = legacy_query_aliases(&value)?;
+    if !alias_queries.is_empty() {
+        let search_query = commands.search_query.get_or_insert_with(Vec::new);
+        for query in alias_queries.into_iter().rev() {
+            search_query.insert(0, query);
+        }
+    }
+    Ok(commands)
+}
+
+fn legacy_query_aliases(value: &Value) -> Result<Vec<SearchQuery>, FunctionCallError> {
+    let args: WebSearchArgs = serde_json::from_value(value.clone()).map_err(|err| {
+        FunctionCallError::RespondToModel(format!(
+            "failed to parse web_search query aliases: {err}"
+        ))
+    })?;
     let mut queries = Vec::new();
     if let Some(query) = args.query {
-        push_query(&mut queries, query);
+        push_search_query(&mut queries, query);
     }
     if let Some(batch) = args.queries {
         for query in batch {
-            push_query(&mut queries, query);
+            push_search_query(&mut queries, query);
         }
-    }
-
-    if queries.is_empty() {
-        return Err(FunctionCallError::RespondToModel(
-            "web_search requires `query` or `queries` with at least one non-empty string"
-                .to_string(),
-        ));
-    }
-    if queries.len() > MAX_WEB_SEARCH_QUERIES {
-        queries.truncate(MAX_WEB_SEARCH_QUERIES);
     }
     Ok(queries)
 }
 
-fn push_query(queries: &mut Vec<String>, query: String) {
+fn push_search_query(queries: &mut Vec<SearchQuery>, query: String) {
     let query = query.trim();
-    if !query.is_empty() && !queries.iter().any(|existing| existing == query) {
-        queries.push(query.to_string());
-    }
-}
-
-fn web_search_action_for_queries(queries: &[String]) -> WebSearchAction {
-    WebSearchAction::Search {
-        query: queries.first().cloned(),
-        queries: (queries.len() > 1).then_some(queries.to_vec()),
-    }
-}
-
-async fn run_web_searches(
-    client: &reqwest::Client,
-    endpoint: &Url,
-    queries: Vec<String>,
-    allowed_domains: &[String],
-    max_results_per_query: usize,
-) -> Result<WebSearchResponse, FunctionCallError> {
-    let mut searches = Vec::with_capacity(queries.len());
-    for query in queries {
-        let effective_query = query_with_allowed_domains(&query, allowed_domains);
-        let html = fetch_search_html(client, endpoint, &effective_query).await?;
-        let results = parse_duckduckgo_results(&html, max_results_per_query);
-        searches.push(WebSearchResultSet { query, results });
-    }
-
-    Ok(WebSearchResponse {
-        source: "duckduckgo_html",
-        searches,
-    })
-}
-
-async fn fetch_search_html(
-    client: &reqwest::Client,
-    endpoint: &Url,
-    query: &str,
-) -> Result<String, FunctionCallError> {
-    let mut url = endpoint.clone();
-    url.query_pairs_mut().append_pair("q", query);
-    let response = client
-        .get(url)
-        .header(USER_AGENT, WEB_SEARCH_USER_AGENT)
-        .header(ACCEPT, "text/html,application/xhtml+xml")
-        .timeout(WEB_SEARCH_TIMEOUT)
-        .send()
-        .await
-        .map_err(|err| FunctionCallError::RespondToModel(format!("web_search failed: {err}")))?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(FunctionCallError::RespondToModel(format!(
-            "web_search failed with HTTP status {status}"
-        )));
-    }
-    response
-        .text()
-        .await
-        .map_err(|err| FunctionCallError::RespondToModel(format!("web_search failed: {err}")))
-}
-
-fn query_with_allowed_domains(query: &str, allowed_domains: &[String]) -> String {
-    if allowed_domains.is_empty() {
-        return query.to_string();
-    }
-    let sites = allowed_domains
-        .iter()
-        .filter_map(|domain| normalize_domain_filter(domain))
-        .map(|domain| format!("site:{domain}"))
-        .collect::<Vec<_>>();
-    if sites.is_empty() {
-        return query.to_string();
-    }
-    format!("{query} ({})", sites.join(" OR "))
-}
-
-fn parse_duckduckgo_results(html: &str, limit: usize) -> Vec<WebSearchResult> {
-    let result_link_re = Regex::new(
-        r#"(?is)<a[^>]*class=["'][^"']*result__a[^"']*["'][^>]*href=["']([^"']+)["'][^>]*>(.*?)</a>"#,
-    )
-    .expect("result regex should compile");
-    let snippet_re = Regex::new(
-        r#"(?is)<(?:a|div)[^>]*class=["'][^"']*result__snippet[^"']*["'][^>]*>(.*?)</(?:a|div)>"#,
-    )
-    .expect("snippet regex should compile");
-
-    let mut results = Vec::new();
-    let mut seen_urls = HashSet::new();
-    for captures in result_link_re.captures_iter(html) {
-        let Some(link) = captures.get(1) else {
-            continue;
-        };
-        let Some(title_html) = captures.get(2) else {
-            continue;
-        };
-        let title = clean_html_text(title_html.as_str());
-        if title.is_empty() {
-            continue;
-        }
-        let url = normalize_duckduckgo_href(link.as_str());
-        if url.is_empty() || !seen_urls.insert(url.clone()) {
-            continue;
-        }
-        let snippet = captures.get(0).map_or_else(String::new, |match_| {
-            let tail = &html[match_.end()..];
-            let bounded_tail = take_prefix_chars(tail, 4000);
-            snippet_re
-                .captures(&bounded_tail)
-                .and_then(|captures| captures.get(1))
-                .map(|snippet| clean_html_text(snippet.as_str()))
-                .unwrap_or_default()
+    if !query.is_empty() && !queries.iter().any(|existing| existing.q == query) {
+        queries.push(SearchQuery {
+            q: query.to_string(),
+            recency: None,
+            domains: None,
         });
-        results.push(WebSearchResult {
-            title,
-            url,
-            snippet,
-        });
-        if results.len() >= limit {
-            break;
+    }
+}
+
+fn command_action(commands: &SearchCommands) -> WebSearchAction {
+    commands
+        .search_query
+        .as_deref()
+        .and_then(query_action)
+        .or_else(|| commands.image_query.as_deref().and_then(query_action))
+        .or_else(|| {
+            commands
+                .open
+                .as_deref()
+                .and_then(|operations| operations.first())
+                .and_then(|operation| {
+                    literal_url(&operation.ref_id)
+                        .map(|url| WebSearchAction::OpenPage { url: Some(url) })
+                })
+        })
+        .or_else(|| {
+            commands
+                .find
+                .as_deref()
+                .and_then(|operations| operations.first())
+                .map(|operation| WebSearchAction::FindInPage {
+                    url: literal_url(&operation.ref_id),
+                    pattern: Some(operation.pattern.clone()),
+                })
+        })
+        .unwrap_or(WebSearchAction::Other)
+}
+
+fn query_action(queries: &[SearchQuery]) -> Option<WebSearchAction> {
+    match queries {
+        [] => None,
+        [query] => Some(WebSearchAction::Search {
+            query: Some(query.q.clone()),
+            queries: None,
+        }),
+        queries => Some(WebSearchAction::Search {
+            query: None,
+            queries: Some(queries.iter().map(|query| query.q.clone()).collect()),
+        }),
+    }
+}
+
+fn literal_url(ref_id: &str) -> Option<String> {
+    Url::parse(ref_id).is_ok().then(|| ref_id.to_string())
+}
+
+fn recent_input(items: &[ResponseItem]) -> Option<SearchInput> {
+    let mut messages = Vec::new();
+    for item in items {
+        push_visible_message(&mut messages, item);
+    }
+
+    retain_tail_from_last_n_user_messages(&mut messages, /*user_message_count*/ 2);
+    truncate_assistant_output_text_to_token_budget(&mut messages, ASSISTANT_CONTEXT_TOKEN_LIMIT);
+    (!messages.is_empty()).then_some(SearchInput::Items(messages))
+}
+
+fn push_visible_message(messages: &mut Vec<ResponseItem>, item: &ResponseItem) {
+    match item {
+        ResponseItem::Message { role, .. } if role == ASSISTANT_ROLE => {
+            let mut message = item.clone();
+            message.set_id(/*new_id*/ None);
+            messages.push(message);
+        }
+        ResponseItem::AgentMessage {
+            author,
+            content,
+            internal_chat_message_metadata_passthrough: metadata,
+            ..
+        } => {
+            if let Some(text) = plaintext_agent_message_content(content) {
+                messages.push(ResponseItem::Message {
+                    id: None,
+                    role: ASSISTANT_ROLE.to_string(),
+                    content: vec![ContentItem::OutputText {
+                        text: format!("Agent message from {author}:\n{text}"),
+                    }],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough: metadata.clone(),
+                });
+            }
+        }
+        ResponseItem::Message {
+            id: _,
+            role,
+            content,
+            phase,
+            internal_chat_message_metadata_passthrough: metadata,
+        } if role == USER_ROLE
+            && matches!(
+                crate::parse_turn_item(item),
+                Some(ProtocolTurnItem::UserMessage(_))
+            ) =>
+        {
+            let content = content
+                .iter()
+                .filter(|item| matches!(item, ContentItem::InputText { .. }))
+                .cloned()
+                .collect::<Vec<_>>();
+            if !content.is_empty() {
+                messages.push(ResponseItem::Message {
+                    id: None,
+                    role: role.clone(),
+                    content,
+                    phase: phase.clone(),
+                    internal_chat_message_metadata_passthrough: metadata.clone(),
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
+impl ToolOutput for OpenAiSearchOutput {
+    fn log_preview(&self) -> String {
+        "[openai web search output]".to_string()
+    }
+
+    fn success_for_logging(&self) -> bool {
+        true
+    }
+
+    fn contains_external_context(&self) -> bool {
+        true
+    }
+
+    fn to_response_item(&self, call_id: &str, _payload: &ToolPayload) -> ResponseInputItem {
+        ResponseInputItem::FunctionCallOutput {
+            call_id: call_id.to_string(),
+            output: FunctionCallOutputPayload::from_content_items(vec![
+                FunctionCallOutputContentItem::InputText {
+                    text: self.output.clone(),
+                },
+            ]),
         }
     }
-    results
-}
-
-fn normalize_duckduckgo_href(href: &str) -> String {
-    let href = decode_html_entities(href.trim());
-    let candidate = if href.starts_with("//") {
-        format!("https:{href}")
-    } else {
-        href
-    };
-    let Ok(url) = Url::parse(&candidate) else {
-        return candidate;
-    };
-    if url
-        .host_str()
-        .is_some_and(|host| host.ends_with("duckduckgo.com"))
-        && let Some((_, target)) = url.query_pairs().find(|(key, _)| key == "uddg")
-    {
-        return target.into_owned();
-    }
-    url.to_string()
-}
-
-fn clean_html_text(html: &str) -> String {
-    let tag_re = Regex::new(r"(?is)<[^>]+>").expect("tag regex should compile");
-    let text = tag_re.replace_all(html, " ");
-    decode_html_entities(&text)
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn decode_html_entities(input: &str) -> String {
-    let mut output = String::with_capacity(input.len());
-    let mut remaining = input;
-    while let Some(start) = remaining.find('&') {
-        output.push_str(&remaining[..start]);
-        let after_amp = &remaining[start + 1..];
-        let Some(end) = after_amp.find(';').filter(|end| *end <= 16) else {
-            output.push('&');
-            remaining = after_amp;
-            continue;
-        };
-        let entity = &after_amp[..end];
-        if let Some(decoded) = decode_entity(entity) {
-            output.push_str(&decoded);
-        } else {
-            output.push('&');
-            output.push_str(entity);
-            output.push(';');
-        }
-        remaining = &after_amp[end + 1..];
-    }
-    output.push_str(remaining);
-    output
-}
-
-fn decode_entity(entity: &str) -> Option<String> {
-    match entity {
-        "amp" => Some("&".to_string()),
-        "quot" => Some("\"".to_string()),
-        "apos" | "#39" => Some("'".to_string()),
-        "lt" => Some("<".to_string()),
-        "gt" => Some(">".to_string()),
-        "nbsp" => Some(" ".to_string()),
-        _ => {
-            let number = entity
-                .strip_prefix("#x")
-                .or_else(|| entity.strip_prefix("#X"))
-                .and_then(|hex| u32::from_str_radix(hex, 16).ok())
-                .or_else(|| {
-                    entity
-                        .strip_prefix('#')
-                        .and_then(|decimal| decimal.parse::<u32>().ok())
-                })?;
-            char::from_u32(number).map(|ch| ch.to_string())
-        }
-    }
-}
-
-fn take_prefix_chars(input: &str, max_chars: usize) -> String {
-    input.chars().take(max_chars).collect()
 }
 
 #[cfg(test)]
