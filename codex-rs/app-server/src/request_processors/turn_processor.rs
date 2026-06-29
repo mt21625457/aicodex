@@ -1,5 +1,4 @@
 use super::*;
-use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::protocol::AdditionalContextEntry as CoreAdditionalContextEntry;
@@ -58,6 +57,7 @@ fn validate_response_item_image_urls(items: &[ResponseItem]) -> Result<(), JSONR
         | ResponseItem::Compaction { .. }
         | ResponseItem::CompactionTrigger { .. }
         | ResponseItem::ContextCompaction { .. }
+        | ResponseItem::AdditionalTools { .. }
         | ResponseItem::Other => false,
     }) {
         return Err(invalid_request(REMOTE_IMAGE_URL_ERROR));
@@ -117,7 +117,6 @@ struct ThreadSettingsBuildParams {
     effort: Option<ReasoningEffort>,
     summary: Option<ReasoningSummary>,
     collaboration_mode: Option<CollaborationMode>,
-    multi_agent_mode: Option<MultiAgentMode>,
     personality: Option<Personality>,
 }
 
@@ -514,7 +513,6 @@ impl TurnRequestProcessor {
                     effort: params.effort,
                     summary: params.summary,
                     collaboration_mode: params.collaboration_mode,
-                    multi_agent_mode: params.multi_agent_mode,
                     personality: params.personality,
                 },
             )
@@ -621,7 +619,6 @@ impl TurnRequestProcessor {
             effort,
             summary,
             collaboration_mode,
-            multi_agent_mode,
             personality,
         } = params;
 
@@ -655,7 +652,6 @@ impl TurnRequestProcessor {
             || effort.is_some()
             || summary.is_some()
             || collaboration_mode.is_some()
-            || multi_agent_mode.is_some()
             || personality.is_some();
 
         let runtime_workspace_roots =
@@ -732,7 +728,6 @@ impl TurnRequestProcessor {
                     summary,
                     service_tier: service_tier.clone(),
                     collaboration_mode: collaboration_mode.clone(),
-                    multi_agent_mode,
                     personality,
                 })
                 .await
@@ -756,7 +751,6 @@ impl TurnRequestProcessor {
             summary,
             service_tier,
             collaboration_mode,
-            multi_agent_mode,
             personality,
         })
     }
@@ -787,7 +781,6 @@ impl TurnRequestProcessor {
                     effort: params.effort,
                     summary: params.summary,
                     collaboration_mode: params.collaboration_mode,
-                    multi_agent_mode: params.multi_agent_mode,
                     personality: params.personality,
                 },
             )
@@ -1236,7 +1229,7 @@ impl TurnRequestProcessor {
                 config.clone(),
                 InitialHistory::Resumed(ResumedHistory {
                     conversation_id: parent_thread_id,
-                    history: parent_history.items,
+                    history: Arc::new(parent_history.items),
                     rollout_path: parent_thread.rollout_path(),
                 }),
                 /*thread_source*/ None,
