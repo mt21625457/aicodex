@@ -6,6 +6,7 @@ use app_test_support::create_fake_rollout_with_token_usage;
 use app_test_support::create_mock_responses_server_repeating_assistant;
 use app_test_support::to_response;
 use app_test_support::write_chatgpt_auth;
+use codex_app_server_protocol::DeprecationNoticeNotification;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCResponse;
@@ -248,6 +249,64 @@ async fn thread_fork_creates_new_thread_and_emits_started() -> Result<()> {
     let mut expected_started_thread = thread;
     expected_started_thread.turns.clear();
     assert_eq!(started.thread, expected_started_thread);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_fork_deprecates_persist_extended_history_true() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let conversation_id = create_fake_rollout(
+        codex_home.path(),
+        "2025-01-05T12-00-00",
+        "2025-01-05T12:00:00Z",
+        "Saved user message",
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let fork_id = mcp
+        .send_thread_fork_request(ThreadForkParams {
+            thread_id: conversation_id,
+            persist_extended_history: true,
+            ..Default::default()
+        })
+        .await?;
+
+    let notification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("deprecationNotice"),
+    )
+    .await??;
+    let notice: DeprecationNoticeNotification = serde_json::from_value(
+        notification
+            .params
+            .expect("deprecationNotice params should be present"),
+    )?;
+    assert_eq!(
+        notice.summary,
+        "persistExtendedHistory is deprecated and ignored"
+    );
+    assert_eq!(
+        notice.details,
+        Some(
+            "Remove this parameter. App-server always persists replayable transcript history."
+                .to_string()
+        )
+    );
+
+    let fork_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(fork_id)),
+    )
+    .await??;
+    let _fork: ThreadForkResponse = to_response(fork_resp)?;
 
     Ok(())
 }

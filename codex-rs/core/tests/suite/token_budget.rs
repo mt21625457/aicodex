@@ -520,7 +520,7 @@ async fn get_context_remaining_returns_token_budget_remaining_fragment() -> Resu
     let remaining_context =
         remaining_context.expect("get_context_remaining should return a text fragment");
     let captures = assert_regex_match(
-        r"^You have ([0-9]+) tokens left in this context window\.$",
+        r"^You have ([0-9]+) tokens left before this context window is reset\.$",
         &remaining_context,
     );
     let tokens_left = captures
@@ -595,7 +595,8 @@ async fn get_context_remaining_uses_body_after_prefix_window() -> Result<()> {
         "get_context_remaining should be exposed when token budget is enabled"
     );
 
-    let remaining_context = "You have 6500 tokens left in this context window.".to_string();
+    let remaining_context =
+        "You have 6500 tokens left before this context window is reset.".to_string();
     assert_eq!(
         requests[2].function_call_output_content_and_success(call_id),
         Some((Some(remaining_context), None))
@@ -656,7 +657,7 @@ async fn get_context_remaining_returns_unknown_when_threshold_is_unbounded() -> 
     assert_eq!(
         requests[1].function_call_output_content_and_success(call_id),
         Some((
-            Some("You have unknown tokens left in this context window.".to_string()),
+            Some("You have unknown tokens left before this context window is reset.".to_string()),
             None,
         ))
     );

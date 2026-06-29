@@ -19,6 +19,7 @@ use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::CommandExecutionApprovalDecision;
 use codex_app_server_protocol::CommandExecutionRequestApprovalResponse;
 use codex_app_server_protocol::ContextTokenUsageSource;
+use codex_app_server_protocol::DeprecationNoticeNotification;
 use codex_app_server_protocol::FileChangeApprovalDecision;
 use codex_app_server_protocol::FileChangeRequestApprovalResponse;
 use codex_app_server_protocol::ItemStartedNotification;
@@ -257,6 +258,64 @@ async fn thread_resume_with_empty_path_uses_running_thread_id() -> Result<()> {
     } = to_response::<ThreadResumeResponse>(resume_resp)?;
 
     assert_eq!(resumed.id, thread.id);
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_resume_deprecates_persist_extended_history_true() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let conversation_id = create_fake_rollout(
+        codex_home.path(),
+        "2025-01-05T12-00-00",
+        "2025-01-05T12:00:00Z",
+        "Saved user message",
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let resume_id = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: conversation_id,
+            persist_extended_history: true,
+            ..Default::default()
+        })
+        .await?;
+
+    let notification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("deprecationNotice"),
+    )
+    .await??;
+    let notice: DeprecationNoticeNotification = serde_json::from_value(
+        notification
+            .params
+            .expect("deprecationNotice params should be present"),
+    )?;
+    assert_eq!(
+        notice.summary,
+        "persistExtendedHistory is deprecated and ignored"
+    );
+    assert_eq!(
+        notice.details,
+        Some(
+            "Remove this parameter. App-server always persists replayable transcript history."
+                .to_string()
+        )
+    );
+
+    let resume_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(resume_id)),
+    )
+    .await??;
+    let _resume: ThreadResumeResponse = to_response(resume_resp)?;
+
     Ok(())
 }
 

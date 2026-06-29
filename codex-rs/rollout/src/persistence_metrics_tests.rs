@@ -18,7 +18,9 @@ use super::TurnOutcome;
 use super::TurnSizeTotals;
 use super::is_thread_sampled;
 use super::measure_and_filter_rollout_items;
+use super::measure_and_filter_rollout_items_with_mode;
 use super::update_turn_measurements;
+use crate::policy::EventPersistenceMode;
 
 fn retained_message(text: &str) -> RolloutItem {
     RolloutItem::ResponseItem(ResponseItem::Message {
@@ -59,6 +61,35 @@ fn turn_aborted(turn_id: &str) -> RolloutItem {
         completed_at: None,
         duration_ms: None,
     }))
+}
+
+fn exec_command_end_with_output(aggregated_output: &str) -> RolloutItem {
+    serde_json::from_value(serde_json::json!({
+        "type": "event_msg",
+        "payload": {
+            "type": "exec_command_end",
+            "call_id": "call-1",
+            "process_id": null,
+            "turn_id": "turn-1",
+            "completed_at_ms": 1,
+            "command": ["echo", "hello"],
+            "cwd": "file:///tmp",
+            "parsed_cmd": [],
+            "source": "user_shell",
+            "interaction_input": null,
+            "stdout": "stdout to sanitize",
+            "stderr": "stderr to sanitize",
+            "aggregated_output": aggregated_output,
+            "exit_code": 0,
+            "duration": {
+                "secs": 0,
+                "nanos": 1_000_000,
+            },
+            "formatted_output": "formatted output to sanitize",
+            "status": "completed",
+        }
+    }))
+    .expect("valid exec command end rollout item")
 }
 
 fn update_for_batch(
@@ -138,6 +169,49 @@ fn retained_items_are_byte_identical() {
         measurement.post_filter.payload_bytes,
         measurement.items[0].payload_bytes.expect("payload bytes")
     );
+}
+
+#[test]
+fn extended_mode_sanitizes_exec_command_end_after_measuring_original_payload() {
+    let aggregated_output = "x".repeat(20_000);
+    let item = exec_command_end_with_output(&aggregated_output);
+    let original_payload_bytes = serde_json::to_vec(&item)
+        .expect("serialize original item")
+        .len() as u64;
+
+    let (persisted, measurement) = measure_and_filter_rollout_items_with_mode(
+        std::slice::from_ref(&item),
+        EventPersistenceMode::Extended,
+    );
+
+    assert_eq!(measurement.pre_filter.items, 1);
+    assert_eq!(measurement.pre_filter.payload_bytes, original_payload_bytes);
+    assert_eq!(measurement.post_filter.items, 1);
+    assert_eq!(
+        measurement.post_filter.payload_bytes,
+        original_payload_bytes
+    );
+    assert_eq!(
+        measurement.items[0].payload_bytes,
+        Some(original_payload_bytes)
+    );
+    assert_eq!(
+        measurement.items[0].rollout_item_type,
+        "event.exec_command_end"
+    );
+    assert_eq!(
+        measurement.items[0].decision,
+        super::PersistenceDecision::Kept
+    );
+
+    let RolloutItem::EventMsg(EventMsg::ExecCommandEnd(event)) = &persisted[0] else {
+        panic!("expected sanitized exec_command_end event");
+    };
+    assert_eq!(event.stdout, "");
+    assert_eq!(event.stderr, "");
+    assert_eq!(event.formatted_output, "");
+    assert!(event.aggregated_output.len() < aggregated_output.len());
+    assert!(event.aggregated_output.contains("chars truncated"));
 }
 
 #[test]

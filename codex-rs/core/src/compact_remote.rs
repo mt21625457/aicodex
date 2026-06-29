@@ -223,7 +223,7 @@ async fn run_remote_compact_task_inner_impl(
     // fit the compact endpoint. The checkpoint below records it separately from the next sampling
     // request, whose prompt will repeat current developer/context prefix items.
     let trace_input_history = history.raw_items().to_vec();
-    let prompt_input = history.raw_items().to_vec();
+    let prompt_input = history.for_prompt(&turn_context.model_info.input_modalities);
     let tool_router = built_tools(
         sess.as_ref(),
         step_context.as_ref(),

@@ -1,10 +1,10 @@
 name: postmerge-ci
 
-# This is the single entrypoint for main-only CI that is intentionally outside
+# This is the single entrypoint for postmerge CI that is intentionally outside
 # the merge-blocking suite. It keeps the broader postmerge signal in one run.
 on:
   push:
-    branches: [main]
+    branches: [main, release]
 
 jobs:
   # Keep reusable workflow calls alphabetized. Each child retains its own

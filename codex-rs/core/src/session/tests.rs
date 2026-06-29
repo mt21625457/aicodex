@@ -7808,6 +7808,59 @@ async fn refresh_mcp_servers_keeps_the_previous_runtime_alive() {
 }
 
 #[tokio::test]
+async fn refresh_mcp_servers_preserves_elicitation_auto_deny() -> anyhow::Result<()> {
+    let (session, turn_context) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let old_runtime = session.services.latest_mcp_runtime();
+    old_runtime
+        .manager()
+        .set_elicitations_auto_deny(/*auto_deny*/ true);
+
+    let mut refresh_config = turn_context.config.as_ref().clone();
+    refresh_config.mcp_servers.set(HashMap::from([(
+        "refreshed".to_string(),
+        McpServerConfig {
+            auth: Default::default(),
+            transport: McpServerTransportConfig::Stdio {
+                command: "missing-test-mcp-server".to_string(),
+                args: Vec::new(),
+                env: None,
+                env_vars: Vec::new(),
+                cwd: None,
+            },
+            environment_id: DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
+            enabled: false,
+            required: false,
+            supports_parallel_tool_calls: false,
+            disabled_reason: None,
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            default_tools_approval_mode: None,
+            enabled_tools: None,
+            disabled_tools: None,
+            scopes: None,
+            oauth: None,
+            oauth_resource: None,
+            tools: HashMap::new(),
+        },
+    )]))?;
+
+    session
+        .refresh_mcp_servers_now(
+            &turn_context,
+            &refresh_config,
+            /*elicitation_reviewer*/ None,
+        )
+        .await;
+
+    let new_runtime = session.services.latest_mcp_runtime();
+    assert!(!Arc::ptr_eq(&old_runtime, &new_runtime));
+    assert!(new_runtime.manager().elicitations_auto_deny());
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn built_tools_uses_the_step_mcp_runtime() -> anyhow::Result<()> {
     let (session, turn_context) = make_session_and_context().await;
     let session = Arc::new(session);

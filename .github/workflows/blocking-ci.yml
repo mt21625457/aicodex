@@ -1,11 +1,12 @@
 name: blocking-ci
 
 # This is the single entrypoint for checks that block a PR merge. It also runs
-# after pushes to main so the same check family stays grouped in the Actions UI.
+# after pushes to main and release so the same check family stays grouped in the
+# Actions UI.
 on:
   pull_request: {}
   push:
-    branches: [main]
+    branches: [main, release]
 
 jobs:
   # Keep reusable workflow calls alphabetized. The `required` job below is the

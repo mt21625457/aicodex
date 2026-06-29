@@ -16,6 +16,7 @@ use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::InputModality;
 use codex_protocol::protocol::ContextTokenUsageSource;
 use codex_protocol::protocol::ConversationStartParams;
 use codex_protocol::protocol::EventMsg;
@@ -533,6 +534,79 @@ async fn remote_compact_replaces_history_for_followups() -> Result<()> {
                 ("Remote Post-Compaction History Layout", follow_up_request),
             ]
         )
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_compact_prompt_normalizes_text_only_model_history() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let harness = TestCodexHarness::with_builder(test_codex().with_model_info_override(
+        "gpt-5.4",
+        |model_info| {
+            model_info.input_modalities = vec![InputModality::Text];
+        },
+    ))
+    .await?;
+    let codex = harness.test().codex.clone();
+
+    let responses_mock = responses::mount_sse_once(
+        harness.server(),
+        responses::sse(vec![
+            responses::ev_assistant_message("m1", "saw text only"),
+            responses::ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    let compact_mock = responses::mount_compact_json_once(
+        harness.server(),
+        serde_json::json!({ "output": compacted_summary_only_output("summary") }),
+    )
+    .await;
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![
+                UserInput::Image {
+                    image_url: "data:image/png;base64,abc".to_string(),
+                    detail: None,
+                },
+                UserInput::Text {
+                    text: "text-only compact keeps text".to_string(),
+                    text_elements: Vec::new(),
+                },
+            ],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_turn_complete(&codex).await;
+
+    codex.submit(Op::Compact).await?;
+    wait_for_turn_complete(&codex).await;
+
+    let initial_body = responses_mock.single_request().body_json().to_string();
+    assert!(
+        !initial_body.contains("input_image"),
+        "text-only model requests should strip unsupported image inputs"
+    );
+
+    let compact_body = compact_mock.single_request().body_json().to_string();
+    assert!(
+        compact_body.contains("text-only compact keeps text"),
+        "compact request should retain supported text history"
+    );
+    assert!(
+        !compact_body.contains("input_image"),
+        "compact request should use normalized model prompt history"
+    );
+    assert!(
+        !compact_body.contains("data:image/png"),
+        "compact request should not leak raw image history for text-only models"
     );
 
     Ok(())
