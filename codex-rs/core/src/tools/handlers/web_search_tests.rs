@@ -180,9 +180,13 @@ fn local_web_search_rejects_non_text_content_types() {
 
 async fn invocation_for_arguments(arguments: &str) -> ToolInvocation {
     let (session, turn) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let step_context = session.capture_step_context(Arc::clone(&turn)).await;
     ToolInvocation {
-        session: session.into(),
-        turn: turn.into(),
+        session,
+        turn,
+        step_context,
         cancellation_token: CancellationToken::new(),
         tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
         call_id: "call-web-search".to_string(),

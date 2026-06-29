@@ -331,6 +331,23 @@ impl Session {
         let task: Arc<dyn AnySessionTask> = Arc::new(task);
         let task_kind = task.kind();
         let span_name = task.span_name();
+        if task_kind == TaskKind::Regular {
+            let active_turn_state = {
+                let active = self.active_turn.lock().await;
+                active.as_ref().and_then(|active_turn| {
+                    active_turn.task.as_ref().and_then(|active_task| {
+                        (active_task.kind == TaskKind::Regular)
+                            .then(|| Arc::clone(&active_turn.turn_state))
+                    })
+                })
+            };
+            if let Some(turn_state) = active_turn_state {
+                self.input_queue
+                    .extend_pending_input_for_turn_state(turn_state.as_ref(), input)
+                    .await;
+                return;
+            }
+        }
         let started_at = Instant::now();
         let turn_started_at_unix_ms = turn_context
             .turn_timing_state
@@ -483,7 +500,7 @@ impl Session {
         }
 
         let turn_context = self.new_default_turn_with_sub_id(sub_id).await;
-        self.maybe_emit_unknown_model_warning_for_turn(turn_context.as_ref())
+        self.maybe_emit_model_warnings_for_turn(turn_context.as_ref())
             .await;
         self.start_task(turn_context, Vec::new(), RegularTask::new())
             .await;
@@ -793,10 +810,14 @@ impl Session {
                 false
             }
         };
-        if !cleared_active_turn {
-            return;
+        if cleared_active_turn {
+            self.emit_thread_idle_lifecycle_if_idle().await;
         }
-        self.emit_thread_idle_lifecycle_if_idle().await;
+        // Regular items were flushed before this terminal event was appended; buffering
+        // thread writers may not flush it without another explicit barrier.
+        if let Err(err) = self.flush_rollout().await {
+            warn!("failed to flush rollout after emitting terminal turn event: {err}");
+        }
     }
 
     async fn take_active_turn(&self) -> Option<ActiveTurn> {
@@ -896,6 +917,11 @@ impl Session {
             .lock()
             .await
             .clear_turn(&task.turn_context.sub_id);
+        // Regular items were flushed before this terminal event was appended; buffering
+        // thread writers may not flush it without another explicit barrier.
+        if let Err(err) = self.flush_rollout().await {
+            warn!("failed to flush rollout after emitting terminal turn event: {err}");
+        }
     }
 }
 

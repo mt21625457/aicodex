@@ -42,7 +42,7 @@ pub struct WebSearchHandler {
 impl WebSearchHandler {
     pub(crate) fn new(spec: ToolSpec) -> Self {
         let endpoint = Url::parse(DUCKDUCKGO_HTML_ENDPOINT)
-            .expect("built-in DuckDuckGo HTML endpoint must parse");
+            .unwrap_or_else(|err| panic!("built-in DuckDuckGo HTML endpoint must parse: {err}"));
         let allowed_domains = allowed_domains_from_spec(&spec);
         let max_results_per_query = max_results_per_query_from_spec(&spec);
         let unsupported_reason = unsupported_local_web_search_reason(&spec);
@@ -341,11 +341,11 @@ fn parse_duckduckgo_results(html: &str, limit: usize) -> Vec<WebSearchResult> {
     let result_link_re = Regex::new(
         r#"(?is)<a[^>]*class=["'][^"']*result__a[^"']*["'][^>]*href=["']([^"']+)["'][^>]*>(.*?)</a>"#,
     )
-    .expect("result regex should compile");
+    .unwrap_or_else(|err| panic!("result regex should compile: {err}"));
     let snippet_re = Regex::new(
         r#"(?is)<(?:a|div)[^>]*class=["'][^"']*result__snippet[^"']*["'][^>]*>(.*?)</(?:a|div)>"#,
     )
-    .expect("snippet regex should compile");
+    .unwrap_or_else(|err| panic!("snippet regex should compile: {err}"));
 
     let mut results = Vec::new();
     let mut seen_urls = HashSet::new();
@@ -406,7 +406,8 @@ fn normalize_duckduckgo_href(href: &str) -> String {
 }
 
 fn clean_html_text(html: &str) -> String {
-    let tag_re = Regex::new(r"(?is)<[^>]+>").expect("tag regex should compile");
+    let tag_re =
+        Regex::new(r"(?is)<[^>]+>").unwrap_or_else(|err| panic!("tag regex should compile: {err}"));
     let text = tag_re.replace_all(html, " ");
     decode_html_entities(&text)
         .split_whitespace()

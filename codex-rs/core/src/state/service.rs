@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use crate::SkillsService;
 use crate::agent::AgentControl;
+use crate::agents_md_manager::AgentsMdManager;
 use crate::attestation::AttestationProvider;
 use crate::client::ModelClient;
 use crate::config::NetworkProxyAuditMetadata;
@@ -15,6 +16,7 @@ use crate::exec_policy::ExecPolicyManager;
 use crate::guardian::GuardianRejection;
 use crate::guardian::GuardianRejectionCircuitBreaker;
 use crate::mcp::McpManager;
+use crate::session::McpRuntimeSnapshot;
 use crate::tools::code_mode::CodeModeService;
 use crate::tools::handlers::ToolSearchHandlerCache;
 use crate::tools::network_approval::NetworkApprovalService;
@@ -30,9 +32,12 @@ use codex_extension_api::ExtensionDataInit;
 use codex_extension_api::ExtensionRegistry;
 use codex_hooks::Hooks;
 use codex_login::AuthManager;
+use codex_mcp::McpConfig;
 use codex_mcp::McpConnectionManager;
+use codex_mcp::McpRuntimeContext;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_otel::SessionTelemetry;
+use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_rollout::state_db::StateDbHandle;
 use codex_rollout_trace::ThreadTraceContext;
 use codex_thread_store::LiveThread;
@@ -40,6 +45,7 @@ use codex_thread_store::ThreadStore;
 use std::path::PathBuf;
 use tokio::runtime::Handle;
 use tokio::sync::Mutex;
+use tokio::time::sleep;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
@@ -47,8 +53,12 @@ use tracing::warn;
 const MCP_MANAGER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) struct SessionServices {
-    /// The latest manager; callers retain an owned handle while performing MCP I/O.
+    /// Mirror of the latest manager for extension resource clients that predate runtime snapshots.
     pub(crate) mcp_connection_manager: Arc<ArcSwap<McpConnectionManager>>,
+    /// The latest atomically published MCP config and manager pair.
+    pub(crate) mcp_runtime: ArcSwapOption<McpRuntimeSnapshot>,
+    /// Serializes environment-driven runtime rebuilds.
+    pub(crate) mcp_projection_lock: Mutex<()>,
     pub(crate) mcp_startup_cancellation_token: Mutex<CancellationToken>,
     pub(crate) unified_exec_manager: UnifiedExecProcessManager,
     #[cfg_attr(not(unix), allow(dead_code))]
@@ -69,12 +79,16 @@ pub(crate) struct SessionServices {
     pub(crate) guardian_rejection_circuit_breaker: Mutex<GuardianRejectionCircuitBreaker>,
     pub(crate) runtime_handle: Handle,
     pub(crate) skills_service: Arc<SkillsService>,
+    pub(crate) agents_md_manager: Arc<AgentsMdManager>,
     pub(crate) plugins_manager: Arc<PluginsManager>,
     pub(crate) mcp_manager: Arc<McpManager>,
     pub(crate) extensions: Arc<ExtensionRegistry<crate::config::Config>>,
     pub(crate) session_extension_data: ExtensionData,
     pub(crate) thread_extension_data: ExtensionData,
     pub(crate) supports_openai_form_elicitation: AtomicBool,
+    /// Raw capability selections for this thread. Each model step resolves them against its
+    /// current executor environments before using them.
+    pub(crate) selected_capability_roots: Vec<SelectedCapabilityRoot>,
     pub(crate) mcp_thread_init: ExtensionDataInit,
     pub(crate) agent_control: AgentControl,
     pub(crate) network_proxy: ArcSwapOption<StartedNetworkProxy>,
@@ -94,31 +108,59 @@ pub(crate) struct SessionServices {
 }
 
 impl SessionServices {
-    pub(crate) async fn replace_mcp_connection_manager(
-        &self,
-        manager: McpConnectionManager,
-        reason: &'static str,
-    ) -> Arc<McpConnectionManager> {
-        let manager = Arc::new(manager);
-        let previous_manager = self.mcp_connection_manager.swap(Arc::clone(&manager));
-        shutdown_replaced_mcp_connection_manager(previous_manager, reason).await;
-        manager
-    }
-
     /// Installs the manager before validating required servers so startup-time elicitation can
     /// resolve through the session's manager while validation waits.
     pub(crate) async fn install_mcp_connection_manager(
         &self,
+        config: Arc<McpConfig>,
+        runtime_context: McpRuntimeContext,
+        available_environment_ids: Vec<String>,
         manager: McpConnectionManager,
     ) -> Result<()> {
-        let manager = self
-            .replace_mcp_connection_manager(manager, "session_start")
+        let runtime = self
+            .publish_mcp_runtime(config, runtime_context, available_environment_ids, manager)
             .await;
-        let validation = manager.validate_required_servers().await;
+        let validation = runtime.manager().validate_required_servers().await;
         if validation.is_err() {
-            shutdown_replaced_mcp_connection_manager(manager, "required_server_validation").await;
+            shutdown_replaced_mcp_connection_manager(
+                runtime.manager_arc(),
+                "required_server_validation",
+            )
+            .await;
         }
         validation
+    }
+
+    pub(crate) async fn publish_mcp_runtime(
+        &self,
+        config: Arc<McpConfig>,
+        runtime_context: McpRuntimeContext,
+        available_environment_ids: Vec<String>,
+        manager: McpConnectionManager,
+    ) -> Arc<McpRuntimeSnapshot> {
+        let manager = Arc::new(manager);
+        // Publish the manager for legacy resource clients first. Once the paired snapshot is
+        // visible, every model-scoped consumer observes this exact manager.
+        let previous_manager = self.mcp_connection_manager.swap(Arc::clone(&manager));
+        let runtime = Arc::new(McpRuntimeSnapshot::new(
+            config,
+            manager,
+            runtime_context,
+            available_environment_ids,
+        ));
+        self.mcp_runtime.store(Some(Arc::clone(&runtime)));
+        tokio::spawn(shutdown_replaced_mcp_connection_manager_when_unused(
+            previous_manager,
+            "publish_mcp_runtime",
+        ));
+        runtime
+    }
+
+    pub(crate) fn latest_mcp_runtime(&self) -> Arc<McpRuntimeSnapshot> {
+        let Some(runtime) = self.mcp_runtime.load_full() else {
+            unreachable!("MCP runtime must be installed before handling requests");
+        };
+        runtime
     }
 }
 
@@ -140,4 +182,19 @@ async fn shutdown_replaced_mcp_connection_manager(
             "timed out shutting down replaced MCP connection manager"
         );
     }
+}
+
+async fn shutdown_replaced_mcp_connection_manager_when_unused(
+    manager: Arc<McpConnectionManager>,
+    reason: &'static str,
+) {
+    if !manager.has_servers() {
+        return;
+    }
+
+    while Arc::strong_count(&manager) > 1 {
+        sleep(Duration::from_millis(50)).await;
+    }
+
+    shutdown_replaced_mcp_connection_manager(manager, reason).await;
 }

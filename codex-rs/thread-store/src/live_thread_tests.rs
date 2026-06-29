@@ -9,8 +9,11 @@ use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::ExecCommandStatus;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadMemoryMode;
 use codex_rollout::EventPersistenceMode;
+use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_path_uri::PathUri;
 use pretty_assertions::assert_eq;
 
 use super::LiveThread;
@@ -97,9 +100,13 @@ fn create_thread_params(thread_id: ThreadId) -> CreateThreadParams {
         parent_thread_id: None,
         source: SessionSource::Cli,
         thread_source: None,
+        originator: "test-originator".to_string(),
         base_instructions: BaseInstructions::default(),
         dynamic_tools: Vec::new(),
+        selected_capability_roots: Vec::new(),
         multi_agent_version: None,
+        history_mode: ThreadHistoryMode::Legacy,
+        initial_window_id: "window-1".to_string(),
         metadata: ThreadPersistenceMetadata {
             cwd: Some(std::env::current_dir().expect("current dir")),
             model_provider: "test-provider".to_string(),
@@ -115,10 +122,7 @@ fn exec_command_end_item() -> RolloutItem {
         turn_id: "turn-1".to_string(),
         completed_at_ms: 1,
         command: vec!["echo".to_string(), "hello".to_string()],
-        cwd: serde_json::from_value(serde_json::json!(
-            std::env::current_dir().expect("current dir")
-        ))
-        .expect("absolute cwd"),
+        cwd: PathUri::from_abs_path(&current_dir()),
         parsed_cmd: Vec::new(),
         source: ExecCommandSource::UserShell,
         interaction_input: None,
@@ -130,4 +134,8 @@ fn exec_command_end_item() -> RolloutItem {
         formatted_output: "formatted output".to_string(),
         status: ExecCommandStatus::Completed,
     }))
+}
+
+fn current_dir() -> AbsolutePathBuf {
+    AbsolutePathBuf::current_dir().expect("absolute current dir")
 }
