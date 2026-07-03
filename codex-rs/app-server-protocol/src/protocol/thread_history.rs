@@ -7,6 +7,8 @@ use crate::protocol::item_builders::build_item_from_guardian_event;
 use crate::protocol::v2::CollabAgentState;
 use crate::protocol::v2::CollabAgentTool;
 use crate::protocol::v2::CollabAgentToolCallStatus;
+use crate::protocol::v2::CommandAction;
+use crate::protocol::v2::CommandExecutionSource;
 use crate::protocol::v2::CommandExecutionStatus;
 use crate::protocol::v2::DynamicToolCallOutputContentItem;
 use crate::protocol::v2::DynamicToolCallStatus;
@@ -55,12 +57,12 @@ use codex_protocol::protocol::UserMessageEvent;
 use codex_protocol::protocol::ViewImageToolCallEvent;
 use codex_protocol::protocol::WebSearchBeginEvent;
 use codex_protocol::protocol::WebSearchEndEvent;
+use codex_utils_path_uri::LegacyAppPathString;
+use serde::Deserialize;
 use std::collections::HashMap;
 use tracing::warn;
 use uuid::Uuid;
 
-#[cfg(test)]
-use crate::protocol::v2::CommandAction;
 #[cfg(test)]
 use crate::protocol::v2::FileUpdateChange;
 #[cfg(test)]
@@ -487,8 +489,103 @@ impl ThreadHistoryBuilder {
                     content,
                 });
             }
+            codex_protocol::models::ResponseItem::FunctionCall {
+                name,
+                arguments,
+                call_id,
+                internal_chat_message_metadata_passthrough,
+                ..
+            } => {
+                if name == "exec_command" {
+                    self.handle_exec_command_function_call(
+                        call_id,
+                        arguments,
+                        internal_chat_message_metadata_passthrough
+                            .as_ref()
+                            .and_then(|metadata| metadata.turn_id.as_deref()),
+                    );
+                }
+            }
+            codex_protocol::models::ResponseItem::FunctionCallOutput {
+                call_id,
+                output,
+                internal_chat_message_metadata_passthrough,
+                ..
+            } => {
+                self.handle_exec_command_function_call_output(
+                    call_id,
+                    output,
+                    internal_chat_message_metadata_passthrough
+                        .as_ref()
+                        .and_then(|metadata| metadata.turn_id.as_deref()),
+                );
+            }
             _ => {}
         }
+    }
+
+    fn handle_exec_command_function_call(
+        &mut self,
+        call_id: &str,
+        arguments: &str,
+        turn_id: Option<&str>,
+    ) {
+        let Some(args) = parse_exec_command_function_arguments(arguments) else {
+            return;
+        };
+
+        let command_actions = vec![CommandAction::Unknown {
+            command: args.command.clone(),
+        }];
+        let item = ThreadItem::CommandExecution {
+            id: call_id.to_string(),
+            command: args.command,
+            cwd: legacy_app_path_string(args.cwd.unwrap_or_default()),
+            process_id: None,
+            source: CommandExecutionSource::UnifiedExecStartup,
+            status: CommandExecutionStatus::InProgress,
+            command_actions,
+            aggregated_output: None,
+            exit_code: None,
+            duration_ms: None,
+        };
+        self.upsert_item_by_optional_turn_id(turn_id, item);
+    }
+
+    fn handle_exec_command_function_call_output(
+        &mut self,
+        call_id: &str,
+        output: &codex_protocol::models::FunctionCallOutputPayload,
+        turn_id: Option<&str>,
+    ) {
+        let Some(text) = output.body.to_text() else {
+            return;
+        };
+        let Some(existing) = self.find_command_execution_item(call_id, turn_id) else {
+            return;
+        };
+        let parsed = parse_exec_command_response_text(&text);
+        let status = match parsed.exit_code {
+            Some(0) => CommandExecutionStatus::Completed,
+            Some(_) => CommandExecutionStatus::Failed,
+            None if parsed.process_id.is_some() => CommandExecutionStatus::InProgress,
+            None => CommandExecutionStatus::Completed,
+        };
+        let item = ThreadItem::CommandExecution {
+            id: call_id.to_string(),
+            command: existing.command,
+            cwd: existing.cwd,
+            process_id: parsed.process_id.or(existing.process_id),
+            source: existing.source,
+            status,
+            command_actions: existing.command_actions,
+            aggregated_output: parsed
+                .aggregated_output
+                .or_else(|| (!text.is_empty()).then_some(text)),
+            exit_code: parsed.exit_code.or(existing.exit_code),
+            duration_ms: parsed.duration_ms.or(existing.duration_ms),
+        };
+        self.upsert_item_in_turn_id(&existing.turn_id, item);
     }
 
     fn handle_user_message(&mut self, payload: &UserMessageEvent) {
@@ -1412,6 +1509,57 @@ impl ThreadHistoryBuilder {
         );
     }
 
+    fn upsert_item_by_optional_turn_id(&mut self, turn_id: Option<&str>, item: ThreadItem) {
+        if let Some(turn_id) = turn_id
+            && self.has_turn_id(turn_id)
+        {
+            self.upsert_item_in_turn_id(turn_id, item);
+            return;
+        }
+        self.upsert_item_in_current_turn(item);
+    }
+
+    fn has_turn_id(&self, turn_id: &str) -> bool {
+        self.current_turn
+            .as_ref()
+            .is_some_and(|turn| turn.id == turn_id)
+            || self.turns.iter().any(|turn| turn.id == turn_id)
+    }
+
+    fn find_command_execution_item(
+        &self,
+        item_id: &str,
+        preferred_turn_id: Option<&str>,
+    ) -> Option<CommandExecutionItemSnapshot> {
+        if let Some(turn_id) = preferred_turn_id {
+            if let Some(snapshot) = self
+                .current_turn
+                .as_ref()
+                .filter(|turn| turn.id == turn_id)
+                .and_then(|turn| find_command_execution_in_items(&turn.id, &turn.items, item_id))
+            {
+                return Some(snapshot);
+            }
+            if let Some(snapshot) = self
+                .turns
+                .iter()
+                .find(|turn| turn.id == turn_id)
+                .and_then(|turn| find_command_execution_in_items(&turn.id, &turn.items, item_id))
+            {
+                return Some(snapshot);
+            }
+        }
+
+        self.current_turn
+            .as_ref()
+            .and_then(|turn| find_command_execution_in_items(&turn.id, &turn.items, item_id))
+            .or_else(|| {
+                self.turns.iter().find_map(|turn| {
+                    find_command_execution_in_items(&turn.id, &turn.items, item_id)
+                })
+            })
+    }
+
     fn upsert_item_in_current_turn(&mut self, item: ThreadItem) {
         let tracking_changes = self.is_tracking_changes();
         let changed_item = {
@@ -1596,6 +1744,134 @@ fn merge_reasoning_texts(existing: &mut Vec<String>, incoming: Vec<String>) {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct ExecCommandFunctionArguments {
+    command: String,
+    cwd: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RawExecCommandFunctionArguments {
+    cmd: Option<String>,
+    command: Option<String>,
+    workdir: Option<String>,
+    cwd: Option<String>,
+}
+
+fn parse_exec_command_function_arguments(arguments: &str) -> Option<ExecCommandFunctionArguments> {
+    let raw: RawExecCommandFunctionArguments = serde_json::from_str(arguments).ok()?;
+    let command = raw.cmd.or(raw.command)?;
+    if command.is_empty() {
+        return None;
+    }
+    Some(ExecCommandFunctionArguments {
+        command,
+        cwd: raw.workdir.or(raw.cwd),
+    })
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ParsedExecCommandResponseText {
+    process_id: Option<String>,
+    exit_code: Option<i32>,
+    duration_ms: Option<i64>,
+    aggregated_output: Option<String>,
+}
+
+fn parse_exec_command_response_text(text: &str) -> ParsedExecCommandResponseText {
+    let mut process_id = None;
+    let mut exit_code = None;
+    let mut duration_ms = None;
+    let mut output_start = None;
+
+    for (line_start, line) in text.split_inclusive('\n').scan(0, |offset, line| {
+        let start = *offset;
+        *offset += line.len();
+        Some((start, line.trim_end_matches('\n')))
+    }) {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if let Some(raw_duration) = line
+            .strip_prefix("Wall time: ")
+            .and_then(|value| value.strip_suffix(" seconds"))
+        {
+            duration_ms = parse_seconds_to_millis(raw_duration);
+        } else if let Some(raw_exit_code) = line.strip_prefix("Process exited with code ") {
+            exit_code = raw_exit_code.parse::<i32>().ok();
+        } else if let Some(raw_process_id) = line.strip_prefix("Process running with session ID ") {
+            process_id = Some(raw_process_id.to_string());
+        } else if line == "Output:" {
+            output_start = Some(line_start + "Output:".len());
+            break;
+        }
+    }
+
+    let aggregated_output = output_start
+        .map(|start| text[start..].trim_start_matches(['\r', '\n']).to_string())
+        .filter(|output| !output.is_empty());
+
+    ParsedExecCommandResponseText {
+        process_id,
+        exit_code,
+        duration_ms,
+        aggregated_output,
+    }
+}
+
+fn parse_seconds_to_millis(raw: &str) -> Option<i64> {
+    let seconds = raw.parse::<f64>().ok()?;
+    if !seconds.is_finite() || seconds < 0.0 {
+        return None;
+    }
+    Some((seconds * 1000.0).round().min(i64::MAX as f64) as i64)
+}
+
+fn legacy_app_path_string(path: String) -> LegacyAppPathString {
+    serde_json::from_value(serde_json::Value::String(path))
+        .expect("LegacyAppPathString accepts any UTF-8 string")
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct CommandExecutionItemSnapshot {
+    turn_id: String,
+    command: String,
+    cwd: LegacyAppPathString,
+    process_id: Option<String>,
+    source: CommandExecutionSource,
+    command_actions: Vec<CommandAction>,
+    exit_code: Option<i32>,
+    duration_ms: Option<i64>,
+}
+
+fn find_command_execution_in_items(
+    turn_id: &str,
+    items: &[ThreadItem],
+    item_id: &str,
+) -> Option<CommandExecutionItemSnapshot> {
+    items.iter().find_map(|item| match item {
+        ThreadItem::CommandExecution {
+            id,
+            command,
+            cwd,
+            process_id,
+            source,
+            command_actions,
+            exit_code,
+            duration_ms,
+            ..
+        } if id == item_id => Some(CommandExecutionItemSnapshot {
+            turn_id: turn_id.to_string(),
+            command: command.clone(),
+            cwd: cwd.clone(),
+            process_id: process_id.clone(),
+            source: source.clone(),
+            command_actions: command_actions.clone(),
+            exit_code: *exit_code,
+            duration_ms: *duration_ms,
+        }),
+        _ => None,
+    })
+}
+
 struct PendingTurn {
     id: String,
     items: Vec<ThreadItem>,
@@ -1673,8 +1949,10 @@ mod tests {
     use codex_protocol::items::UserMessageItem as CoreUserMessageItem;
     use codex_protocol::items::build_hook_prompt_message;
     use codex_protocol::mcp::CallToolResult;
+    use codex_protocol::models::FunctionCallOutputPayload;
     use codex_protocol::models::ImageDetail;
     use codex_protocol::models::MessagePhase as CoreMessagePhase;
+    use codex_protocol::models::ResponseItem;
     use codex_protocol::models::WebSearchAction as CoreWebSearchAction;
     use codex_protocol::parse_command::ParsedCommand;
     use codex_protocol::protocol::AgentMessageEvent;
@@ -1704,6 +1982,70 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
     use uuid::Uuid;
+
+    #[test]
+    fn response_item_exec_command_rebuilds_command_execution_item() {
+        let items = vec![
+            RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
+                message: "run a command".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+                ..Default::default()
+            })),
+            RolloutItem::ResponseItem(ResponseItem::FunctionCall {
+                id: Some("fc-1".into()),
+                name: "exec_command".into(),
+                namespace: None,
+                arguments: serde_json::json!({
+                    "cmd": "printf hello",
+                    "workdir": "/tmp",
+                    "yield_time_ms": 1000,
+                    "max_output_tokens": 2000
+                })
+                .to_string(),
+                call_id: "call-exec-1".into(),
+                internal_chat_message_metadata_passthrough: None,
+            }),
+            RolloutItem::ResponseItem(ResponseItem::FunctionCallOutput {
+                id: None,
+                call_id: "call-exec-1".into(),
+                output: FunctionCallOutputPayload::from_text(
+                    "Chunk ID: chunk-1\n\
+                     Wall time: 0.0123 seconds\n\
+                     Process exited with code 0\n\
+                     Original token count: 1\n\
+                     Output:\n\
+                     hello\n"
+                        .into(),
+                ),
+                internal_chat_message_metadata_passthrough: None,
+            }),
+        ];
+
+        let turns = build_turns_from_rollout_items(&items);
+
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].items.len(), 2);
+        assert_eq!(
+            turns[0].items[1],
+            ThreadItem::CommandExecution {
+                id: "call-exec-1".into(),
+                command: "printf hello".into(),
+                cwd: legacy_app_path_string("/tmp".into()),
+                process_id: None,
+                source: CommandExecutionSource::UnifiedExecStartup,
+                status: CommandExecutionStatus::Completed,
+                command_actions: vec![CommandAction::Unknown {
+                    command: "printf hello".into(),
+                }],
+                aggregated_output: Some("hello\n".into()),
+                exit_code: Some(0),
+                duration_ms: Some(12),
+            }
+        );
+    }
 
     #[test]
     fn builds_multiple_turns_with_reasoning_items() {

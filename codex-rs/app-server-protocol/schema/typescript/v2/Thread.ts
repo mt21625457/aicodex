@@ -37,15 +37,15 @@ modelProvider: string,
 /**
  * Latest observed model for this thread, when recorded in thread metadata.
  */
-modelId?: string | null,
+modelId: string | null,
 /**
  * Wire protocol inferred for the recorded model/provider pair.
  */
-wireApi?: string | null,
+wireApi: string | null,
 /**
  * Latest observed reasoning effort for this thread.
  */
-effort?: ReasoningEffort | null,
+effort: ReasoningEffort | null,
 /**
  * Unix timestamp (in seconds) when the thread was created.
  */

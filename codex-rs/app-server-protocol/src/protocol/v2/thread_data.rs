@@ -148,13 +148,10 @@ pub struct Thread {
     /// Model provider used for this thread (for example, 'openai').
     pub model_provider: String,
     /// Latest observed model for this thread, when recorded in thread metadata.
-    #[ts(optional = nullable)]
     pub model_id: Option<String>,
     /// Wire protocol inferred for the recorded model/provider pair.
-    #[ts(optional = nullable)]
     pub wire_api: Option<String>,
     /// Latest observed reasoning effort for this thread.
-    #[ts(optional = nullable)]
     pub effort: Option<ReasoningEffort>,
     /// Unix timestamp (in seconds) when the thread was created.
     #[ts(type = "number")]
