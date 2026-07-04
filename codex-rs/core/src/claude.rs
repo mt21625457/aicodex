@@ -458,6 +458,7 @@ pub(crate) fn build_claude_messages_request(
             }
             ResponseItem::ToolSearchCall { .. }
             | ResponseItem::ToolSearchOutput { .. }
+            | ResponseItem::AdditionalTools { .. }
             | ResponseItem::WebSearchCall { .. }
             | ResponseItem::ImageGenerationCall { .. }
             | ResponseItem::CompactionTrigger { .. }
@@ -830,7 +831,9 @@ fn claude_thinking_config(
         }
         ReasoningEffortConfig::Medium => CLAUDE_THINKING_MEDIUM_BUDGET_TOKENS,
         ReasoningEffortConfig::High => CLAUDE_THINKING_HIGH_BUDGET_TOKENS,
-        ReasoningEffortConfig::XHigh => CLAUDE_THINKING_XHIGH_BUDGET_TOKENS,
+        ReasoningEffortConfig::XHigh | ReasoningEffortConfig::Ultra => {
+            CLAUDE_THINKING_XHIGH_BUDGET_TOKENS
+        }
         ReasoningEffortConfig::Custom(_) => return None,
     };
     let max_budget = u32::try_from(max_tokens.saturating_sub(1)).unwrap_or(u32::MAX);

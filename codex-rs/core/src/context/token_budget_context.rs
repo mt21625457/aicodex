@@ -1,6 +1,8 @@
 use super::ContextualUserFragment;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::CONTEXT_WINDOW_CLOSE_TAG;
+use codex_protocol::protocol::CONTEXT_WINDOW_GUIDANCE_CLOSE_TAG;
+use codex_protocol::protocol::CONTEXT_WINDOW_GUIDANCE_OPEN_TAG;
 use codex_protocol::protocol::CONTEXT_WINDOW_OPEN_TAG;
 use uuid::Uuid;
 
@@ -64,6 +66,40 @@ impl ContextualUserFragment for TokenBudgetContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ContextWindowGuidance {
+    message: String,
+}
+
+impl ContextWindowGuidance {
+    pub(crate) fn new(message: &str) -> Self {
+        Self {
+            message: message.to_string(),
+        }
+    }
+}
+
+impl ContextualUserFragment for ContextWindowGuidance {
+    fn role(&self) -> &'static str {
+        "developer"
+    }
+
+    fn markers(&self) -> (&'static str, &'static str) {
+        Self::type_markers()
+    }
+
+    fn type_markers() -> (&'static str, &'static str) {
+        (
+            CONTEXT_WINDOW_GUIDANCE_OPEN_TAG,
+            CONTEXT_WINDOW_GUIDANCE_CLOSE_TAG,
+        )
+    }
+
+    fn body(&self) -> String {
+        format!("\n{}\n", self.message)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TokenBudgetRemainingContext {
     tokens_left: Option<i64>,
 }
@@ -96,9 +132,9 @@ impl ContextualUserFragment for TokenBudgetRemainingContext {
     fn body(&self) -> String {
         match self.tokens_left {
             Some(tokens_left) => {
-                format!("You have {tokens_left} tokens left in this context window.")
+                format!("You have {tokens_left} tokens left before this context window is reset.")
             }
-            None => "You have unknown tokens left in this context window.".to_string(),
+            None => "You have unknown tokens left before this context window is reset.".to_string(),
         }
     }
 }

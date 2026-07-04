@@ -248,7 +248,6 @@ async fn guardian_test_session_turn_and_rx(
     turn_mut.config = Arc::clone(&config);
     turn_mut.provider =
         create_model_provider(config.model_provider.clone(), turn_mut.auth_manager.clone());
-    turn_mut.user_instructions = None;
 
     (session, turn, rx)
 }
@@ -280,7 +279,6 @@ async fn guardian_test_session_and_turn_with_base_url(
     session.services.models_manager = models_manager;
     turn.config = Arc::clone(&config);
     turn.provider = create_model_provider(config.model_provider.clone(), turn.auth_manager.clone());
-    turn.user_instructions = None;
 
     (Arc::new(session), Arc::new(turn))
 }
@@ -927,6 +925,7 @@ fn guardian_approval_request_to_json_renders_mcp_tool_call_shape() -> serde_json
         connector_id: None,
         connector_name: Some("Playwright".to_string()),
         connector_description: None,
+        connected_account_email: Some("owner@example.com".to_string()),
         tool_title: Some("Navigate".to_string()),
         tool_description: None,
         annotations: Some(GuardianMcpAnnotations {
@@ -946,6 +945,7 @@ fn guardian_approval_request_to_json_renders_mcp_tool_call_shape() -> serde_json
                 "url": "https://example.com",
             },
             "connector_name": "Playwright",
+            "connected_account_email": "owner@example.com",
             "tool_title": "Navigate",
             "annotations": {
                 "destructive_hint": true,
@@ -2305,7 +2305,6 @@ async fn guardian_review_surfaces_responses_api_errors_in_rejection_reason() -> 
     turn_mut.config = Arc::clone(&config);
     turn_mut.provider =
         create_model_provider(config.model_provider.clone(), turn_mut.auth_manager.clone());
-    turn_mut.user_instructions = None;
 
     seed_guardian_parent_history(&session, &turn).await;
 

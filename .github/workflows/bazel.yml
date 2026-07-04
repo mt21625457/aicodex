@@ -4,17 +4,15 @@ name: Bazel
 # https://github.com/cerisier/toolchains_llvm_bootstrapped/blob/main/.github/workflows/ci.yaml
 
 on:
-  pull_request: {}
-  push:
-    branches:
-      - release
+  workflow_call:
   workflow_dispatch:
 
 concurrency:
-  # Cancel previous actions from the same PR or branch except 'release' branch.
+  # Cancel previous actions from the same PR or branch except 'main' branch.
   # See https://docs.github.com/en/actions/using-jobs/using-concurrency and https://docs.github.com/en/actions/learn-github-actions/contexts for more info.
-  group: concurrency-group::${{ github.workflow }}::${{ github.event.pull_request.number > 0 && format('pr-{0}', github.event.pull_request.number) || github.ref_name }}${{ github.ref_name == 'release' && format('::{0}', github.run_id) || ''}}
-  cancel-in-progress: ${{ github.ref_name != 'release' }}
+  group: concurrency-group::${{ github.workflow }}::${{ github.event.pull_request.number > 0 && format('pr-{0}', github.event.pull_request.number) || github.ref_name }}${{ github.ref_name == 'main' && format('::{0}', github.run_id) || ''}}
+  cancel-in-progress: ${{ github.ref_name != 'main' }}
+
 jobs:
   test:
     # PRs use the sharded Windows cross-compiled test jobs below. Post-merge
@@ -133,6 +131,10 @@ jobs:
           path: ${{ steps.prepare_bazel.outputs.repository-cache-path }}
           key: ${{ steps.prepare_bazel.outputs.repository-cache-key }}
 
+      - name: Check for a clean worktree
+        if: always() && !cancelled()
+        uses: ./.github/actions/check-clean-worktree
+
   test-windows-shard:
     # Split the Windows Bazel test leg across separate Windows hosts. Jobs with
     # BuildBuddy credentials use Linux RBE for build actions; test execution
@@ -238,6 +240,10 @@ jobs:
           path: ${{ runner.temp }}/bazel-execution-logs
           if-no-files-found: ignore
 
+      - name: Check for a clean worktree
+        if: always() && !cancelled()
+        uses: ./.github/actions/check-clean-worktree
+
   test-windows:
     # Preserve the existing required-check surface while the real work happens
     # in the sharded Windows jobs above.
@@ -331,6 +337,10 @@ jobs:
         with:
           path: ${{ steps.prepare_bazel.outputs.repository-cache-path }}
           key: ${{ steps.prepare_bazel.outputs.repository-cache-key }}
+
+      - name: Check for a clean worktree
+        if: always() && !cancelled()
+        uses: ./.github/actions/check-clean-worktree
 
   clippy:
     timeout-minutes: 30
@@ -431,6 +441,10 @@ jobs:
         with:
           path: ${{ steps.prepare_bazel.outputs.repository-cache-path }}
           key: ${{ steps.prepare_bazel.outputs.repository-cache-key }}
+
+      - name: Check for a clean worktree
+        if: always() && !cancelled()
+        uses: ./.github/actions/check-clean-worktree
 
   verify-release-build:
     timeout-minutes: 30
@@ -544,3 +558,7 @@ jobs:
         with:
           path: ${{ steps.prepare_bazel.outputs.repository-cache-path }}
           key: ${{ steps.prepare_bazel.outputs.repository-cache-key }}
+
+      - name: Check for a clean worktree
+        if: always() && !cancelled()
+        uses: ./.github/actions/check-clean-worktree
