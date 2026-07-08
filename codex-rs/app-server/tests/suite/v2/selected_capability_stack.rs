@@ -8,6 +8,7 @@ use app_test_support::TestAppServer;
 use app_test_support::to_response;
 use app_test_support::write_chatgpt_auth;
 use app_test_support::write_mock_responses_config_toml_with_chatgpt_base_url;
+use app_test_support::write_models_cache_with_models;
 use codex_app_server_protocol::AppInfo;
 use codex_app_server_protocol::CapabilityRootLocation;
 use codex_app_server_protocol::EnvironmentAddResponse;
@@ -25,9 +26,12 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::UserInput;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_exec_server::LOCAL_ENVIRONMENT_ID;
+use codex_models_manager::model_info::model_info_from_slug;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
+use codex_protocol::openai_models::ModelsResponse;
+use codex_protocol::protocol::PLUGINS_INSTRUCTIONS_OPEN_TAG;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use core_test_support::process::wait_for_pid_file;
@@ -139,7 +143,11 @@ async fn selected_capability_stack_tracks_environment_availability_and_resume() 
     )
     .await;
 
-    let mut app_server = TestAppServer::new(fixture.codex_home.path()).await?;
+    let mut app_server = TestAppServer::builder()
+        .with_codex_home(fixture.codex_home.path())
+        .without_auto_env()
+        .build()
+        .await?;
     timeout(READ_TIMEOUT, app_server.initialize()).await??;
     let thread_id = start_thread(
         &mut app_server,
@@ -185,7 +193,11 @@ async fn selected_capability_stack_tracks_environment_availability_and_resume() 
     drop(app_server);
     std::fs::remove_file(&fixture.pid_file)?;
 
-    let mut app_server = TestAppServer::new(fixture.codex_home.path()).await?;
+    let mut app_server = TestAppServer::builder()
+        .with_codex_home(fixture.codex_home.path())
+        .without_auto_env()
+        .build()
+        .await?;
     timeout(READ_TIMEOUT, app_server.initialize()).await??;
     let request_id = app_server
         .send_thread_resume_request(ThreadResumeParams {
@@ -235,7 +247,9 @@ async fn selected_capability_stack_tracks_environment_availability_and_resume() 
     for request in &requests[1..4] {
         assert_selected_skill_is_injected(request, /*expected_count*/ 1);
         assert_selected_plugin_tools(request);
+        assert_plugin_guidance_count(request, /*expected_count*/ 1);
     }
+    assert_plugin_guidance_count(&requests[4], /*expected_count*/ 1);
     assert_selected_skill_is_injected(&requests[5], /*expected_count*/ 2);
     assert_selected_plugin_tools(&requests[5]);
     let output = requests[2].function_call_output(MCP_CALL_ID);
@@ -330,7 +344,11 @@ async fn selected_capabilities_become_available_between_samples_in_one_turn() ->
     )
     .await;
 
-    let mut app_server = TestAppServer::new(fixture.codex_home.path()).await?;
+    let mut app_server = TestAppServer::builder()
+        .with_codex_home(fixture.codex_home.path())
+        .without_auto_env()
+        .build()
+        .await?;
     timeout(READ_TIMEOUT, app_server.initialize()).await??;
     let thread_id = start_thread(
         &mut app_server,
@@ -398,7 +416,9 @@ async fn selected_capabilities_become_available_between_samples_in_one_turn() ->
     assert_eq!(3, requests.len());
     assert_selected_skill_catalog_available(&requests[1]);
     assert_selected_plugin_tools(&requests[1]);
+    assert_plugin_guidance_count(&requests[1], /*expected_count*/ 1);
     assert_selected_plugin_tools(&requests[2]);
+    assert_plugin_guidance_count(&requests[2], /*expected_count*/ 1);
     let output = requests[2].function_call_output(MCP_CALL_ID);
     let output = output["output"]
         .as_str()
@@ -432,10 +452,21 @@ fn selected_capability_fixture(
         responses_server_uri,
         apps_url,
     )?;
+    write_models_cache_with_models(codex_home.path(), vec![model_info_from_slug("mock-model")])?;
+    let model_catalog_path = codex_home.path().join("model_catalog.json");
+    std::fs::write(
+        &model_catalog_path,
+        serde_json::to_vec_pretty(&ModelsResponse {
+            models: vec![model_info_from_slug("mock-model")],
+        })?,
+    )?;
+    let model_catalog_path = model_catalog_path.to_string_lossy().replace('\\', "\\\\");
     let config_path = codex_home.path().join("config.toml");
     let config = std::fs::read_to_string(&config_path)?.replacen(
         "model_provider = \"mock_provider\"",
-        "mcp_oauth_credentials_store = \"file\"\nmodel_provider = \"mock_provider\"",
+        &format!(
+            "mcp_oauth_credentials_store = \"file\"\nmodel_catalog_json = \"{model_catalog_path}\"\nmodel_provider = \"mock_provider\""
+        ),
         1,
     );
     std::fs::write(
@@ -537,6 +568,7 @@ fn assert_selected_capabilities_absent(request: &ResponsesRequest) {
             .all(|text| !text.contains(SKILL_DESCRIPTION))
     );
     assert_selected_plugin_tools_absent(request);
+    assert_plugin_guidance_count(request, /*expected_count*/ 0);
 }
 
 fn assert_selected_plugin_tools_absent(request: &ResponsesRequest) {
@@ -552,6 +584,17 @@ fn assert_selected_plugin_tools_absent(request: &ResponsesRequest) {
         connector["description"]
             .as_str()
             .is_some_and(|description| !description.contains(PLUGIN_DISPLAY_NAME))
+    );
+}
+
+fn assert_plugin_guidance_count(request: &ResponsesRequest, expected_count: usize) {
+    assert_eq!(
+        expected_count,
+        request
+            .message_input_texts("developer")
+            .into_iter()
+            .filter(|text| text.starts_with(PLUGINS_INSTRUCTIONS_OPEN_TAG))
+            .count()
     );
 }
 
@@ -712,13 +755,15 @@ async fn wait_for_selected_mcp_server(
 }
 
 async fn spawn_exec_server(codex_home: &std::path::Path, url: &str) -> Result<Child> {
-    let mut child = Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
+    let mut child = Command::new(codex_utils_cargo_bin::cargo_bin("aicodex")?)
         .args(["exec-server", "--listen", url])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .kill_on_drop(true)
+        .env("AICODEX_HOME", codex_home)
         .env("CODEX_HOME", codex_home)
+        .env("CODEX_SQLITE_HOME", codex_home)
         .env(EXECUTOR_ENV_NAME, EXECUTOR_ENV_VALUE)
         .spawn()?;
     let stdout = child

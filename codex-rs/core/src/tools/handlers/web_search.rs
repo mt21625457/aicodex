@@ -225,7 +225,7 @@ impl CoreToolRuntime for WebSearchHandler {
 fn search_settings_from_spec(spec: &ToolSpec) -> SearchSettings {
     let ToolSpec::WebSearch {
         external_web_access,
-        index_gated_web_access,
+        indexed_web_access,
         filters,
         user_location,
         search_context_size,
@@ -255,7 +255,7 @@ fn search_settings_from_spec(spec: &ToolSpec) -> SearchSettings {
         allowed_callers: Some(vec![AllowedCaller::Direct]),
         external_web_access: external_web_access_for_spec(
             *external_web_access,
-            *index_gated_web_access,
+            *indexed_web_access,
         ),
         ..Default::default()
     }
@@ -263,9 +263,9 @@ fn search_settings_from_spec(spec: &ToolSpec) -> SearchSettings {
 
 fn external_web_access_for_spec(
     external_web_access: Option<bool>,
-    index_gated_web_access: Option<bool>,
+    indexed_web_access: Option<bool>,
 ) -> Option<ExternalWebAccess> {
-    if index_gated_web_access == Some(true) {
+    if indexed_web_access == Some(true) {
         return Some(ExternalWebAccess::Mode(ExternalWebAccessMode::Indexed));
     }
     external_web_access.map(ExternalWebAccess::Boolean)

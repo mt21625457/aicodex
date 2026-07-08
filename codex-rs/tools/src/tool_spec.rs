@@ -85,15 +85,15 @@ pub enum ToolSpec {
     // TODO: Understand why we get an error on web_search although the API docs
     // say it's supported.
     // https://platform.openai.com/docs/guides/tools-web-search?api-mode=responses#:~:text=%7B%20type%3A%20%22web_search%22%20%7D%2C
-    // The `external_web_access` field determines whether the web search is over
-    // cached or live content.
+    // `external_web_access` distinguishes cached from live-capable search, while
+    // `indexed_web_access` restricts live fetches to indexed URLs.
     // https://platform.openai.com/docs/guides/tools-web-search#live-internet-access
     #[serde(rename = "web_search")]
     WebSearch {
         #[serde(skip_serializing_if = "Option::is_none")]
         external_web_access: Option<bool>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        index_gated_web_access: Option<bool>,
+        indexed_web_access: Option<bool>,
         #[serde(skip_serializing_if = "Option::is_none")]
         filters: Option<ResponsesApiWebSearchFilters>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -301,7 +301,7 @@ pub fn create_tools_json_for_claude_messages_with_options(
             }
             ToolSpec::WebSearch {
                 external_web_access,
-                index_gated_web_access,
+                indexed_web_access,
                 filters,
                 user_location,
                 search_context_size,
@@ -314,7 +314,7 @@ pub fn create_tools_json_for_claude_messages_with_options(
                             .any(|content_type| !content_type.eq_ignore_ascii_case("text"))
                     });
                 let native_mapping_is_lossless = !matches!(external_web_access, Some(false))
-                    && index_gated_web_access.is_none()
+                    && indexed_web_access.is_none()
                     && search_context_size.is_none()
                     && !has_non_text_content_types;
                 let web_search_plan = match options.web_search_tool_kind {

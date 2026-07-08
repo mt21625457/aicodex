@@ -193,7 +193,7 @@ async fn selected_executor_plugin_exposes_its_mcps_only_to_that_thread() -> Resu
         "compact",
     )?;
     let codex_bin = toml::Value::String(
-        codex_utils_cargo_bin::cargo_bin("codex")?
+        codex_utils_cargo_bin::cargo_bin("aicodex")?
             .to_string_lossy()
             .into_owned(),
     );
@@ -245,7 +245,11 @@ HTTP_PROXY = {http_proxy}
         }))?,
     )?;
 
-    let mut app_server = TestAppServer::new(codex_home.path()).await?;
+    let mut app_server = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build()
+        .await?;
     timeout(DEFAULT_READ_TIMEOUT, app_server.initialize()).await??;
 
     let selected_thread = start_thread(
@@ -330,9 +334,18 @@ startup_timeout_sec = 10
     let token_request = timeout(DEFAULT_READ_TIMEOUT, token_request_rx.recv())
         .await?
         .expect("executor token endpoint should receive a request");
-    assert!(token_request.contains("grant_type=authorization_code"));
-    assert!(token_request.contains("code=executor-test-code"));
-    assert!(token_request.contains("code_verifier="));
+    assert!(
+        token_request.contains("grant_type=authorization_code"),
+        "unexpected token request body: {token_request}"
+    );
+    assert!(
+        token_request.contains("code=executor-test-code"),
+        "unexpected token request body: {token_request}"
+    );
+    assert!(
+        token_request.contains("code_verifier="),
+        "unexpected token request body: {token_request}"
+    );
     let notification = timeout(
         DEFAULT_READ_TIMEOUT,
         app_server.read_stream_until_notification_message("mcpServer/oauthLogin/completed"),

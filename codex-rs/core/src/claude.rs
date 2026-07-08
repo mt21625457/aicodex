@@ -833,9 +833,9 @@ fn claude_thinking_config(
         }
         ReasoningEffortConfig::Medium => CLAUDE_THINKING_MEDIUM_BUDGET_TOKENS,
         ReasoningEffortConfig::High => CLAUDE_THINKING_HIGH_BUDGET_TOKENS,
-        ReasoningEffortConfig::XHigh | ReasoningEffortConfig::Ultra => {
-            CLAUDE_THINKING_XHIGH_BUDGET_TOKENS
-        }
+        ReasoningEffortConfig::XHigh
+        | ReasoningEffortConfig::Ultra
+        | ReasoningEffortConfig::Max => CLAUDE_THINKING_XHIGH_BUDGET_TOKENS,
         ReasoningEffortConfig::Custom(_) => return None,
     };
     let max_budget = u32::try_from(max_tokens.saturating_sub(1)).unwrap_or(u32::MAX);
@@ -2079,7 +2079,7 @@ mod tests {
             }],
             tools: vec![ToolSpec::WebSearch {
                 external_web_access: Some(true),
-                index_gated_web_access: None,
+                indexed_web_access: None,
                 filters: Some(codex_tools::ResponsesApiWebSearchFilters {
                     allowed_domains: Some(vec!["example.com".to_string()]),
                 }),
@@ -2132,7 +2132,7 @@ mod tests {
             }],
             tools: vec![ToolSpec::WebSearch {
                 external_web_access: Some(true),
-                index_gated_web_access: None,
+                indexed_web_access: None,
                 filters: Some(codex_tools::ResponsesApiWebSearchFilters {
                     allowed_domains: Some(vec!["example.com".to_string()]),
                 }),
@@ -2176,7 +2176,7 @@ mod tests {
             }],
             tools: vec![ToolSpec::WebSearch {
                 external_web_access: Some(false),
-                index_gated_web_access: None,
+                indexed_web_access: None,
                 filters: None,
                 user_location: None,
                 search_context_size: None,
@@ -2218,7 +2218,7 @@ mod tests {
             }],
             tools: vec![ToolSpec::WebSearch {
                 external_web_access: Some(true),
-                index_gated_web_access: None,
+                indexed_web_access: None,
                 filters: Some(codex_tools::ResponsesApiWebSearchFilters {
                     allowed_domains: Some(vec!["example.com".to_string()]),
                 }),
@@ -2311,7 +2311,7 @@ mod tests {
                 }),
                 ToolSpec::WebSearch {
                     external_web_access: Some(true),
-                    index_gated_web_access: None,
+                    indexed_web_access: None,
                     filters: None,
                     user_location: None,
                     search_context_size: None,
@@ -4454,7 +4454,7 @@ mod tests {
             ],
             tools: vec![ToolSpec::WebSearch {
                 external_web_access: Some(true),
-                index_gated_web_access: None,
+                indexed_web_access: None,
                 filters: None,
                 user_location: None,
                 search_context_size: None,
@@ -4522,7 +4522,7 @@ mod tests {
             ],
             tools: vec![ToolSpec::WebSearch {
                 external_web_access: Some(true),
-                index_gated_web_access: None,
+                indexed_web_access: None,
                 filters: None,
                 user_location: None,
                 search_context_size: None,
@@ -4616,7 +4616,7 @@ mod tests {
             ],
             tools: vec![ToolSpec::WebSearch {
                 external_web_access: Some(true),
-                index_gated_web_access: None,
+                indexed_web_access: None,
                 filters: None,
                 user_location: None,
                 search_context_size: None,
@@ -4687,7 +4687,7 @@ mod tests {
             ],
             tools: vec![ToolSpec::WebSearch {
                 external_web_access: Some(true),
-                index_gated_web_access: None,
+                indexed_web_access: None,
                 filters: None,
                 user_location: None,
                 search_context_size: None,
@@ -4752,7 +4752,7 @@ mod tests {
             ],
             tools: vec![ToolSpec::WebSearch {
                 external_web_access: Some(true),
-                index_gated_web_access: None,
+                indexed_web_access: None,
                 filters: None,
                 user_location: None,
                 search_context_size: None,
@@ -4811,7 +4811,7 @@ mod tests {
             ],
             tools: vec![ToolSpec::WebSearch {
                 external_web_access: Some(true),
-                index_gated_web_access: None,
+                indexed_web_access: None,
                 filters: None,
                 user_location: None,
                 search_context_size: None,
@@ -4870,7 +4870,7 @@ mod tests {
             ],
             tools: vec![ToolSpec::WebSearch {
                 external_web_access: Some(true),
-                index_gated_web_access: None,
+                indexed_web_access: None,
                 filters: None,
                 user_location: None,
                 search_context_size: Some(codex_protocol::config_types::WebSearchContextSize::High),

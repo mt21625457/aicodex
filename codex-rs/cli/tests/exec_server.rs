@@ -32,8 +32,20 @@ use wiremock::matchers::path;
 
 fn codex_command(codex_home: &Path) -> Result<assert_cmd::Command> {
     let mut cmd = assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("aicodex")?);
-    cmd.env("CODEX_HOME", codex_home);
+    cmd.env("AICODEX_HOME", codex_home)
+        .env("CODEX_HOME", codex_home)
+        .env("CODEX_SQLITE_HOME", codex_home)
+        .env_remove("AICODEX_APP_DAEMON_ADDR")
+        .env_remove("AICODEX_APP_DAEMON_TOKEN");
     Ok(cmd)
+}
+
+fn configure_codex_test_env(cmd: &mut std::process::Command, codex_home: &Path) {
+    cmd.env("AICODEX_HOME", codex_home)
+        .env("CODEX_HOME", codex_home)
+        .env("CODEX_SQLITE_HOME", codex_home)
+        .env_remove("AICODEX_APP_DAEMON_ADDR")
+        .env_remove("AICODEX_APP_DAEMON_TOKEN");
 }
 
 #[test]
@@ -104,12 +116,16 @@ metrics_exporter = {{ otlp-http = {{ endpoint = "{base_url}/v1/metrics", protoco
     let argv = vec!["ping.exe", "-n", "61", "127.0.0.1"];
     #[cfg(not(windows))]
     let argv = vec!["/bin/sleep", "60"];
-    let codex_bin = codex_utils_cargo_bin::cargo_bin("codex")?;
+    let codex_bin = codex_utils_cargo_bin::cargo_bin("aicodex")?;
     let codex_home = codex_home.path().to_path_buf();
     let subprocess = async move {
         let mut command = tokio::process::Command::new(codex_bin);
         command
-            .env("CODEX_HOME", codex_home)
+            .env("AICODEX_HOME", &codex_home)
+            .env("CODEX_HOME", &codex_home)
+            .env("CODEX_SQLITE_HOME", &codex_home)
+            .env_remove("AICODEX_APP_DAEMON_ADDR")
+            .env_remove("AICODEX_APP_DAEMON_TOKEN")
             .env("NO_PROXY", "127.0.0.1,localhost")
             .env("no_proxy", "127.0.0.1,localhost")
             .args(["exec-server", "--listen", "stdio"])
@@ -238,8 +254,9 @@ async fn send_json_line(
 #[test]
 fn local_exec_server_exits_successfully_on_sigterm() -> Result<()> {
     let codex_home = TempDir::new()?;
-    let mut child = std::process::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
-        .env("CODEX_HOME", codex_home.path())
+    let mut command = std::process::Command::new(codex_utils_cargo_bin::cargo_bin("aicodex")?);
+    configure_codex_test_env(&mut command, codex_home.path());
+    let mut child = command
         .args(["exec-server", "--listen", "ws://127.0.0.1:0"])
         .stdout(Stdio::piped())
         .spawn()?;

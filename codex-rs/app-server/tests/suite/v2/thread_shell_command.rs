@@ -61,7 +61,11 @@ async fn thread_shell_command_history_full_responses_include_persisted_command_e
         &BTreeMap::default(),
     )?;
 
-    let mut mcp = TestAppServer::new(codex_home.as_path()).await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.as_path())
+        .without_auto_env()
+        .build()
+        .await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let start_id = mcp
@@ -282,11 +286,12 @@ async fn thread_shell_command_returns_error_when_local_environment_is_disabled()
         &BTreeMap::default(),
     )?;
 
-    let mut mcp = TestAppServer::new_with_env(
-        codex_home.as_path(),
-        &[(CODEX_EXEC_SERVER_URL_ENV_VAR, Some("none"))],
-    )
-    .await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.as_path())
+        .without_auto_env()
+        .with_env_overrides(&[(CODEX_EXEC_SERVER_URL_ENV_VAR, Some("none"))])
+        .build()
+        .await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let start_id = mcp
@@ -341,7 +346,11 @@ async fn thread_shell_command_uses_existing_active_turn() -> Result<()> {
         &BTreeMap::default(),
     )?;
 
-    let mut mcp = TestAppServer::new(codex_home.as_path()).await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.as_path())
+        .without_auto_env()
+        .build()
+        .await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let start_id = mcp

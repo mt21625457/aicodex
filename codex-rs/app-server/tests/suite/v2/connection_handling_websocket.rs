@@ -7,6 +7,7 @@ use app_test_support::to_response;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use codex_app_server_protocol::ClientInfo;
+use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::InitializeParams;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCMessage;
@@ -18,6 +19,8 @@ use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadLoadedListResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
+use codex_core::config::set_project_trust_level;
+use codex_protocol::config_types::TrustLevel;
 use futures::SinkExt;
 use futures::StreamExt;
 use hmac::Hmac;
@@ -96,6 +99,106 @@ async fn websocket_transport_routes_per_connection_handshake_and_responses() -> 
     assert_eq!(ws2_config.id, RequestId::Integer(77));
     assert!(ws1_config.result.get("config").is_some());
     assert!(ws2_config.result.get("config").is_some());
+
+    process
+        .kill()
+        .await
+        .context("failed to stop websocket app-server process")?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_start_routes_project_exec_policy_warning_to_requester() -> Result<()> {
+    let server = create_mock_responses_server_sequence_unchecked(Vec::new()).await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri(), "never")?;
+
+    let project = TempDir::new()?;
+    std::fs::create_dir(project.path().join(".git"))?;
+    let rules_dir = project.path().join(".codex/rules");
+    std::fs::create_dir_all(&rules_dir)?;
+    let rules_path = rules_dir.join("broken.rules");
+    std::fs::write(&rules_path, "prefix_rule(")?;
+    set_project_trust_level(codex_home.path(), project.path(), TrustLevel::Trusted)?;
+
+    let (mut process, bind_addr) = spawn_websocket_server(codex_home.path()).await?;
+    let mut requester = connect_websocket(bind_addr).await?;
+    let mut other_client = connect_websocket(bind_addr).await?;
+
+    send_initialize_request(&mut requester, /*id*/ 1, "requester").await?;
+    read_response_for_id(&mut requester, /*id*/ 1).await?;
+    send_initialize_request(&mut other_client, /*id*/ 2, "other_client").await?;
+    read_response_for_id(&mut other_client, /*id*/ 2).await?;
+
+    send_request(
+        &mut requester,
+        "thread/start",
+        /*id*/ 3,
+        Some(serde_json::to_value(ThreadStartParams {
+            cwd: Some(project.path().display().to_string()),
+            model: Some("mock-model".to_string()),
+            ..Default::default()
+        })?),
+    )
+    .await?;
+
+    let target_id = RequestId::Integer(3);
+    let warning_summary = "Error parsing rules; custom rules not applied.";
+    let is_exec_policy_warning = |notification: &JSONRPCNotification| {
+        notification.method == "configWarning"
+            && notification
+                .params
+                .as_ref()
+                .and_then(|params| params.get("summary"))
+                .and_then(serde_json::Value::as_str)
+                == Some(warning_summary)
+    };
+    let mut response = None;
+    let mut warning = None;
+    while response.is_none() || warning.is_none() {
+        match read_jsonrpc_message(&mut requester).await? {
+            JSONRPCMessage::Response(candidate) if candidate.id == target_id => {
+                response = Some(candidate);
+            }
+            JSONRPCMessage::Notification(candidate) if is_exec_policy_warning(&candidate) => {
+                warning = Some(candidate);
+            }
+            _ => {}
+        }
+    }
+
+    let _: ThreadStartResponse = to_response(response.context("missing thread/start response")?)?;
+    let warning: ConfigWarningNotification = serde_json::from_value(
+        warning
+            .context("missing exec-policy configWarning")?
+            .params
+            .context("configWarning should include params")?,
+    )?;
+    assert_eq!(
+        warning
+            .path
+            .as_deref()
+            .map(Path::new)
+            .and_then(Path::file_name),
+        Some(std::ffi::OsStr::new("broken.rules"))
+    );
+
+    match timeout(Duration::from_millis(250), async {
+        loop {
+            let message = read_jsonrpc_message(&mut other_client).await?;
+            if let JSONRPCMessage::Notification(notification) = message
+                && is_exec_policy_warning(&notification)
+            {
+                return Ok::<_, anyhow::Error>(notification);
+            }
+        }
+    })
+    .await
+    {
+        Ok(Ok(_)) => bail!("exec-policy configWarning leaked to another connection"),
+        Ok(Err(err)) => return Err(err),
+        Err(_) => {}
+    }
 
     process
         .kill()
@@ -379,6 +482,18 @@ pub(super) async fn spawn_websocket_server(codex_home: &Path) -> Result<(Child, 
     spawn_websocket_server_with_args(codex_home, "ws://127.0.0.1:0", &[]).await
 }
 
+fn configure_app_server_test_env(cmd: &mut Command, codex_home: &Path) {
+    cmd.env("AICODEX_HOME", codex_home)
+        .env("CODEX_HOME", codex_home)
+        .env("CODEX_SQLITE_HOME", codex_home)
+        .env(
+            "CODEX_APP_SERVER_MANAGED_CONFIG_PATH",
+            codex_home.join("managed_config.toml"),
+        )
+        .env_remove("AICODEX_APP_DAEMON_ADDR")
+        .env_remove("AICODEX_APP_DAEMON_TOKEN");
+}
+
 pub(super) async fn spawn_websocket_server_with_args(
     codex_home: &Path,
     listen_url: &str,
@@ -394,8 +509,8 @@ pub(super) async fn spawn_websocket_server_with_args(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .env("CODEX_HOME", codex_home)
         .env("RUST_LOG", "warn");
+    configure_app_server_test_env(&mut cmd, codex_home);
     let mut process = cmd
         .kill_on_drop(true)
         .spawn()
@@ -530,8 +645,8 @@ async fn run_websocket_server_to_completion_with_args(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .env("CODEX_HOME", codex_home)
         .env("RUST_LOG", "warn");
+    configure_app_server_test_env(&mut cmd, codex_home);
     timeout(DEFAULT_READ_TIMEOUT, cmd.output())
         .await
         .context("timed out waiting for websocket app-server to exit")?

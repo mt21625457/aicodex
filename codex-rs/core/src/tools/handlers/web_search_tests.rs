@@ -69,7 +69,7 @@ fn parse_search_commands_accepts_openai_commands_and_legacy_aliases() {
 fn search_settings_preserve_openai_web_search_options() {
     let spec = ToolSpec::WebSearch {
         external_web_access: Some(true),
-        index_gated_web_access: Some(true),
+        indexed_web_access: Some(true),
         filters: Some(ResponsesApiWebSearchFilters {
             allowed_domains: Some(vec![
                 "example.com".to_string(),
@@ -130,7 +130,7 @@ async fn handler_calls_openai_search_endpoint_and_returns_search_output() {
 
     let spec = ToolSpec::WebSearch {
         external_web_access: Some(true),
-        index_gated_web_access: None,
+        indexed_web_access: None,
         filters: Some(ResponsesApiWebSearchFilters {
             allowed_domains: Some(vec!["example.com".to_string()]),
         }),

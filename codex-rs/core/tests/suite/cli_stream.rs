@@ -30,6 +30,8 @@ const PERSONAL_ACCESS_TOKEN_ACCOUNT_ID: &str = "account-pat";
 const WHOAMI_PATH: &str = "/v1/user-auth-credential/whoami";
 const CLOUD_CONFIG_BUNDLE_PATH: &str = "/backend-api/wham/config/bundle";
 const CLI_TIMEOUT: Duration = Duration::from_secs(30);
+const AICODEX_APP_DAEMON_ADDR_ENV_VAR: &str = "AICODEX_APP_DAEMON_ADDR";
+const AICODEX_APP_DAEMON_TOKEN_ENV_VAR: &str = "AICODEX_APP_DAEMON_TOKEN";
 
 fn repo_root() -> std::path::PathBuf {
     codex_utils_cargo_bin::repo_root().expect("failed to resolve repo root")
@@ -41,6 +43,14 @@ fn cli_sse_response() -> String {
         responses::ev_assistant_message("msg-fixture", "fixture hello"),
         responses::ev_completed("resp-fixture"),
     ])
+}
+
+fn configure_cli_test_env(cmd: &mut Command, home: &TempDir) {
+    cmd.env("AICODEX_HOME", home.path())
+        .env("CODEX_HOME", home.path())
+        .env("CODEX_SQLITE_HOME", home.path())
+        .env_remove(AICODEX_APP_DAEMON_ADDR_ENV_VAR)
+        .env_remove(AICODEX_APP_DAEMON_TOKEN_ENV_VAR);
 }
 
 async fn mount_personal_access_token_startup(server: &MockServer) {
@@ -79,8 +89,8 @@ fn personal_access_token_exec_command(server: &MockServer, home: &TempDir) -> Co
         .arg("-C")
         .arg(repo_root())
         .arg("hello?");
-    cmd.env("CODEX_HOME", home.path())
-        .env(CODEX_ACCESS_TOKEN_ENV_VAR, PERSONAL_ACCESS_TOKEN)
+    configure_cli_test_env(&mut cmd, home);
+    cmd.env(CODEX_ACCESS_TOKEN_ENV_VAR, PERSONAL_ACCESS_TOKEN)
         .env("CODEX_AUTHAPI_BASE_URL", server.uri())
         .env_remove(CODEX_API_KEY_ENV_VAR)
         .env_remove("OPENAI_API_KEY");
@@ -238,8 +248,8 @@ async fn responses_mode_stream_cli() {
         .arg("-C")
         .arg(&repo_root)
         .arg("hello?");
-    cmd.env("CODEX_HOME", home.path())
-        .env("OPENAI_API_KEY", "dummy");
+    configure_cli_test_env(&mut cmd, &home);
+    cmd.env("OPENAI_API_KEY", "dummy");
 
     let output = run_cli_command(&mut cmd).unwrap();
     println!("Status: {}", output.status);
@@ -278,8 +288,8 @@ async fn responses_mode_stream_cli_supports_openai_base_url_config_override() {
         .arg("-C")
         .arg(&repo_root)
         .arg("hello?");
-    cmd.env("CODEX_HOME", home.path())
-        .env("OPENAI_API_KEY", "dummy");
+    configure_cli_test_env(&mut cmd, &home);
+    cmd.env("OPENAI_API_KEY", "dummy");
 
     let output = run_cli_command(&mut cmd).unwrap();
     assert!(output.status.success());
@@ -334,8 +344,8 @@ async fn exec_cli_applies_model_instructions_file() {
         .arg("-C")
         .arg(&repo_root)
         .arg("hello?\n");
-    cmd.env("CODEX_HOME", home.path())
-        .env("OPENAI_API_KEY", "dummy");
+    configure_cli_test_env(&mut cmd, &home);
+    cmd.env("OPENAI_API_KEY", "dummy");
 
     let output = run_cli_command(&mut cmd).unwrap();
     println!("Status: {}", output.status);
@@ -404,8 +414,8 @@ async fn exec_cli_profile_applies_model_instructions_file() {
         .arg("-C")
         .arg(&repo_root)
         .arg("hello?\n");
-    cmd.env("CODEX_HOME", home.path())
-        .env("OPENAI_API_KEY", "dummy");
+    configure_cli_test_env(&mut cmd, &home);
+    cmd.env("OPENAI_API_KEY", "dummy");
 
     let output = run_cli_command(&mut cmd).unwrap();
     println!("Status: {}", output.status);
@@ -445,8 +455,8 @@ async fn responses_api_stream_cli() {
         .arg("-C")
         .arg(&repo_root)
         .arg("hello?");
-    cmd.env("CODEX_HOME", home.path())
-        .env("OPENAI_API_KEY", "dummy");
+    configure_cli_test_env(&mut cmd, &home);
+    cmd.env("OPENAI_API_KEY", "dummy");
 
     let output = run_cli_command(&mut cmd).unwrap();
     assert!(output.status.success());
@@ -486,8 +496,8 @@ async fn integration_creates_and_checks_session_file() -> anyhow::Result<()> {
         .arg("-C")
         .arg(&repo_root)
         .arg(&prompt);
-    cmd.env("CODEX_HOME", home.path())
-        .env(CODEX_API_KEY_ENV_VAR, "dummy");
+    configure_cli_test_env(&mut cmd, &home);
+    cmd.env(CODEX_API_KEY_ENV_VAR, "dummy");
 
     let output = run_cli_command(&mut cmd).unwrap();
     assert!(
@@ -604,8 +614,8 @@ async fn integration_creates_and_checks_session_file() -> anyhow::Result<()> {
         .arg(&prompt2)
         .arg("resume")
         .arg("--last");
-    cmd2.env("CODEX_HOME", home.path())
-        .env("OPENAI_API_KEY", "dummy");
+    configure_cli_test_env(&mut cmd2, &home);
+    cmd2.env("OPENAI_API_KEY", "dummy");
 
     let output2 = run_cli_command(&mut cmd2).unwrap();
     assert!(output2.status.success(), "resume codex-cli run failed");
