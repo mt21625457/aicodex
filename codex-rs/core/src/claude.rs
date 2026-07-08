@@ -61,6 +61,7 @@ const INTERRUPTED_TOOL_USE_PLACEHOLDER: &str = "[Tool use interrupted]";
 const TOOL_INPUT_FIELD: &str = "input";
 const OUTPUT_SCHEMA_INSTRUCTIONS: &str =
     "Respond with JSON only. It must strictly match this schema:";
+const CLAUDE_LANGUAGE_INSTRUCTION: &str = "For visible thinking summaries and user-facing responses, use the dominant language of the latest user message.";
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct ClaudeToolHistoryRepairStats {
@@ -245,6 +246,7 @@ pub(crate) fn build_claude_messages_request(
     if let Some(output_schema) = &prompt.output_schema {
         system_segments.push(output_schema_instruction(output_schema));
     }
+    system_segments.push(CLAUDE_LANGUAGE_INSTRUCTION.to_string());
     let tools_json = create_tools_json_for_claude_messages_with_options(
         &prompt.tools,
         ClaudeMessagesToolOptions {
@@ -2035,7 +2037,7 @@ mod tests {
                         }
                     ]
                 }],
-                "system": "be useful",
+                "system": format!("be useful\n\n{CLAUDE_LANGUAGE_INSTRUCTION}"),
                 "tools": [{
                     "name": "mcp__demo__search",
                     "description": "Demo tools\n\nSearch",
@@ -2510,6 +2512,7 @@ mod tests {
                     "type": "enabled",
                     "budget_tokens": CLAUDE_THINKING_HIGH_BUDGET_TOKENS
                 },
+                "system": CLAUDE_LANGUAGE_INSTRUCTION,
                 "stream": true
             })
         );
@@ -2735,6 +2738,7 @@ mod tests {
                     "type": "enabled",
                     "budget_tokens": CLAUDE_THINKING_HIGH_BUDGET_TOKENS
                 },
+                "system": CLAUDE_LANGUAGE_INSTRUCTION,
                 "stream": true
             })
         );
@@ -3005,6 +3009,7 @@ mod tests {
                     "type": "enabled",
                     "budget_tokens": CLAUDE_THINKING_HIGH_BUDGET_TOKENS
                 },
+                "system": CLAUDE_LANGUAGE_INSTRUCTION,
                 "service_tier": "auto",
                 "stream": true
             })
@@ -3057,6 +3062,7 @@ mod tests {
                     "type": "enabled",
                     "budget_tokens": CLAUDE_THINKING_XHIGH_BUDGET_TOKENS
                 },
+                "system": CLAUDE_LANGUAGE_INSTRUCTION,
                 "stream": true
             })
         );
@@ -3118,6 +3124,7 @@ mod tests {
                         "text": "answer directly"
                     }]
                 }],
+                "system": CLAUDE_LANGUAGE_INSTRUCTION,
                 "stream": true
             })
         );
@@ -3820,7 +3827,7 @@ mod tests {
             serde_json::to_value(&request).expect("serialize request")["system"],
             json!([{
                 "type": "text",
-                "text": "stable system",
+                "text": format!("stable system\n\n{CLAUDE_LANGUAGE_INSTRUCTION}"),
                 "cache_control": {
                     "type": "ephemeral",
                     "ttl": "1h"
