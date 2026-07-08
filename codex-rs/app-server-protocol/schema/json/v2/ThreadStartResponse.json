@@ -1266,7 +1266,8 @@
                 {
                   "type": "null"
                 }
-              ]
+              ],
+              "default": null
             },
             "type": {
               "enum": [
@@ -1349,7 +1350,8 @@
                 {
                   "type": "null"
                 }
-              ]
+              ],
+              "default": null
             },
             "type": {
               "enum": [
@@ -1419,7 +1421,8 @@
                 {
                   "type": "null"
                 }
-              ]
+              ],
+              "default": null
             },
             "type": {
               "enum": [
@@ -1509,7 +1512,8 @@
                 {
                   "type": "null"
                 }
-              ]
+              ],
+              "default": null
             },
             "type": {
               "enum": [

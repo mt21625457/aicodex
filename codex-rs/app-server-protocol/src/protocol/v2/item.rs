@@ -238,8 +238,7 @@ pub enum ThreadItem {
         id: String,
         client_id: Option<String>,
         content: Vec<UserInput>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
+        #[serde(default)]
         transcript_metadata: Option<TranscriptMetadata>,
     },
     #[serde(rename_all = "camelCase")]
@@ -257,8 +256,7 @@ pub enum ThreadItem {
         phase: Option<MessagePhase>,
         #[serde(default)]
         memory_citation: Option<MemoryCitation>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
+        #[serde(default)]
         transcript_metadata: Option<TranscriptMetadata>,
     },
     #[serde(rename_all = "camelCase")]
@@ -274,8 +272,7 @@ pub enum ThreadItem {
         summary: Vec<String>,
         #[serde(default)]
         content: Vec<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
+        #[serde(default)]
         transcript_metadata: Option<TranscriptMetadata>,
     },
     #[serde(rename_all = "camelCase")]
@@ -302,8 +299,7 @@ pub enum ThreadItem {
         /// The duration of the command execution in milliseconds.
         #[ts(type = "number | null")]
         duration_ms: Option<i64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
+        #[serde(default)]
         transcript_metadata: Option<TranscriptMetadata>,
     },
     #[serde(rename_all = "camelCase")]

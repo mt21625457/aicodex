@@ -25,6 +25,7 @@ use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
+use codex_app_server_protocol::TranscriptMetadata;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::UserInput;
 use codex_config::types::AuthCredentialsStoreMode;
@@ -769,7 +770,12 @@ async fn external_agent_config_import_creates_session_rollouts() -> Result<()> {
             text: "<EXTERNAL SESSION IMPORTED>".into(),
             phase: None,
             memory_citation: None,
-            transcript_metadata: None,
+            transcript_metadata: Some(TranscriptMetadata {
+                turn_id: Some("external-import-turn-1".into()),
+                backend_item_id: Some("item-3".into()),
+                order_index: Some(2),
+                event_sequence: Some(3),
+            }),
         })
     );
 

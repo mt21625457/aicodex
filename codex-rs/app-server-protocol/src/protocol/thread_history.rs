@@ -1479,28 +1479,28 @@ impl ThreadHistoryBuilder {
     fn upsert_item_in_turn_id(&mut self, turn_id: &str, item: ThreadItem) {
         let tracking_changes = self.is_tracking_changes();
         let item_id = item.id().to_string();
-        if self
+        if let Some((existing_metadata, order_index)) = self
             .current_turn
             .as_ref()
-            .is_some_and(|turn| turn.id == turn_id)
+            .filter(|turn| turn.id == turn_id)
+            .map(|turn| {
+                (
+                    transcript_metadata_for_upsert(&turn.items, &item_id),
+                    turn.items.len(),
+                )
+            })
         {
-            let metadata = {
-                let turn = self.current_turn.as_ref().expect("turn exists");
-                transcript_metadata_for_upsert(&turn.items, &item_id)
-            }
-            .unwrap_or_else(|| {
-                let order_index = self
-                    .current_turn
-                    .as_ref()
-                    .map(|turn| turn.items.len())
-                    .unwrap_or_default();
-                self.next_transcript_metadata(turn_id, &item_id, order_index)
-            });
+            let metadata = existing_metadata
+                .unwrap_or_else(|| self.next_transcript_metadata(turn_id, &item_id, order_index));
             let item = item_with_transcript_metadata(item, metadata);
             let changed_item = {
-                let turn = self.current_turn.as_mut().expect("turn exists");
-                let item = upsert_turn_item(&mut turn.items, item);
-                tracking_changes.then(|| (turn.id.clone(), item.clone()))
+                self.current_turn
+                    .as_mut()
+                    .filter(|turn| turn.id == turn_id)
+                    .and_then(|turn| {
+                        let item = upsert_turn_item(&mut turn.items, item);
+                        tracking_changes.then(|| (turn.id.clone(), item.clone()))
+                    })
             };
             if let Some((turn_id, item)) = changed_item {
                 self.record_changed_item(turn_id, item);
@@ -1913,8 +1913,7 @@ fn parse_seconds_to_millis(raw: &str) -> Option<i64> {
 }
 
 fn legacy_app_path_string(path: String) -> LegacyAppPathString {
-    serde_json::from_value(serde_json::Value::String(path))
-        .expect("LegacyAppPathString accepts any UTF-8 string")
+    LegacyAppPathString::from_path(std::path::Path::new(&path))
 }
 
 #[derive(Debug, Clone, PartialEq)]
