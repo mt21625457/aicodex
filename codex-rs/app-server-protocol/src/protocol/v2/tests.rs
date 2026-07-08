@@ -2748,6 +2748,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
                     path: "app://demo-app".to_string(),
                 },
             ],
+            transcript_metadata: None,
         }
     );
 
@@ -2772,6 +2773,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             text: "Hello world".to_string(),
             phase: None,
             memory_citation: None,
+            transcript_metadata: None,
         }
     );
 
@@ -2807,6 +2809,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
                 }],
                 thread_ids: vec!["rollout-1".to_string()],
             }),
+            transcript_metadata: None,
         }
     );
 
@@ -2822,6 +2825,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             id: "reasoning-1".to_string(),
             summary: vec!["line one".to_string(), "line two".to_string()],
             content: vec![],
+            transcript_metadata: None,
         }
     );
 
@@ -2859,6 +2863,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             aggregated_output: Some("done\n".to_string()),
             exit_code: Some(0),
             duration_ms: Some(5),
+            transcript_metadata: None,
         }
     );
 

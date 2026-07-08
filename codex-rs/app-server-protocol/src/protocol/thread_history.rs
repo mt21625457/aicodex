@@ -17,6 +17,7 @@ use crate::protocol::v2::McpToolCallError;
 use crate::protocol::v2::McpToolCallResult;
 use crate::protocol::v2::McpToolCallStatus;
 use crate::protocol::v2::ThreadItem;
+use crate::protocol::v2::TranscriptMetadata;
 use crate::protocol::v2::Turn;
 use crate::protocol::v2::TurnError as V2TurnError;
 use crate::protocol::v2::TurnError;
@@ -231,6 +232,7 @@ pub struct ThreadHistoryBuilder {
     turns: Vec<Turn>,
     current_turn: Option<PendingTurn>,
     next_item_index: i64,
+    next_event_sequence: i64,
     current_rollout_index: usize,
     next_rollout_index: usize,
     active_change_set: Option<ThreadHistoryChangeSet>,
@@ -248,6 +250,7 @@ impl ThreadHistoryBuilder {
             turns: Vec::new(),
             current_turn: None,
             next_item_index: 1,
+            next_event_sequence: 1,
             current_rollout_index: 0,
             next_rollout_index: 0,
             active_change_set: None,
@@ -489,6 +492,7 @@ impl ThreadHistoryBuilder {
                     id,
                     summary,
                     content,
+                    transcript_metadata: None,
                 });
             }
             codex_protocol::models::ResponseItem::FunctionCall {
@@ -548,6 +552,7 @@ impl ThreadHistoryBuilder {
             aggregated_output: None,
             exit_code: None,
             duration_ms: None,
+            transcript_metadata: None,
         };
         self.upsert_item_by_optional_turn_id(turn_id, item);
     }
@@ -584,6 +589,7 @@ impl ThreadHistoryBuilder {
                 .or_else(|| (!text.is_empty()).then_some(text)),
             exit_code: parsed.exit_code.or(existing.exit_code),
             duration_ms: parsed.duration_ms.or(existing.duration_ms),
+            transcript_metadata: None,
         };
         self.upsert_item_in_turn_id(&existing.turn_id, item);
     }
@@ -604,6 +610,7 @@ impl ThreadHistoryBuilder {
             id,
             client_id: payload.client_id.clone(),
             content,
+            transcript_metadata: None,
         });
     }
 
@@ -623,6 +630,7 @@ impl ThreadHistoryBuilder {
             text,
             phase,
             memory_citation,
+            transcript_metadata: None,
         });
     }
 
@@ -663,6 +671,7 @@ impl ThreadHistoryBuilder {
             id,
             summary: vec![payload.text.clone()],
             content: Vec::new(),
+            transcript_metadata: None,
         });
     }
 
@@ -703,6 +712,7 @@ impl ThreadHistoryBuilder {
             id,
             summary: Vec::new(),
             content: vec![payload.text.clone()],
+            transcript_metadata: None,
         });
     }
 
@@ -1449,6 +1459,12 @@ impl ThreadHistoryBuilder {
 
     fn push_item_in_current_turn(&mut self, item: ThreadItem) {
         let tracking_changes = self.is_tracking_changes();
+        let item_id = item.id().to_string();
+        let (turn_id, order_index) = {
+            let turn = self.ensure_turn();
+            (turn.id.clone(), turn.items.len())
+        };
+        let item = self.item_with_new_transcript_metadata(item, &turn_id, &item_id, order_index);
         let changed_item = {
             let turn = self.ensure_turn();
             let changed_item = tracking_changes.then(|| (turn.id.clone(), item.clone()));
@@ -1462,10 +1478,27 @@ impl ThreadHistoryBuilder {
 
     fn upsert_item_in_turn_id(&mut self, turn_id: &str, item: ThreadItem) {
         let tracking_changes = self.is_tracking_changes();
-        if let Some(turn) = self.current_turn.as_mut()
-            && turn.id == turn_id
+        let item_id = item.id().to_string();
+        if self
+            .current_turn
+            .as_ref()
+            .is_some_and(|turn| turn.id == turn_id)
         {
+            let metadata = {
+                let turn = self.current_turn.as_ref().expect("turn exists");
+                transcript_metadata_for_upsert(&turn.items, &item_id)
+            }
+            .unwrap_or_else(|| {
+                let order_index = self
+                    .current_turn
+                    .as_ref()
+                    .map(|turn| turn.items.len())
+                    .unwrap_or_default();
+                self.next_transcript_metadata(turn_id, &item_id, order_index)
+            });
+            let item = item_with_transcript_metadata(item, metadata);
             let changed_item = {
+                let turn = self.current_turn.as_mut().expect("turn exists");
                 let item = upsert_turn_item(&mut turn.items, item);
                 tracking_changes.then(|| (turn.id.clone(), item.clone()))
             };
@@ -1475,8 +1508,15 @@ impl ThreadHistoryBuilder {
             return;
         }
 
-        if let Some(turn) = self.turns.iter_mut().find(|turn| turn.id == turn_id) {
+        if let Some(turn_index) = self.turns.iter().position(|turn| turn.id == turn_id) {
+            let metadata = transcript_metadata_for_upsert(&self.turns[turn_index].items, &item_id)
+                .unwrap_or_else(|| {
+                    let order_index = self.turns[turn_index].items.len();
+                    self.next_transcript_metadata(turn_id, &item_id, order_index)
+                });
+            let item = item_with_transcript_metadata(item, metadata);
             let changed_item = {
+                let turn = &mut self.turns[turn_index];
                 let item = upsert_turn_item(&mut turn.items, item);
                 tracking_changes.then(|| (turn.id.clone(), item.clone()))
             };
@@ -1500,6 +1540,33 @@ impl ThreadHistoryBuilder {
             return;
         }
         self.upsert_item_in_current_turn(item);
+    }
+
+    fn item_with_new_transcript_metadata(
+        &mut self,
+        item: ThreadItem,
+        turn_id: &str,
+        item_id: &str,
+        order_index: usize,
+    ) -> ThreadItem {
+        let metadata = self.next_transcript_metadata(turn_id, item_id, order_index);
+        item_with_transcript_metadata(item, metadata)
+    }
+
+    fn next_transcript_metadata(
+        &mut self,
+        turn_id: &str,
+        item_id: &str,
+        order_index: usize,
+    ) -> TranscriptMetadata {
+        let event_sequence = self.next_event_sequence;
+        self.next_event_sequence += 1;
+        TranscriptMetadata {
+            turn_id: Some(turn_id.to_string()),
+            backend_item_id: Some(item_id.to_string()),
+            order_index: Some(i64::try_from(order_index).unwrap_or(i64::MAX)),
+            event_sequence: Some(event_sequence),
+        }
     }
 
     fn has_turn_id(&self, turn_id: &str) -> bool {
@@ -1545,6 +1612,18 @@ impl ThreadHistoryBuilder {
 
     fn upsert_item_in_current_turn(&mut self, item: ThreadItem) {
         let tracking_changes = self.is_tracking_changes();
+        let item_id = item.id().to_string();
+        let (turn_id, order_index, existing_metadata) = {
+            let turn = self.ensure_turn();
+            (
+                turn.id.clone(),
+                turn.items.len(),
+                transcript_metadata_for_upsert(&turn.items, &item_id),
+            )
+        };
+        let metadata = existing_metadata
+            .unwrap_or_else(|| self.next_transcript_metadata(&turn_id, &item_id, order_index));
+        let item = item_with_transcript_metadata(item, metadata);
         let changed_item = {
             let turn = self.ensure_turn();
             let item = upsert_turn_item(&mut turn.items, item);
@@ -1560,6 +1639,7 @@ impl ThreadHistoryBuilder {
             id,
             summary,
             content,
+            transcript_metadata: _,
         } = item
         else {
             self.upsert_item_in_current_turn(item);
@@ -1567,38 +1647,46 @@ impl ThreadHistoryBuilder {
         };
 
         let tracking_changes = self.is_tracking_changes();
-        let changed_item = {
+        let (merged, changed_item) = {
             let turn = self.ensure_turn();
             if let Some(ThreadItem::Reasoning {
                 id: existing_id,
                 summary: existing_summary,
                 content: existing_content,
+                ..
             }) = turn.items.last_mut()
                 && (existing_id == &id
                     || reasoning_texts_equivalent(existing_content, &content)
                     || reasoning_texts_equivalent(existing_summary, &summary))
             {
-                merge_reasoning_texts(existing_summary, summary);
-                merge_reasoning_texts(existing_content, content);
-                tracking_changes.then(|| {
+                merge_reasoning_texts(existing_summary, summary.clone());
+                merge_reasoning_texts(existing_content, content.clone());
+                let changed_item = if tracking_changes {
                     turn.items
                         .last()
                         .cloned()
                         .map(|item| (turn.id.clone(), item))
-                })
-            } else {
-                let item = ThreadItem::Reasoning {
-                    id,
-                    summary,
-                    content,
+                } else {
+                    None
                 };
-                let item = upsert_turn_item(&mut turn.items, item);
-                Some(tracking_changes.then(|| (turn.id.clone(), item.clone())))
+                (true, changed_item)
+            } else {
+                (false, None)
             }
         };
-        if let Some(Some((turn_id, item))) = changed_item {
+        if let Some((turn_id, item)) = changed_item {
             self.record_changed_item(turn_id, item);
         }
+        if merged {
+            return;
+        }
+
+        self.upsert_item_in_current_turn(ThreadItem::Reasoning {
+            id,
+            summary,
+            content,
+            transcript_metadata: None,
+        });
     }
 
     fn is_tracking_changes(&self) -> bool {
@@ -1707,6 +1795,22 @@ fn upsert_turn_item(items: &mut Vec<ThreadItem>, item: ThreadItem) -> &ThreadIte
     let inserted_item_index = items.len();
     items.push(item);
     &items[inserted_item_index]
+}
+
+fn item_with_transcript_metadata(mut item: ThreadItem, metadata: TranscriptMetadata) -> ThreadItem {
+    item.set_transcript_metadata(metadata);
+    item
+}
+
+fn transcript_metadata_for_upsert(
+    items: &[ThreadItem],
+    item_id: &str,
+) -> Option<TranscriptMetadata> {
+    items
+        .iter()
+        .find(|existing_item| existing_item.id() == item_id)
+        .and_then(ThreadItem::transcript_metadata)
+        .cloned()
 }
 
 fn reasoning_texts_equivalent(left: &[String], right: &[String]) -> bool {
@@ -2013,23 +2117,146 @@ mod tests {
 
         assert_eq!(turns.len(), 1);
         assert_eq!(turns[0].items.len(), 2);
+        let ThreadItem::CommandExecution {
+            id,
+            command,
+            cwd,
+            process_id,
+            source,
+            status,
+            command_actions,
+            aggregated_output,
+            exit_code,
+            duration_ms,
+            transcript_metadata,
+        } = &turns[0].items[1]
+        else {
+            panic!("expected command execution item");
+        };
+        assert_eq!(id, "call-exec-1");
+        assert_eq!(command, "printf hello");
+        assert_eq!(cwd, &legacy_app_path_string("/tmp".into()));
+        assert_eq!(process_id, &None);
+        assert_eq!(source, &CommandExecutionSource::UnifiedExecStartup);
+        assert_eq!(status, &CommandExecutionStatus::Completed);
         assert_eq!(
-            turns[0].items[1],
-            ThreadItem::CommandExecution {
-                id: "call-exec-1".into(),
+            command_actions,
+            &vec![CommandAction::Unknown {
                 command: "printf hello".into(),
-                cwd: legacy_app_path_string("/tmp".into()),
-                process_id: None,
-                source: CommandExecutionSource::UnifiedExecStartup,
-                status: CommandExecutionStatus::Completed,
-                command_actions: vec![CommandAction::Unknown {
-                    command: "printf hello".into(),
-                }],
-                aggregated_output: Some("hello\n".into()),
-                exit_code: Some(0),
-                duration_ms: Some(12),
-            }
+            }]
         );
+        assert_eq!(aggregated_output.as_deref(), Some("hello\n"));
+        assert_eq!(exit_code, &Some(0));
+        assert_eq!(duration_ms, &Some(12));
+        let metadata = transcript_metadata.as_ref().expect("transcript metadata");
+        assert_eq!(metadata.order_index, Some(1));
+        assert_eq!(metadata.event_sequence, Some(2));
+    }
+
+    #[test]
+    fn exec_command_history_keeps_assistant_command_final_order() {
+        let items = vec![
+            RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
+                message: "run a command".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+                ..Default::default()
+            })),
+            RolloutItem::EventMsg(EventMsg::AgentMessage(AgentMessageEvent {
+                message: "I'll check.".into(),
+                phase: None,
+                memory_citation: None,
+            })),
+            RolloutItem::ResponseItem(ResponseItem::FunctionCall {
+                id: Some("fc-1".into()),
+                name: "exec_command".into(),
+                namespace: None,
+                arguments: serde_json::json!({ "cmd": "pwd", "workdir": "/tmp" }).to_string(),
+                call_id: "call-exec-1".into(),
+                internal_chat_message_metadata_passthrough: None,
+            }),
+            RolloutItem::ResponseItem(ResponseItem::FunctionCallOutput {
+                id: None,
+                call_id: "call-exec-1".into(),
+                output: FunctionCallOutputPayload::from_text("Output:\n/tmp\n".into()),
+                internal_chat_message_metadata_passthrough: None,
+            }),
+            RolloutItem::EventMsg(EventMsg::AgentMessage(AgentMessageEvent {
+                message: "Done.".into(),
+                phase: None,
+                memory_citation: None,
+            })),
+        ];
+
+        let turns = build_turns_from_rollout_items(&items);
+
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].items.len(), 4);
+        assert!(matches!(turns[0].items[1], ThreadItem::AgentMessage { .. }));
+        assert!(matches!(
+            turns[0].items[2],
+            ThreadItem::CommandExecution { .. }
+        ));
+        assert!(matches!(turns[0].items[3], ThreadItem::AgentMessage { .. }));
+        let order_indexes = turns[0]
+            .items
+            .iter()
+            .map(|item| {
+                item.transcript_metadata()
+                    .and_then(|metadata| metadata.order_index)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(order_indexes, vec![Some(0), Some(1), Some(2), Some(3)]);
+    }
+
+    #[test]
+    fn late_exec_output_updates_command_without_moving_it() {
+        let items = vec![
+            RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
+                client_id: None,
+                message: "run a command".into(),
+                images: None,
+                text_elements: Vec::new(),
+                local_images: Vec::new(),
+                ..Default::default()
+            })),
+            RolloutItem::ResponseItem(ResponseItem::FunctionCall {
+                id: Some("fc-1".into()),
+                name: "exec_command".into(),
+                namespace: None,
+                arguments: serde_json::json!({ "cmd": "pwd", "workdir": "/tmp" }).to_string(),
+                call_id: "call-exec-1".into(),
+                internal_chat_message_metadata_passthrough: None,
+            }),
+            RolloutItem::EventMsg(EventMsg::AgentMessage(AgentMessageEvent {
+                message: "Done.".into(),
+                phase: None,
+                memory_citation: None,
+            })),
+            RolloutItem::ResponseItem(ResponseItem::FunctionCallOutput {
+                id: None,
+                call_id: "call-exec-1".into(),
+                output: FunctionCallOutputPayload::from_text("Output:\n/tmp\n".into()),
+                internal_chat_message_metadata_passthrough: None,
+            }),
+        ];
+
+        let turns = build_turns_from_rollout_items(&items);
+
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].items.len(), 3);
+        assert!(matches!(
+            turns[0].items[1],
+            ThreadItem::CommandExecution { .. }
+        ));
+        assert!(matches!(turns[0].items[2], ThreadItem::AgentMessage { .. }));
+        let command_metadata = turns[0].items[1]
+            .transcript_metadata()
+            .expect("command metadata");
+        assert_eq!(command_metadata.order_index, Some(1));
+        assert_eq!(command_metadata.event_sequence, Some(2));
     }
 
     #[test]
@@ -2095,6 +2322,7 @@ mod tests {
                         detail: None,
                     }
                 ],
+                transcript_metadata: None,
             }
         );
         assert_eq!(
@@ -2104,6 +2332,7 @@ mod tests {
                 text: "Hi there".into(),
                 phase: None,
                 memory_citation: None,
+                transcript_metadata: None,
             }
         );
         assert_eq!(
@@ -2112,6 +2341,7 @@ mod tests {
                 id: "item-3".into(),
                 summary: vec!["thinking".into()],
                 content: vec!["full reasoning".into()],
+                transcript_metadata: None,
             }
         );
 
@@ -2128,6 +2358,7 @@ mod tests {
                     text: "Second turn".into(),
                     text_elements: Vec::new(),
                 }],
+                transcript_metadata: None,
             }
         );
         assert_eq!(
@@ -2137,6 +2368,7 @@ mod tests {
                 text: "Reply two".into(),
                 phase: None,
                 memory_citation: None,
+                transcript_metadata: None,
             }
         );
     }
@@ -2178,6 +2410,7 @@ mod tests {
                         detail: Some(ImageDetail::Original),
                     },
                 ],
+                transcript_metadata: None,
             }
         );
     }
@@ -2237,6 +2470,7 @@ mod tests {
                     text: "hello".into(),
                     text_elements: Vec::new(),
                 }],
+                transcript_metadata: None,
             }
         );
     }
@@ -2355,6 +2589,7 @@ mod tests {
                 aggregated_output: Some("hello world\n".to_string()),
                 exit_code: Some(0),
                 duration_ms: Some(12),
+                transcript_metadata: None,
             }]
         );
     }
@@ -2416,6 +2651,7 @@ mod tests {
                     text: "hello".into(),
                     text_elements: Vec::new(),
                 }],
+                transcript_metadata: None,
             }]
         );
     }
@@ -2441,6 +2677,7 @@ mod tests {
                 text: "Final reply".into(),
                 phase: Some(MessagePhase::FinalAnswer),
                 memory_citation: None,
+                transcript_metadata: None,
             }
         );
     }
@@ -2499,6 +2736,7 @@ mod tests {
                             text: "generate an image".into(),
                             text_elements: Vec::new(),
                         }],
+                        transcript_metadata: None,
                     },
                     ThreadItem::ImageGeneration {
                         id: "ig_123".into(),
@@ -2554,6 +2792,7 @@ mod tests {
                 id: "item-2".into(),
                 summary: vec!["first summary".into()],
                 content: vec!["first content".into()],
+                transcript_metadata: None,
             }
         );
         assert_eq!(
@@ -2562,6 +2801,7 @@ mod tests {
                 id: "item-4".into(),
                 summary: vec!["second summary".into()],
                 content: Vec::new(),
+                transcript_metadata: None,
             }
         );
     }
@@ -2622,6 +2862,7 @@ mod tests {
                     text: "Please do the thing".into(),
                     text_elements: Vec::new(),
                 }],
+                transcript_metadata: None,
             }
         );
         assert_eq!(
@@ -2631,6 +2872,7 @@ mod tests {
                 text: "Working...".into(),
                 phase: None,
                 memory_citation: None,
+                transcript_metadata: None,
             }
         );
 
@@ -2646,6 +2888,7 @@ mod tests {
                     text: "Let's try again".into(),
                     text_elements: Vec::new(),
                 }],
+                transcript_metadata: None,
             }
         );
         assert_eq!(
@@ -2655,6 +2898,7 @@ mod tests {
                 text: "Second attempt complete.".into(),
                 phase: None,
                 memory_citation: None,
+                transcript_metadata: None,
             }
         );
     }
@@ -2725,12 +2969,14 @@ mod tests {
                         text: "First".into(),
                         text_elements: Vec::new(),
                     }],
+                    transcript_metadata: None,
                 },
                 ThreadItem::AgentMessage {
                     id: "item-2".into(),
                     text: "A1".into(),
                     phase: None,
                     memory_citation: None,
+                    transcript_metadata: None,
                 },
             ]
         );
@@ -2744,12 +2990,14 @@ mod tests {
                         text: "Third".into(),
                         text_elements: Vec::new(),
                     }],
+                    transcript_metadata: None,
                 },
                 ThreadItem::AgentMessage {
                     id: "item-4".into(),
                     text: "A3".into(),
                     phase: None,
                     memory_citation: None,
+                    transcript_metadata: None,
                 },
             ]
         );
@@ -2847,6 +3095,7 @@ mod tests {
                         text: "Start".into(),
                         text_elements: Vec::new(),
                     }],
+                    transcript_metadata: None,
                 },
                 ThreadItem::UserMessage {
                     id: "item-2".into(),
@@ -2855,6 +3104,7 @@ mod tests {
                         text: "Steer".into(),
                         text_elements: Vec::new(),
                     }],
+                    transcript_metadata: None,
                 },
             ]
         );
@@ -2958,6 +3208,7 @@ mod tests {
                 aggregated_output: Some("hello world\n".into()),
                 exit_code: Some(0),
                 duration_ms: Some(12),
+                transcript_metadata: None,
             }
         );
         assert_eq!(
@@ -3203,6 +3454,7 @@ mod tests {
                 aggregated_output: Some("exec command rejected by user".into()),
                 exit_code: Some(-1),
                 duration_ms: Some(0),
+                transcript_metadata: None,
             }
         );
         assert_eq!(
@@ -3301,6 +3553,7 @@ mod tests {
                 aggregated_output: None,
                 exit_code: None,
                 duration_ms: None,
+                transcript_metadata: None,
             }
         );
     }
@@ -3367,6 +3620,7 @@ mod tests {
                 aggregated_output: None,
                 exit_code: None,
                 duration_ms: None,
+                transcript_metadata: None,
             }
         );
     }
@@ -3465,6 +3719,7 @@ mod tests {
                 aggregated_output: Some("done\n".into()),
                 exit_code: Some(0),
                 duration_ms: Some(5),
+                transcript_metadata: None,
             }
         );
     }
@@ -3557,6 +3812,7 @@ mod tests {
                     text: "second".into(),
                     text_elements: Vec::new(),
                 }],
+                transcript_metadata: None,
             }
         );
     }
@@ -3615,6 +3871,7 @@ mod tests {
                         text: "apply patch".into(),
                         text_elements: Vec::new(),
                     }],
+                    transcript_metadata: None,
                 },
                 ThreadItem::FileChange {
                     id: "patch-call".into(),
@@ -3685,6 +3942,7 @@ mod tests {
                         text: "apply patch".into(),
                         text_elements: Vec::new(),
                     }],
+                    transcript_metadata: None,
                 },
                 ThreadItem::FileChange {
                     id: "patch-call".into(),
@@ -4152,6 +4410,7 @@ mod tests {
                         text: "hello".into(),
                         text_elements: Vec::new(),
                     }],
+                    transcript_metadata: None,
                 }],
             }
         );
@@ -4357,6 +4616,7 @@ mod tests {
                 id: "reasoning-1".into(),
                 summary: vec!["short thought".into()],
                 content: vec!["full private reasoning".into()],
+                transcript_metadata: None,
             }
         );
     }
@@ -4424,6 +4684,7 @@ mod tests {
                 id: "item-2".into(),
                 summary: Vec::new(),
                 content: vec!["full ".into(), "private reasoning".into()],
+                transcript_metadata: None,
             }
         );
     }
@@ -4455,6 +4716,7 @@ mod tests {
                             text: "hello".into(),
                             text_elements: Vec::new(),
                         }],
+                        transcript_metadata: None,
                     },
                 }],
                 changed_turns: vec![ThreadHistoryTurnChange {
@@ -4534,6 +4796,7 @@ mod tests {
                         id: "item-1".into(),
                         summary: vec!["summary".into()],
                         content: vec!["raw content".into()],
+                        transcript_metadata: None,
                     },
                 }],
                 changed_turns: Vec::new(),

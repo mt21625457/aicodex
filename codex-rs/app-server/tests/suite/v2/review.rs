@@ -99,6 +99,7 @@ async fn review_start_runs_review_turn_and_emits_code_review_item() -> Result<()
                 text: "commit 1234567: Tidy UI colors".to_string(),
                 text_elements: Vec::new(),
             }],
+            transcript_metadata: None,
         }]
     );
 
@@ -211,6 +212,7 @@ async fn review_start_exec_approval_item_id_matches_command_execution_item() -> 
                 text: "commit 1234567: Check review approvals".to_string(),
                 text_elements: Vec::new(),
             }],
+            transcript_metadata: None,
         }]
     );
 
@@ -347,6 +349,7 @@ async fn review_start_with_detached_delivery_returns_new_thread_id() -> Result<(
                 text: "detached review".to_string(),
                 text_elements: Vec::new(),
             }],
+            transcript_metadata: None,
         }]
     );
     assert_ne!(

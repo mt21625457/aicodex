@@ -18,6 +18,7 @@ use crate::protocol::v2::ReasoningSummaryTextDeltaNotification;
 use crate::protocol::v2::ReasoningTextDeltaNotification;
 use crate::protocol::v2::TerminalInteractionNotification;
 use crate::protocol::v2::ThreadItem;
+use crate::protocol::v2::TranscriptMetadata;
 use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem as CoreDynamicToolCallOutputContentItem;
 use codex_protocol::protocol::EventMsg;
 use std::collections::HashMap;
@@ -404,18 +405,20 @@ pub fn item_event_to_server_notification(
             })
         }
         EventMsg::ItemStarted(item_started_event) => {
+            let item = thread_item_with_live_metadata(item_started_event.item.into(), &turn_id);
             ServerNotification::ItemStarted(ItemStartedNotification {
                 thread_id,
                 turn_id,
-                item: item_started_event.item.into(),
+                item,
                 started_at_ms: item_started_event.started_at_ms,
             })
         }
         EventMsg::ItemCompleted(item_completed_event) => {
+            let item = thread_item_with_live_metadata(item_completed_event.item.into(), &turn_id);
             ServerNotification::ItemCompleted(ItemCompletedNotification {
                 thread_id,
                 turn_id,
-                item: item_completed_event.item.into(),
+                item,
                 completed_at_ms: item_completed_event.completed_at_ms,
             })
         }
@@ -428,10 +431,14 @@ pub fn item_event_to_server_notification(
             })
         }
         EventMsg::ExecCommandBegin(exec_command_begin_event) => {
+            let item = thread_item_with_live_metadata(
+                build_command_execution_begin_item(&exec_command_begin_event),
+                &turn_id,
+            );
             ServerNotification::ItemStarted(ItemStartedNotification {
                 thread_id,
                 turn_id,
-                item: build_command_execution_begin_item(&exec_command_begin_event),
+                item,
                 started_at_ms: exec_command_begin_event.started_at_ms,
             })
         }
@@ -457,15 +464,30 @@ pub fn item_event_to_server_notification(
             })
         }
         EventMsg::ExecCommandEnd(exec_command_end_event) => {
+            let item = thread_item_with_live_metadata(
+                build_command_execution_end_item(&exec_command_end_event),
+                &turn_id,
+            );
             ServerNotification::ItemCompleted(ItemCompletedNotification {
                 thread_id,
                 turn_id,
-                item: build_command_execution_end_item(&exec_command_end_event),
+                item,
                 completed_at_ms: exec_command_end_event.completed_at_ms,
             })
         }
         _ => unreachable!("unsupported item event"),
     }
+}
+
+fn thread_item_with_live_metadata(mut item: ThreadItem, turn_id: &str) -> ThreadItem {
+    let item_id = item.id().to_string();
+    item.set_transcript_metadata(TranscriptMetadata {
+        turn_id: Some(turn_id.to_string()),
+        backend_item_id: Some(item_id),
+        order_index: None,
+        event_sequence: None,
+    });
+    item
 }
 
 #[cfg(test)]

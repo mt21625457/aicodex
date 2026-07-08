@@ -288,11 +288,12 @@ pub(crate) async fn apply_bespoke_event_handling(
                 )
                 .await;
             }
-            let notification = guardian_auto_approval_review_notification(
+            let mut notification = guardian_auto_approval_review_notification(
                 &conversation_id,
                 &event_turn_id,
                 &assessment,
             );
+            attach_transcript_metadata_to_notification(&mut notification, &thread_state).await;
             outgoing.send_server_notification(notification).await;
             let completion_status = match assessment.status {
                 codex_protocol::protocol::GuardianAssessmentStatus::Denied
@@ -989,11 +990,12 @@ pub(crate) async fn apply_bespoke_event_handling(
                 _ => None,
             };
             if should_emit {
-                let notification = item_event_to_server_notification(
+                let mut notification = item_event_to_server_notification(
                     EventMsg::ItemStarted(event),
                     &conversation_id.to_string(),
                     &event_turn_id,
                 );
+                attach_transcript_metadata_to_notification(&mut notification, &thread_state).await;
                 outgoing.send_server_notification(notification).await;
             }
             if let Some(params) = dynamic_tool_call_params {
@@ -1014,11 +1016,12 @@ pub(crate) async fn apply_bespoke_event_handling(
                 &event.item,
             )
             .await;
-            let notification = item_event_to_server_notification(
+            let mut notification = item_event_to_server_notification(
                 EventMsg::ItemCompleted(event),
                 &conversation_id.to_string(),
                 &event_turn_id,
             );
+            attach_transcript_metadata_to_notification(&mut notification, &thread_state).await;
             outgoing.send_server_notification(notification).await;
         }
         msg @ (EventMsg::PatchApplyUpdated(_) | EventMsg::TerminalInteraction(_)) => {
@@ -1355,6 +1358,32 @@ async fn remove_missing_thread_watch(
     }
 }
 
+async fn attach_transcript_metadata_to_notification(
+    notification: &mut ServerNotification,
+    thread_state: &Arc<Mutex<ThreadState>>,
+) {
+    match notification {
+        ServerNotification::ItemStarted(payload) => {
+            attach_transcript_metadata_to_item(thread_state, &payload.turn_id, &mut payload.item)
+                .await;
+        }
+        ServerNotification::ItemCompleted(payload) => {
+            attach_transcript_metadata_to_item(thread_state, &payload.turn_id, &mut payload.item)
+                .await;
+        }
+        _ => {}
+    }
+}
+
+async fn attach_transcript_metadata_to_item(
+    thread_state: &Arc<Mutex<ThreadState>>,
+    turn_id: &str,
+    item: &mut ThreadItem,
+) {
+    let state = thread_state.lock().await;
+    state.attach_transcript_metadata(turn_id, item);
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn start_command_execution_item(
     conversation_id: &ThreadId,
@@ -1375,22 +1404,25 @@ async fn start_command_execution_item(
             .insert(item_id.clone())
     };
     if first_start {
+        let mut item = ThreadItem::CommandExecution {
+            id: item_id,
+            command,
+            cwd,
+            process_id: None,
+            source,
+            status: CommandExecutionStatus::InProgress,
+            command_actions,
+            aggregated_output: None,
+            exit_code: None,
+            duration_ms: None,
+            transcript_metadata: None,
+        };
+        attach_transcript_metadata_to_item(thread_state, &turn_id, &mut item).await;
         let notification = ItemStartedNotification {
             thread_id: conversation_id.to_string(),
             turn_id,
             started_at_ms: now_unix_timestamp_ms(),
-            item: ThreadItem::CommandExecution {
-                id: item_id,
-                command,
-                cwd,
-                process_id: None,
-                source,
-                status: CommandExecutionStatus::InProgress,
-                command_actions,
-                aggregated_output: None,
-                exit_code: None,
-                duration_ms: None,
-            },
+            item,
         };
         outgoing
             .send_server_notification(ServerNotification::ItemStarted(notification))
@@ -1434,7 +1466,10 @@ async fn complete_command_execution_item(
         aggregated_output: None,
         exit_code: None,
         duration_ms: None,
+        transcript_metadata: None,
     };
+    let mut item = item;
+    attach_transcript_metadata_to_item(thread_state, &turn_id, &mut item).await;
     let notification = ItemCompletedNotification {
         thread_id: conversation_id.to_string(),
         turn_id,
@@ -2180,6 +2215,8 @@ mod tests {
     use codex_app_server_protocol::TurnPlanStepStatus;
     use codex_login::CodexAuth;
     use codex_protocol::AgentPath;
+    use codex_protocol::items::CommandExecutionItem as CoreCommandExecutionItem;
+    use codex_protocol::items::CommandExecutionStatus as CoreCommandExecutionStatus;
     use codex_protocol::items::DynamicToolCallItem;
     use codex_protocol::items::DynamicToolCallStatus as CoreDynamicToolCallStatus;
     use codex_protocol::items::HookPromptFragment;
@@ -2616,6 +2653,7 @@ mod tests {
                         aggregated_output: None,
                         exit_code: None,
                         duration_ms: None,
+                        transcript_metadata: None,
                     }
                 );
             }
@@ -2636,6 +2674,126 @@ mod tests {
         .await;
         assert!(!second_start);
         assert!(rx.try_recv().is_err(), "duplicate start should not emit");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn canonical_command_start_uses_tracked_transcript_metadata() -> Result<()> {
+        let codex_home = TempDir::new()?;
+        let config = load_default_config_for_test(&codex_home).await;
+        let thread_manager = Arc::new(
+            codex_core::test_support::thread_manager_with_models_provider_and_home(
+                CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+                config.model_provider.clone(),
+                config.codex_home.to_path_buf(),
+                Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+            ),
+        );
+        let codex_core::NewThread {
+            thread_id: conversation_id,
+            thread: conversation,
+            ..
+        } = thread_manager.start_thread(config).await?;
+        let thread_state = new_thread_state();
+        let command_item = CoreCommandExecutionItem {
+            id: "cmd-1".to_string(),
+            process_id: None,
+            command: vec!["printf".to_string(), "hi".to_string()],
+            cwd: test_path_buf("/tmp").abs().into(),
+            parsed_cmd: Vec::new(),
+            source: codex_protocol::protocol::ExecCommandSource::Agent,
+            interaction_input: None,
+            status: CoreCommandExecutionStatus::InProgress,
+            stdout: None,
+            stderr: None,
+            aggregated_output: None,
+            exit_code: None,
+            duration: None,
+            formatted_output: None,
+        };
+        {
+            let mut state = thread_state.lock().await;
+            state.track_current_turn_event(
+                "turn-1",
+                &EventMsg::TurnStarted(codex_protocol::protocol::TurnStartedEvent {
+                    turn_id: "turn-1".to_string(),
+                    trace_id: None,
+                    started_at: Some(42),
+                    model_context_window: None,
+                    collaboration_mode_kind: Default::default(),
+                }),
+            );
+            state.track_current_turn_event(
+                "turn-1",
+                &EventMsg::AgentMessage(AgentMessageEvent {
+                    message: "I'll run that.".to_string(),
+                    phase: None,
+                    memory_citation: None,
+                }),
+            );
+            state.track_current_turn_event(
+                "turn-1",
+                &EventMsg::ItemStarted(ItemStartedEvent {
+                    thread_id: conversation_id,
+                    turn_id: "turn-1".to_string(),
+                    item: CoreTurnItem::CommandExecution(command_item.clone()),
+                    started_at_ms: 43,
+                }),
+            );
+        }
+
+        let (tx, mut rx) = mpsc::channel(CHANNEL_CAPACITY);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let outgoing = ThreadScopedOutgoingMessageSender::new(
+            outgoing,
+            vec![ConnectionId(1)],
+            conversation_id,
+        );
+
+        apply_bespoke_event_handling(
+            Event {
+                id: "turn-1".to_string(),
+                msg: EventMsg::ItemStarted(ItemStartedEvent {
+                    thread_id: conversation_id,
+                    turn_id: "turn-1".to_string(),
+                    item: CoreTurnItem::CommandExecution(command_item),
+                    started_at_ms: 43,
+                }),
+            },
+            conversation_id,
+            conversation,
+            thread_manager,
+            outgoing,
+            thread_state,
+            ThreadWatchManager::new(),
+            Arc::new(tokio::sync::Semaphore::new(/*permits*/ 1)),
+            "test-provider".to_string(),
+        )
+        .await;
+
+        let item_started = recv_broadcast_message(&mut rx).await?;
+        let OutgoingMessage::AppServerNotification(ServerNotification::ItemStarted(payload)) =
+            item_started
+        else {
+            bail!("unexpected message: {item_started:?}");
+        };
+        let ThreadItem::CommandExecution {
+            id,
+            transcript_metadata,
+            ..
+        } = payload.item
+        else {
+            bail!("expected command execution item");
+        };
+        assert_eq!(id, "cmd-1");
+        let metadata = transcript_metadata.expect("live command item should carry metadata");
+        assert_eq!(metadata.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(metadata.backend_item_id.as_deref(), Some("cmd-1"));
+        assert_eq!(metadata.order_index, Some(1));
+        assert!(metadata.event_sequence.is_some());
         Ok(())
     }
 

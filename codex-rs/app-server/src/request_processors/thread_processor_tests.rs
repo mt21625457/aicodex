@@ -305,6 +305,7 @@ mod thread_processor_behavior_tests {
                     text: "live".to_string(),
                     text_elements: Vec::new(),
                 }],
+                transcript_metadata: None,
             }],
             items_view: TurnItemsView::Full,
             error: None,

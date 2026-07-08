@@ -3,7 +3,9 @@ use crate::outgoing_message::ConnectionRequestId;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadGoal;
 use codex_app_server_protocol::ThreadHistoryBuilder;
+use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadSettings;
+use codex_app_server_protocol::TranscriptMetadata;
 use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::TurnError;
 use codex_core::CodexThread;
@@ -86,6 +88,7 @@ pub(crate) struct ThreadState {
     last_thread_settings: Option<ThreadSettings>,
     listener_command_tx: Option<mpsc::UnboundedSender<ThreadListenerCommand>>,
     current_turn_history: ThreadHistoryBuilder,
+    transcript_metadata_by_item: HashMap<(String, String), TranscriptMetadata>,
     listener_thread: Option<Weak<CodexThread>>,
     watch_registration: WatchRegistration,
 }
@@ -123,6 +126,7 @@ impl ThreadState {
         }
         self.listener_command_tx = None;
         self.current_turn_history.reset();
+        self.transcript_metadata_by_item.clear();
         self.listener_thread = None;
         self.watch_registration = WatchRegistration::default();
     }
@@ -141,11 +145,38 @@ impl ThreadState {
         self.current_turn_history.active_turn_snapshot()
     }
 
+    pub(crate) fn attach_transcript_metadata(&self, turn_id: &str, item: &mut ThreadItem) {
+        let item_id = item.id().to_string();
+        let metadata = self
+            .current_turn_history
+            .turn_snapshot(turn_id)
+            .and_then(|turn| {
+                turn.items
+                    .into_iter()
+                    .find(|candidate| candidate.id() == item_id)
+                    .and_then(|candidate| candidate.transcript_metadata().cloned())
+            })
+            .or_else(|| {
+                self.transcript_metadata_by_item
+                    .get(&(turn_id.to_string(), item_id))
+                    .cloned()
+            });
+        if let Some(metadata) = metadata {
+            item.set_transcript_metadata(metadata);
+        }
+    }
+
     pub(crate) fn track_current_turn_event(&mut self, event_turn_id: &str, event: &EventMsg) {
         if let EventMsg::TurnStarted(payload) = event {
             self.turn_summary.started_at = payload.started_at;
         }
         self.current_turn_history.handle_event(event);
+        self.remember_transcript_metadata_for_turn(event_turn_id);
+        if let Some(turn_id) = transcript_metadata_turn_id(event)
+            && turn_id != event_turn_id
+        {
+            self.remember_transcript_metadata_for_turn(turn_id);
+        }
         if matches!(event, EventMsg::TurnAborted(_) | EventMsg::TurnComplete(_))
             && !self.current_turn_history.has_active_turn()
         {
@@ -154,10 +185,44 @@ impl ThreadState {
         }
     }
 
+    fn remember_transcript_metadata_for_turn(&mut self, turn_id: &str) {
+        let Some(turn) = self.current_turn_history.turn_snapshot(turn_id) else {
+            return;
+        };
+        for item in turn.items {
+            if let Some(metadata) = item.transcript_metadata().cloned() {
+                self.transcript_metadata_by_item
+                    .insert((turn.id.clone(), item.id().to_string()), metadata);
+            }
+        }
+    }
+
     pub(crate) fn note_thread_settings(&mut self, thread_settings: ThreadSettings) -> bool {
         let changed = self.last_thread_settings.as_ref() != Some(&thread_settings);
         self.last_thread_settings = Some(thread_settings);
         changed
+    }
+}
+
+fn transcript_metadata_turn_id(event: &EventMsg) -> Option<&str> {
+    match event {
+        EventMsg::ExecCommandBegin(payload) => Some(payload.turn_id.as_str()),
+        EventMsg::ExecCommandEnd(payload) => Some(payload.turn_id.as_str()),
+        EventMsg::GuardianAssessment(payload) if !payload.turn_id.is_empty() => {
+            Some(payload.turn_id.as_str())
+        }
+        EventMsg::ApplyPatchApprovalRequest(payload) if !payload.turn_id.is_empty() => {
+            Some(payload.turn_id.as_str())
+        }
+        EventMsg::PatchApplyBegin(payload) if !payload.turn_id.is_empty() => {
+            Some(payload.turn_id.as_str())
+        }
+        EventMsg::PatchApplyEnd(payload) if !payload.turn_id.is_empty() => {
+            Some(payload.turn_id.as_str())
+        }
+        EventMsg::ItemStarted(payload) => Some(payload.turn_id.as_str()),
+        EventMsg::ItemCompleted(payload) => Some(payload.turn_id.as_str()),
+        _ => None,
     }
 }
 
@@ -198,11 +263,22 @@ mod tests {
     use super::*;
     use codex_app_server_protocol::ApprovalsReviewer;
     use codex_app_server_protocol::AskForApproval;
+    use codex_app_server_protocol::CommandExecutionSource;
+    use codex_app_server_protocol::CommandExecutionStatus;
     use codex_app_server_protocol::SandboxPolicy;
     use codex_protocol::config_types::CollaborationMode;
     use codex_protocol::config_types::ModeKind;
     use codex_protocol::config_types::Settings;
+    use codex_protocol::items::CommandExecutionItem;
+    use codex_protocol::items::CommandExecutionStatus as CoreCommandExecutionStatus;
+    use codex_protocol::items::TurnItem;
+    use codex_protocol::protocol::AgentMessageEvent;
+    use codex_protocol::protocol::ExecCommandSource;
+    use codex_protocol::protocol::ItemStartedEvent;
+    use codex_protocol::protocol::TurnCompleteEvent;
+    use codex_protocol::protocol::TurnStartedEvent;
     use codex_utils_absolute_path::AbsolutePathBuf;
+    use codex_utils_path_uri::PathUri;
     use pretty_assertions::assert_eq;
 
     #[test]
@@ -219,6 +295,105 @@ mod tests {
         ];
 
         assert_eq!(results, vec![true, false, true, false]);
+    }
+
+    #[test]
+    fn transcript_metadata_survives_turn_reset_for_late_command_completion() {
+        let mut state = ThreadState::default();
+        let thread_id = ThreadId::new();
+
+        state.track_current_turn_event(
+            "turn-1",
+            &EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: "turn-1".to_string(),
+                trace_id: None,
+                started_at: Some(42),
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            }),
+        );
+        state.track_current_turn_event(
+            "turn-1",
+            &EventMsg::AgentMessage(AgentMessageEvent {
+                message: "I'll run that.".to_string(),
+                phase: None,
+                memory_citation: None,
+            }),
+        );
+        state.track_current_turn_event(
+            "turn-1",
+            &EventMsg::ItemStarted(ItemStartedEvent {
+                thread_id,
+                turn_id: "turn-1".to_string(),
+                item: TurnItem::CommandExecution(command_execution_item(
+                    "cmd-1",
+                    CoreCommandExecutionStatus::InProgress,
+                )),
+                started_at_ms: 43,
+            }),
+        );
+        state.track_current_turn_event(
+            "turn-1",
+            &EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: "turn-1".to_string(),
+                last_agent_message: None,
+                completed_at: Some(44),
+                duration_ms: Some(2),
+                time_to_first_token_ms: None,
+            }),
+        );
+
+        assert!(state.active_turn_snapshot().is_none());
+
+        let mut item = ThreadItem::CommandExecution {
+            id: "cmd-1".to_string(),
+            command: "printf hi".to_string(),
+            cwd: LegacyAppPathString::from_abs_path(
+                &AbsolutePathBuf::from_absolute_path("/tmp").expect("absolute path"),
+            ),
+            process_id: None,
+            source: CommandExecutionSource::Agent,
+            status: CommandExecutionStatus::Completed,
+            command_actions: Vec::new(),
+            aggregated_output: Some("hi".to_string()),
+            exit_code: Some(0),
+            duration_ms: Some(1),
+            transcript_metadata: None,
+        };
+
+        state.attach_transcript_metadata("turn-1", &mut item);
+
+        let metadata = item
+            .transcript_metadata()
+            .expect("late completion should use cached transcript metadata");
+        assert_eq!(metadata.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(metadata.backend_item_id.as_deref(), Some("cmd-1"));
+        assert_eq!(metadata.order_index, Some(1));
+        assert_eq!(metadata.event_sequence, Some(2));
+    }
+
+    fn command_execution_item(
+        id: &str,
+        status: CoreCommandExecutionStatus,
+    ) -> CommandExecutionItem {
+        CommandExecutionItem {
+            id: id.to_string(),
+            process_id: None,
+            command: vec!["printf".to_string(), "hi".to_string()],
+            cwd: PathUri::from_abs_path(
+                &AbsolutePathBuf::from_absolute_path("/tmp").expect("absolute path"),
+            ),
+            parsed_cmd: Vec::new(),
+            source: ExecCommandSource::Agent,
+            interaction_input: None,
+            status,
+            stdout: None,
+            stderr: None,
+            aggregated_output: None,
+            exit_code: None,
+            duration: None,
+            formatted_output: None,
+        }
     }
 
     fn thread_settings(model: &str) -> ThreadSettings {

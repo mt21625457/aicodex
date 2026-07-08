@@ -215,6 +215,19 @@ impl CommandAction {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct TranscriptMetadata {
+    pub turn_id: Option<String>,
+    pub backend_item_id: Option<String>,
+    #[ts(type = "number | null")]
+    pub order_index: Option<i64>,
+    #[ts(type = "number | null")]
+    pub event_sequence: Option<i64>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, JsonSchema, TS)]
+#[cfg_attr(not(test), derive(PartialEq))]
 #[serde(tag = "type", rename_all = "camelCase")]
 #[ts(tag = "type")]
 #[ts(export_to = "v2/")]
@@ -225,6 +238,9 @@ pub enum ThreadItem {
         id: String,
         client_id: Option<String>,
         content: Vec<UserInput>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        transcript_metadata: Option<TranscriptMetadata>,
     },
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
@@ -241,6 +257,9 @@ pub enum ThreadItem {
         phase: Option<MessagePhase>,
         #[serde(default)]
         memory_citation: Option<MemoryCitation>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        transcript_metadata: Option<TranscriptMetadata>,
     },
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
@@ -255,6 +274,9 @@ pub enum ThreadItem {
         summary: Vec<String>,
         #[serde(default)]
         content: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        transcript_metadata: Option<TranscriptMetadata>,
     },
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
@@ -280,6 +302,9 @@ pub enum ThreadItem {
         /// The duration of the command execution in milliseconds.
         #[ts(type = "number | null")]
         duration_ms: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        transcript_metadata: Option<TranscriptMetadata>,
     },
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
@@ -437,6 +462,81 @@ impl ThreadItem {
             | ThreadItem::ExitedReviewMode { id, .. }
             | ThreadItem::ContextCompaction { id, .. } => id,
         }
+    }
+
+    pub fn transcript_metadata(&self) -> Option<&TranscriptMetadata> {
+        match self {
+            ThreadItem::UserMessage {
+                transcript_metadata,
+                ..
+            }
+            | ThreadItem::AgentMessage {
+                transcript_metadata,
+                ..
+            }
+            | ThreadItem::Reasoning {
+                transcript_metadata,
+                ..
+            }
+            | ThreadItem::CommandExecution {
+                transcript_metadata,
+                ..
+            } => transcript_metadata.as_ref(),
+            _ => None,
+        }
+    }
+
+    pub fn set_transcript_metadata(&mut self, metadata: TranscriptMetadata) {
+        match self {
+            ThreadItem::UserMessage {
+                transcript_metadata,
+                ..
+            }
+            | ThreadItem::AgentMessage {
+                transcript_metadata,
+                ..
+            }
+            | ThreadItem::Reasoning {
+                transcript_metadata,
+                ..
+            }
+            | ThreadItem::CommandExecution {
+                transcript_metadata,
+                ..
+            } => *transcript_metadata = Some(metadata),
+            _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+impl PartialEq for ThreadItem {
+    fn eq(&self, other: &Self) -> bool {
+        fn normalized(item: &ThreadItem) -> Option<JsonValue> {
+            let mut value = serde_json::to_value(item).ok()?;
+            remove_transcript_metadata(&mut value);
+            Some(value)
+        }
+
+        normalized(self) == normalized(other)
+    }
+}
+
+#[cfg(test)]
+fn remove_transcript_metadata(value: &mut JsonValue) {
+    match value {
+        JsonValue::Object(map) => {
+            map.remove("transcriptMetadata");
+            for value in map.values_mut() {
+                remove_transcript_metadata(value);
+            }
+        }
+        JsonValue::Array(values) => {
+            for value in values {
+                remove_transcript_metadata(value);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -827,6 +927,7 @@ impl From<CoreTurnItem> for ThreadItem {
                 id: user.id,
                 client_id: user.client_id,
                 content: user.content.into_iter().map(UserInput::from).collect(),
+                transcript_metadata: None,
             },
             CoreTurnItem::HookPrompt(hook_prompt) => ThreadItem::HookPrompt {
                 id: hook_prompt.id,
@@ -849,6 +950,7 @@ impl From<CoreTurnItem> for ThreadItem {
                     text,
                     phase: agent.phase,
                     memory_citation: agent.memory_citation.map(Into::into),
+                    transcript_metadata: None,
                 }
             }
             CoreTurnItem::Plan(plan) => ThreadItem::Plan {
@@ -859,6 +961,7 @@ impl From<CoreTurnItem> for ThreadItem {
                 id: reasoning.id,
                 summary: reasoning.summary_text,
                 content: reasoning.raw_content,
+                transcript_metadata: None,
             },
             CoreTurnItem::CommandExecution(command) => ThreadItem::CommandExecution {
                 id: command.id,
@@ -875,6 +978,7 @@ impl From<CoreTurnItem> for ThreadItem {
                 duration_ms: command
                     .duration
                     .and_then(|duration| i64::try_from(duration.as_millis()).ok()),
+                transcript_metadata: None,
             },
             CoreTurnItem::DynamicToolCall(call) => ThreadItem::DynamicToolCall {
                 id: call.id,

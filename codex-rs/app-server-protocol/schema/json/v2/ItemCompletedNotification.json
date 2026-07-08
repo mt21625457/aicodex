@@ -560,6 +560,16 @@
             "id": {
               "type": "string"
             },
+            "transcriptMetadata": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/TranscriptMetadata"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "type": {
               "enum": [
                 "userMessage"
@@ -633,6 +643,16 @@
             "text": {
               "type": "string"
             },
+            "transcriptMetadata": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/TranscriptMetadata"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "type": {
               "enum": [
                 "agentMessage"
@@ -692,6 +712,16 @@
                 "type": "string"
               },
               "type": "array"
+            },
+            "transcriptMetadata": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/TranscriptMetadata"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "type": {
               "enum": [
@@ -772,6 +802,16 @@
             },
             "status": {
               "$ref": "#/definitions/CommandExecutionStatus"
+            },
+            "transcriptMetadata": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/TranscriptMetadata"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "type": {
               "enum": [
@@ -1281,6 +1321,37 @@
           "type": "object"
         }
       ]
+    },
+    "TranscriptMetadata": {
+      "properties": {
+        "backendItemId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "eventSequence": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "orderIndex": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "turnId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
     },
     "UserInput": {
       "oneOf": [
