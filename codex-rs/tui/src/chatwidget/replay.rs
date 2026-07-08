@@ -81,6 +81,7 @@ impl ChatWidget {
                 text,
                 phase,
                 memory_citation,
+                ..
             } => {
                 self.on_agent_message_item_completed(
                     AgentMessageItem {

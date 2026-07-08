@@ -52,6 +52,7 @@ pub(crate) fn thread_to_transcript_cells(
                 id,
                 client_id,
                 content,
+                ..
             } => {
                 let item = UserMessageItem {
                     id: id.clone(),
