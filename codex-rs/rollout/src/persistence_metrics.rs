@@ -8,9 +8,10 @@ use codex_protocol::items::TurnItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
+use codex_protocol::protocol::ThreadHistoryMode;
 
 use crate::policy::EventPersistenceMode;
-use crate::policy::is_persisted_rollout_item;
+use crate::policy::is_persisted_rollout_item_with_mode;
 use crate::policy::sanitize_rollout_item_for_persistence;
 
 const ITEM_BYTES_METRIC: &str = "codex.rollout.persistence.item_bytes";
@@ -97,14 +98,16 @@ struct TurnMeasurementUpdate {
 /// Measures logical JSON sizes while applying the shared rollout persistence policy once.
 pub fn measure_and_filter_rollout_items(
     items: &[RolloutItem],
+    history_mode: ThreadHistoryMode,
 ) -> (Vec<RolloutItem>, RolloutPersistenceBatchMeasurement) {
-    measure_and_filter_rollout_items_with_mode(items, EventPersistenceMode::Limited)
+    measure_and_filter_rollout_items_with_mode(items, history_mode, EventPersistenceMode::Limited)
 }
 
 /// Measures logical JSON sizes while applying the shared rollout persistence policy once.
 pub fn measure_and_filter_rollout_items_with_mode(
     items: &[RolloutItem],
-    mode: EventPersistenceMode,
+    history_mode: ThreadHistoryMode,
+    event_mode: EventPersistenceMode,
 ) -> (Vec<RolloutItem>, RolloutPersistenceBatchMeasurement) {
     let mut persisted = Vec::new();
     let mut measurement = RolloutPersistenceBatchMeasurement {
@@ -113,7 +116,7 @@ pub fn measure_and_filter_rollout_items_with_mode(
     };
 
     for item in items {
-        let kept = is_persisted_rollout_item(item, mode);
+        let kept = is_persisted_rollout_item_with_mode(item, history_mode, event_mode);
         let decision = if kept {
             PersistenceDecision::Kept
         } else {
@@ -123,7 +126,10 @@ pub fn measure_and_filter_rollout_items_with_mode(
         add_to_totals(&mut measurement.pre_filter, payload_bytes);
         if kept {
             add_to_totals(&mut measurement.post_filter, payload_bytes);
-            persisted.push(sanitize_rollout_item_for_persistence(item.clone(), mode));
+            persisted.push(sanitize_rollout_item_for_persistence(
+                item.clone(),
+                event_mode,
+            ));
         }
         measurement.items.push(RolloutItemMeasurement {
             decision,
@@ -264,7 +270,10 @@ fn turn_item_type(item: &TurnItem) -> &'static str {
         TurnItem::WebSearch(_) => "web_search",
         TurnItem::ImageView(_) => "image_view",
         TurnItem::Sleep(_) => "sleep",
+        TurnItem::Extension(_) => "extension",
         TurnItem::ImageGeneration(_) => "image_generation",
+        TurnItem::EnteredReviewMode(_) => "entered_review_mode",
+        TurnItem::ExitedReviewMode(_) => "exited_review_mode",
         TurnItem::FileChange(_) => "file_change",
         TurnItem::McpToolCall(_) => "mcp_tool_call",
         TurnItem::ContextCompaction(_) => "context_compaction",

@@ -1,4 +1,5 @@
 use super::*;
+use codex_app_server_protocol::ImageGenerationItem;
 use codex_app_server_protocol::PluginAvailability;
 use pretty_assertions::assert_eq;
 
@@ -296,9 +297,7 @@ pub(crate) fn set_fast_mode_test_catalog(chat: &mut ChatWidget) {
                 "gpt-5.4", /*priority*/ 0, /*supports_fast_mode*/ true,
             ),
             test_model_info(
-                "gpt-5.3-codex",
-                /*priority*/ 1,
-                /*supports_fast_mode*/ false,
+                "gpt-5.2", /*priority*/ 1, /*supports_fast_mode*/ false,
             ),
         ],
     }
@@ -546,6 +545,7 @@ pub(super) fn handle_agent_reasoning_final(chat: &mut ChatWidget) {
                 id: "reasoning-1".to_string(),
                 summary: Vec::new(),
                 content: Vec::new(),
+                transcript_metadata: None,
             },
         }),
         /*replay_kind*/ None,
@@ -712,13 +712,13 @@ pub(super) fn handle_image_generation_end(
             thread_id: thread_id(chat),
             turn_id: "turn-1".to_string(),
             completed_at_ms: 0,
-            item: AppServerThreadItem::ImageGeneration {
+            item: AppServerThreadItem::ImageGeneration(ImageGenerationItem {
                 id: call_id.into(),
                 status: status.into(),
                 revised_prompt,
                 result: String::new(),
                 saved_path,
-            },
+            }),
         }),
         /*replay_kind*/ None,
     );
@@ -735,6 +735,7 @@ pub(super) fn replay_user_message_inputs(
             id: item_id.to_string(),
             client_id: None,
             content,
+            transcript_metadata: None,
         },
         "turn-1".to_string(),
         replay_kind,
@@ -770,6 +771,7 @@ pub(super) fn replay_agent_message(
             text: text.into(),
             phase: Some(MessagePhase::FinalAnswer),
             memory_citation: None,
+            transcript_metadata: None,
         },
         "turn-1".to_string(),
         replay_kind,
@@ -835,6 +837,7 @@ pub(super) fn begin_exec_with_source(
         aggregated_output: None,
         exit_code: None,
         duration_ms: None,
+        transcript_metadata: None,
     };
     handle_exec_begin(chat, item.clone());
     item
@@ -858,6 +861,7 @@ pub(super) fn begin_unified_exec_startup(
         aggregated_output: None,
         exit_code: None,
         duration_ms: None,
+        transcript_metadata: None,
     };
     handle_exec_begin(chat, item.clone());
     item
@@ -919,6 +923,7 @@ pub(super) fn complete_assistant_message(
                 text: text.to_string(),
                 phase,
                 memory_citation: None,
+                transcript_metadata: None,
             },
         }),
         /*replay_kind*/ None,
@@ -961,6 +966,7 @@ pub(super) fn complete_user_message_for_inputs(
                 id: item_id.to_string(),
                 client_id: None,
                 content,
+                transcript_metadata: None,
             },
         }),
         /*replay_kind*/ None,
@@ -1088,6 +1094,7 @@ pub(super) fn end_exec(
             aggregated_output: (!aggregated.is_empty()).then_some(aggregated),
             exit_code: Some(exit_code),
             duration_ms: Some(5),
+            transcript_metadata: None,
         },
     );
 }

@@ -187,6 +187,7 @@ async fn live_app_server_review_prompt_item_is_not_rendered() {
                     text: "Review the code changes against the base branch 'main'.".to_string(),
                     text_elements: Vec::new(),
                 }],
+                transcript_metadata: None,
             },
         }),
         /*replay_kind*/ None,

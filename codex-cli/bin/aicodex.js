@@ -11,6 +11,7 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const require = createRequire(import.meta.url);
+const aicodexPackageRoot = realpathSync(path.join(__dirname, ".."));
 
 const PLATFORM_PACKAGE_BY_TARGET = {
   "x86_64-unknown-linux-musl": "@leagsoft/aicodex-linux-x64",
@@ -119,7 +120,9 @@ if (!nativePackage) {
   const updateCommand =
     packageManager === "bun"
       ? "bun install -g @leagsoft/aicodex@latest"
-      : "npm install -g @leagsoft/aicodex@latest";
+      : packageManager === "pnpm"
+        ? "pnpm add -g @leagsoft/aicodex@latest"
+        : "npm install -g @leagsoft/aicodex@latest";
   throw new Error(
     `Missing optional dependency ${platformPackage}. Reinstall AICodex: ${updateCommand}`,
   );
@@ -133,11 +136,47 @@ const { binaryPath, pathDir } = nativePackage;
 // and guarantees that when either the child terminates or the parent
 // receives a fatal signal, both processes exit in a predictable manner.
 
+function isPnpmOwnedAicodexInstall(nodeModulesDir) {
+  if (!existsSync(path.join(nodeModulesDir, ".modules.yaml"))) {
+    return false;
+  }
+
+  try {
+    return (
+      realpathSync(path.join(nodeModulesDir, "@leagsoft", "aicodex")) ===
+      aicodexPackageRoot
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Use heuristics to detect the package manager that was used to install AICodex
  * in order to give the user a hint about how to update it.
  */
 function detectPackageManager() {
+  // pnpm's owning node_modules directory can be several parents above the
+  // package in isolated global layouts. Search ancestors of both the canonical
+  // package root and lexical entrypoint because pnpm may link either path.
+  const entrypointDir = path.dirname(path.resolve(process.argv[1]));
+  for (const startDir of new Set([aicodexPackageRoot, entrypointDir])) {
+    const filesystemRoot = path.parse(startDir).root;
+    for (
+      let currentDir = startDir;
+      currentDir !== filesystemRoot;
+      currentDir = path.dirname(currentDir)
+    ) {
+      if (isPnpmOwnedAicodexInstall(path.join(currentDir, "node_modules"))) {
+        return "pnpm";
+      }
+    }
+
+    if (isPnpmOwnedAicodexInstall(path.join(filesystemRoot, "node_modules"))) {
+      return "pnpm";
+    }
+  }
+
   const userAgent = process.env.npm_config_user_agent || "";
   if (/\bbun\//.test(userAgent)) {
     return "bun";
@@ -171,13 +210,22 @@ if (existsSync(pathDir)) {
   additionalDirs.push(pathDir);
 }
 
+const packageManager = detectPackageManager();
 const packageManagerEnvVar =
-  detectPackageManager() === "bun"
+  packageManager === "bun"
     ? "CODEX_MANAGED_BY_BUN"
-    : "CODEX_MANAGED_BY_NPM";
-const env = { ...process.env, PATH: getUpdatedPath(additionalDirs) };
+    : packageManager === "pnpm"
+      ? "CODEX_MANAGED_BY_PNPM"
+      : "CODEX_MANAGED_BY_NPM";
+const env = {
+  ...process.env,
+  PATH: getUpdatedPath(additionalDirs),
+  CODEX_MANAGED_PACKAGE_ROOT: aicodexPackageRoot,
+};
+delete env.CODEX_MANAGED_BY_NPM;
+delete env.CODEX_MANAGED_BY_BUN;
+delete env.CODEX_MANAGED_BY_PNPM;
 env[packageManagerEnvVar] = "1";
-env.CODEX_MANAGED_PACKAGE_ROOT = realpathSync(path.join(__dirname, ".."));
 
 const child = spawn(binaryPath, process.argv.slice(2), {
   stdio: "inherit",

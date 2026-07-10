@@ -409,11 +409,14 @@ dependencies = [
  "codex-protocol",
  "codex-utils-cargo-bin",
  "core_test_support",
+ "pretty_assertions",
  "serde",
  "serde_json",
  "shlex",
  "tempfile",
  "tokio",
+ "tokio-util",
+ "url",
  "uuid",
  "wiremock",
 ]
@@ -1940,6 +1943,7 @@ dependencies = [
  "codex-http-client",
  "codex-protocol",
  "codex-utils-rustls-provider",
+ "codex-websocket-client",
  "eventsource-stream",
  "futures",
  "http 1.4.0",
@@ -1994,6 +1998,7 @@ dependencies = [
  "codex-guardian",
  "codex-home",
  "codex-hooks",
+ "codex-http-client",
  "codex-image-generation-extension",
  "codex-login",
  "codex-mcp",
@@ -2109,6 +2114,7 @@ dependencies = [
  "anyhow",
  "clap",
  "codex-experimental-api-macros",
+ "codex-extension-items",
  "codex-protocol",
  "codex-shell-command",
  "codex-utils-absolute-path",
@@ -2645,6 +2651,7 @@ dependencies = [
  "codex-exec-server",
  "codex-execpolicy",
  "codex-extension-api",
+ "codex-extension-items",
  "codex-features",
  "codex-feedback",
  "codex-file-system",
@@ -2756,6 +2763,7 @@ dependencies = [
  "codex-extension-api",
  "codex-features",
  "codex-home",
+ "codex-image-generation-extension",
  "codex-login",
  "codex-model-provider-info",
  "codex-models-manager",
@@ -2806,6 +2814,7 @@ dependencies = [
  "tracing-subscriber",
  "tracing-test",
  "url",
+ "which 8.0.0",
  "wiremock",
  "zip 2.4.2",
 ]
@@ -3015,6 +3024,18 @@ dependencies = [
  "pretty_assertions",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "codex-extension-items"
+version = "0.1.11"
+dependencies = [
+ "codex-utils-absolute-path",
+ "pretty_assertions",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "ts-rs",
 ]
 
 [[package]]
@@ -3239,6 +3260,7 @@ dependencies = [
  "codex-core",
  "codex-exec-server",
  "codex-extension-api",
+ "codex-extension-items",
  "codex-login",
  "codex-model-provider",
  "codex-model-provider-info",
@@ -3331,6 +3353,7 @@ dependencies = [
  "codex-terminal-detection",
  "codex-utils-template",
  "core_test_support",
+ "http 1.4.0",
  "jsonwebtoken",
  "keyring",
  "once_cell",
@@ -3348,6 +3371,7 @@ dependencies = [
  "tiny_http",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "url",
  "urlencoding",
  "webbrowser",
@@ -3425,6 +3449,7 @@ dependencies = [
  "codex-exec-server",
  "codex-extension-api",
  "codex-home",
+ "codex-image-generation-extension",
  "codex-login",
  "codex-protocol",
  "codex-shell-command",
@@ -3574,6 +3599,7 @@ version = "0.1.11"
 dependencies = [
  "chrono",
  "codex-collaboration-mode-templates",
+ "codex-http-client",
  "codex-login",
  "codex-otel",
  "codex-protocol",
@@ -3718,6 +3744,7 @@ dependencies = [
  "chrono",
  "codex-async-utils",
  "codex-execpolicy",
+ "codex-extension-items",
  "codex-network-proxy",
  "codex-utils-absolute-path",
  "codex-utils-image",
@@ -4080,6 +4107,7 @@ dependencies = [
  "codex-app-server-protocol",
  "codex-code-mode",
  "codex-connectors",
+ "codex-extension-items",
  "codex-features",
  "codex-file-system",
  "codex-protocol",
@@ -4463,6 +4491,7 @@ dependencies = [
  "codex-api",
  "codex-core",
  "codex-extension-api",
+ "codex-extension-items",
  "codex-login",
  "codex-model-provider",
  "codex-model-provider-info",
@@ -4472,6 +4501,22 @@ dependencies = [
  "pretty_assertions",
  "schemars 0.8.22",
  "serde_json",
+ "url",
+]
+
+[[package]]
+name = "codex-websocket-client"
+version = "0.1.11"
+dependencies = [
+ "codex-http-client",
+ "codex-utils-rustls-provider",
+ "futures",
+ "pretty_assertions",
+ "rcgen",
+ "rustls",
+ "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite",
  "url",
 ]
 
