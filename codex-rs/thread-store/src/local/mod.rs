@@ -254,6 +254,16 @@ impl ThreadStore for LocalThreadStore {
         Box::pin(async move { live_writer::append_items(self, params).await })
     }
 
+    fn append_items_with_persistence_mode(
+        &self,
+        params: AppendThreadItemsParams,
+        mode: codex_rollout::EventPersistenceMode,
+    ) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(async move {
+            live_writer::append_items_with_persistence_mode(self, params, mode).await
+        })
+    }
+
     fn persist_thread(&self, thread_id: ThreadId) -> ThreadStoreFuture<'_, ()> {
         Box::pin(async move { live_writer::persist_thread(self, thread_id).await })
     }
@@ -694,6 +704,7 @@ mod tests {
             write_session_file(home.path(), "2025-01-03T17-00-00", uuid).expect("session file");
         let live_thread = LiveThread::resume(
             store,
+            ThreadHistoryMode::Legacy,
             ResumeThreadParams {
                 thread_id,
                 rollout_path: Some(rollout_path),
@@ -748,6 +759,7 @@ mod tests {
             .expect("external session file");
         let live_thread = LiveThread::resume(
             store,
+            ThreadHistoryMode::Legacy,
             ResumeThreadParams {
                 thread_id,
                 rollout_path: Some(rollout_path),

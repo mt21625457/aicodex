@@ -77,13 +77,6 @@ fn tool_spec_name_covers_all_variants() {
         "tool_search"
     );
     assert_eq!(
-        ToolSpec::ImageGeneration {
-            output_format: "png".to_string(),
-        }
-        .name(),
-        "image_generation"
-    );
-    assert_eq!(
         ToolSpec::WebSearch {
             external_web_access: Some(true),
             indexed_web_access: None,
@@ -612,7 +605,7 @@ fn create_tools_json_for_claude_messages_preserves_dynamic_tool_schema() {
 }
 
 #[test]
-fn create_tools_json_for_claude_messages_maps_web_search_and_omits_image_generation() {
+fn create_tools_json_for_claude_messages_maps_web_search() {
     let result = create_tools_json_for_claude_messages(&[
         ToolSpec::WebSearch {
             external_web_access: Some(true),
@@ -632,9 +625,6 @@ fn create_tools_json_for_claude_messages_maps_web_search_and_omits_image_generat
             }),
             search_context_size: None,
             search_content_types: None,
-        },
-        ToolSpec::ImageGeneration {
-            output_format: "png".to_string(),
         },
         ToolSpec::Function(ResponsesApiTool {
             name: "lookup_order".to_string(),

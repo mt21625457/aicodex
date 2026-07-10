@@ -15,6 +15,7 @@ use std::time::Instant;
 
 use crate::custom_ca::BuildCustomCaTransportError;
 use crate::custom_ca::build_reqwest_client_with_custom_ca;
+use crate::default_client::HttpClient;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use sha2::Digest;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
@@ -156,6 +157,26 @@ impl HttpClientFactory {
             self.outbound_proxy_policy,
             resolve_system_proxy,
         )
+    }
+
+    /// Builds an HTTP client for a concrete outbound route.
+    pub fn build_client(
+        &self,
+        request_url: &str,
+        route_class: ClientRouteClass,
+    ) -> Result<HttpClient, BuildRouteAwareHttpClientError> {
+        self.build_reqwest_client(reqwest::Client::builder(), request_url, route_class)
+            .map(HttpClient::new)
+    }
+
+    /// Builds a route-aware client without request URL or response-header diagnostics.
+    pub fn build_client_without_request_logging(
+        &self,
+        request_url: &str,
+        route_class: ClientRouteClass,
+    ) -> Result<HttpClient, BuildRouteAwareHttpClientError> {
+        self.build_reqwest_client(reqwest::Client::builder(), request_url, route_class)
+            .map(HttpClient::new_without_request_logging)
     }
 
     /// Builds a reqwest client for a concrete outbound route.
@@ -352,12 +373,32 @@ enum SystemProxyDecision {
 }
 
 fn resolve_system_proxy(request_url: &str, origin: &RequestOrigin) -> SystemProxyDecision {
-    if let Some(decision) = cached_system_proxy_decision(request_url) {
+    let cache = SYSTEM_PROXY_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    resolve_system_proxy_with(cache, request_url, origin, resolve_platform_system_proxy)
+}
+
+fn resolve_system_proxy_with(
+    cache: &Mutex<HashMap<String, CachedSystemProxyDecision>>,
+    request_url: &str,
+    origin: &RequestOrigin,
+    resolve_platform_system_proxy: impl FnOnce(&str, &RequestOrigin) -> SystemProxyDecision,
+) -> SystemProxyDecision {
+    let mut cache = match cache.lock() {
+        Ok(cache) => cache,
+        Err(error) => panic!("system proxy cache lock should not be poisoned: {error}"),
+    };
+    let cache_key = system_proxy_cache_key(request_url);
+    if let Some(decision) =
+        cached_system_proxy_decision_from_cache(&mut cache, &cache_key, Instant::now())
+    {
         return decision;
     }
 
+    // Keep cache misses single-flight. Platform PAC/WPAD APIs are synchronous, so async callers
+    // run this work on the blocking pool; serializing misses prevents concurrent requests from
+    // consuming an unbounded number of blocking workers while system lookup is pending.
     let decision = resolve_platform_system_proxy(request_url, origin);
-    cache_system_proxy_decision(request_url, decision.clone());
+    insert_system_proxy_cache_entry(&mut cache, &cache_key, decision.clone(), Instant::now());
     decision
 }
 
@@ -390,18 +431,28 @@ struct CachedSystemProxyDecision {
 static SYSTEM_PROXY_CACHE: OnceLock<Mutex<HashMap<String, CachedSystemProxyDecision>>> =
     OnceLock::new();
 
+#[cfg(test)]
 fn cached_system_proxy_decision(request_url: &str) -> Option<SystemProxyDecision> {
     let cache = SYSTEM_PROXY_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut cache = cache.lock().ok()?;
     let key = system_proxy_cache_key(request_url);
-    let cached = cache.get(&key)?;
-    if cached.expires_at > Instant::now() {
+    cached_system_proxy_decision_from_cache(&mut cache, &key, Instant::now())
+}
+
+fn cached_system_proxy_decision_from_cache(
+    cache: &mut HashMap<String, CachedSystemProxyDecision>,
+    cache_key: &str,
+    now: Instant,
+) -> Option<SystemProxyDecision> {
+    let cached = cache.get(cache_key)?;
+    if cached.expires_at > now {
         return Some(cached.decision.clone());
     }
-    cache.remove(&key);
+    cache.remove(cache_key);
     None
 }
 
+#[cfg(test)]
 fn cache_system_proxy_decision(request_url: &str, decision: SystemProxyDecision) {
     let cache = SYSTEM_PROXY_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(mut cache) = cache.lock() {

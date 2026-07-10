@@ -10,6 +10,7 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TokenUsageInfo;
+use core_test_support::test_path_buf;
 use serde_json::json;
 use std::fs;
 use std::fs::FileTimes;
@@ -192,7 +193,7 @@ fn create_fake_rollout_with_source_and_parent_thread_id(
         forked_from_id: None,
         parent_thread_id,
         timestamp: meta_rfc3339.to_string(),
-        cwd: PathBuf::from("/"),
+        cwd: test_path_buf("/"),
         originator: "codex".to_string(),
         cli_version: "0.0.0".to_string(),
         source,
@@ -282,7 +283,7 @@ pub fn create_fake_rollout_with_text_elements(
         forked_from_id: None,
         parent_thread_id: None,
         timestamp: meta_rfc3339.to_string(),
-        cwd: PathBuf::from("/"),
+        cwd: test_path_buf("/"),
         originator: "codex".to_string(),
         cli_version: "0.0.0".to_string(),
         source: SessionSource::Cli,

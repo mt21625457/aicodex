@@ -17,7 +17,6 @@ use codex_protocol::models::BaseInstructions;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadMemoryMode;
-use codex_rollout::EventPersistenceMode;
 use codex_rollout::is_persisted_rollout_item;
 use codex_thread_store::AppendThreadItemsParams;
 use codex_thread_store::CreateThreadParams;
@@ -190,6 +189,7 @@ impl ExternalAgentSessionImporter {
                 &config.model,
                 /*allow_provider_model_fallback*/ false,
                 RefreshStrategy::Offline,
+                config.http_client_factory(),
             )
             .await;
         let model_info = models_manager
@@ -231,7 +231,7 @@ impl ExternalAgentSessionImporter {
                 memory_mode,
             },
         };
-        rollout_items.retain(|item| is_persisted_rollout_item(item, EventPersistenceMode::Limited));
+        rollout_items.retain(|item| is_persisted_rollout_item(item, ThreadHistoryMode::Legacy));
         let title = title
             .as_deref()
             .and_then(codex_core::util::normalize_thread_name);

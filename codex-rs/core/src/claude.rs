@@ -621,9 +621,7 @@ fn has_tool_spec(tools: &[codex_tools::ToolSpec], name: &str) -> bool {
         codex_tools::ToolSpec::Function(tool) => tool.name == name,
         codex_tools::ToolSpec::Freeform(tool) => tool.name == name,
         codex_tools::ToolSpec::ToolSearch { .. } => name == "tool_search",
-        codex_tools::ToolSpec::WebSearch { .. } | codex_tools::ToolSpec::ImageGeneration { .. } => {
-            false
-        }
+        codex_tools::ToolSpec::WebSearch { .. } => false,
         codex_tools::ToolSpec::Namespace(namespace) => {
             namespace.tools.iter().any(|tool| match tool {
                 codex_tools::ResponsesApiNamespaceTool::Function(tool) => tool.name == name,

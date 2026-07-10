@@ -16,6 +16,8 @@ use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadMemoryMode;
+use codex_rollout::EventPersistenceMode;
+use codex_rollout::persisted_rollout_items_with_mode;
 
 use crate::AppendThreadItemsParams;
 use crate::ArchiveThreadParams;
@@ -481,16 +483,31 @@ impl InMemoryThreadStore {
     }
 
     async fn append_items(&self, params: AppendThreadItemsParams) -> ThreadStoreResult<()> {
+        self.append_items_with_persistence_mode(params, EventPersistenceMode::Limited)
+            .await
+    }
+
+    async fn append_items_with_persistence_mode(
+        &self,
+        params: AppendThreadItemsParams,
+        mode: EventPersistenceMode,
+    ) -> ThreadStoreResult<()> {
         if params.items.is_empty() {
             return Ok(());
         }
         let mut state = self.state.lock().await;
+        let history_mode = history_mode_from_state(&state, params.thread_id);
+        let persisted_items =
+            persisted_rollout_items_with_mode(params.items.as_slice(), history_mode, mode);
+        if persisted_items.is_empty() {
+            return Ok(());
+        }
         state.calls.append_items += 1;
         state
             .histories
             .entry(params.thread_id)
             .or_default()
-            .extend(params.items);
+            .extend(persisted_items);
         Ok(())
     }
 
@@ -616,6 +633,16 @@ impl ThreadStore for InMemoryThreadStore {
 
     fn append_items(&self, params: AppendThreadItemsParams) -> ThreadStoreFuture<'_, ()> {
         Box::pin(InMemoryThreadStore::append_items(self, params))
+    }
+
+    fn append_items_with_persistence_mode(
+        &self,
+        params: AppendThreadItemsParams,
+        mode: EventPersistenceMode,
+    ) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(InMemoryThreadStore::append_items_with_persistence_mode(
+            self, params, mode,
+        ))
     }
 
     fn persist_thread(&self, _thread_id: ThreadId) -> ThreadStoreFuture<'_, ()> {

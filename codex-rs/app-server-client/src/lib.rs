@@ -1234,6 +1234,7 @@ mod tests {
                 text: text.to_string(),
                 phase: None,
                 memory_citation: None,
+                transcript_metadata: None,
             },
         })
     }
@@ -2210,6 +2211,7 @@ mod tests {
                             text: "hello".to_string(),
                             phase: None,
                             memory_citation: None,
+                            transcript_metadata: None,
                         },
                     }
                 )

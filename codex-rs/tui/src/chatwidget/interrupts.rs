@@ -185,6 +185,7 @@ mod tests {
             aggregated_output: None,
             exit_code: None,
             duration_ms: None,
+            transcript_metadata: None,
         }
     }
 

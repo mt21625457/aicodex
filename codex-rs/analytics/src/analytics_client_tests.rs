@@ -66,6 +66,7 @@ use crate::facts::PluginInstallRequestSource;
 use crate::facts::PluginInstallRequested;
 use crate::facts::PluginInstallRequestedInput;
 use crate::facts::PluginInstallRequestedPlugin;
+use crate::facts::PluginInstallSource;
 use crate::facts::PluginState;
 use crate::facts::PluginStateChangedInput;
 use crate::facts::PluginUsedInput;
@@ -103,6 +104,7 @@ use codex_app_server_protocol::GuardianApprovalReview;
 use codex_app_server_protocol::GuardianApprovalReviewAction;
 use codex_app_server_protocol::GuardianApprovalReviewStatus;
 use codex_app_server_protocol::GuardianCommandSource as AppServerGuardianCommandSource;
+use codex_app_server_protocol::ImageGenerationItem;
 use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::InitializeParams;
 use codex_app_server_protocol::ItemCompletedNotification;
@@ -139,6 +141,7 @@ use codex_app_server_protocol::TurnStatus as AppServerTurnStatus;
 use codex_app_server_protocol::TurnSteerParams;
 use codex_app_server_protocol::TurnSteerResponse;
 use codex_app_server_protocol::UserInput;
+use codex_app_server_protocol::WebSearchItem;
 use codex_login::default_client::DEFAULT_ORIGINATOR;
 use codex_login::default_client::originator;
 use codex_plugin::AppConnectorId;
@@ -200,6 +203,9 @@ fn sample_thread_with_metadata(
         ephemeral,
         history_mode: Default::default(),
         model_provider: "openai".to_string(),
+        model_id: None,
+        wire_api: None,
+        effort: None,
         created_at: 1,
         updated_at: 2,
         recency_at: Some(2),
@@ -863,6 +869,7 @@ fn sample_command_execution_item_with_id(
         aggregated_output: None,
         exit_code,
         duration_ms,
+        transcript_metadata: None,
     }
 }
 
@@ -3240,6 +3247,7 @@ fn plugin_install_failed_event_serializes_expected_shape() {
         event_type: "codex_plugin_install_failed",
         event_params: CodexPluginInstallFailedMetadata {
             plugin: codex_plugin_metadata(sample_plugin_metadata()),
+            source: PluginInstallSource::Manual,
             error_type: "store_io".to_string(),
         },
     });
@@ -3259,6 +3267,7 @@ fn plugin_install_failed_event_serializes_expected_shape() {
                 "mcp_server_count": 2,
                 "connector_ids": ["calendar", "drive"],
                 "product_client_id": originator().value,
+                "source": "manual",
                 "error_type": "store_io"
             }
         })
@@ -3690,6 +3699,7 @@ async fn reducer_ingests_plugin_install_failed_fact() {
             AnalyticsFact::Custom(CustomAnalyticsFact::PluginInstallFailed(
                 PluginInstallFailedInput {
                     plugin: sample_plugin_metadata(),
+                    source: PluginInstallSource::ExternalAgentMigration,
                     error_type: "invalid_plugin".to_string(),
                 },
             )),
@@ -3711,6 +3721,7 @@ async fn reducer_ingests_plugin_install_failed_fact() {
                 "mcp_server_count": 2,
                 "connector_ids": ["calendar", "drive"],
                 "product_client_id": originator().value,
+                "source": "external_agent_migration",
                 "error_type": "invalid_plugin"
             }
         }])
@@ -3732,6 +3743,7 @@ async fn reducer_ingests_plugin_install_failed_fact_without_detail() {
             AnalyticsFact::Custom(CustomAnalyticsFact::PluginInstallFailed(
                 PluginInstallFailedInput {
                     plugin,
+                    source: PluginInstallSource::Manual,
                     error_type: "remote_catalog_unexpected_status".to_string(),
                 },
             )),
@@ -3753,6 +3765,7 @@ async fn reducer_ingests_plugin_install_failed_fact_without_detail() {
                 "mcp_server_count": null,
                 "connector_ids": null,
                 "product_client_id": originator().value,
+                "source": "manual",
                 "error_type": "remote_catalog_unexpected_status"
             }
         }])
@@ -4400,18 +4413,18 @@ async fn turn_event_counts_completed_tool_items() {
             agent_thread_id: "thread-child".to_string(),
             agent_path: "/root/child".to_string(),
         },
-        ThreadItem::WebSearch {
+        ThreadItem::WebSearch(WebSearchItem {
             id: "web-1".to_string(),
             query: "codex".to_string(),
             action: None,
-        },
-        ThreadItem::ImageGeneration {
+        }),
+        ThreadItem::ImageGeneration(ImageGenerationItem {
             id: "image-1".to_string(),
             status: "completed".to_string(),
             revised_prompt: None,
             result: "ok".to_string(),
             saved_path: None,
-        },
+        }),
     ];
 
     for item in completed_tool_items {

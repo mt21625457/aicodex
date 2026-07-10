@@ -1,6 +1,8 @@
 use crate::protocol::EventMsg;
 use crate::protocol::RolloutItem;
+use codex_protocol::items::TurnItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::ThreadHistoryMode;
 use codex_utils_string::truncate_middle_chars;
 
 const PERSISTED_EXEC_AGGREGATED_OUTPUT_MAX_BYTES: usize = 10_000;
@@ -12,14 +14,25 @@ pub enum EventPersistenceMode {
     Extended,
 }
 
-/// Whether a rollout `item` should be persisted in rollout files for the
-/// provided persistence `mode`.
-pub fn is_persisted_rollout_item(item: &RolloutItem, mode: EventPersistenceMode) -> bool {
+/// Whether a rollout `item` should be persisted in rollout files.
+pub fn is_persisted_rollout_item(item: &RolloutItem, history_mode: ThreadHistoryMode) -> bool {
+    is_persisted_rollout_item_with_mode(item, history_mode, EventPersistenceMode::Limited)
+}
+
+/// Whether a rollout `item` should be persisted for the thread history format and event detail
+/// level.
+pub fn is_persisted_rollout_item_with_mode(
+    item: &RolloutItem,
+    history_mode: ThreadHistoryMode,
+    event_mode: EventPersistenceMode,
+) -> bool {
     match item {
         RolloutItem::ResponseItem(item) => should_persist_response_item(item),
         RolloutItem::InterAgentCommunication(_)
         | RolloutItem::InterAgentCommunicationMetadata { .. } => true,
-        RolloutItem::EventMsg(ev) => should_persist_event_msg(ev, mode),
+        RolloutItem::EventMsg(ev) => {
+            should_persist_event_msg_with_mode(ev, history_mode, event_mode)
+        }
         // Persist Codex executive markers so we can analyze flows (e.g., compaction, API turns).
         RolloutItem::Compacted(_)
         | RolloutItem::TurnContext(_)
@@ -28,15 +41,27 @@ pub fn is_persisted_rollout_item(item: &RolloutItem, mode: EventPersistenceMode)
     }
 }
 
-/// Return the canonical rollout items that should be persisted for a live append.
+/// Return the rollout items that should be persisted for a live append.
 pub fn persisted_rollout_items(
     items: &[RolloutItem],
-    mode: EventPersistenceMode,
+    history_mode: ThreadHistoryMode,
+) -> Vec<RolloutItem> {
+    persisted_rollout_items_with_mode(items, history_mode, EventPersistenceMode::Limited)
+}
+
+/// Return rollout items filtered by both the thread history format and event detail level.
+pub fn persisted_rollout_items_with_mode(
+    items: &[RolloutItem],
+    history_mode: ThreadHistoryMode,
+    event_mode: EventPersistenceMode,
 ) -> Vec<RolloutItem> {
     let mut persisted = Vec::new();
     for item in items {
-        if is_persisted_rollout_item(item, mode) {
-            persisted.push(sanitize_rollout_item_for_persistence(item.clone(), mode));
+        if is_persisted_rollout_item_with_mode(item, history_mode, event_mode) {
+            persisted.push(sanitize_rollout_item_for_persistence(
+                item.clone(),
+                event_mode,
+            ));
         }
     }
     persisted
@@ -113,66 +138,45 @@ pub fn should_persist_response_item_for_memories(item: &ResponseItem) -> bool {
     }
 }
 
-/// Whether an `EventMsg` should be persisted in rollout files for the
-/// provided persistence `mode`.
+/// Whether an `EventMsg` should be persisted for the thread history format and event detail level.
 #[inline]
-pub fn should_persist_event_msg(ev: &EventMsg, mode: EventPersistenceMode) -> bool {
-    match mode {
-        EventPersistenceMode::Limited => should_persist_event_msg_limited(ev),
-        EventPersistenceMode::Extended => should_persist_event_msg_extended(ev),
-    }
-}
-
-fn should_persist_event_msg_limited(ev: &EventMsg) -> bool {
-    matches!(
-        event_msg_persistence_mode(ev),
-        Some(EventPersistenceMode::Limited)
-    )
-}
-
-fn should_persist_event_msg_extended(ev: &EventMsg) -> bool {
-    matches!(
-        event_msg_persistence_mode(ev),
-        Some(EventPersistenceMode::Limited) | Some(EventPersistenceMode::Extended)
-    )
-}
-
-/// Returns the minimum persistence mode that includes this event.
-/// `None` means the event should never be persisted.
-fn event_msg_persistence_mode(ev: &EventMsg) -> Option<EventPersistenceMode> {
+pub fn should_persist_event_msg_with_mode(
+    ev: &EventMsg,
+    history_mode: ThreadHistoryMode,
+    event_mode: EventPersistenceMode,
+) -> bool {
     match ev {
-        EventMsg::UserMessage(_)
-        | EventMsg::AgentMessage(_)
-        | EventMsg::AgentReasoning(_)
-        | EventMsg::AgentReasoningRawContent(_)
-        | EventMsg::PatchApplyEnd(_)
-        | EventMsg::TokenCount(_)
+        EventMsg::ItemCompleted(event) => {
+            // Paginated rollouts store TurnItems.
+            // Legacy rollouts keep only items with no raw ResponseItem or legacy equivalent.
+            matches!(history_mode, ThreadHistoryMode::Paginated)
+                || matches!(event.item, TurnItem::Plan(_) | TurnItem::Sleep(_))
+        }
+        EventMsg::TokenCount(_)
         | EventMsg::ThreadGoalUpdated(_)
-        | EventMsg::ContextCompacted(_)
-        | EventMsg::EnteredReviewMode(_)
-        | EventMsg::ExitedReviewMode(_)
-        | EventMsg::McpToolCallEnd(_)
         | EventMsg::ThreadRolledBack(_)
         | EventMsg::TurnAborted(_)
         | EventMsg::TurnStarted(_)
         | EventMsg::TurnComplete(_)
+        | EventMsg::ThreadSettingsApplied(_) => true,
+
+        // Only persist these legacy events when the thread's history mode is Legacy.
+        // New, paginated rollouts persist ItemCompleted events with TurnItems.
+        EventMsg::UserMessage(_)
+        | EventMsg::AgentMessage(_)
+        | EventMsg::AgentReasoning(_)
+        | EventMsg::AgentReasoningRawContent(_)
+        | EventMsg::EnteredReviewMode(_)
+        | EventMsg::ExitedReviewMode(_)
+        | EventMsg::PatchApplyEnd(_)
+        | EventMsg::ContextCompacted(_)
+        | EventMsg::McpToolCallEnd(_)
         | EventMsg::WebSearchEnd(_)
         | EventMsg::ImageGenerationEnd(_)
-        | EventMsg::SubAgentActivity(_) => Some(EventPersistenceMode::Limited),
-        EventMsg::ItemCompleted(event) => {
-            // These items have no equivalent raw ResponseItem or legacy event,
-            // so persist their completion for replay without retaining every
-            // item lifecycle event.
-            if matches!(
-                event.item,
-                codex_protocol::items::TurnItem::Plan(_)
-                    | codex_protocol::items::TurnItem::Sleep(_)
-            ) {
-                Some(EventPersistenceMode::Limited)
-            } else {
-                None
-            }
-        }
+        | EventMsg::SubAgentActivity(_) => matches!(history_mode, ThreadHistoryMode::Legacy),
+
+        // Extended history keeps terminal details that are useful for full-fidelity replay but
+        // are too verbose for the default rollout representation.
         EventMsg::Error(_)
         | EventMsg::GuardianAssessment(_)
         | EventMsg::ExecCommandEnd(_)
@@ -183,7 +187,11 @@ fn event_msg_persistence_mode(ev: &EventMsg) -> Option<EventPersistenceMode> {
         | EventMsg::CollabCloseEnd(_)
         | EventMsg::CollabResumeEnd(_)
         | EventMsg::DynamicToolCallRequest(_)
-        | EventMsg::DynamicToolCallResponse(_) => Some(EventPersistenceMode::Extended),
+        | EventMsg::DynamicToolCallResponse(_) => {
+            matches!(event_mode, EventPersistenceMode::Extended)
+        }
+
+        // Transient, non-durable events.
         EventMsg::Warning(_)
         | EventMsg::GuardianWarning(_)
         | EventMsg::RealtimeConversationStarted(_)
@@ -197,7 +205,6 @@ fn event_msg_persistence_mode(ev: &EventMsg) -> Option<EventPersistenceMode> {
         | EventMsg::AgentReasoningSectionBreak(_)
         | EventMsg::RawResponseItem(_)
         | EventMsg::SessionConfigured(_)
-        | EventMsg::ThreadSettingsApplied(_)
         | EventMsg::McpToolCallBegin(_)
         | EventMsg::ExecCommandBegin(_)
         | EventMsg::TerminalInteraction(_)
@@ -230,6 +237,6 @@ fn event_msg_persistence_mode(ev: &EventMsg) -> Option<EventPersistenceMode> {
         | EventMsg::CollabAgentInteractionBegin(_)
         | EventMsg::CollabWaitingBegin(_)
         | EventMsg::CollabCloseBegin(_)
-        | EventMsg::CollabResumeBegin(_) => None,
+        | EventMsg::CollabResumeBegin(_) => false,
     }
 }
