@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
 
-const DEFAULT_STREAM_IDLE_TIMEOUT_MS: u64 = 300_000;
+const DEFAULT_STREAM_IDLE_TIMEOUT_MS: u64 = 3_600_000;
 const DEFAULT_STREAM_MAX_RETRIES: u64 = 5;
 const DEFAULT_REQUEST_MAX_RETRIES: u64 = 4;
 pub const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS: u64 = 15_000;
@@ -131,7 +131,7 @@ pub struct ModelProviderInfo {
     /// Number of times to retry reconnecting a dropped streaming response before failing.
     pub stream_max_retries: Option<u64>,
     /// Idle timeout (in milliseconds) to wait for activity on a streaming response before treating
-    /// the connection as lost.
+    /// the connection as lost. When unset, defaults to 60 minutes (`3_600_000`).
     pub stream_idle_timeout_ms: Option<u64>,
     /// Maximum time (in milliseconds) to wait for a websocket connection attempt before treating
     /// it as failed.
