@@ -433,6 +433,12 @@ async fn claude_messages_client_uses_messages_path_and_version_header() -> Resul
     );
     assert_eq!(
         req.headers
+            .get(http::header::USER_AGENT)
+            .and_then(|value| value.to_str().ok()),
+        Some("aicodex")
+    );
+    assert_eq!(
+        req.headers
             .get(http::header::ACCEPT)
             .and_then(|value| value.to_str().ok()),
         Some("text/event-stream")
@@ -540,6 +546,12 @@ async fn claude_messages_client_counts_tokens_on_count_tokens_path() -> Result<(
             .get("anthropic-version")
             .and_then(|value| value.to_str().ok()),
         Some("2023-06-01")
+    );
+    assert_eq!(
+        req.headers
+            .get(http::header::USER_AGENT)
+            .and_then(|value| value.to_str().ok()),
+        Some("aicodex")
     );
     assert_eq!(
         req.headers
