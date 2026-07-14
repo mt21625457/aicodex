@@ -111,6 +111,13 @@ pub(crate) struct ThreadScopedOutgoingMessageSender {
     thread_id: ThreadId,
 }
 
+fn notification_requires_unsubscribed_broadcast(notification: &ServerNotification) -> bool {
+    matches!(
+        notification,
+        ServerNotification::TurnStarted(_) | ServerNotification::TurnCompleted(_)
+    )
+}
+
 struct PendingCallbackEntry {
     callback: oneshot::Sender<ClientRequestResult>,
     thread_id: Option<ThreadId>,
@@ -162,6 +169,17 @@ impl ThreadScopedOutgoingMessageSender {
             .analytics_events_client
             .track_notification(notification.clone());
         if self.connection_ids.is_empty() {
+            // Thread-scoped delivery snapshots can race empty between consecutive
+            // events (for example item/completed then TurnComplete). Lifecycle
+            // boundaries must still reach clients; fall back to broadcast instead
+            // of silently dropping turn/completed.
+            if notification_requires_unsubscribed_broadcast(&notification) {
+                warn!(
+                    thread.id = %self.thread_id,
+                    "thread-scoped lifecycle notification has no subscribers; broadcasting"
+                );
+                self.outgoing.send_server_notification(notification).await;
+            }
             return;
         }
         self.outgoing
@@ -1384,6 +1402,88 @@ mod tests {
                 .pending_requests_for_thread(thread_id)
                 .await
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn thread_scoped_turn_completed_broadcasts_when_subscribers_are_empty() {
+        use codex_app_server_protocol::Turn;
+        use codex_app_server_protocol::TurnCompletedNotification;
+        use codex_app_server_protocol::TurnItemsView;
+        use codex_app_server_protocol::TurnStatus;
+
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(4);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_id = ThreadId::new();
+        let thread_outgoing =
+            ThreadScopedOutgoingMessageSender::new(outgoing, Vec::new(), thread_id);
+
+        thread_outgoing
+            .send_server_notification(ServerNotification::TurnCompleted(
+                TurnCompletedNotification {
+                    thread_id: thread_id.to_string(),
+                    turn: Turn {
+                        id: "turn-1".to_string(),
+                        items: Vec::new(),
+                        items_view: TurnItemsView::NotLoaded,
+                        error: None,
+                        status: TurnStatus::Completed,
+                        started_at: None,
+                        completed_at: None,
+                        duration_ms: None,
+                    },
+                },
+            ))
+            .await;
+
+        let envelope = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("should receive envelope before timeout")
+            .expect("channel should contain one message");
+        match envelope {
+            OutgoingEnvelope::Broadcast { message } => {
+                let OutgoingMessage::AppServerNotification(ServerNotification::TurnCompleted(
+                    notification,
+                )) = message
+                else {
+                    panic!("expected turn/completed broadcast");
+                };
+                assert_eq!(notification.turn.id, "turn-1");
+                assert_eq!(notification.turn.status, TurnStatus::Completed);
+            }
+            other => panic!("expected broadcast envelope, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn thread_scoped_non_lifecycle_notification_stays_dropped_without_subscribers() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(4);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let thread_outgoing =
+            ThreadScopedOutgoingMessageSender::new(outgoing, Vec::new(), ThreadId::new());
+
+        thread_outgoing
+            .send_server_notification(ServerNotification::ConfigWarning(
+                ConfigWarningNotification {
+                    summary: "ignored".to_string(),
+                    details: Some("should not broadcast without subscribers".to_string()),
+                    path: None,
+                    range: None,
+                },
+            ))
+            .await;
+
+        assert!(
+            timeout(Duration::from_millis(50), rx.recv())
+                .await
+                .is_err(),
+            "non-lifecycle notifications must stay dropped without subscribers"
         );
     }
 }

@@ -701,7 +701,10 @@ pub enum ClaudeToolChoice {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClaudeThinkingConfig {
-    Enabled { budget_tokens: u32 },
+    Enabled {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        budget_tokens: Option<u32>,
+    },
     Disabled,
 }
 
@@ -1005,9 +1008,15 @@ mod claude_wire_tests {
         roundtrip(&ClaudeToolChoice::None, json!({"type": "none"}));
         roundtrip(
             &ClaudeThinkingConfig::Enabled {
-                budget_tokens: 1024,
+                budget_tokens: Some(1024),
             },
             json!({"type": "enabled", "budget_tokens": 1024}),
+        );
+        roundtrip(
+            &ClaudeThinkingConfig::Enabled {
+                budget_tokens: None,
+            },
+            json!({"type": "enabled"}),
         );
         roundtrip(&ClaudeThinkingConfig::Disabled, json!({"type": "disabled"}));
         roundtrip(

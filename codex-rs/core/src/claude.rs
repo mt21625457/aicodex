@@ -567,7 +567,13 @@ pub(crate) fn build_claude_messages_request(
     );
     validate_tool_result_history(&messages)?;
     let max_tokens = DEFAULT_MAX_TOKENS;
-    let thinking = claude_thinking_config(options.reasoning_effort, max_tokens);
+    let thinking = if claude_model_requires_enabled_thinking_without_budget(&model_info.slug) {
+        Some(ClaudeThinkingConfig::Enabled {
+            budget_tokens: None,
+        })
+    } else {
+        claude_thinking_config(options.reasoning_effort, max_tokens)
+    };
 
     Ok(ClaudeMessagesApiRequest {
         model: model_info.slug.clone(),
@@ -841,7 +847,22 @@ fn claude_thinking_config(
     if budget_tokens == 0 {
         return None;
     }
-    Some(ClaudeThinkingConfig::Enabled { budget_tokens })
+    Some(ClaudeThinkingConfig::Enabled {
+        budget_tokens: Some(budget_tokens),
+    })
+}
+
+fn claude_model_requires_enabled_thinking_without_budget(model: &str) -> bool {
+    let normalized = model
+        .trim()
+        .rsplit(':')
+        .next()
+        .unwrap_or(model)
+        .to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "kimi-k2.7-code" | "kimi-k2.7-code-highspeed"
+    )
 }
 
 fn claude_service_tier(service_tier: Option<ServiceTier>) -> Option<ClaudeServiceTier> {
@@ -3071,13 +3092,53 @@ mod tests {
         assert_eq!(
             claude_thinking_config(Some(ReasoningEffortConfig::XHigh), 2_048),
             Some(ClaudeThinkingConfig::Enabled {
-                budget_tokens: 2_047,
+                budget_tokens: Some(2_047),
             })
         );
         assert_eq!(
             claude_thinking_config(Some(ReasoningEffortConfig::High), 1),
             None
         );
+    }
+
+    #[test]
+    fn builds_kimi_request_with_required_budgetless_thinking() {
+        let prompt = Prompt {
+            input: vec![ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "think".to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            }],
+            base_instructions: BaseInstructions {
+                text: String::new(),
+            },
+            ..Default::default()
+        };
+        for slug in ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"] {
+            let mut kimi_model = model_info();
+            kimi_model.slug = slug.to_string();
+
+            let request = build_claude_messages_request(
+                &prompt,
+                &kimi_model,
+                ClaudeRequestOptions {
+                    reasoning_effort: Some(ReasoningEffortConfig::XHigh),
+                    provider_compat: ClaudeProviderCompat::Compatible,
+                    ..Default::default()
+                },
+            )
+            .expect("request");
+
+            assert_eq!(
+                serde_json::to_value(request.thinking).expect("serialize thinking"),
+                json!({"type": "enabled"}),
+                "unexpected thinking shape for {slug}"
+            );
+        }
     }
 
     #[test]
