@@ -566,8 +566,19 @@ pub(crate) fn build_claude_messages_request(
         "Claude protocol processing detailed counters"
     );
     validate_tool_result_history(&messages)?;
-    let max_tokens = DEFAULT_MAX_TOKENS;
-    let thinking = if claude_model_requires_enabled_thinking_without_budget(&model_info.slug) {
+    let requires_budgetless_thinking =
+        claude_model_requires_enabled_thinking_without_budget(&model_info.slug);
+    let max_tokens = match model_info.max_output_tokens {
+        Some(0) => {
+            return Err(CodexErr::InvalidRequest(format!(
+                "model `{}` has invalid max_output_tokens 0; expected a positive integer",
+                model_info.slug
+            )));
+        }
+        Some(max_tokens) => max_tokens,
+        None => DEFAULT_MAX_TOKENS,
+    };
+    let thinking = if requires_budgetless_thinking {
         Some(ClaudeThinkingConfig::Enabled {
             budget_tokens: None,
         })
@@ -3103,6 +3114,57 @@ mod tests {
     }
 
     #[test]
+    fn builds_claude_request_with_model_catalog_output_limit() {
+        let mut catalog_model = serde_json::to_value(model_info()).expect("serialize model info");
+        catalog_model["max_output_tokens"] = json!(12_345);
+        let catalog_model =
+            serde_json::from_value(catalog_model).expect("deserialize model catalog entry");
+        let prompt = Prompt {
+            input: vec![ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "use the configured output limit".to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            }],
+            base_instructions: BaseInstructions {
+                text: String::new(),
+            },
+            ..Default::default()
+        };
+
+        let request =
+            build_claude_messages_request(&prompt, &catalog_model, ClaudeRequestOptions::default())
+                .expect("request");
+
+        assert_eq!(request.max_tokens, 12_345);
+    }
+
+    #[test]
+    fn rejects_zero_model_catalog_output_limit() {
+        let mut catalog_model = model_info();
+        catalog_model.max_output_tokens = Some(0);
+
+        let error = build_claude_messages_request(
+            &Prompt::default(),
+            &catalog_model,
+            ClaudeRequestOptions::default(),
+        )
+        .expect_err("zero max_output_tokens must be rejected before sending a provider request");
+
+        assert!(matches!(error, CodexErr::InvalidRequest(_)));
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "model `{}` has invalid max_output_tokens 0; expected a positive integer",
+                catalog_model.slug
+            )
+        );
+    }
+
+    #[test]
     fn builds_kimi_request_with_required_budgetless_thinking() {
         let prompt = Prompt {
             input: vec![ResponseItem::Message {
@@ -3122,6 +3184,7 @@ mod tests {
         for slug in ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"] {
             let mut kimi_model = model_info();
             kimi_model.slug = slug.to_string();
+            kimi_model.max_output_tokens = Some(32_768);
 
             let request = build_claude_messages_request(
                 &prompt,
@@ -3135,9 +3198,12 @@ mod tests {
             .expect("request");
 
             assert_eq!(
-                serde_json::to_value(request.thinking).expect("serialize thinking"),
-                json!({"type": "enabled"}),
-                "unexpected thinking shape for {slug}"
+                (
+                    request.max_tokens,
+                    serde_json::to_value(request.thinking).expect("serialize thinking")
+                ),
+                (32_768, json!({"type": "enabled"})),
+                "unexpected Kimi request budget or thinking shape for {slug}"
             );
         }
     }

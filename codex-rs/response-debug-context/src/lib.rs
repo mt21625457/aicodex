@@ -75,6 +75,7 @@ pub fn telemetry_api_error_message(error: &ApiError) -> String {
         ApiError::Transport(transport) => telemetry_transport_error_message(transport),
         ApiError::Api { status, .. } => format!("api error {}", status.as_u16()),
         ApiError::Stream(err) => err.to_string(),
+        ApiError::MalformedResponse { .. } => "malformed provider response".to_string(),
         ApiError::StreamFailure { kind, .. } => format!("provider stream error {kind}"),
         ApiError::ProviderMedia { kind, .. } => format!("provider media error {kind}"),
         ApiError::ContextWindowExceeded => "context window exceeded".to_string(),

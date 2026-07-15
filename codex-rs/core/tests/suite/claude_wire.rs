@@ -1241,6 +1241,76 @@ async fn claude_wire_stream_close_after_tool_input_does_not_retry() -> anyhow::R
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_wire_malformed_tool_json_fails_without_retry_and_completes_turn()
+-> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let malformed_tool_input = sse(vec![
+        json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "usage": {"input_tokens": 1, "output_tokens": 8192}
+            }
+        }),
+        json!({
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+                "type": "tool_use",
+                "id": "toolu_malformed",
+                "name": "apply_patch",
+                "input": {}
+            }
+        }),
+        json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+                "type": "input_json_delta",
+                "partial_json": "{\"input\":\"*** Begin Patch\\n*** Add File: incomplete.txt\\n+partial"
+            }
+        }),
+        json!({"type": "content_block_stop", "index": 0}),
+    ]);
+    let responses = mount_claude_sse_sequence(&server, vec![malformed_tool_input]).await;
+    let count_tokens = mount_claude_count_tokens_never(&server).await;
+
+    let test = test_codex()
+        .with_config(configure_claude_provider_with_apply_patch_streaming)
+        .build(&server)
+        .await?;
+
+    submit_user_input_without_waiting(&test, "write a large file with apply_patch").await?;
+    let events = collect_events_until_turn_complete(&test).await;
+
+    assert_eq!(responses.requests().len(), 1);
+    assert_eq!(count_tokens.requests().len(), 0);
+    let errors = events
+        .iter()
+        .filter_map(|event| match event {
+            EventMsg::Error(error) => Some(error),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(errors.len(), 1);
+    assert!(
+        errors[0]
+            .message
+            .contains("malformed provider response: invalid Claude tool input JSON")
+    );
+    assert!(matches!(events.last(), Some(EventMsg::TurnComplete(_))));
+    assert!(
+        !test.config.cwd.join("incomplete.txt").exists(),
+        "malformed tool input must never execute"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn compatible_claude_wire_exposes_apply_patch_for_fallback_model() -> anyhow::Result<()> {
     let server = start_mock_server().await;
     let responses = mount_claude_sse_sequence(

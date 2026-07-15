@@ -1320,11 +1320,13 @@ fn parse_partial_tool_input_json(
         let tool_name = tool_name
             .filter(|name| !name.trim().is_empty())
             .unwrap_or("<unknown>");
-        ApiError::Stream(format!(
-            "invalid Claude tool input JSON for content block {index} \
+        ApiError::MalformedResponse {
+            message: format!(
+                "invalid Claude tool input JSON for content block {index} \
              (tool `{tool_name}`, input length {} bytes): {err}",
-            partial_json.len()
-        ))
+                partial_json.len()
+            ),
+        }
     })
 }
 
@@ -3804,7 +3806,9 @@ mod tests {
         ])
         .await;
 
-        let message = error.to_string();
+        let ApiError::MalformedResponse { message } = error else {
+            panic!("expected malformed provider response");
+        };
         assert!(message.contains("invalid Claude tool input JSON for content block 0"));
         assert!(message.contains("tool `search`"));
         assert!(message.contains("input length 9 bytes"));

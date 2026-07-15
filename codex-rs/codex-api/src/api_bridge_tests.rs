@@ -1,5 +1,6 @@
 use super::*;
 use base64::Engine;
+use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::RateLimitReachedType;
 use pretty_assertions::assert_eq;
 
@@ -46,6 +47,21 @@ fn map_api_error_preserves_provider_stream_failure_class() {
         message,
         "closed_before_message_start: stream closed before message_start"
     );
+}
+
+#[test]
+fn map_api_error_makes_malformed_provider_responses_non_retryable() {
+    let err = map_api_error(ApiError::MalformedResponse {
+        message: "incomplete tool input".to_string(),
+    });
+
+    assert!(matches!(err, CodexErr::MalformedProviderResponse(_)));
+    assert_eq!(
+        err.to_string(),
+        "malformed provider response: incomplete tool input"
+    );
+    assert!(!err.is_retryable());
+    assert_eq!(err.to_codex_protocol_error(), CodexErrorInfo::Other);
 }
 
 #[test]

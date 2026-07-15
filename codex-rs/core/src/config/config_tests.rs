@@ -8493,6 +8493,7 @@ async fn model_catalog_json_loads_from_path() -> std::io::Result<()> {
     let mut catalog = bundled_models_response()
         .unwrap_or_else(|err| panic!("bundled models.json should parse: {err}"));
     catalog.models = catalog.models.into_iter().take(1).collect();
+    catalog.models[0].max_output_tokens = Some(12_345);
     std::fs::write(
         &catalog_path,
         serde_json::to_string(&catalog).expect("serialize catalog"),
@@ -8510,7 +8511,16 @@ async fn model_catalog_json_loads_from_path() -> std::io::Result<()> {
     )
     .await?;
 
-    assert_eq!(config.model_catalog, Some(catalog));
+    assert_eq!(config.model_catalog.as_ref(), Some(&catalog));
+    assert_eq!(
+        config
+            .model_catalog
+            .as_ref()
+            .and_then(|catalog| catalog.models.first())
+            .and_then(|model| model.max_output_tokens),
+        Some(12_345),
+        "model_catalog_json must preserve the model output limit used by Claude requests"
+    );
     Ok(())
 }
 

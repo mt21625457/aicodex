@@ -2464,6 +2464,9 @@ fn websocket_error_detail(err: &ApiError) -> String {
             format!("handshake API error: {status} {message}")
         }
         ApiError::Stream(message) => format!("handshake stream error: {message}"),
+        ApiError::MalformedResponse { message } => {
+            format!("handshake malformed provider response: {message}")
+        }
         ApiError::StreamFailure { kind, message } => {
             format!("handshake provider stream error ({kind}): {message}")
         }
