@@ -336,7 +336,9 @@ mod tests {
             "turn-1",
             &EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-1".to_string(),
+                started_at: None,
                 last_agent_message: None,
+                error: None,
                 completed_at: Some(44),
                 duration_ms: Some(2),
                 time_to_first_token_ms: None,

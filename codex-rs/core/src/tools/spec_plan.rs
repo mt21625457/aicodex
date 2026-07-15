@@ -18,7 +18,6 @@ use crate::tools::handlers::GetContextRemainingHandler;
 use crate::tools::handlers::ListAvailablePluginsToInstallHandler;
 use crate::tools::handlers::ListMcpResourceTemplatesHandler;
 use crate::tools::handlers::ListMcpResourcesHandler;
-use crate::tools::handlers::McpHandler;
 use crate::tools::handlers::NewContextWindowHandler;
 use crate::tools::handlers::PlanHandler;
 use crate::tools::handlers::ReadMcpResourceHandler;
@@ -64,7 +63,6 @@ use crate::tools::router::ToolRouter;
 use crate::tools::router::ToolRouterParams;
 use codex_features::Feature;
 use codex_login::AuthManager;
-use codex_mcp::ToolInfo;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolNamespaceTool;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
@@ -148,8 +146,7 @@ impl PlannedTools {
 #[derive(Clone, Copy)]
 struct CoreToolPlanContext<'a> {
     step_context: &'a StepContext,
-    mcp_tools: Option<&'a [ToolInfo]>,
-    deferred_mcp_tools: Option<&'a [ToolInfo]>,
+    tool_runtimes: &'a [PlannedRuntime],
     tool_suggest_candidates: Option<&'a crate::tools::router::ToolSuggestCandidates>,
     extension_tool_executors: &'a [Arc<dyn ToolExecutor<ExtensionToolCall>>],
     dynamic_tools: &'a [DynamicToolSpec],
@@ -177,8 +174,7 @@ fn build_tool_specs_and_registry(
 ) -> (Vec<ToolSpec>, ToolRegistry) {
     let turn_context = step_context.turn.as_ref();
     let ToolRouterParams {
-        mcp_tools,
-        deferred_mcp_tools,
+        tool_runtimes,
         tool_suggest_candidates,
         extension_tool_executors,
         dynamic_tools,
@@ -187,8 +183,7 @@ fn build_tool_specs_and_registry(
         crate::agent::role::spawn_tool_spec::build(&std::collections::BTreeMap::new());
     let context = CoreToolPlanContext {
         step_context,
-        mcp_tools: mcp_tools.as_deref(),
-        deferred_mcp_tools: deferred_mcp_tools.as_deref(),
+        tool_runtimes: &tool_runtimes,
         tool_suggest_candidates: tool_suggest_candidates.as_ref(),
         extension_tool_executors: &extension_tool_executors,
         dynamic_tools,
@@ -585,6 +580,8 @@ fn code_mode_namespace_descriptions(
 
 #[instrument(level = "trace", skip_all)]
 fn add_tool_sources(context: &CoreToolPlanContext<'_>, planned_tools: &mut PlannedTools) {
+    // Guardian reviewers receive only `exec_command`, `write_stdin`, and `view_image`
+    // when an environment is available; all general tool sources stay excluded.
     if crate::guardian::is_guardian_reviewer_source(&context.step_context.turn.session_source) {
         let turn_context = context.step_context.turn.as_ref();
         let environment_mode = tool_environment_mode(context.step_context);
@@ -614,7 +611,9 @@ fn add_tool_sources(context: &CoreToolPlanContext<'_>, planned_tools: &mut Plann
     add_mcp_resource_tools(context, planned_tools);
     add_core_utility_tools(context, planned_tools);
     add_collaboration_tools(context, planned_tools);
-    add_mcp_runtime_tools(context, planned_tools);
+    for runtime in context.tool_runtimes {
+        planned_tools.add_arc(Arc::clone(runtime));
+    }
     add_extension_tools(context, planned_tools);
     add_dynamic_tools(context, planned_tools);
     add_hosted_model_tools(context, planned_tools);
@@ -696,7 +695,7 @@ fn unified_exec_should_include_shell_parameter(
 
 #[instrument(level = "trace", skip_all)]
 fn add_mcp_resource_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut PlannedTools) {
-    if context.mcp_tools.is_some() {
+    if context.step_context.mcp.manager().has_servers() {
         planned_tools.add(ListMcpResourcesHandler);
         planned_tools.add(ListMcpResourceTemplatesHandler);
         planned_tools.add(ReadMcpResourceHandler);
@@ -817,6 +816,11 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mu
                             .config
                             .multi_agent_v2
                             .hide_spawn_agent_metadata,
+                        expose_spawn_agent_model_overrides: turn_context
+                            .config
+                            .multi_agent_v2
+                            .expose_spawn_agent_model_overrides,
+                        multi_agent_version: turn_context.multi_agent_version,
                         usage_hint_text: turn_context.config.multi_agent_v2.usage_hint_text.clone(),
                     }),
                     tool_namespace,
@@ -859,6 +863,8 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mu
                     available_models: turn_context.available_models.clone(),
                     agent_type_description,
                     hide_agent_type_model_reasoning: false,
+                    expose_spawn_agent_model_overrides: true,
+                    multi_agent_version: turn_context.multi_agent_version,
                     usage_hint_text: turn_context.config.multi_agent_v2.usage_hint_text.clone(),
                 }),
                 exposure,
@@ -879,45 +885,7 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mu
     }
 }
 
-#[instrument(
-    level = "trace",
-    skip_all,
-    fields(
-        direct_mcp_tool_count = context.mcp_tools.map_or(0, <[ToolInfo]>::len),
-        deferred_mcp_tool_count = context.deferred_mcp_tools.map_or(0, <[ToolInfo]>::len)
-    )
-)]
-fn add_mcp_runtime_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut PlannedTools) {
-    if let Some(mcp_tools) = context.mcp_tools {
-        for tool in mcp_tools {
-            match McpHandler::new(tool.clone()) {
-                Ok(handler) => planned_tools.add(handler),
-                Err(err) => warn!(
-                    "Skipping MCP tool `{}`: failed to build tool spec: {err}",
-                    tool.canonical_tool_name()
-                ),
-            }
-        }
-    }
-
-    if let Some(deferred_mcp_tools) = context.deferred_mcp_tools {
-        for tool in deferred_mcp_tools {
-            match McpHandler::new(tool.clone()) {
-                Ok(handler) => planned_tools.add_with_exposure(handler, ToolExposure::Deferred),
-                Err(err) => warn!(
-                    "Skipping deferred MCP tool `{}`: failed to build tool spec: {err}",
-                    tool.canonical_tool_name()
-                ),
-            }
-        }
-    }
-}
-
-#[instrument(
-    level = "trace",
-    skip_all,
-    fields(dynamic_tool_count = context.dynamic_tools.len())
-)]
+#[instrument(level = "trace", skip_all, fields(dynamic_tool_count = context.dynamic_tools.len()))]
 fn add_dynamic_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut PlannedTools) {
     for spec in context.dynamic_tools {
         match spec {

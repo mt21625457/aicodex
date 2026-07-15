@@ -103,7 +103,7 @@ impl ToolExecutor<ToolInvocation> for ClaudeTextEditorHandler {
             let fs = turn_environment.environment.get_filesystem();
             let sandbox = turn.file_system_sandbox_context(
                 /*additional_permissions*/ None,
-                turn_environment.cwd(),
+                turn_environment,
             );
 
             match args.command {

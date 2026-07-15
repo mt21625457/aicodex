@@ -127,7 +127,7 @@ fn reserialize_shell_outputs(items: &mut [ResponseItem]) {
 
     items.iter_mut().for_each(|item| match item {
         ResponseItem::LocalShellCall { call_id, id, .. } => {
-            if let Some(identifier) = call_id.clone().or_else(|| id.clone()) {
+            if let Some(identifier) = call_id.clone().or_else(|| id.clone().map(String::from)) {
                 shell_call_ids.insert(identifier);
             }
         }

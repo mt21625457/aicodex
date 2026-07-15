@@ -14,6 +14,7 @@ use crate::tools::parallel::ToolCallRuntime;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::TurnItemContributor;
+use codex_protocol::ResponseItemId;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::TurnItem;
 use codex_protocol::memory_citation::MemoryCitation;
@@ -34,7 +35,7 @@ fn assistant_output_text(text: &str) -> ResponseItem {
 
 fn assistant_output_text_with_phase(text: &str, phase: Option<MessagePhase>) -> ResponseItem {
     ResponseItem::Message {
-        id: Some("msg-1".to_string()),
+        id: Some(ResponseItemId::with_suffix("msg", "1")),
         role: "assistant".to_string(),
         content: vec![ContentItem::OutputText {
             text: text.to_string(),
@@ -138,7 +139,7 @@ fn external_context_pollution_items_exclude_local_tool_calls() {
 fn respond_to_model_error_response_preserves_custom_tool_call_id_and_name() {
     let response = respond_to_model_error_response(
         &ResponseItem::CustomToolCall {
-            id: Some("toolu-1".to_string()),
+            id: Some(ResponseItemId::from_server("toolu-1".to_string())),
             status: None,
             call_id: "toolu-1".to_string(),
             name: "apply_patch".to_string(),
@@ -311,8 +312,7 @@ async fn handle_output_item_done_returns_contributed_last_agent_message() {
         step_context.as_ref(),
         crate::tools::router::ToolRouterParams {
             tool_suggest_candidates: None,
-            mcp_tools: None,
-            deferred_mcp_tools: None,
+            tool_runtimes: Vec::new(),
             extension_tool_executors: Vec::new(),
             dynamic_tools: turn_context.dynamic_tools.as_slice(),
         },

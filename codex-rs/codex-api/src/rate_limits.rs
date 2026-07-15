@@ -95,6 +95,7 @@ pub fn parse_rate_limit_for_limit(
         secondary,
         credits,
         individual_limit: None,
+        spend_control_reached: None,
         plan_type: None,
         rate_limit_reached_type: None,
     })
@@ -160,6 +161,7 @@ pub fn parse_rate_limit_event(payload: &str) -> Option<RateLimitSnapshot> {
         secondary,
         credits,
         individual_limit: None,
+        spend_control_reached: None,
         plan_type: event.plan_type,
         rate_limit_reached_type: None,
     })
@@ -313,6 +315,7 @@ fn parse_anthropic_rate_limits(headers: &HeaderMap) -> Vec<RateLimitSnapshot> {
             individual_limit: None,
             plan_type: None,
             rate_limit_reached_type: None,
+            spend_control_reached: None,
         })
     })
     .collect()

@@ -346,7 +346,7 @@ pub(crate) fn build_claude_messages_request(
                 ..
             } => {
                 let call_id = call_id
-                    .or(id)
+                    .or_else(|| id.map(String::from))
                     .unwrap_or_else(|| "local_shell_call".to_string());
                 push_message(
                     &mut messages,
@@ -1784,6 +1784,7 @@ fn parse_json_object_or_wrapped(input: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_protocol::ResponseItemId;
     use codex_protocol::models::BaseInstructions;
     use codex_protocol::models::FunctionCallOutputBody;
     use codex_protocol::models::FunctionCallOutputPayload;
@@ -3231,7 +3232,7 @@ mod tests {
         let prompt = Prompt {
             input: vec![
                 ResponseItem::Reasoning {
-                    id: Some("msg_1_reasoning_0".to_string()),
+                    id: Some(ResponseItemId::from_server("msg_1_reasoning_0".to_string())),
                     summary: Vec::new(),
                     content: Some(vec![ReasoningItemContent::ReasoningText {
                         text: "thinking".to_string(),
@@ -3332,7 +3333,7 @@ mod tests {
         let prompt = Prompt {
             input: vec![
                 ResponseItem::Reasoning {
-                    id: Some("rs_1".to_string()),
+                    id: Some(ResponseItemId::from_server("rs_1".to_string())),
                     summary: vec![ReasoningItemReasoningSummary::SummaryText {
                         text: "OpenAI reasoning summary".to_string(),
                     }],
@@ -3375,7 +3376,7 @@ mod tests {
     fn builds_claude_history_without_summaryless_openai_encrypted_reasoning_as_signature() {
         let prompt = Prompt {
             input: vec![ResponseItem::Reasoning {
-                id: Some("rs_1".to_string()),
+                id: Some(ResponseItemId::from_server("rs_1".to_string())),
                 summary: Vec::new(),
                 content: None,
                 encrypted_content: Some("openai-encrypted-content".to_string()),
@@ -3402,7 +3403,7 @@ mod tests {
     fn builds_claude_history_with_omitted_thinking_signature_only_block() {
         let prompt = Prompt {
             input: vec![ResponseItem::Reasoning {
-                id: Some("msg_1_reasoning_0".to_string()),
+                id: Some(ResponseItemId::from_server("msg_1_reasoning_0".to_string())),
                 summary: Vec::new(),
                 content: Some(vec![ReasoningItemContent::ReasoningText {
                     text: String::new(),
@@ -3445,7 +3446,7 @@ mod tests {
                     internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Reasoning {
-                    id: Some("msg_1_reasoning_0".to_string()),
+                    id: Some(ResponseItemId::from_server("msg_1_reasoning_0".to_string())),
                     summary: Vec::new(),
                     content: Some(vec![ReasoningItemContent::ReasoningText {
                         text: "stale thinking".to_string(),
@@ -3489,7 +3490,7 @@ mod tests {
                     internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Reasoning {
-                    id: Some("msg_1_reasoning_0".to_string()),
+                    id: Some(ResponseItemId::from_server("msg_1_reasoning_0".to_string())),
                     summary: Vec::new(),
                     content: Some(vec![ReasoningItemContent::ReasoningText {
                         text: "trailing thinking".to_string(),
@@ -3522,7 +3523,7 @@ mod tests {
     fn builds_claude_history_without_openai_reasoning_as_thinking_block() {
         let prompt = Prompt {
             input: vec![ResponseItem::Reasoning {
-                id: Some("rs_1".to_string()),
+                id: Some(ResponseItemId::from_server("rs_1".to_string())),
                 summary: vec![ReasoningItemReasoningSummary::SummaryText {
                     text: "OpenAI reasoning summary".to_string(),
                 }],

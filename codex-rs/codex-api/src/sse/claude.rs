@@ -9,6 +9,7 @@ use crate::rate_limits::parse_all_rate_limits;
 use crate::telemetry::SseTelemetry;
 use codex_client::ByteStream;
 use codex_client::StreamResponse;
+use codex_protocol::ResponseItemId;
 use codex_protocol::models::Citation;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ReasoningItemContent;
@@ -840,7 +841,7 @@ impl ClaudeStreamState {
         tx_event
             .send(Ok(ResponseEvent::OutputItemAdded(
                 ResponseItem::CustomToolCall {
-                    id: Some(call_id.clone()),
+                    id: Some(ResponseItemId::with_suffix("ctc", &call_id)),
                     status: None,
                     call_id,
                     name: info.name.clone(),
@@ -1063,7 +1064,7 @@ impl ClaudeStreamState {
 
         Ok(Some(match info.kind {
             ClaudeToolCallKind::Function => ResponseItem::FunctionCall {
-                id: Some(call_id.clone()),
+                id: Some(ResponseItemId::with_suffix("fc", &call_id)),
                 name: info.name,
                 namespace: info.namespace,
                 arguments: stringify_tool_input(&input),
@@ -1072,7 +1073,7 @@ impl ClaudeStreamState {
             },
             ClaudeToolCallKind::Custom => match custom_tool_input(&info.name, &input) {
                 Ok(input) => ResponseItem::CustomToolCall {
-                    id: Some(call_id.clone()),
+                    id: Some(ResponseItemId::with_suffix("ctc", &call_id)),
                     status: None,
                     call_id,
                     name: info.name,
@@ -1081,7 +1082,7 @@ impl ClaudeStreamState {
                     internal_chat_message_metadata_passthrough: None,
                 },
                 Err(message) => ResponseItem::CustomToolCall {
-                    id: Some(call_id.clone()),
+                    id: Some(ResponseItemId::with_suffix("ctc", &call_id)),
                     status: Some(format!(
                         "{INVALID_CLAUDE_CUSTOM_TOOL_INPUT_STATUS_PREFIX}{message}"
                     )),
@@ -1093,7 +1094,7 @@ impl ClaudeStreamState {
                 },
             },
             ClaudeToolCallKind::ToolSearch => ResponseItem::ToolSearchCall {
-                id: Some(call_id.clone()),
+                id: Some(ResponseItemId::with_suffix("tsc", &call_id)),
                 call_id: Some(call_id),
                 status: None,
                 execution: "client".to_string(),
@@ -1119,7 +1120,7 @@ impl ClaudeStreamState {
         let call_id = state.id.clone().unwrap_or_else(|| name.to_string());
         let input = state.json_object_input_value(index)?;
         Ok(Some(ResponseItem::WebSearchCall {
-            id: Some(call_id),
+            id: Some(ResponseItemId::with_suffix("ws", call_id)),
             status: None,
             action: web_search_action_from_claude_input(&input),
             internal_chat_message_metadata_passthrough: None,
@@ -1162,18 +1163,19 @@ impl ClaudeStreamState {
             .unwrap_or_else(|| "claude-response".to_string())
     }
 
-    fn message_id_for_block(&self, index: usize) -> Option<String> {
+    fn message_id_for_block(&self, index: usize) -> Option<ResponseItemId> {
         self.message_id.as_ref().map(|message_id| {
-            if index == 0 {
+            let id = if index == 0 {
                 message_id.clone()
             } else {
                 format!("{message_id}_text_{index}")
-            }
+            };
+            ResponseItemId::from_server(id)
         })
     }
 
-    fn reasoning_id_for_block(&self, index: usize) -> String {
-        format!("{}_reasoning_{index}", self.response_id())
+    fn reasoning_id_for_block(&self, index: usize) -> ResponseItemId {
+        ResponseItemId::with_suffix("rs", format!("{}_reasoning_{index}", self.response_id()))
     }
 }
 
@@ -3112,7 +3114,7 @@ mod tests {
                 content: Some(content),
                 encrypted_content: None,
                 ..
-            }) if id.as_deref() == Some("msg_1_reasoning_0")
+            }) if id.as_deref() == Some("rs_msg_1_reasoning_0")
                 && summary.is_empty()
                 && content.is_empty()
         )));
@@ -3390,7 +3392,7 @@ mod tests {
                 id: Some(id),
                 action: Some(WebSearchAction::Search { query: Some(query), queries: None }),
                 ..
-            }) if id == "srvtoolu_1" && query == "latest rust release"
+            }) if id.as_str() == "ws_srvtoolu_1" && query == "latest rust release"
         )));
         assert!(events.iter().any(|event| matches!(
             event,
@@ -3729,7 +3731,7 @@ mod tests {
             added,
             vec![
                 "message:msg_1".to_string(),
-                "reasoning:msg_1_reasoning_1".to_string(),
+                "reasoning:rs_msg_1_reasoning_1".to_string(),
                 "message:msg_1_text_2".to_string(),
             ]
         );
@@ -3739,8 +3741,8 @@ mod tests {
             vec![
                 "added:message:msg_1".to_string(),
                 "done:message:msg_1".to_string(),
-                "added:reasoning:msg_1_reasoning_1".to_string(),
-                "done:reasoning:msg_1_reasoning_1".to_string(),
+                "added:reasoning:rs_msg_1_reasoning_1".to_string(),
+                "done:reasoning:rs_msg_1_reasoning_1".to_string(),
                 "added:message:msg_1_text_2".to_string(),
                 "done:message:msg_1_text_2".to_string(),
             ]

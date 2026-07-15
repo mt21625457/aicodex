@@ -161,9 +161,8 @@ async fn run_exec_like(args: RunExecLikeArgs) -> Result<FunctionToolOutput, Func
         return Ok(output);
     }
 
-    let exec_cwd_uri = PathUri::from_abs_path(&exec_params.cwd);
     let shell_file_change_sandbox = turn_environment.environment.is_remote().then(|| {
-        turn.file_system_sandbox_context(/*additional_permissions*/ None, &exec_cwd_uri)
+        turn.file_system_sandbox_context(/*additional_permissions*/ None, &turn_environment)
     });
     let shell_file_snapshot_before = if is_known_safe_command(&exec_params.command) {
         None

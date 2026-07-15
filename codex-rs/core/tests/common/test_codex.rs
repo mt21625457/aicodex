@@ -109,6 +109,7 @@ pub fn local(cwd: AbsolutePathBuf) -> TurnEnvironmentSelection {
     TurnEnvironmentSelection {
         environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),
         cwd: PathUri::from_abs_path(&cwd),
+        workspace_roots: vec![PathUri::from_abs_path(&cwd)],
     }
 }
 
@@ -140,6 +141,7 @@ impl TestEnv {
             Some(_) => TurnEnvironmentSelection {
                 environment_id: codex_exec_server::REMOTE_ENVIRONMENT_ID.to_string(),
                 cwd: PathUri::from_abs_path(&cwd),
+                workspace_roots: vec![PathUri::from_abs_path(&cwd)],
             },
             None => local(cwd.clone()),
         };
@@ -161,6 +163,10 @@ impl TestEnv {
 
     pub fn environment(&self) -> &codex_exec_server::Environment {
         &self.environment
+    }
+
+    pub fn exec_server_url(&self) -> Option<&str> {
+        self.exec_server_url.as_deref()
     }
 
     /// Returns the environment and target-native cwd selected by the test harness.
@@ -203,6 +209,7 @@ pub async fn test_env() -> Result<TestEnv> {
             let selection = TurnEnvironmentSelection {
                 environment_id: codex_exec_server::REMOTE_ENVIRONMENT_ID.to_string(),
                 cwd: cwd_uri.clone(),
+                workspace_roots: vec![cwd_uri.clone()],
             };
             let cwd = if remote_env == TestEnvironment::WineExec {
                 // TODO(anp): Convert `Config::cwd` to `LegacyAppPathString` and remove this
@@ -617,9 +624,12 @@ impl TestCodexBuilder {
                     config.codex_home.clone(),
                 ))
             });
+        let auth_manager = codex_core::test_support::auth_manager_from_auth(auth.clone());
         let thread_manager = ThreadManager::new(
             &config,
-            codex_core::test_support::auth_manager_from_auth(auth.clone()),
+            auth_manager.clone(),
+            codex_core::build_models_manager(&config, auth_manager),
+            codex_core::CodexAppsToolsCache::default(),
             SessionSource::Exec,
             Arc::clone(&environment_manager),
             Arc::clone(&self.extensions),
@@ -686,7 +696,8 @@ impl TestCodexBuilder {
                 .await?
             }
             (None, None) => {
-                let environments = thread_manager.default_environment_selections(&config.cwd);
+                let environments = thread_manager
+                    .default_environment_selections(&config.cwd, &config.workspace_roots);
                 Box::pin(
                     thread_manager.start_thread_with_options(StartThreadOptions {
                         config: config.clone(),

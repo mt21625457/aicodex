@@ -201,6 +201,7 @@ impl ToolExecutor<ToolInvocation> for WebSearchHandler {
                 id: call_id.clone(),
                 query: query_detail,
                 action,
+                results: None,
             });
             session.emit_turn_item_started(turn.as_ref(), &item).await;
             let result = self

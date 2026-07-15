@@ -1,5 +1,6 @@
 use crate::protocol::EventMsg;
 use crate::protocol::RolloutItem;
+use codex_extension_items::ExtensionItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::ThreadHistoryMode;
@@ -150,7 +151,10 @@ pub fn should_persist_event_msg_with_mode(
             // Paginated rollouts store TurnItems.
             // Legacy rollouts keep only items with no raw ResponseItem or legacy equivalent.
             matches!(history_mode, ThreadHistoryMode::Paginated)
-                || matches!(event.item, TurnItem::Plan(_) | TurnItem::Sleep(_))
+                || matches!(
+                    event.item,
+                    TurnItem::Plan(_) | TurnItem::Extension(ExtensionItem::Sleep(_))
+                )
         }
         EventMsg::TokenCount(_)
         | EventMsg::ThreadGoalUpdated(_)
@@ -204,6 +208,7 @@ pub fn should_persist_event_msg_with_mode(
         | EventMsg::TurnModerationMetadata(_)
         | EventMsg::AgentReasoningSectionBreak(_)
         | EventMsg::RawResponseItem(_)
+        | EventMsg::RawResponseCompleted(_)
         | EventMsg::SessionConfigured(_)
         | EventMsg::McpToolCallBegin(_)
         | EventMsg::ExecCommandBegin(_)

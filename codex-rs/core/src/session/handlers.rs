@@ -127,7 +127,6 @@ async fn thread_settings_update(
 ) -> SessionSettingsUpdate {
     let ThreadSettingsOverrides {
         environments,
-        workspace_roots,
         profile_workspace_roots,
         approval_policy,
         approvals_reviewer,
@@ -157,7 +156,6 @@ async fn thread_settings_update(
     };
     SessionSettingsUpdate {
         environments,
-        workspace_roots,
         profile_workspace_roots,
         approval_policy,
         approvals_reviewer,

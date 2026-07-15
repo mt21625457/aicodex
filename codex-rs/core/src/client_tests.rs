@@ -35,6 +35,7 @@ use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::WireApi;
 use codex_model_provider_info::create_oss_provider_with_base_url;
 use codex_otel::SessionTelemetry;
+use codex_protocol::ResponseItemId;
 use codex_protocol::ThreadId;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::models::BaseInstructions;
@@ -265,7 +266,6 @@ fn test_model_info() -> ModelInfo {
         "upgrade": null,
         "base_instructions": "base instructions",
         "model_messages": null,
-        "supports_reasoning_summaries": false,
         "support_verbosity": false,
         "default_verbosity": null,
         "apply_patch_tool_type": null,
@@ -418,7 +418,7 @@ fn started_inference_attempt(temp: &TempDir) -> anyhow::Result<InferenceTraceAtt
 
 fn output_message(id: &str, text: &str) -> ResponseItem {
     ResponseItem::Message {
-        id: Some(id.to_string()),
+        id: Some(codex_protocol::ResponseItemId::with_suffix("msg", id)),
         role: "assistant".to_string(),
         content: vec![ContentItem::OutputText {
             text: text.to_string(),
@@ -431,7 +431,7 @@ fn output_message(id: &str, text: &str) -> ResponseItem {
 #[test]
 fn strips_provider_specific_reasoning_state_before_responses_serialization() {
     let mut input = vec![ResponseItem::Reasoning {
-        id: Some("msg_1_reasoning_0".to_string()),
+        id: Some(ResponseItemId::from_server("msg_1_reasoning_0".to_string())),
         summary: vec![ReasoningItemReasoningSummary::SummaryText {
             text: "summary".to_string(),
         }],
@@ -461,7 +461,7 @@ fn strips_provider_specific_reasoning_state_before_responses_serialization() {
 #[test]
 fn preserves_openai_encrypted_reasoning_state_without_raw_content_for_responses_serialization() {
     let mut input = vec![ResponseItem::Reasoning {
-        id: Some("rs_1".to_string()),
+        id: Some(ResponseItemId::from_server("rs_1".to_string())),
         summary: vec![ReasoningItemReasoningSummary::SummaryText {
             text: "summary".to_string(),
         }],
@@ -489,7 +489,7 @@ fn preserves_openai_encrypted_reasoning_state_without_raw_content_for_responses_
 #[test]
 fn preserves_openai_encrypted_reasoning_state_with_raw_content_for_responses_serialization() {
     let mut input = vec![ResponseItem::Reasoning {
-        id: Some("rs_1".to_string()),
+        id: Some(ResponseItemId::from_server("rs_1".to_string())),
         summary: vec![ReasoningItemReasoningSummary::SummaryText {
             text: "summary".to_string(),
         }],
@@ -518,7 +518,7 @@ fn preserves_openai_encrypted_reasoning_state_with_raw_content_for_responses_ser
 #[test]
 fn strips_unknown_raw_reasoning_state_before_responses_serialization() {
     let mut input = vec![ResponseItem::Reasoning {
-        id: Some(String::new()),
+        id: Some(ResponseItemId::from_server(String::new())),
         summary: Vec::new(),
         content: Some(vec![ReasoningItemContent::ReasoningText {
             text: "raw provider reasoning".to_string(),
@@ -544,7 +544,7 @@ fn strips_unknown_raw_reasoning_state_before_responses_serialization() {
 #[test]
 fn strips_raw_reasoning_encrypted_content_for_non_openai_responses_providers() {
     let mut input = vec![ResponseItem::Reasoning {
-        id: Some("reasoning-id".to_string()),
+        id: Some(ResponseItemId::from_server("reasoning-id".to_string())),
         summary: vec![ReasoningItemReasoningSummary::SummaryText {
             text: "summary".to_string(),
         }],
@@ -748,7 +748,7 @@ async fn dropped_response_stream_traces_cancelled_partial_output() -> anyhow::Re
     // response.completed event. The harness has enough information to keep this
     // item in history, so the trace should preserve it when the stream is
     // abandoned.
-    let item = output_message("msg-1", "partial answer");
+    let item = output_message("1", "partial answer");
     let api_stream = futures::stream::iter([Ok(ResponseEvent::OutputItemDone(item))])
         .chain(futures::stream::pending());
     let (mut stream, _) = super::map_response_events(
@@ -867,7 +867,7 @@ async fn dropped_backpressured_response_stream_traces_cancelled_partial_output()
         events.push_back(ResponseEvent::Created);
     }
     events.push_back(ResponseEvent::OutputItemDone(output_message(
-        "msg-1",
+        "1",
         "partial answer",
     )));
     let api_stream = NotifyAfterEventStream {

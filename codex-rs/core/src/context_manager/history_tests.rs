@@ -5,6 +5,7 @@ use crate::context::world_state::WorldStateSection;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use codex_protocol::AgentPath;
+use codex_protocol::ResponseItemId;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
@@ -667,7 +668,7 @@ fn for_prompt_strips_images_when_model_does_not_support_images() {
 fn for_prompt_preserves_image_generation_calls_when_images_are_supported() {
     let history = create_history_with_items(vec![
         ResponseItem::ImageGenerationCall {
-            id: Some("ig_123".to_string()),
+            id: Some(ResponseItemId::with_suffix("ig", "123")),
             status: "generating".to_string(),
             revised_prompt: Some("lobster".to_string()),
             result: "Zm9v".to_string(),
@@ -688,7 +689,7 @@ fn for_prompt_preserves_image_generation_calls_when_images_are_supported() {
         history.for_prompt(&default_input_modalities()),
         vec![
             ResponseItem::ImageGenerationCall {
-                id: Some("ig_123".to_string()),
+                id: Some(ResponseItemId::with_suffix("ig", "123")),
                 status: "generating".to_string(),
                 revised_prompt: Some("lobster".to_string()),
                 result: "Zm9v".to_string(),
@@ -720,7 +721,7 @@ fn for_prompt_clears_image_generation_result_when_images_are_unsupported() {
             internal_chat_message_metadata_passthrough: None,
         },
         ResponseItem::ImageGenerationCall {
-            id: Some("ig_123".to_string()),
+            id: Some(ResponseItemId::with_suffix("ig", "123")),
             status: "completed".to_string(),
             revised_prompt: Some("lobster".to_string()),
             result: "Zm9v".to_string(),
@@ -741,7 +742,7 @@ fn for_prompt_clears_image_generation_result_when_images_are_unsupported() {
                 internal_chat_message_metadata_passthrough: None,
             },
             ResponseItem::ImageGenerationCall {
-                id: Some("ig_123".to_string()),
+                id: Some(ResponseItemId::with_suffix("ig", "123")),
                 status: "completed".to_string(),
                 revised_prompt: Some("lobster".to_string()),
                 result: String::new(),
@@ -1767,7 +1768,7 @@ fn normalize_adds_missing_output_for_function_call_inserts_output() {
 fn for_prompt_assigns_stable_id_to_synthetic_output_without_reordering_history() {
     let items = vec![
         ResponseItem::FunctionCall {
-            id: Some("fc_existing".to_string()),
+            id: Some(ResponseItemId::with_suffix("fc", "existing")),
             name: "do_it".to_string(),
             namespace: None,
             arguments: "{}".to_string(),
@@ -1775,7 +1776,7 @@ fn for_prompt_assigns_stable_id_to_synthetic_output_without_reordering_history()
             internal_chat_message_metadata_passthrough: None,
         },
         ResponseItem::Message {
-            id: Some("msg_later".to_string()),
+            id: Some(ResponseItemId::with_suffix("msg", "later")),
             role: "user".to_string(),
             content: vec![ContentItem::InputText {
                 text: "later turn".to_string(),

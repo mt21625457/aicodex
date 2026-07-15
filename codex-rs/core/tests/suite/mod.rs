@@ -38,6 +38,7 @@ mod apply_patch_cli;
 #[cfg(not(target_os = "windows"))]
 mod approvals;
 mod auto_review;
+mod catalog_permission_messages;
 mod claude_wire;
 mod cli_stream;
 mod client;
@@ -72,6 +73,7 @@ mod mcp_auth_elicitation;
 mod mcp_auth_refresh;
 #[cfg(unix)]
 mod mcp_refresh_cleanup;
+mod mcp_tool_cache;
 mod mcp_tool_exposure;
 mod mcp_turn_metadata;
 mod model_overrides;
@@ -81,6 +83,7 @@ mod model_visible_layout;
 mod models_cache_ttl;
 mod models_etag_responses;
 mod multi_agent_mode;
+mod multi_agent_resume;
 mod network_approval;
 mod openai_file_mcp;
 mod otel;
@@ -88,8 +91,8 @@ mod override_updates;
 mod pending_input;
 mod permissions_messages;
 mod personality;
-mod personality_migration;
 mod plugins;
+mod prompt_cache_key;
 mod prompt_caching;
 mod prompt_debug_tests;
 mod quota_exceeded;
@@ -143,3 +146,4 @@ mod websocket_fallback;
 mod window_headers;
 #[cfg(target_os = "windows")]
 mod windows_sandbox;
+mod workspace_roots;

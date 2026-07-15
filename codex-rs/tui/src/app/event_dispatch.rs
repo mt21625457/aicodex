@@ -173,7 +173,11 @@ impl App {
                 if let Some(thread_id) = self.chat_widget.thread_id() {
                     self.refresh_in_memory_config_from_disk_best_effort("forking the thread")
                         .await;
-                    match app_server.fork_thread(self.config.clone(), thread_id).await {
+                    let mut fork_config = self.config.clone();
+                    fork_config.model = Some(self.chat_widget.current_model().to_string());
+                    fork_config.model_reasoning_effort =
+                        self.chat_widget.current_reasoning_effort();
+                    match app_server.fork_thread(fork_config, thread_id).await {
                         Ok(forked) => {
                             self.shutdown_current_thread(app_server).await;
                             match self
@@ -828,10 +832,19 @@ impl App {
                 self.chat_widget
                     .finish_add_credits_nudge_email_request(result);
             }
-            AppEvent::RateLimitsLoaded { origin, result } => match result {
+            AppEvent::RateLimitsLoaded {
+                origin,
+                hard_stop_generation,
+                result,
+            } => match result {
                 Ok(response) => {
                     let rate_limit_reset_credits = response.rate_limit_reset_credits.clone();
-                    let snapshots = app_server_rate_limit_snapshots(response);
+                    let snapshots = if hard_stop_generation == self.rate_limit_hard_stop_generation
+                    {
+                        app_server_rate_limit_snapshots(response)
+                    } else {
+                        Vec::new()
+                    };
                     match origin {
                         RateLimitRefreshOrigin::StartupPrefetch {
                             reset_hint_request_id,
@@ -1025,6 +1038,42 @@ impl App {
             }
             AppEvent::OpenReasoningPopup { model } => {
                 self.chat_widget.open_reasoning_popup(model);
+            }
+            AppEvent::OpenAdvancedReasoningPopup { model } => {
+                self.chat_widget.open_advanced_reasoning_popup(model);
+            }
+            AppEvent::ApplyAdvancedReasoning { model, effort } => {
+                let default_effort =
+                    self.on_apply_advanced_reasoning(model.as_str(), effort.clone());
+                if let Some(mut params) =
+                    self.active_thread_model_setting_update_params(model.clone())
+                {
+                    params.effort = Some(effort.clone());
+                    self.send_thread_settings_update(app_server, params).await;
+                }
+                self.sync_active_thread_service_tier_to_cached_session()
+                    .await;
+
+                if let Some(default_effort) = default_effort.as_ref()
+                    && let Err(err) = crate::config_update::write_config_batch(
+                        app_server.request_handle(),
+                        crate::config_update::build_model_selection_edits(
+                            model.as_str(),
+                            Some(default_effort),
+                        ),
+                    )
+                    .await
+                {
+                    let error = format_config_error(&err);
+                    tracing::error!(error = %error, "failed to persist conversation model");
+                    self.chat_widget
+                        .add_error_message(format!("Failed to save default model: {error}"));
+                } else {
+                    self.chat_widget.add_info_message(
+                        format!("Model changed to {model} {effort} for this conversation"),
+                        /*hint*/ None,
+                    );
+                }
             }
             AppEvent::OpenPlanReasoningScopePrompt { model, effort } => {
                 self.chat_widget
@@ -1792,9 +1841,6 @@ impl App {
             AppEvent::SkipNextWorldWritableScan => {
                 self.windows_sandbox.skip_world_writable_scan_once = true;
             }
-            AppEvent::UpdateFullAccessWarningAcknowledged(ack) => {
-                self.chat_widget.set_full_access_warning_acknowledged(ack);
-            }
             AppEvent::UpdateWorldWritableWarningAcknowledged(ack) => {
                 self.chat_widget
                     .set_world_writable_warning_acknowledged(ack);
@@ -1803,25 +1849,9 @@ impl App {
                 self.chat_widget.set_rate_limit_switch_prompt_hidden(hidden);
             }
             AppEvent::UpdatePlanModeReasoningEffort(effort) => {
-                self.config.plan_mode_reasoning_effort = effort.clone();
-                self.chat_widget.set_plan_mode_reasoning_effort(effort);
+                self.on_update_plan_mode_reasoning_effort(effort);
                 self.sync_active_thread_plan_mode_reasoning_setting(app_server)
                     .await;
-            }
-            AppEvent::PersistFullAccessWarningAcknowledged => {
-                if let Err(err) = ConfigEditsBuilder::for_config(&self.config)
-                    .set_hide_full_access_warning(/*acknowledged*/ true)
-                    .apply()
-                    .await
-                {
-                    tracing::error!(
-                        error = %err,
-                        "failed to persist full access warning acknowledgement"
-                    );
-                    self.chat_widget.add_error_message(format!(
-                        "Failed to save full access confirmation preference: {err}"
-                    ));
-                }
             }
             AppEvent::PersistWorldWritableWarningAcknowledged => {
                 if let Err(err) = ConfigEditsBuilder::for_config(&self.config)
