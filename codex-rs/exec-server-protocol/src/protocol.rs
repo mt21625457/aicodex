@@ -24,6 +24,7 @@ pub const EXEC_OUTPUT_DELTA_METHOD: &str = "process/output";
 pub const EXEC_EXITED_METHOD: &str = "process/exited";
 pub const EXEC_CLOSED_METHOD: &str = "process/closed";
 pub const ENVIRONMENT_INFO_METHOD: &str = "environment/info";
+pub const ENVIRONMENT_STATUS_METHOD: &str = "environment/status";
 pub const FS_READ_FILE_METHOD: &str = "fs/readFile";
 pub const FS_OPEN_METHOD: &str = "fs/open";
 pub const FS_READ_BLOCK_METHOD: &str = "fs/readBlock";
@@ -40,6 +41,8 @@ pub const FS_COPY_METHOD: &str = "fs/copy";
 pub const HTTP_REQUEST_METHOD: &str = "http/request";
 /// JSON-RPC notification method for streamed executor HTTP response bodies.
 pub const HTTP_REQUEST_BODY_DELTA_METHOD: &str = "http/request/bodyDelta";
+/// Maximum decoded response-body bytes carried by one streamed HTTP notification.
+pub const MAX_HTTP_BODY_DELTA_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -79,6 +82,25 @@ pub struct EnvironmentInfo {
     /// Working directory inherited by the exec-server process.
     #[serde(default)]
     pub cwd: Option<PathUri>,
+}
+
+/// Status returned by an initialized exec-server connection.
+///
+/// The response is intentionally small today. New status details can be added
+/// without changing the method used by clients to verify that an initialized
+/// exec-server connection is still responsive.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentStatus {
+    pub status: EnvironmentStatusKind,
+}
+
+/// High-level status reported by exec-server itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EnvironmentStatusKind {
+    /// The connection is initialized and exec-server can handle requests.
+    Ready,
 }
 
 impl EnvironmentInfo {

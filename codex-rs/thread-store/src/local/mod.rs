@@ -4,8 +4,11 @@ mod delete_thread;
 mod helpers;
 mod list_threads;
 mod live_writer;
+mod model_context;
 mod read_thread;
 mod search_threads;
+mod thread_history;
+mod thread_history_materialization;
 mod unarchive_thread;
 mod update_thread_metadata;
 
@@ -21,17 +24,23 @@ use std::collections::hash_map::Entry;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio::sync::OnceCell;
+use tokio::sync::OwnedMutexGuard;
 
 use crate::AppendThreadItemsParams;
 use crate::ArchiveThreadParams;
 use crate::CreateThreadParams;
 use crate::DeleteThreadParams;
+use crate::ItemPage;
+use crate::ListItemsParams;
 use crate::ListThreadsParams;
+use crate::ListTurnsParams;
 use crate::LoadThreadHistoryParams;
 use crate::ReadThreadByRolloutPathParams;
 use crate::ReadThreadParams;
 use crate::ResumeThreadParams;
 use crate::SearchThreadsParams;
+use crate::StoredModelContext;
 use crate::StoredThread;
 use crate::StoredThreadHistory;
 use crate::ThreadPage;
@@ -40,6 +49,7 @@ use crate::ThreadStore;
 use crate::ThreadStoreError;
 use crate::ThreadStoreFuture;
 use crate::ThreadStoreResult;
+use crate::TurnPage;
 use crate::UpdateThreadMetadataParams;
 
 /// Local filesystem/SQLite-backed implementation of [`ThreadStore`].
@@ -59,7 +69,9 @@ use crate::UpdateThreadMetadataParams;
 pub struct LocalThreadStore {
     pub(super) config: LocalThreadStoreConfig,
     live_recorders: Arc<Mutex<HashMap<ThreadId, LiveRecorderEntry>>>,
+    live_writer_locks: Arc<LiveWriterLocks>,
     state_db: Option<StateDbHandle>,
+    thread_history_db: Arc<OnceCell<sqlx::SqlitePool>>,
 }
 
 struct LiveRecorderEntry {
@@ -68,6 +80,26 @@ struct LiveRecorderEntry {
     // canonical SessionMeta is durable. Retain the mode captured when live persistence was opened
     // so missing SQLite rows can still be seeded.
     history_mode: ThreadHistoryMode,
+}
+
+#[derive(Default)]
+struct LiveWriterLocks {
+    // Keep per-thread locks after a writer goes idle. Removing one while another caller is about
+    // to acquire it could let two operations for the same thread run at once.
+    by_thread: Mutex<HashMap<ThreadId, Arc<Mutex<()>>>>,
+}
+
+impl LiveWriterLocks {
+    async fn lock(&self, thread_id: ThreadId) -> OwnedMutexGuard<()> {
+        let lock = self
+            .by_thread
+            .lock()
+            .await
+            .entry(thread_id)
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone();
+        lock.lock_owned().await
+    }
 }
 
 /// Process-scoped configuration for local thread storage.
@@ -106,13 +138,26 @@ impl LocalThreadStore {
         Self {
             config,
             live_recorders: Arc::new(Mutex::new(HashMap::new())),
+            live_writer_locks: Arc::new(LiveWriterLocks::default()),
             state_db,
+            thread_history_db: Arc::new(OnceCell::new()),
         }
     }
 
     /// Return the state DB handle used by local rollout writers.
     pub async fn state_db(&self) -> Option<StateDbHandle> {
         self.state_db.clone()
+    }
+
+    async fn thread_history_db(&self) -> ThreadStoreResult<&sqlx::SqlitePool> {
+        self.thread_history_db
+            .get_or_try_init(|| async {
+                codex_state::open_thread_history_db(self.config.sqlite_home.as_path()).await
+            })
+            .await
+            .map_err(|err| ThreadStoreError::Internal {
+                message: format!("failed to open thread history database: {err}"),
+            })
     }
 
     /// Read a local rollout-backed thread by path.
@@ -134,18 +179,6 @@ impl LocalThreadStore {
     /// Return the live local rollout path for legacy local-only code paths.
     pub async fn live_rollout_path(&self, thread_id: ThreadId) -> ThreadStoreResult<PathBuf> {
         live_writer::rollout_path(self, thread_id).await
-    }
-
-    pub(super) async fn live_recorder(
-        &self,
-        thread_id: ThreadId,
-    ) -> ThreadStoreResult<RolloutRecorder> {
-        self.live_recorders
-            .lock()
-            .await
-            .get(&thread_id)
-            .map(|entry| entry.recorder.clone())
-            .ok_or(ThreadStoreError::ThreadNotFound { thread_id })
     }
 
     pub(super) async fn ensure_live_recorder_absent(
@@ -235,6 +268,16 @@ impl LocalThreadStore {
         )
         .await
     }
+
+    /// Lists projection-backed turns without enabling app-server routing yet.
+    pub async fn list_turns(&self, params: ListTurnsParams) -> ThreadStoreResult<TurnPage> {
+        thread_history::list_turns(self, params).await
+    }
+
+    /// Lists projection-backed items without enabling app-server routing yet.
+    pub async fn list_items(&self, params: ListItemsParams) -> ThreadStoreResult<ItemPage> {
+        thread_history::list_items(self, params).await
+    }
 }
 
 impl ThreadStore for LocalThreadStore {
@@ -277,6 +320,13 @@ impl ThreadStore for LocalThreadStore {
         Box::pin(LocalThreadStore::load_history(self, params))
     }
 
+    fn load_latest_model_context(
+        &self,
+        params: LoadThreadHistoryParams,
+    ) -> ThreadStoreFuture<'_, StoredModelContext> {
+        Box::pin(async move { model_context::load_latest_model_context(self, params).await })
+    }
+
     fn read_thread(&self, params: ReadThreadParams) -> ThreadStoreFuture<'_, StoredThread> {
         Box::pin(async move { read_thread::read_thread(self, params).await })
     }
@@ -292,6 +342,14 @@ impl ThreadStore for LocalThreadStore {
 
     fn list_threads(&self, params: ListThreadsParams) -> ThreadStoreFuture<'_, ThreadPage> {
         Box::pin(async move { list_threads::list_threads(self, params).await })
+    }
+
+    fn list_turns(&self, params: ListTurnsParams) -> ThreadStoreFuture<'_, TurnPage> {
+        Box::pin(LocalThreadStore::list_turns(self, params))
+    }
+
+    fn list_items(&self, params: ListItemsParams) -> ThreadStoreFuture<'_, ItemPage> {
+        Box::pin(LocalThreadStore::list_items(self, params))
     }
 
     fn search_threads(
@@ -326,12 +384,15 @@ mod tests {
     use std::sync::Arc;
 
     use codex_protocol::ThreadId;
+    use codex_protocol::items::TurnItem;
+    use codex_protocol::items::UserMessageItem;
     use codex_protocol::models::BaseInstructions;
     use codex_protocol::models::FunctionCallOutputPayload;
     use codex_protocol::models::MessagePhase;
     use codex_protocol::models::ResponseItem;
     use codex_protocol::protocol::AgentMessageEvent;
     use codex_protocol::protocol::EventMsg;
+    use codex_protocol::protocol::ItemCompletedEvent;
     use codex_protocol::protocol::RolloutItem;
     use codex_protocol::protocol::SessionSource;
     use codex_protocol::protocol::ThreadHistoryMode;
@@ -538,7 +599,9 @@ mod tests {
                 )),
                 RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                     turn_id: "turn-1".to_string(),
+                    started_at: None,
                     last_agent_message: None,
+                    error: None,
                     completed_at: None,
                     duration_ms: None,
                     time_to_first_token_ms: None,
@@ -1257,15 +1320,60 @@ mod tests {
                 .await
                 .expect_err("resume should fail"),
         );
+    }
 
-        let mut create_params = create_thread_params(ThreadId::default());
+    #[tokio::test]
+    async fn paginated_live_appends_use_paginated_history_mode() {
+        let home = TempDir::new().expect("temp dir");
+        let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+        let thread_id = ThreadId::default();
+        let mut create_params = create_thread_params(thread_id);
         create_params.history_mode = ThreadHistoryMode::Paginated;
-        assert_paginated_threads_unsupported(
-            store
-                .create_thread(create_params)
-                .await
-                .expect_err("paginated create should fail"),
-        );
+        store
+            .create_thread(create_params)
+            .await
+            .expect("create paginated thread");
+        let paginated_item = RolloutItem::EventMsg(EventMsg::ItemCompleted(ItemCompletedEvent {
+            thread_id,
+            turn_id: "turn-1".to_string(),
+            item: TurnItem::UserMessage(UserMessageItem {
+                id: "item-1".to_string(),
+                client_id: None,
+                content: Vec::new(),
+            }),
+            completed_at_ms: 1,
+        }));
+        store
+            .append_items(AppendThreadItemsParams {
+                thread_id,
+                items: vec![
+                    user_message_item("legacy event should not persist"),
+                    paginated_item,
+                ],
+            })
+            .await
+            .expect("append paginated item");
+        let rollout_path = store
+            .live_rollout_path(thread_id)
+            .await
+            .expect("paginated rollout path");
+        let (items, _, _) = RolloutRecorder::load_rollout_items(rollout_path.as_path())
+            .await
+            .expect("load paginated rollout");
+        assert!(items.iter().any(|item| {
+            matches!(
+                item,
+                RolloutItem::EventMsg(EventMsg::ItemCompleted(event))
+                    if event.turn_id == "turn-1"
+            )
+        }));
+        assert!(!items.iter().any(|item| {
+            matches!(
+                item,
+                RolloutItem::EventMsg(EventMsg::UserMessage(event))
+                    if event.message == "legacy event should not persist"
+            )
+        }));
     }
 
     fn create_thread_params(thread_id: ThreadId) -> CreateThreadParams {

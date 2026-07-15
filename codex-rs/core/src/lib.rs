@@ -65,6 +65,7 @@ pub use network_proxy_loader::MtimeConfigReloader;
 pub use network_proxy_loader::build_network_proxy_state;
 pub use network_proxy_loader::build_network_proxy_state_and_reloader;
 mod original_image_detail;
+pub use codex_mcp::CodexAppsToolsCache;
 pub use codex_mcp::SandboxState;
 mod mcp_openai_file;
 mod mcp_tool_call;
@@ -73,7 +74,6 @@ pub(crate) mod utils;
 pub use mention_syntax::PLUGIN_TEXT_MENTION_SIGIL;
 pub use mention_syntax::TOOL_MENTION_SIGIL;
 pub use utils::path_utils;
-pub mod personality_migration;
 pub(crate) mod plugins;
 #[doc(hidden)]
 pub(crate) mod prompt_debug;

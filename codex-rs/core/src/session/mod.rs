@@ -55,6 +55,7 @@ use codex_analytics::SubAgentThreadStartedInput;
 use codex_analytics::TurnCodexErrorFact;
 use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::OAuthCredentialsStoreMode;
+use codex_connectors::connector_runtime_context_key;
 use codex_exec_server::Environment;
 use codex_exec_server::EnvironmentManager;
 use codex_extension_api::ExtensionDataInit;
@@ -73,7 +74,6 @@ use codex_login::auth_env_telemetry::collect_auth_env_telemetry;
 use codex_mcp::McpConnectionManager;
 use codex_mcp::McpResourceClient;
 use codex_mcp::McpRuntimeContext;
-use codex_mcp::codex_apps_tools_cache_key;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_network_proxy::NetworkProxy;
@@ -332,11 +332,11 @@ use codex_core_plugins::PluginsManager;
 use codex_core_plugins::RecommendedPluginCandidatesInput;
 use codex_git_utils::get_git_repo_root;
 use codex_mcp::McpConfig;
-use codex_mcp::compute_auth_statuses;
 use codex_mcp::effective_mcp_servers;
 use codex_otel::SessionTelemetry;
 use codex_otel::THREAD_STARTED_METRIC;
 use codex_otel::TelemetryAuthMode;
+use codex_protocol::ResponseItemId;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
@@ -658,7 +658,6 @@ impl Codex {
                 config.cwd.clone(),
                 environment_selections,
             ),
-            workspace_roots: config.workspace_roots.clone(),
             codex_home: config.codex_home.clone(),
             thread_name: None,
             original_config_do_not_use: Arc::clone(&config),
@@ -1131,6 +1130,10 @@ impl Session {
                 spec
             }
         };
+        if cfg!(target_os = "windows") && !spec.enabled() {
+            self.services.network_proxy.store(None);
+            return;
+        }
         if let Some(started_proxy) = self.services.network_proxy.load_full() {
             if let Err(err) = spec.apply_to_started_proxy(started_proxy.as_ref()).await {
                 warn!("failed to refresh managed network proxy for sandbox change: {err}");
@@ -1776,7 +1779,7 @@ impl Session {
                 .terminal_error
                 .lock()
                 .await
-                .replace(error.message.clone());
+                .replace(error.clone());
         }
         self.services
             .rollout_thread_trace
@@ -1834,7 +1837,7 @@ impl Session {
 
         let status = match turn_context.terminal_error.lock().await.take() {
             Some(error) => {
-                let status = AgentStatus::Errored(error);
+                let status = AgentStatus::Errored(error.message);
                 self.agent_status.send_replace(status.clone());
                 status
             }
@@ -2784,7 +2787,10 @@ impl Session {
     }
 
     fn assign_missing_response_item_ids(items: Cow<'_, [ResponseItem]>) -> Cow<'_, [ResponseItem]> {
-        if items.iter().all(|item| item.id().is_some()) {
+        if items
+            .iter()
+            .all(|item| item.id().is_some_and(|id| !id.is_empty()))
+        {
             return items;
         }
         let mut items = items;
@@ -2795,27 +2801,13 @@ impl Session {
     }
 
     fn assign_missing_response_item_id(item: &mut ResponseItem) {
-        if item.id().is_some() {
+        if item.id().is_some_and(|id| !id.is_empty()) {
             return;
         }
-        let prefix = match item {
-            ResponseItem::AdditionalTools { .. } => "at",
-            ResponseItem::Message { .. } => "msg",
-            ResponseItem::Reasoning { .. } => "rs",
-            ResponseItem::LocalShellCall { .. } => "lsh",
-            ResponseItem::FunctionCall { .. } => "fc",
-            ResponseItem::ToolSearchCall { .. } => "tsc",
-            ResponseItem::FunctionCallOutput { .. } => "fco",
-            ResponseItem::CustomToolCall { .. } => "ctc",
-            ResponseItem::CustomToolCallOutput { .. } => "ctco",
-            ResponseItem::ToolSearchOutput { .. } => "tso",
-            ResponseItem::WebSearchCall { .. } => "ws",
-            ResponseItem::ImageGenerationCall { .. } => "ig",
-            ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. } => "cmp",
-            ResponseItem::AgentMessage { .. } => "amsg",
-            ResponseItem::CompactionTrigger { .. } | ResponseItem::Other => return,
+        let Some(prefix) = item.id_prefix() else {
+            return;
         };
-        item.set_id(Some(format!("{prefix}_{}", Uuid::now_v7())));
+        item.set_id(Some(ResponseItemId::new(prefix)));
     }
 
     pub(crate) fn response_item_from_user_input(&self, input: Vec<UserInput>) -> ResponseItem {
@@ -3241,6 +3233,11 @@ impl Session {
                             .model_messages
                             .as_ref()
                             .and_then(|messages| messages.approvals.as_ref()),
+                        turn_context
+                            .model_info
+                            .model_messages
+                            .as_ref()
+                            .and_then(|messages| messages.permissions.as_ref()),
                     ),
                     self.services.exec_policy.current().as_ref(),
                     #[allow(deprecated)]

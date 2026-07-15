@@ -317,6 +317,7 @@ pub(crate) enum AppEvent {
     /// Result of refreshing rate limits.
     RateLimitsLoaded {
         origin: RateLimitRefreshOrigin,
+        hard_stop_generation: u64,
         result: Result<GetAccountRateLimitsResponse, String>,
     },
 
@@ -741,6 +742,17 @@ pub(crate) enum AppEvent {
         model: ModelPreset,
     },
 
+    /// Open the explicit Max/Ultra reasoning selection popup for a model.
+    OpenAdvancedReasoningPopup {
+        model: ModelPreset,
+    },
+
+    /// Apply an advanced reasoning effort to the active conversation without changing defaults.
+    ApplyAdvancedReasoning {
+        model: String,
+        effort: ReasoningEffort,
+    },
+
     /// Open the Plan-mode reasoning scope prompt for the selected model/effort.
     OpenPlanReasoningScopePrompt {
         model: String,
@@ -853,9 +865,6 @@ pub(crate) enum AppEvent {
     /// Clear all persisted local memory artifacts via the app-server.
     ResetMemories,
 
-    /// Update whether the full access warning prompt has been acknowledged.
-    UpdateFullAccessWarningAcknowledged(bool),
-
     /// Update whether the world-writable directories warning has been acknowledged.
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     UpdateWorldWritableWarningAcknowledged(bool),
@@ -865,9 +874,6 @@ pub(crate) enum AppEvent {
 
     /// Update the Plan-mode-specific reasoning effort in memory.
     UpdatePlanModeReasoningEffort(Option<ReasoningEffort>),
-
-    /// Persist the acknowledgement flag for the full access warning prompt.
-    PersistFullAccessWarningAcknowledged,
 
     /// Persist the acknowledgement flag for the world-writable directories warning.
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
