@@ -105,6 +105,8 @@ pub enum ApiError {
     Api { status: StatusCode, message: String },
     #[error("stream error: {0}")]
     Stream(String),
+    #[error("malformed provider response: {message}")]
+    MalformedResponse { message: String },
     #[error("provider stream error ({kind}): {message}")]
     StreamFailure {
         kind: ProviderStreamErrorKind,

@@ -109,6 +109,9 @@ pub enum CodexErr {
     /// Invalid request.
     #[error("{0}")]
     InvalidRequest(String),
+    /// The provider returned a syntactically malformed response that cannot be consumed safely.
+    #[error("malformed provider response: {0}")]
+    MalformedProviderResponse(String),
     /// Invalid image.
     #[error("Image poisoning")]
     InvalidImageRequest(),
@@ -184,6 +187,7 @@ impl CodexErr {
             | CodexErr::QuotaExceeded
             | CodexErr::InvalidImageRequest()
             | CodexErr::InvalidRequest(_)
+            | CodexErr::MalformedProviderResponse(_)
             | CodexErr::RefreshTokenFailed(_)
             | CodexErr::UnsupportedOperation(_)
             | CodexErr::Sandbox(_)
@@ -246,6 +250,7 @@ impl CodexErr {
             CodexErr::UnsupportedOperation(_)
             | CodexErr::ThreadNotFound(_)
             | CodexErr::AgentLimitReached { .. } => CodexErrorInfo::BadRequest,
+            CodexErr::MalformedProviderResponse(_) => CodexErrorInfo::Other,
             CodexErr::Sandbox(_) => CodexErrorInfo::SandboxError,
             _ => CodexErrorInfo::Other,
         }

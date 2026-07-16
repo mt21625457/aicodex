@@ -24,6 +24,7 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
         ApiError::UsageNotIncluded => CodexErr::UsageNotIncluded,
         ApiError::Retryable { message, delay } => CodexErr::Stream(message, delay),
         ApiError::Stream(msg) => CodexErr::Stream(msg, None),
+        ApiError::MalformedResponse { message } => CodexErr::MalformedProviderResponse(message),
         ApiError::StreamFailure { kind, message } => {
             CodexErr::Stream(provider_stream_error_message(kind, &message), None)
         }

@@ -405,6 +405,9 @@ pub struct ModelInfo {
     pub supports_image_detail_original: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<i64>,
+    /// Maximum number of output tokens requested from the model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
     /// Maximum context window allowed for config overrides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_context_window: Option<i64>,
@@ -723,6 +726,7 @@ mod tests {
             supports_parallel_tool_calls: false,
             supports_image_detail_original: false,
             context_window: None,
+            max_output_tokens: None,
             max_context_window: None,
             auto_compact_token_limit: None,
             comp_hash: None,

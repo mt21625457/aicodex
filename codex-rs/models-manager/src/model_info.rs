@@ -155,6 +155,7 @@ pub fn model_info_from_slug(slug: &str) -> ModelInfo {
         supports_parallel_tool_calls: false,
         supports_image_detail_original: false,
         context_window: Some(fallback_context_window),
+        max_output_tokens: None,
         max_context_window: Some(fallback_context_window),
         auto_compact_token_limit: None,
         comp_hash: None,
