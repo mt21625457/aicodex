@@ -192,6 +192,12 @@ async fn selected_executor_plugin_exposes_its_mcps_only_to_that_thread() -> Resu
         "mock_provider",
         "compact",
     )?;
+    let config_path = codex_home.path().join("config.toml");
+    let config = std::fs::read_to_string(&config_path)?;
+    std::fs::write(
+        &config_path,
+        format!("mcp_oauth_credentials_store = \"file\"\n{config}"),
+    )?;
     let codex_bin = toml::Value::String(
         codex_utils_cargo_bin::cargo_bin("aicodex")?
             .to_string_lossy()
@@ -265,7 +271,6 @@ HTTP_PROXY = {http_proxy}
     )
     .await?;
 
-    let config_path = codex_home.path().join("config.toml");
     let mut config = std::fs::read_to_string(&config_path)?;
     config.push_str(&format!(
         r#"

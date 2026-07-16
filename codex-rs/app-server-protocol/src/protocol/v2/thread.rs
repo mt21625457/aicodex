@@ -448,6 +448,20 @@ pub struct ThreadResumeResponse {
     #[experimental("thread/resume.initialTurnsPage")]
     #[serde(default)]
     pub initial_turns_page: Option<TurnsPage>,
+    /// Opaque head cursor for hydrating paginated turns backwards.
+    ///
+    /// Pass this as `cursor` to `thread/turns/list` with
+    /// `sortDirection: "desc"`. The first page includes the cursor's head turn.
+    #[experimental("thread/resume.turnsBackwardsCursor")]
+    #[serde(default)]
+    pub turns_backwards_cursor: Option<String>,
+    /// Opaque head cursor for hydrating paginated items backwards.
+    ///
+    /// Pass this as `cursor` to `thread/items/list` with
+    /// `sortDirection: "desc"`. The first page includes the cursor's head item.
+    #[experimental("thread/resume.itemsBackwardsCursor")]
+    #[serde(default)]
+    pub items_backwards_cursor: Option<String>,
 }
 
 impl ThreadResumeResponse {
@@ -513,6 +527,12 @@ pub struct ThreadForkParams {
     /// The referenced turn cannot be in progress.
     #[ts(optional = nullable)]
     pub last_turn_id: Option<String>,
+
+    /// Optional turn id to fork before, excluding that turn and all later turns.
+    /// Cannot be combined with `last_turn_id`.
+    #[experimental("thread/fork.beforeTurnId")]
+    #[ts(optional = nullable)]
+    pub before_turn_id: Option<String>,
 
     /// [UNSTABLE] Specify the rollout path to fork from.
     /// If specified, the thread_id param will be ignored.
@@ -580,6 +600,12 @@ pub struct ThreadForkParams {
     #[experimental("thread/fork.persistFullHistory")]
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub persist_extended_history: bool,
+    /// When true, carry the source thread's current goal into the fork without
+    /// starting its initial automatic continuation. The next explicit turn owns
+    /// the goal lifecycle, and normal automatic continuation resumes after it.
+    #[experimental("thread/fork.deferGoalContinuation")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub defer_goal_continuation: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, ExperimentalApi)]
@@ -1467,6 +1493,9 @@ pub struct TokenUsageBreakdown {
     pub input_tokens: i64,
     #[ts(type = "number")]
     pub cached_input_tokens: i64,
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub cache_write_input_tokens: i64,
     #[ts(type = "number")]
     pub output_tokens: i64,
     #[ts(type = "number")]
@@ -1479,6 +1508,7 @@ impl From<CoreTokenUsage> for TokenUsageBreakdown {
             total_tokens: value.total_tokens,
             input_tokens: value.input_tokens,
             cached_input_tokens: value.cached_input_tokens,
+            cache_write_input_tokens: value.cache_write_input_tokens,
             output_tokens: value.output_tokens,
             reasoning_output_tokens: value.reasoning_output_tokens,
         }

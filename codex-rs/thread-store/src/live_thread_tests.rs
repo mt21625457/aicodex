@@ -106,6 +106,7 @@ fn create_thread_params(thread_id: ThreadId) -> CreateThreadParams {
         selected_capability_roots: Vec::new(),
         multi_agent_version: None,
         history_mode: ThreadHistoryMode::Legacy,
+        subagent_history_start_ordinal: None,
         initial_window_id: "window-1".to_string(),
         metadata: ThreadPersistenceMetadata {
             cwd: Some(std::env::current_dir().expect("current dir")),

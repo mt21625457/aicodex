@@ -389,6 +389,14 @@ pub(crate) async fn run_turn(
                     provider_stop_reason,
                     last_agent_message: sampling_request_last_agent_message,
                 } = sampling_request_output;
+                if model_needs_follow_up {
+                    sess.input_queue
+                        .accept_mailbox_delivery_for_current_turn(
+                            &sess.active_turn,
+                            &turn_context.sub_id,
+                        )
+                        .await;
+                }
                 let (has_pending_input, token_status, estimated_token_count) = async {
                     let has_pending_input =
                         sess.input_queue.has_pending_input(&sess.active_turn).await;
@@ -445,23 +453,26 @@ pub(crate) async fn run_turn(
                     "post sampling token usage"
                 );
 
-                super::token_budget::maybe_record(
-                    sess.as_ref(),
-                    turn_context.as_ref(),
-                    token_status.tokens_until_compaction,
-                )
-                .await;
-
                 let requested_new_context_window = sess.take_new_context_window_request().await;
                 let should_defer_compaction_to_drain_pending_input =
                     pending_input_deferred_for_model_follow_up
                         && !model_needs_follow_up
                         && has_pending_input;
-                // as long as compaction works well in getting us way below the token limit, we shouldn't worry about being in an infinite loop.
-                if needs_follow_up
+                let should_roll_over = needs_follow_up
                     && (requested_new_context_window
-                        || (token_limit_reached && !should_defer_compaction_to_drain_pending_input))
-                {
+                        || (token_limit_reached
+                            && !should_defer_compaction_to_drain_pending_input));
+                let allow_auto_compact_fallback = !should_roll_over && !token_limit_reached;
+                super::token_budget::maybe_record(
+                    sess.as_ref(),
+                    turn_context.as_ref(),
+                    token_status.base_window_tokens_remaining,
+                    allow_auto_compact_fallback,
+                )
+                .await;
+
+                // as long as compaction works well in getting us way below the token limit, we shouldn't worry about being in an infinite loop.
+                if should_roll_over {
                     if let Err(err) = run_auto_compact(
                         &sess,
                         Arc::clone(&step_context),
@@ -510,6 +521,12 @@ pub(crate) async fn run_turn(
                                 hook_prompt_message,
                             )
                             .await;
+                            sess.input_queue
+                                .accept_mailbox_delivery_for_current_turn(
+                                    &sess.active_turn,
+                                    &turn_context.sub_id,
+                                )
+                                .await;
                             stop_hook_active = true;
                             continue;
                         } else {
@@ -1958,6 +1975,8 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<(String, Option<
         | EventMsg::AgentReasoningRawContent(_)
         | EventMsg::AgentReasoningSectionBreak(_)
         | EventMsg::SessionConfigured(_)
+        | EventMsg::EnvironmentConnected(_)
+        | EventMsg::EnvironmentDisconnected(_)
         | EventMsg::ThreadGoalUpdated(_)
         | EventMsg::McpStartupUpdate(_)
         | EventMsg::McpStartupComplete(_)
@@ -2419,6 +2438,7 @@ async fn try_run_sampling_request(
             codex.request.reasoning_effort = %reasoning_effort,
             gen_ai.usage.input_tokens = field::Empty,
             gen_ai.usage.cache_read.input_tokens = field::Empty,
+            gen_ai.usage.cache_write.input_tokens = field::Empty,
             gen_ai.usage.output_tokens = field::Empty,
             codex.usage.reasoning_output_tokens = field::Empty,
             codex.usage.total_tokens = field::Empty,

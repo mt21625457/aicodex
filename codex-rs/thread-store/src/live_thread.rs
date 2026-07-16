@@ -22,6 +22,7 @@ use crate::StoredThread;
 use crate::StoredThreadHistory;
 use crate::ThreadMetadataPatch;
 use crate::ThreadStore;
+use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
 use crate::UpdateThreadMetadataParams;
 use crate::thread_metadata_sync::ThreadMetadataSync;
@@ -107,6 +108,46 @@ impl LiveThread {
         })
     }
 
+    /// Create a child thread with inherited model context already durable.
+    ///
+    /// The boundary belongs in session metadata before the copied prefix is written so history
+    /// projection can distinguish inherited context from the child's own records immediately.
+    pub async fn create_with_inherited_model_context(
+        thread_store: Arc<dyn ThreadStore>,
+        mut params: CreateThreadParams,
+        inherited_model_context: &[RolloutItem],
+    ) -> ThreadStoreResult<Self> {
+        let persisted_prefix_item_count = persisted_rollout_items_with_mode(
+            inherited_model_context,
+            params.history_mode,
+            EventPersistenceMode::Limited,
+        )
+        .len();
+        params.subagent_history_start_ordinal = Some(
+            u64::try_from(persisted_prefix_item_count)
+                .map_err(|_| ThreadStoreError::Internal {
+                    message: "inherited model context is too large".to_string(),
+                })?
+                .checked_add(1)
+                .ok_or_else(|| ThreadStoreError::Internal {
+                    message: "inherited model context is too large".to_string(),
+                })?,
+        );
+        let live_thread = Self::create(thread_store, params).await?;
+        if let Err(err) = live_thread
+            .persist_appended_items(inherited_model_context)
+            .await
+        {
+            if let Err(discard_err) = live_thread.discard().await {
+                warn!(
+                    "failed to discard thread persistence after inherited context append failed: {discard_err}"
+                );
+            }
+            return Err(err);
+        }
+        Ok(live_thread)
+    }
+
     pub async fn resume(
         thread_store: Arc<dyn ThreadStore>,
         history_mode: ThreadHistoryMode,
@@ -160,39 +201,11 @@ impl LiveThread {
         raw_items: &[RolloutItem],
         mode: EventPersistenceMode,
     ) -> ThreadStoreResult<()> {
-        // Empty appends are intentionally ignored rather than represented as zero-sized batches.
-        if raw_items.is_empty() {
-            return Ok(());
-        }
-        let (items, measurement) = if self.persistence_telemetry.is_enabled() {
-            let (items, measurement) =
-                measure_and_filter_rollout_items_with_mode(raw_items, self.history_mode, mode);
-            (items, Some(measurement))
-        } else {
-            (
-                persisted_rollout_items_with_mode(raw_items, self.history_mode, mode),
-                None,
-            )
-        };
-        if items.is_empty() {
-            if let Some(measurement) = measurement.as_ref() {
-                self.persistence_telemetry
-                    .record_batch(raw_items, measurement);
-            }
-            return Ok(());
-        }
-        self.thread_store
-            .append_items_with_persistence_mode(
-                AppendThreadItemsParams {
-                    thread_id: self.thread_id,
-                    items: raw_items.to_vec(),
-                },
-                mode,
-            )
+        let items = self
+            .persist_appended_items_with_persistence_mode(raw_items, mode)
             .await?;
-        if let Some(measurement) = measurement.as_ref() {
-            self.persistence_telemetry
-                .record_batch(raw_items, measurement);
+        if items.is_empty() {
+            return Ok(());
         }
         let update = self
             .metadata_sync
@@ -213,6 +226,56 @@ impl LiveThread {
                 .mark_pending_update_applied(&update);
         }
         Ok(())
+    }
+
+    async fn persist_appended_items(
+        &self,
+        raw_items: &[RolloutItem],
+    ) -> ThreadStoreResult<Vec<RolloutItem>> {
+        self.persist_appended_items_with_persistence_mode(raw_items, EventPersistenceMode::Limited)
+            .await
+    }
+
+    async fn persist_appended_items_with_persistence_mode(
+        &self,
+        raw_items: &[RolloutItem],
+        mode: EventPersistenceMode,
+    ) -> ThreadStoreResult<Vec<RolloutItem>> {
+        // Empty appends are intentionally ignored rather than represented as zero-sized batches.
+        if raw_items.is_empty() {
+            return Ok(Vec::new());
+        }
+        let (items, measurement) = if self.persistence_telemetry.is_enabled() {
+            let (items, measurement) =
+                measure_and_filter_rollout_items_with_mode(raw_items, self.history_mode, mode);
+            (items, Some(measurement))
+        } else {
+            (
+                persisted_rollout_items_with_mode(raw_items, self.history_mode, mode),
+                None,
+            )
+        };
+        if items.is_empty() {
+            if let Some(measurement) = measurement.as_ref() {
+                self.persistence_telemetry
+                    .record_batch(raw_items, measurement);
+            }
+            return Ok(Vec::new());
+        }
+        self.thread_store
+            .append_items_with_persistence_mode(
+                AppendThreadItemsParams {
+                    thread_id: self.thread_id,
+                    items: raw_items.to_vec(),
+                },
+                mode,
+            )
+            .await?;
+        if let Some(measurement) = measurement.as_ref() {
+            self.persistence_telemetry
+                .record_batch(raw_items, measurement);
+        }
+        Ok(items)
     }
 
     pub async fn persist(&self) -> ThreadStoreResult<()> {

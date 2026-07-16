@@ -365,6 +365,11 @@ impl ClaudeUsage {
             .unwrap_or_default()
             .max(0)
             .min(input_tokens.max(0));
+        let cache_write_input_tokens = self
+            .cache_creation_input_tokens
+            .unwrap_or_default()
+            .max(0)
+            .min(input_tokens.max(0));
         let total_tokens = input_tokens + output_tokens;
         if total_tokens == 0 && cached_input_tokens == 0 {
             return None;
@@ -372,6 +377,7 @@ impl ClaudeUsage {
         Some(TokenUsage {
             input_tokens,
             cached_input_tokens,
+            cache_write_input_tokens,
             output_tokens,
             reasoning_output_tokens: 0,
             total_tokens,
@@ -2425,6 +2431,7 @@ mod tests {
             TokenUsage {
                 input_tokens: 100,
                 cached_input_tokens: 30,
+                cache_write_input_tokens: 12,
                 output_tokens: 9,
                 reasoning_output_tokens: 0,
                 total_tokens: 109,
@@ -2548,6 +2555,7 @@ mod tests {
             TokenUsage {
                 input_tokens: 12,
                 cached_input_tokens: 4,
+                cache_write_input_tokens: 3,
                 output_tokens: 8,
                 reasoning_output_tokens: 0,
                 total_tokens: 20,
@@ -2631,6 +2639,7 @@ mod tests {
             Some(TokenUsage {
                 input_tokens: 10,
                 cached_input_tokens: 0,
+                cache_write_input_tokens: 6,
                 output_tokens: 2,
                 reasoning_output_tokens: 0,
                 total_tokens: 12,
@@ -2653,6 +2662,7 @@ mod tests {
             Some(TokenUsage {
                 input_tokens: 3,
                 cached_input_tokens: 3,
+                cache_write_input_tokens: 3,
                 output_tokens: 1,
                 reasoning_output_tokens: 0,
                 total_tokens: 4,
@@ -2680,6 +2690,7 @@ mod tests {
             Some(TokenUsage {
                 input_tokens: 11,
                 cached_input_tokens: 0,
+                cache_write_input_tokens: 0,
                 output_tokens: 5,
                 reasoning_output_tokens: 0,
                 total_tokens: 16,
