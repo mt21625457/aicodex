@@ -43,7 +43,7 @@ use crate::config::NetworkProxySpec;
 use crate::config::Permissions;
 use crate::context::ContextualUserFragment;
 use crate::context::GuardianFollowupReviewReminder;
-use crate::session::Codex;
+use crate::session::SessionIo;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use codex_config::types::McpServerConfig;
@@ -106,7 +106,8 @@ struct GuardianReviewSessionState {
 }
 
 struct GuardianReviewSession {
-    codex: Codex,
+    session: Arc<Session>,
+    io: SessionIo,
     cancel_token: CancellationToken,
     reuse_key: GuardianReviewSessionReuseKey,
     review_lock: Semaphore,
@@ -127,6 +128,8 @@ fn token_usage_delta(start: &TokenUsage, end: &TokenUsage) -> TokenUsage {
     TokenUsage {
         input_tokens: (end.input_tokens - start.input_tokens).max(0),
         cached_input_tokens: (end.cached_input_tokens - start.cached_input_tokens).max(0),
+        cache_write_input_tokens: (end.cache_write_input_tokens - start.cache_write_input_tokens)
+            .max(0),
         output_tokens: (end.output_tokens - start.output_tokens).max(0),
         reasoning_output_tokens: (end.reasoning_output_tokens - start.reasoning_output_tokens)
             .max(0),
@@ -220,7 +223,7 @@ pub(crate) fn prompt_cache_key_override_for_review_session(
 impl GuardianReviewSession {
     async fn shutdown(&self) {
         self.cancel_token.cancel();
-        let _ = self.codex.shutdown_and_wait().await;
+        let _ = self.io.shutdown_and_wait().await;
     }
 
     fn shutdown_in_background(self: &Arc<Self>) {
@@ -235,7 +238,7 @@ impl GuardianReviewSession {
     }
 
     async fn refresh_last_committed_fork_snapshot(&self) {
-        match load_rollout_items_for_fork(&self.codex.session).await {
+        match load_rollout_items_for_fork(&self.session).await {
             Ok(Some(items)) if !items.is_empty() => {
                 let mut state = self.state.lock().await;
                 let prior_review_count = state.prior_review_count;
@@ -332,8 +335,8 @@ impl GuardianReviewSessionManager {
 
     pub(crate) async fn trunk_rollout_path(&self) -> Option<PathBuf> {
         let trunk = self.state.lock().await.trunk.clone()?;
-        trunk.codex.session.ensure_rollout_materialized().await;
-        match trunk.codex.session.current_rollout_path().await {
+        trunk.session.ensure_rollout_materialized().await;
+        match trunk.session.current_rollout_path().await {
             Ok(path) => path,
             Err(err) => {
                 warn!("failed to resolve guardian trunk rollout path: {err}");
@@ -492,14 +495,15 @@ impl GuardianReviewSessionManager {
     }
 
     #[cfg(test)]
-    pub(crate) async fn cache_for_test(&self, codex: Codex) {
+    pub(crate) async fn cache_for_test(&self, session: Arc<Session>, io: SessionIo) {
         let reuse_key = GuardianReviewSessionReuseKey::from_spawn_config(
-            codex.session.get_config().await.as_ref(),
-            codex.session.user_instructions().await,
+            session.get_config().await.as_ref(),
+            session.user_instructions().await,
         );
         self.state.lock().await.trunk = Some(Arc::new(GuardianReviewSession {
             reuse_key,
-            codex,
+            session,
+            io,
             cancel_token: CancellationToken::new(),
             review_lock: Semaphore::new(/*permits*/ 1),
             state: Mutex::new(GuardianReviewState {
@@ -511,10 +515,10 @@ impl GuardianReviewSessionManager {
     }
 
     #[cfg(test)]
-    pub(crate) async fn register_ephemeral_for_test(&self, codex: Codex) {
+    pub(crate) async fn register_ephemeral_for_test(&self, session: Arc<Session>, io: SessionIo) {
         let reuse_key = GuardianReviewSessionReuseKey::from_spawn_config(
-            codex.session.get_config().await.as_ref(),
-            codex.session.user_instructions().await,
+            session.get_config().await.as_ref(),
+            session.user_instructions().await,
         );
         self.state
             .lock()
@@ -522,7 +526,8 @@ impl GuardianReviewSessionManager {
             .ephemeral_reviews
             .push(Arc::new(GuardianReviewSession {
                 reuse_key,
-                codex,
+                session,
+                io,
                 cancel_token: CancellationToken::new(),
                 review_lock: Semaphore::new(/*permits*/ 1),
                 state: Mutex::new(GuardianReviewState {
@@ -553,7 +558,7 @@ impl GuardianReviewSessionManager {
             .trunk
             .clone()
             .expect("guardian trunk should exist");
-        trunk.codex.session.send_event_raw(event).await;
+        trunk.session.send_event_raw(event).await;
     }
 
     async fn remove_trunk_if_current(
@@ -664,7 +669,7 @@ async fn spawn_guardian_review_session(
         ),
         None => (None, 0, None),
     };
-    let codex = Box::pin(run_codex_thread_interactive(
+    let (session, io) = Box::pin(run_codex_thread_interactive(
         spawn_config,
         parent_session.services.auth_manager.clone(),
         parent_session.services.models_manager.clone(),
@@ -677,7 +682,8 @@ async fn spawn_guardian_review_session(
     .await?;
 
     Ok(GuardianReviewSession {
-        codex,
+        session,
+        io,
         cancel_token,
         reuse_key,
         review_lock: Semaphore::new(/*permits*/ 1),
@@ -728,7 +734,7 @@ async fn run_review_on_session(
         .or_else(|| model_info.default_reasoning_level.clone());
     let mut analytics_result =
         GuardianReviewAnalyticsResult::from_session(GuardianReviewSessionAnalyticsParams {
-            guardian_thread_id: review_session.codex.session.thread_id.to_string(),
+            guardian_thread_id: review_session.session.thread_id().to_string(),
             guardian_session_kind,
             guardian_model: params.model.clone(),
             guardian_reasoning_effort: guardian_reasoning_effort.map(|effort| effort.to_string()),
@@ -751,9 +757,7 @@ async fn run_review_on_session(
                 .parent_session
                 .services
                 .network_approval
-                .sync_session_approved_hosts_to(
-                    &review_session.codex.session.services.network_approval,
-                )
+                .sync_session_approved_hosts_to(&review_session.session.services.network_approval)
                 .await;
 
             build_guardian_prompt_items_with_parent_turn(
@@ -784,7 +788,6 @@ async fn run_review_on_session(
     let reviewed_action_truncated = prompt_items.reviewed_action_truncated;
     let transcript_cursor = prompt_items.transcript_cursor;
     let token_usage_at_review_start = review_session
-        .codex
         .session
         .total_token_usage()
         .await
@@ -803,7 +806,7 @@ async fn run_review_on_session(
     let submit_result = run_before_review_deadline(
         deadline,
         params.external_cancel.as_ref(),
-        Box::pin(review_session.codex.submit(Op::UserInput {
+        Box::pin(review_session.io.submit(Op::UserInput {
             items: prompt_items.items,
             final_output_json_schema: Some(params.schema.clone()),
             responsesapi_client_metadata: None,
@@ -857,7 +860,7 @@ async fn run_review_on_session(
     .await;
     if matches!(outcome.0, GuardianReviewSessionOutcome::Completed(_)) {
         if outcome.2
-            && let Some(total_token_usage) = review_session.codex.session.total_token_usage().await
+            && let Some(total_token_usage) = review_session.session.total_token_usage().await
         {
             analytics_result.token_usage = Some(token_usage_delta(
                 &token_usage_at_review_start,
@@ -874,7 +877,6 @@ async fn run_review_on_session(
 async fn append_guardian_followup_reminder(review_session: &GuardianReviewSession) {
     let reminder: ResponseItem = ContextualUserFragment::into(GuardianFollowupReviewReminder);
     review_session
-        .codex
         .session
         .inject_no_new_turn(vec![reminder], /*current_turn_context*/ None)
         .await;
@@ -905,7 +907,7 @@ async fn wait_for_guardian_review(
         tokio::select! {
             _ = &mut timeout => {
                 let keep_review_session = interrupt_and_drain_turn(
-                    &review_session.codex,
+                    &review_session.io,
                     expected_turn_id,
                 )
                 .await
@@ -920,14 +922,14 @@ async fn wait_for_guardian_review(
                 }
             } => {
                 let keep_review_session = interrupt_and_drain_turn(
-                    &review_session.codex,
+                    &review_session.io,
                     expected_turn_id,
                 )
                 .await
                 .is_ok();
                 return (GuardianReviewSessionOutcome::Aborted, keep_review_session, false);
             }
-            event = review_session.codex.next_event() => {
+            event = review_session.io.next_event() => {
                 match event {
                     Ok(event) if !event_matches_turn(&event, expected_turn_id) => {}
                     Ok(event) => match event.msg {
@@ -1104,12 +1106,12 @@ async fn run_before_review_deadline_with_cancel<T>(
     result
 }
 
-async fn interrupt_and_drain_turn(codex: &Codex, expected_turn_id: &str) -> anyhow::Result<()> {
-    let _ = codex.submit(Op::Interrupt).await;
+async fn interrupt_and_drain_turn(io: &SessionIo, expected_turn_id: &str) -> anyhow::Result<()> {
+    let _ = io.submit(Op::Interrupt).await;
 
     tokio::time::timeout(GUARDIAN_INTERRUPT_DRAIN_TIMEOUT, async {
         loop {
-            let event = codex.next_event().await?;
+            let event = io.next_event().await?;
             if event_matches_turn(&event, expected_turn_id)
                 && matches!(
                     event.msg,
@@ -1154,11 +1156,11 @@ mod tests {
 
         (
             GuardianReviewSession {
-                codex: Codex {
+                session,
+                io: SessionIo {
                     tx_sub,
                     rx_event,
                     agent_status,
-                    session,
                     session_loop_termination: crate::session::completed_session_loop_termination(),
                 },
                 cancel_token: CancellationToken::new(),
@@ -1636,6 +1638,7 @@ mod tests {
         let start = TokenUsage {
             input_tokens: 10,
             cached_input_tokens: 8,
+            cache_write_input_tokens: 8,
             output_tokens: 6,
             reasoning_output_tokens: 4,
             total_tokens: 28,
@@ -1643,6 +1646,7 @@ mod tests {
         let end = TokenUsage {
             input_tokens: 15,
             cached_input_tokens: 7,
+            cache_write_input_tokens: 7,
             output_tokens: 10,
             reasoning_output_tokens: 2,
             total_tokens: 34,
@@ -1653,6 +1657,7 @@ mod tests {
             TokenUsage {
                 input_tokens: 5,
                 cached_input_tokens: 0,
+                cache_write_input_tokens: 0,
                 output_tokens: 4,
                 reasoning_output_tokens: 0,
                 total_tokens: 6,
@@ -1960,10 +1965,10 @@ mod tests {
             .await
             .expect("queue current turn abort");
 
-        interrupt_and_drain_turn(&review_session.codex, "current-turn")
+        interrupt_and_drain_turn(&review_session.io, "current-turn")
             .await
             .expect("drain current turn");
 
-        assert!(review_session.codex.rx_event.try_recv().is_err());
+        assert!(review_session.io.rx_event.try_recv().is_err());
     }
 }

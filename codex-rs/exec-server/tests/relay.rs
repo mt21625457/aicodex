@@ -15,7 +15,9 @@ use anyhow::Result;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use codex_api::AuthProvider;
+use codex_exec_server::EnvironmentConnectionState;
 use codex_exec_server::EnvironmentManager;
+use codex_exec_server::EnvironmentReadyInfo;
 use codex_exec_server::ExecParams;
 use codex_exec_server::ExecResponse;
 use codex_exec_server::ExecServerClient;
@@ -29,6 +31,8 @@ use codex_exec_server::NoiseRendezvousConnectBundle;
 use codex_exec_server::NoiseRendezvousConnectProvider;
 use codex_exec_server::ProcessId;
 use codex_exec_server::RemoteEnvironmentConfig;
+use codex_protocol::capabilities::CapabilityRootLocation;
+use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_utils_path_uri::PathUri;
 use futures::SinkExt;
 use futures::StreamExt;
@@ -42,6 +46,7 @@ use relay_proto::relay_message_frame;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
+use tokio::sync::watch;
 use tokio::time::timeout;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::accept_async;
@@ -157,9 +162,21 @@ async fn deferred_noise_environment_connects_and_reconnects_with_fresh_bundle() 
     let environment = manager
         .get_environment(ENVIRONMENT_ID)
         .context("deferred Noise environment")?;
+    let mut connection_state = environment
+        .subscribe_connection_state()
+        .context("remote environment connection state")?;
 
     assert_eq!(provider.calls(), 0);
-    registration.complete(Ok(()))?;
+    let selected_capability_roots = vec![SelectedCapabilityRoot {
+        id: "executor-plugin".to_string(),
+        location: CapabilityRootLocation::Environment {
+            environment_id: ENVIRONMENT_ID.to_string(),
+            path: PathUri::parse("file:///plugins/executor-plugin")?,
+        },
+    }];
+    registration.complete(Ok(EnvironmentReadyInfo {
+        selected_capability_roots: selected_capability_roots.clone(),
+    }))?;
     let harness_websocket = accept_websocket(&listener, "harness").await?;
     let first_relay = tokio::spawn(proxy_relay_frames(
         environment_websocket,
@@ -169,10 +186,22 @@ async fn deferred_noise_environment_connects_and_reconnects_with_fresh_bundle() 
     let initial_info = timeout(TEST_TIMEOUT, environment.info())
         .await
         .context("deferred Noise environment should become ready")??;
+    assert_eq!(
+        environment.selected_capability_roots(),
+        selected_capability_roots
+    );
     assert_eq!(provider.calls(), 1);
+    assert_eq!(
+        next_connection_state(&mut connection_state).await?,
+        EnvironmentConnectionState::Connected
+    );
 
     first_relay.abort();
     let _ = first_relay.await;
+    assert_eq!(
+        next_connection_state(&mut connection_state).await?,
+        EnvironmentConnectionState::Disconnected
+    );
     let first_reconnected_websocket = accept_websocket(&listener, "reconnected peer").await?;
     let second_reconnected_websocket = accept_websocket(&listener, "reconnected peer").await?;
     let second_relay = tokio::spawn(proxy_relay_frames(
@@ -185,7 +214,15 @@ async fn deferred_noise_environment_connects_and_reconnects_with_fresh_bundle() 
         .context("deferred Noise environment should reconnect")??;
 
     assert_eq!(recovered_info, initial_info);
+    assert_eq!(
+        environment.selected_capability_roots(),
+        selected_capability_roots
+    );
     assert_eq!(provider.calls(), 2);
+    assert_eq!(
+        next_connection_state(&mut connection_state).await?,
+        EnvironmentConnectionState::Connected
+    );
     registry.verify().await;
 
     second_relay.abort();
@@ -193,6 +230,13 @@ async fn deferred_noise_environment_connects_and_reconnects_with_fresh_bundle() 
     let _ = second_relay.await;
     let _ = remote_environment.await;
     Ok(())
+}
+
+async fn next_connection_state(
+    state: &mut watch::Receiver<EnvironmentConnectionState>,
+) -> Result<EnvironmentConnectionState> {
+    timeout(TEST_TIMEOUT, state.changed()).await??;
+    Ok(*state.borrow_and_update())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

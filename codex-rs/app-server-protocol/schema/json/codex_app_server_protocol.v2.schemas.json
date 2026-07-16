@@ -5258,6 +5258,23 @@
         }
       ]
     },
+    "EnvironmentConnectionNotification": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "environmentId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "environmentId",
+        "threadId"
+      ],
+      "title": "EnvironmentConnectionNotification",
+      "type": "object"
+    },
     "ErrorNotification": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
@@ -5478,8 +5495,15 @@
           "description": "If true, include detection under the user's home directory.",
           "type": "boolean"
         },
+        "migrationSource": {
+          "description": "Optional migration-source selector. Missing or unrecognized values use the default source.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "source": {
-          "description": "Optional import-source selector. Missing or unrecognized values use the default source for backwards compatibility.",
+          "description": "Deprecated field retained for compatibility. This field is ignored; use `migrationSource` to select the migration source.",
           "type": [
             "string",
             "null"
@@ -5528,6 +5552,12 @@
     "ExternalAgentConfigImportHistoriesReadResponse": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
+        "connectors": {
+          "items": {
+            "$ref": "#/definitions/ExternalAgentImportedConnectorCandidate"
+          },
+          "type": "array"
+        },
         "data": {
           "items": {
             "$ref": "#/definitions/ExternalAgentConfigImportHistory"
@@ -5536,6 +5566,7 @@
         }
       },
       "required": [
+        "connectors",
         "data"
       ],
       "title": "ExternalAgentConfigImportHistoriesReadResponse",
@@ -5652,8 +5683,15 @@
           },
           "type": "array"
         },
+        "migrationSource": {
+          "description": "Migration-source selector used to produce the migration items. Pass the same value to detection and import; missing or unrecognized values use the default source.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "source": {
-          "description": "Import-source selector used to produce the migration items. Pass the same value to detection and import; missing or unrecognized values use the default source for backwards compatibility.",
+          "description": "Optional identifier for the product that initiated the import.",
           "type": [
             "string",
             "null"
@@ -5766,7 +5804,35 @@
         "SUBAGENTS",
         "HOOKS",
         "COMMANDS",
+        "MEMORY",
         "SESSIONS"
+      ],
+      "type": "string"
+    },
+    "ExternalAgentImportedConnectorCandidate": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "sessionCount": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "source": {
+          "$ref": "#/definitions/ExternalAgentImportedConnectorSource"
+        }
+      },
+      "required": [
+        "name",
+        "sessionCount",
+        "source"
+      ],
+      "type": "object"
+    },
+    "ExternalAgentImportedConnectorSource": {
+      "enum": [
+        "remoteMcpServersConfig"
       ],
       "type": "string"
     },
@@ -8786,12 +8852,6 @@
             "string",
             "null"
           ]
-        },
-        "templateId": {
-          "type": [
-            "string",
-            "null"
-          ]
         }
       },
       "required": [
@@ -8951,6 +9011,12 @@
           "default": [],
           "items": {
             "$ref": "#/definitions/McpServerMigration"
+          },
+          "type": "array"
+        },
+        "memory": {
+          "items": {
+            "type": "string"
           },
           "type": "array"
         },
@@ -11313,7 +11379,8 @@
     "RealtimeConversationVersion": {
       "enum": [
         "v1",
-        "v2"
+        "v2",
+        "v3"
       ],
       "type": "string"
     },
@@ -13288,6 +13355,46 @@
             "params"
           ],
           "title": "Thread/goal/clearedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "thread/environment/connected"
+              ],
+              "title": "Thread/environment/connectedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/EnvironmentConnectionNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/environment/connectedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "thread/environment/disconnected"
+              ],
+              "title": "Thread/environment/disconnectedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/EnvironmentConnectionNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/environment/disconnectedNotification",
           "type": "object"
         },
         {
@@ -17993,6 +18100,11 @@
     },
     "TokenUsageBreakdown": {
       "properties": {
+        "cacheWriteInputTokens": {
+          "default": 0,
+          "format": "int64",
+          "type": "integer"
+        },
         "cachedInputTokens": {
           "format": "int64",
           "type": "integer"

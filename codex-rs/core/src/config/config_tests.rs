@@ -99,92 +99,6 @@ use serde::Deserialize;
 use tempfile::tempdir;
 
 use super::*;
-
-async fn load_config_with_elevated_only_windows_sandbox_requirement(
-    cfg: ConfigToml,
-    overrides: ConfigOverrides,
-    codex_home: AbsolutePathBuf,
-) -> std::io::Result<Config> {
-    let requirements_toml = ConfigRequirementsToml {
-        windows: Some(codex_config::WindowsRequirementsToml {
-            allowed_sandbox_implementations: Some(vec![WindowsSandboxModeToml::Elevated]),
-        }),
-        ..Default::default()
-    };
-    let mut requirements_with_sources = codex_config::ConfigRequirementsWithSources::default();
-    requirements_with_sources.merge_unset_fields(
-        codex_config::RequirementSource::Unknown,
-        requirements_toml.clone(),
-    );
-    let requirements = ConfigRequirements::try_from(requirements_with_sources)?;
-    let config_layer_stack = ConfigLayerStack::new(Vec::new(), requirements, requirements_toml)?;
-    Config::load_config_with_layer_stack(
-        codex_exec_server::LOCAL_FS.as_ref(),
-        cfg,
-        overrides,
-        codex_home,
-        config_layer_stack,
-    )
-    .await
-}
-
-#[test]
-fn windows_network_proxy_validation() {
-    let elevated_only = ConfigRequirementsToml {
-        windows: Some(codex_config::WindowsRequirementsToml {
-            allowed_sandbox_implementations: Some(vec![WindowsSandboxModeToml::Elevated]),
-        }),
-        ..Default::default()
-    };
-    for (is_windows, requirements, network_proxy_enabled, allowed) in [
-        (true, ConfigRequirementsToml::default(), true, false),
-        (true, ConfigRequirementsToml::default(), false, true),
-        (true, elevated_only, true, true),
-        (
-            true,
-            ConfigRequirementsToml {
-                windows: Some(codex_config::WindowsRequirementsToml {
-                    allowed_sandbox_implementations: Some(vec![
-                        WindowsSandboxModeToml::Elevated,
-                        WindowsSandboxModeToml::Unelevated,
-                    ]),
-                }),
-                ..Default::default()
-            },
-            true,
-            false,
-        ),
-        (false, ConfigRequirementsToml::default(), true, true),
-    ] {
-        assert_eq!(
-            validate_windows_network_proxy_requirements_for_platform(
-                is_windows,
-                &requirements,
-                network_proxy_enabled,
-            )
-            .is_ok(),
-            allowed
-        );
-    }
-
-    for (is_windows, sandbox_level, network_proxy_enabled, allowed) in [
-        (true, WindowsSandboxLevel::Disabled, true, false),
-        (true, WindowsSandboxLevel::RestrictedToken, true, false),
-        (true, WindowsSandboxLevel::Elevated, true, true),
-        (true, WindowsSandboxLevel::RestrictedToken, false, true),
-        (false, WindowsSandboxLevel::RestrictedToken, true, true),
-    ] {
-        assert_eq!(
-            validate_windows_sandbox_network_proxy_compatibility_for_platform(
-                is_windows,
-                sandbox_level,
-                network_proxy_enabled,
-            )
-            .is_ok(),
-            allowed
-        );
-    }
-}
 use core_test_support::PathBufExt;
 use core_test_support::PathExt;
 use core_test_support::TempDirExt;
@@ -572,11 +486,15 @@ enabled = true
 reminder_threshold_tokens = 16000
 reminder_message_template = "Custom reminder: {n_remaining} tokens."
 guidance_message = "Preserve important state before compaction."
+auto_compact_fallback_prompt = "  Write notes immediately.  "
+auto_compact_fallback_buffer_tokens = 8000
 "#,
             TokenBudgetConfig {
                 reminder_threshold_tokens: Some(16_000),
                 reminder_message_template: "Custom reminder: {n_remaining} tokens.".to_string(),
                 guidance_message: Some("Preserve important state before compaction.".to_string()),
+                auto_compact_fallback_prompt: Some("Write notes immediately.".to_string()),
+                auto_compact_fallback_buffer_tokens: Some(8_000),
             },
         ),
     ] {
@@ -592,6 +510,26 @@ guidance_message = "Preserve important state before compaction."
         assert!(config.features.enabled(Feature::TokenBudget));
         assert_eq!(config.token_budget, Some(expected));
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_rejects_overlong_auto_compact_fallback_prompt() -> std::io::Result<()> {
+    let codex_home = tempdir()?;
+    let prompt = "x".repeat(AUTO_COMPACT_FALLBACK_PROMPT_MAX_BYTES + 1);
+    let config_toml = toml::from_str(&format!(
+        "[features.token_budget]\nenabled = true\nauto_compact_fallback_prompt = {prompt:?}\n"
+    ))
+    .expect("TOML should deserialize");
+    let error = Config::load_from_base_config_with_overrides(
+        config_toml,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await
+    .expect_err("overlong fallback prompt should be rejected");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
     Ok(())
 }
 
@@ -641,6 +579,55 @@ async fn load_config_rejects_non_positive_token_budget_reminder_threshold() -> s
             "features.token_budget.reminder_threshold_tokens must be positive"
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_rejects_non_positive_auto_compact_fallback_buffer() -> std::io::Result<()> {
+    for auto_compact_fallback_buffer_tokens in [-1, 0] {
+        let codex_home = tempdir()?;
+        let config_toml = toml::from_str(&format!(
+            "[features.token_budget]\nenabled = true\nauto_compact_fallback_prompt = \"Write notes.\"\nauto_compact_fallback_buffer_tokens = {auto_compact_fallback_buffer_tokens}\n"
+        ))
+        .expect("TOML should deserialize");
+        let error = Config::load_from_base_config_with_overrides(
+            config_toml,
+            ConfigOverrides::default(),
+            codex_home.abs(),
+        )
+        .await
+        .expect_err("non-positive fallback buffer should be rejected");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "features.token_budget.auto_compact_fallback_buffer_tokens must be positive"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_rejects_missing_auto_compact_fallback_buffer() -> std::io::Result<()> {
+    let codex_home = tempdir()?;
+    let config_toml = toml::from_str(
+        "[features.token_budget]\nenabled = true\nauto_compact_fallback_prompt = \"Write notes.\"\n",
+    )
+    .expect("TOML should deserialize");
+
+    let error = Config::load_from_base_config_with_overrides(
+        config_toml,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await
+    .expect_err("missing fallback buffer should be rejected");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert_eq!(
+        error.to_string(),
+        "features.token_budget.auto_compact_fallback_buffer_tokens is required when auto_compact_fallback_prompt is set"
+    );
+
     Ok(())
 }
 
@@ -1579,7 +1566,7 @@ async fn network_proxy_feature_matrix_preserves_sandbox_network_semantics() -> s
                 ..Default::default()
             },
         };
-        let config = load_config_with_elevated_only_windows_sandbox_requirement(
+        let config = Config::load_from_base_config_with_overrides(
             base_config,
             ConfigOverrides {
                 cwd: Some(cwd.path().to_path_buf()),
@@ -1624,13 +1611,6 @@ sandbox = "elevated"
     )?;
     let config = ConfigBuilder::without_managed_config_for_tests()
         .codex_home(codex_home.path().to_path_buf())
-        .cloud_config_bundle(
-            CloudConfigBundleFixture::loader_with_enterprise_requirement(
-                r#"[windows]
-allowed_sandbox_implementations = ["elevated"]
-"#,
-            ),
-        )
         .cli_overrides(vec![
             (
                 "features.network_proxy.enabled".to_string(),
@@ -1763,9 +1743,6 @@ async fn experimental_network_requirements_enable_proxy_without_feature() -> std
                 r#"
 [experimental_network]
 enabled = true
-
-[windows]
-allowed_sandbox_implementations = ["elevated"]
 "#,
             ),
         )
@@ -1789,7 +1766,7 @@ allowed_sandbox_implementations = ["elevated"]
 async fn network_proxy_feature_uses_profile_network_proxy_settings() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let cwd = TempDir::new()?;
-    let config = load_config_with_elevated_only_windows_sandbox_requirement(
+    let config = Config::load_from_base_config_with_overrides(
         ConfigToml {
             features: Some(toml::from_str("network_proxy = true").expect("valid features")),
             default_permissions: Some("dev".to_string()),
@@ -4190,7 +4167,7 @@ exclude_slash_tmp = true
                         file_system_policy
                             .entries
                             .contains(&FileSystemSandboxEntry {
-                                path: FileSystemPath::Path {
+                                path: FileSystemPath::GeneratedDefaultPath {
                                     path: AbsolutePathBuf::resolve_path_against_base(
                                         subpath,
                                         cwd.path()
@@ -7371,8 +7348,11 @@ async fn load_config_rejects_missing_agent_role_config_file() -> std::io::Result
     let missing_path = codex_home.path().join("agents").join("researcher.toml");
     let cfg = ConfigToml {
         agents: Some(AgentsToml {
-            max_threads: None,
+            enabled: None,
+            max_concurrent_threads_per_session: None,
             max_depth: None,
+            default_subagent_model: None,
+            default_subagent_reasoning_effort: None,
             job_max_runtime_seconds: None,
             interrupt_message: None,
             roles: BTreeMap::from([(
@@ -8292,10 +8272,14 @@ model = "gpt-5-mini"
 }
 
 #[tokio::test]
-async fn load_config_resolves_agent_interrupt_message() -> std::io::Result<()> {
+async fn load_config_resolves_agent_controls() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let cfg = ConfigToml {
         agents: Some(AgentsToml {
+            enabled: Some(false),
+            max_depth: Some(2),
+            default_subagent_model: Some("gpt-5.6-terra".to_string()),
+            default_subagent_reasoning_effort: Some(ReasoningEffort::High),
             interrupt_message: Some(false),
             ..Default::default()
         }),
@@ -8309,9 +8293,45 @@ async fn load_config_resolves_agent_interrupt_message() -> std::io::Result<()> {
     )
     .await?;
 
-    assert!(!config.agent_interrupt_message_enabled);
+    assert_eq!(
+        (
+            config.agents_enabled,
+            config.agent_max_depth,
+            config.agent_default_subagent_model.as_deref(),
+            config.agent_default_subagent_reasoning_effort,
+            config.agent_interrupt_message_enabled,
+        ),
+        (
+            false,
+            2,
+            Some("gpt-5.6-terra"),
+            Some(ReasoningEffort::High),
+            false,
+        )
+    );
 
     Ok(())
+}
+
+#[test]
+fn agents_max_threads_alias_matches_canonical_config() {
+    let canonical: ConfigToml = toml::from_str(
+        r#"[agents]
+max_concurrent_threads_per_session = 7
+"#,
+    )
+    .expect("canonical agents thread limit should parse");
+    let legacy: ConfigToml = toml::from_str(
+        r#"[agents]
+max_threads = 7
+"#,
+    )
+    .expect("legacy agents thread limit should parse");
+
+    assert_eq!(legacy, canonical);
+    let serialized = toml::to_string(&legacy).expect("agents config should serialize");
+    assert!(serialized.contains("max_concurrent_threads_per_session = 7"));
+    assert!(!serialized.contains("max_threads"));
 }
 
 #[tokio::test]
@@ -8319,8 +8339,11 @@ async fn load_config_normalizes_agent_role_nickname_candidates() -> std::io::Res
     let codex_home = TempDir::new()?;
     let cfg = ConfigToml {
         agents: Some(AgentsToml {
-            max_threads: None,
+            enabled: None,
+            max_concurrent_threads_per_session: None,
             max_depth: None,
+            default_subagent_model: None,
+            default_subagent_reasoning_effort: None,
             job_max_runtime_seconds: None,
             interrupt_message: None,
             roles: BTreeMap::from([(
@@ -8362,8 +8385,11 @@ async fn load_config_rejects_empty_agent_role_nickname_candidates() -> std::io::
     let codex_home = TempDir::new()?;
     let cfg = ConfigToml {
         agents: Some(AgentsToml {
-            max_threads: None,
+            enabled: None,
+            max_concurrent_threads_per_session: None,
             max_depth: None,
+            default_subagent_model: None,
+            default_subagent_reasoning_effort: None,
             job_max_runtime_seconds: None,
             interrupt_message: None,
             roles: BTreeMap::from([(
@@ -8399,8 +8425,11 @@ async fn load_config_rejects_duplicate_agent_role_nickname_candidates() -> std::
     let codex_home = TempDir::new()?;
     let cfg = ConfigToml {
         agents: Some(AgentsToml {
-            max_threads: None,
+            enabled: None,
+            max_concurrent_threads_per_session: None,
             max_depth: None,
+            default_subagent_model: None,
+            default_subagent_reasoning_effort: None,
             job_max_runtime_seconds: None,
             interrupt_message: None,
             roles: BTreeMap::from([(
@@ -8436,8 +8465,11 @@ async fn load_config_rejects_unsafe_agent_role_nickname_candidates() -> std::io:
     let codex_home = TempDir::new()?;
     let cfg = ConfigToml {
         agents: Some(AgentsToml {
-            max_threads: None,
+            enabled: None,
+            max_concurrent_threads_per_session: None,
             max_depth: None,
+            default_subagent_model: None,
+            default_subagent_reasoning_effort: None,
             job_max_runtime_seconds: None,
             interrupt_message: None,
             roles: BTreeMap::from([(
@@ -10412,6 +10444,9 @@ tool_namespace = "agents"
 hide_spawn_agent_metadata = true
 expose_spawn_agent_model_overrides = false
 non_code_mode_only = true
+
+[agents]
+max_concurrent_threads_per_session = 9
 "#,
     )?;
 
@@ -10431,7 +10466,7 @@ non_code_mode_only = true
             config.agent_max_threads,
             config.effective_agent_max_threads(MultiAgentVersion::V2)
         ),
-        (None, Some(4))
+        (Some(9), Some(4))
     );
     assert_eq!(
         config.multi_agent_v2.usage_hint_text.as_deref(),
@@ -10599,7 +10634,7 @@ subagent_usage_hint_text = ""
 }
 
 #[tokio::test]
-async fn multi_agent_v2_feature_rejects_agents_max_threads() -> std::io::Result<()> {
+async fn multi_agent_v2_uses_agents_max_concurrent_threads_per_session() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     std::fs::write(
         codex_home.path().join(CONFIG_TOML_FILE),
@@ -10607,7 +10642,7 @@ async fn multi_agent_v2_feature_rejects_agents_max_threads() -> std::io::Result<
 enabled = true
 
 [agents]
-max_threads = 3
+max_concurrent_threads_per_session = 7
 "#,
     )?;
 
@@ -10616,25 +10651,19 @@ max_threads = 3
         .fallback_cwd(Some(codex_home.path().to_path_buf()))
         .build()
         .await?;
-    let err = config
-        .validate_multi_agent_v2_config()
-        .expect_err("agents.max_threads should conflict with multi_agent_v2");
-
-    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     assert_eq!(
-        err.to_string(),
-        "agents.max_threads cannot be set when features.multi_agent_v2 is enabled"
-    );
-    assert_eq!(
-        config.effective_agent_max_threads(MultiAgentVersion::V2),
-        Some(3)
+        (
+            config.multi_agent_v2.max_concurrent_threads_per_session,
+            config.effective_agent_max_threads(MultiAgentVersion::V2),
+        ),
+        (8, Some(7))
     );
 
     Ok(())
 }
 
 #[tokio::test]
-async fn catalog_v2_allows_agents_max_threads_when_feature_disabled() -> std::io::Result<()> {
+async fn catalog_v2_allows_agents_thread_limit_when_feature_disabled() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     std::fs::write(
         codex_home.path().join(CONFIG_TOML_FILE),
@@ -10642,7 +10671,7 @@ async fn catalog_v2_allows_agents_max_threads_when_feature_disabled() -> std::io
 enabled = false
 
 [agents]
-max_threads = 3
+max_concurrent_threads_per_session = 3
 "#,
     )?;
 
@@ -10652,10 +10681,12 @@ max_threads = 3
         .build()
         .await?;
 
-    config.validate_multi_agent_v2_config()?;
     assert_eq!(
-        config.effective_agent_max_threads(MultiAgentVersion::V2),
-        Some(3)
+        (
+            config.multi_agent_v2.max_concurrent_threads_per_session,
+            config.effective_agent_max_threads(MultiAgentVersion::V2),
+        ),
+        (4, Some(3))
     );
 
     Ok(())

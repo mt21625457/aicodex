@@ -22,6 +22,7 @@ use codex_app_server_protocol::CommandExecutionSource;
 use codex_app_server_protocol::CommandExecutionStatus;
 use codex_app_server_protocol::DeprecationNoticeNotification;
 use codex_app_server_protocol::DynamicToolCallParams;
+use codex_app_server_protocol::EnvironmentConnectionNotification;
 use codex_app_server_protocol::ErrorNotification;
 use codex_app_server_protocol::ExecPolicyAmendment as V2ExecPolicyAmendment;
 use codex_app_server_protocol::FileChangeApprovalDecision;
@@ -223,6 +224,26 @@ pub(crate) async fn apply_bespoke_event_handling(
             };
             outgoing
                 .send_server_notification(ServerNotification::McpServerStatusUpdated(notification))
+                .await;
+        }
+        EventMsg::EnvironmentConnected(event) => {
+            outgoing
+                .send_server_notification(ServerNotification::EnvironmentConnected(
+                    EnvironmentConnectionNotification {
+                        thread_id: conversation_id.to_string(),
+                        environment_id: event.environment_id,
+                    },
+                ))
+                .await;
+        }
+        EventMsg::EnvironmentDisconnected(event) => {
+            outgoing
+                .send_server_notification(ServerNotification::EnvironmentDisconnected(
+                    EnvironmentConnectionNotification {
+                        thread_id: conversation_id.to_string(),
+                        environment_id: event.environment_id,
+                    },
+                ))
                 .await;
         }
         EventMsg::Warning(warning_event) => {
@@ -3687,6 +3708,7 @@ mod tests {
             total_token_usage: TokenUsage {
                 input_tokens: 100,
                 cached_input_tokens: 25,
+                cache_write_input_tokens: 0,
                 output_tokens: 50,
                 reasoning_output_tokens: 9,
                 total_tokens: 200,
@@ -3694,6 +3716,7 @@ mod tests {
             last_token_usage: TokenUsage {
                 input_tokens: 10,
                 cached_input_tokens: 5,
+                cache_write_input_tokens: 0,
                 output_tokens: 7,
                 reasoning_output_tokens: 1,
                 total_tokens: 23,
