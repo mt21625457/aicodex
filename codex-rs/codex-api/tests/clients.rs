@@ -398,6 +398,7 @@ fn claude_request() -> ClaudeMessagesApiRequest {
         mcp_servers: Vec::new(),
         tool_choice: None,
         thinking: None,
+        reasoning_effort: None,
         output_config: None,
         service_tier: None,
         context_management: None,

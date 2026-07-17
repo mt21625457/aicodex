@@ -591,14 +591,20 @@ pub(crate) fn build_claude_messages_request(
         Some(max_tokens) => max_tokens,
         None => DEFAULT_MAX_TOKENS,
     };
-    let thinking = if is_kimi_k3 {
-        None
+    let (thinking, reasoning_effort) = if is_kimi_k3 {
+        kimi_k3_thinking_and_effort(options.reasoning_effort)
     } else if requires_budgetless_thinking {
-        Some(ClaudeThinkingConfig::Enabled {
-            budget_tokens: None,
-        })
+        (
+            Some(ClaudeThinkingConfig::Enabled {
+                budget_tokens: None,
+            }),
+            None,
+        )
     } else {
-        claude_thinking_config(options.reasoning_effort, max_tokens)
+        (
+            claude_thinking_config(options.reasoning_effort, max_tokens),
+            None,
+        )
     };
 
     Ok(ClaudeMessagesApiRequest {
@@ -610,6 +616,7 @@ pub(crate) fn build_claude_messages_request(
         mcp_servers: mcp_servers.into_iter().map(api_claude_mcp_server).collect(),
         tool_choice,
         thinking,
+        reasoning_effort,
         output_config: None,
         service_tier: claude_service_tier(options.service_tier),
         context_management: options.context_management,
@@ -903,6 +910,50 @@ fn claude_model_is_kimi_k3(model: &str) -> bool {
         .next()
         .unwrap_or(model)
         .eq_ignore_ascii_case("k3")
+}
+
+/// Map Codex effort values onto Kimi Code's K3 `reasoning_effort` contract.
+///
+/// Per Kimi Code docs:
+/// - omit / null → provider default `max`
+/// - `ultra` / `max` / `xhigh` → `max`
+/// - `high` / `medium` → `high`
+/// - `low` / `minimum` / `light` → `low`
+/// - `none` → `thinking.type = disabled`
+fn kimi_k3_thinking_and_effort(
+    reasoning_effort: Option<ReasoningEffortConfig>,
+) -> (Option<ClaudeThinkingConfig>, Option<ReasoningEffortConfig>) {
+    match reasoning_effort {
+        None => (None, None),
+        Some(ReasoningEffortConfig::None) => (Some(ClaudeThinkingConfig::Disabled), None),
+        Some(ReasoningEffortConfig::Custom(value)) if value.eq_ignore_ascii_case("none") => {
+            (Some(ClaudeThinkingConfig::Disabled), None)
+        }
+        Some(effort) => (None, Some(map_kimi_k3_reasoning_effort(effort))),
+    }
+}
+
+fn map_kimi_k3_reasoning_effort(effort: ReasoningEffortConfig) -> ReasoningEffortConfig {
+    match effort {
+        ReasoningEffortConfig::None => {
+            unreachable!("`none` is handled by kimi_k3_thinking_and_effort before mapping")
+        }
+        ReasoningEffortConfig::Minimal | ReasoningEffortConfig::Low => ReasoningEffortConfig::Low,
+        ReasoningEffortConfig::Medium | ReasoningEffortConfig::High => ReasoningEffortConfig::High,
+        ReasoningEffortConfig::XHigh
+        | ReasoningEffortConfig::Max
+        | ReasoningEffortConfig::Ultra => ReasoningEffortConfig::Max,
+        ReasoningEffortConfig::Custom(value) => match value.to_ascii_lowercase().as_str() {
+            "none" => {
+                unreachable!("`none` is handled by kimi_k3_thinking_and_effort before mapping")
+            }
+            "low" | "minimum" | "minimal" | "light" => ReasoningEffortConfig::Low,
+            "high" | "medium" => ReasoningEffortConfig::High,
+            "max" | "ultra" | "xhigh" => ReasoningEffortConfig::Max,
+            // Unknown values would 400 on Kimi Code; coerce to the documented default.
+            _ => ReasoningEffortConfig::Max,
+        },
+    }
 }
 
 fn claude_service_tier(service_tier: Option<ServiceTier>) -> Option<ClaudeServiceTier> {
@@ -3238,7 +3289,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_k3_request_with_provider_default_thinking_and_local_tools() {
+    fn builds_k3_request_with_reasoning_effort_levels_and_local_tools() {
         let string_params = JsonSchema::object(
             BTreeMap::from([(
                 "query".to_string(),
@@ -3287,16 +3338,40 @@ mod tests {
         kimi_model.slug = "k3".to_string();
         kimi_model.max_output_tokens = Some(131_072);
 
-        for reasoning_effort in [
-            ReasoningEffortConfig::None,
-            ReasoningEffortConfig::Low,
-            ReasoningEffortConfig::Max,
+        for (reasoning_effort, expected_thinking, expected_effort) in [
+            (
+                ReasoningEffortConfig::None,
+                Some(json!({"type": "disabled"})),
+                None,
+            ),
+            (
+                ReasoningEffortConfig::Custom("none".to_string()),
+                Some(json!({"type": "disabled"})),
+                None,
+            ),
+            (ReasoningEffortConfig::Minimal, None, Some(json!("low"))),
+            (ReasoningEffortConfig::Low, None, Some(json!("low"))),
+            (
+                ReasoningEffortConfig::Custom("light".to_string()),
+                None,
+                Some(json!("low")),
+            ),
+            (ReasoningEffortConfig::Medium, None, Some(json!("high"))),
+            (ReasoningEffortConfig::High, None, Some(json!("high"))),
+            (ReasoningEffortConfig::XHigh, None, Some(json!("max"))),
+            (ReasoningEffortConfig::Ultra, None, Some(json!("max"))),
+            (ReasoningEffortConfig::Max, None, Some(json!("max"))),
+            (
+                ReasoningEffortConfig::Custom("unknown-effort".to_string()),
+                None,
+                Some(json!("max")),
+            ),
         ] {
             let request = build_claude_messages_request(
                 &prompt,
                 &kimi_model,
                 ClaudeRequestOptions {
-                    reasoning_effort: Some(reasoning_effort),
+                    reasoning_effort: Some(reasoning_effort.clone()),
                     // K3 must stay on ordinary local tools even if a provider is
                     // accidentally classified as first-party Anthropic.
                     provider_compat: ClaudeProviderCompat::Anthropic,
@@ -3308,7 +3383,18 @@ mod tests {
 
             assert_eq!(request.model, "k3");
             assert_eq!(request.max_tokens, 131_072);
-            assert!(value.get("thinking").is_none());
+            assert_eq!(
+                (
+                    value.get("thinking").cloned(),
+                    value.get("reasoning_effort").cloned()
+                ),
+                (expected_thinking, expected_effort),
+                "unexpected K3 thinking/effort wire mapping for {reasoning_effort:?}"
+            );
+            assert!(
+                !(value.get("thinking").is_some() && value.get("reasoning_effort").is_some()),
+                "K3 must not send thinking and reasoning_effort together: {value}"
+            );
             assert_eq!(
                 request.tool_choice,
                 Some(ClaudeToolChoice::Auto {
@@ -3346,6 +3432,39 @@ mod tests {
                     .expect("local web_search tool"),
             );
         }
+
+        let default_effort_request = build_claude_messages_request(
+            &prompt,
+            &kimi_model,
+            ClaudeRequestOptions {
+                reasoning_effort: None,
+                provider_compat: ClaudeProviderCompat::Compatible,
+                ..Default::default()
+            },
+        )
+        .expect("default effort request");
+        let default_effort_value =
+            serde_json::to_value(&default_effort_request).expect("serialize default effort");
+        assert!(default_effort_value.get("thinking").is_none());
+        assert!(default_effort_value.get("reasoning_effort").is_none());
+        assert_eq!(default_effort_request.reasoning_effort, None);
+
+        let mut prefixed_k3 = kimi_model.clone();
+        prefixed_k3.slug = "aicodex_gateway_claude:k3".to_string();
+        let prefixed_request = build_claude_messages_request(
+            &prompt,
+            &prefixed_k3,
+            ClaudeRequestOptions {
+                reasoning_effort: Some(ReasoningEffortConfig::High),
+                provider_compat: ClaudeProviderCompat::Compatible,
+                ..Default::default()
+            },
+        )
+        .expect("prefixed k3 request");
+        let prefixed_value =
+            serde_json::to_value(&prefixed_request).expect("serialize prefixed k3");
+        assert_eq!(prefixed_value.get("reasoning_effort"), Some(&json!("high")));
+        assert!(prefixed_value.get("thinking").is_none());
 
         let mut serial_prompt = prompt;
         serial_prompt.parallel_tool_calls = false;

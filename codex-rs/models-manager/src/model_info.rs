@@ -5,6 +5,8 @@ use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelInstructionsVariables;
 use codex_protocol::openai_models::ModelMessages;
 use codex_protocol::openai_models::ModelVisibility;
+use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::openai_models::TruncationMode;
 use codex_protocol::openai_models::TruncationPolicyConfig;
 use codex_protocol::openai_models::WebSearchToolType;
@@ -127,12 +129,14 @@ fn clear_instruction_messages(model: &mut ModelInfo) {
 pub fn model_info_from_slug(slug: &str) -> ModelInfo {
     warn!("Unknown model {slug} is used. This will use fallback model metadata.");
     let fallback_context_window = fallback_context_window_for_slug(slug);
+    let (default_reasoning_level, supported_reasoning_levels) =
+        fallback_reasoning_levels_for_slug(slug);
     ModelInfo {
         slug: slug.to_string(),
         display_name: slug.to_string(),
         description: None,
-        default_reasoning_level: None,
-        supported_reasoning_levels: Vec::new(),
+        default_reasoning_level,
+        supported_reasoning_levels,
         shell_type: ConfigShellToolType::Default,
         visibility: ModelVisibility::None,
         supported_in_api: true,
@@ -172,14 +176,44 @@ pub fn model_info_from_slug(slug: &str) -> ModelInfo {
 }
 
 fn fallback_context_window_for_slug(slug: &str) -> i64 {
-    let normalized = slug.to_ascii_lowercase();
-    if normalized == "deepseek-chat"
+    let normalized = slug.rsplit(':').next().unwrap_or(slug).to_ascii_lowercase();
+    if normalized == "k3" {
+        1_048_576
+    } else if normalized == "deepseek-chat"
         || normalized == "deepseek-reasoner"
         || normalized.starts_with("deepseek-")
     {
         DEEPSEEK_FALLBACK_CONTEXT_WINDOW
     } else {
         DEFAULT_FALLBACK_CONTEXT_WINDOW
+    }
+}
+
+fn fallback_reasoning_levels_for_slug(
+    slug: &str,
+) -> (Option<ReasoningEffort>, Vec<ReasoningEffortPreset>) {
+    let normalized = slug.rsplit(':').next().unwrap_or(slug).to_ascii_lowercase();
+    if normalized == "k3" {
+        (
+            Some(ReasoningEffort::Max),
+            vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Low,
+                    description: "Lighter reasoning for faster, simpler coding tasks".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::High,
+                    description: "Deeper reasoning for complex engineering problems".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Max,
+                    description: "Maximum reasoning depth for the hardest long-horizon tasks"
+                        .to_string(),
+                },
+            ],
+        )
+    } else {
+        (None, Vec::new())
     }
 }
 

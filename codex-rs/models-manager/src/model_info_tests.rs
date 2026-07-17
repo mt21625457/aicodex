@@ -258,3 +258,35 @@ fn unknown_deepseek_models_use_large_fallback_context_window() {
     assert_eq!(model.context_window, Some(1_000_000));
     assert_eq!(model.max_context_window, Some(1_000_000));
 }
+
+#[test]
+fn unknown_k3_models_advertise_low_high_max_reasoning_levels() {
+    use codex_protocol::openai_models::ReasoningEffort;
+    use codex_protocol::openai_models::ReasoningEffortPreset;
+
+    for slug in ["k3", "aicodex_gateway_claude:k3"] {
+        let model = model_info_from_slug(slug);
+
+        assert_eq!(model.context_window, Some(1_048_576));
+        assert_eq!(model.max_context_window, Some(1_048_576));
+        assert_eq!(model.default_reasoning_level, Some(ReasoningEffort::Max));
+        assert_eq!(
+            model.supported_reasoning_levels,
+            vec![
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Low,
+                    description: "Lighter reasoning for faster, simpler coding tasks".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::High,
+                    description: "Deeper reasoning for complex engineering problems".to_string(),
+                },
+                ReasoningEffortPreset {
+                    effort: ReasoningEffort::Max,
+                    description: "Maximum reasoning depth for the hardest long-horizon tasks"
+                        .to_string(),
+                },
+            ]
+        );
+    }
+}

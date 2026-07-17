@@ -272,6 +272,11 @@ pub struct ClaudeMessagesApiRequest {
     pub tool_choice: Option<ClaudeToolChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<ClaudeThinkingConfig>,
+    /// Top-level reasoning effort for providers such as Kimi K3.
+    ///
+    /// Kimi Code maps this independently of Anthropic `thinking` budgets.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffortConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_config: Option<ClaudeOutputConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -300,6 +305,8 @@ pub struct ClaudeCountTokensRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<ClaudeThinkingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffortConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub output_config: Option<ClaudeOutputConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<ClaudeServiceTier>,
@@ -317,6 +324,7 @@ impl From<&ClaudeMessagesApiRequest> for ClaudeCountTokensRequest {
             mcp_servers: request.mcp_servers.clone(),
             tool_choice: request.tool_choice.clone(),
             thinking: request.thinking.clone(),
+            reasoning_effort: request.reasoning_effort.clone(),
             output_config: request.output_config,
             service_tier: request.service_tier,
             beta_headers: request.beta_headers.clone(),
@@ -1107,6 +1115,7 @@ mod claude_wire_tests {
             mcp_servers: Vec::new(),
             tool_choice: None,
             thinking: None,
+            reasoning_effort: None,
             output_config: None,
             service_tier: None,
             context_management: None,
@@ -1151,6 +1160,7 @@ mod claude_wire_tests {
             }],
             tool_choice: None,
             thinking: None,
+            reasoning_effort: None,
             output_config: None,
             service_tier: None,
             context_management: None,
