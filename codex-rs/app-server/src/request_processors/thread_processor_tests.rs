@@ -36,6 +36,21 @@ mod thread_list_cwd_filter_tests {
     }
 }
 
+mod thread_wire_api_tests {
+    use super::super::infer_thread_wire_api;
+
+    #[test]
+    fn infers_claude_wire_api_for_bare_and_provider_prefixed_k3() {
+        for model in ["k3", "aicodex_gateway_claude:k3"] {
+            assert_eq!(
+                infer_thread_wire_api(Some(model), "custom_kimi"),
+                Some("claude".to_string()),
+                "unexpected wire API for {model}"
+            );
+        }
+    }
+}
+
 mod background_terminal_pagination_tests {
     use super::super::paginate_background_terminals;
     use codex_app_server_protocol::ThreadBackgroundTerminal;

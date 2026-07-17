@@ -897,7 +897,12 @@ fn claude_model_requires_enabled_thinking_without_budget(model: &str) -> bool {
 }
 
 fn claude_model_is_kimi_k3(model: &str) -> bool {
-    model.trim().eq_ignore_ascii_case("k3")
+    model
+        .trim()
+        .rsplit(':')
+        .next()
+        .unwrap_or(model)
+        .eq_ignore_ascii_case("k3")
 }
 
 fn claude_service_tier(service_tier: Option<ServiceTier>) -> Option<ClaudeServiceTier> {
@@ -3365,6 +3370,13 @@ mod tests {
                 disable_parallel_tool_use: true,
             })
         );
+    }
+
+    #[test]
+    fn detects_provider_prefixed_k3_model_id() {
+        assert!(claude_model_is_kimi_k3("k3"));
+        assert!(claude_model_is_kimi_k3("aicodex_gateway_claude:k3"));
+        assert!(!claude_model_is_kimi_k3("aicodex_gateway_claude:k30"));
     }
 
     #[test]

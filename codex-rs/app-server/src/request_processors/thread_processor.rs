@@ -4759,8 +4759,18 @@ fn set_thread_name_from_title(thread: &mut Thread, title: String) {
 }
 
 fn infer_thread_wire_api(model: Option<&str>, model_provider: &str) -> Option<String> {
-    let model = model.unwrap_or_default().trim().to_ascii_lowercase();
-    if model.starts_with("claude-") || model.starts_with("deepseek-") || model.starts_with("kimi-")
+    let model = model
+        .unwrap_or_default()
+        .trim()
+        .rsplit(':')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if model == "k3"
+        || model.starts_with("claude-")
+        || model.starts_with("deepseek-")
+        || model.starts_with("kimi-")
     {
         return Some("claude".to_string());
     }
