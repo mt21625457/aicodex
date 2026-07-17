@@ -347,7 +347,7 @@ pub fn create_tools_json_for_claude_messages_with_options(
                         claude_tools.push(claude_function_tool_json(
                             &claude_name,
                             "Access the web using Codex's OpenAI web search command surface. Supports search_query, image_query, open, click, find, screenshot, finance, weather, sports, time, and legacy query/queries aliases.",
-                            claude_web_search_function_schema_json(),
+                            web_search_function_schema_json(),
                         ));
                         tool_call_info.push(ClaudeToolCallInfo {
                             claude_name,
@@ -733,7 +733,7 @@ fn claude_web_search_tool_json(
     Value::Object(tool)
 }
 
-fn claude_web_search_function_schema_json() -> Value {
+pub(crate) fn web_search_function_schema_json() -> Value {
     let schema = SchemaSettings::draft2019_09()
         .with(|settings| {
             settings.inline_subschemas = true;

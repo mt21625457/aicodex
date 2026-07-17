@@ -1,3 +1,4 @@
+use crate::AICODEX_USER_AGENT;
 use crate::auth::SharedAuthProvider;
 use crate::common::ResponseEvent;
 use crate::common::ResponseStream;
@@ -494,6 +495,10 @@ fn merge_request_headers(
             entry.insert(value.clone());
         }
     }
+    headers.insert(
+        http::header::USER_AGENT,
+        HeaderValue::from_static(AICODEX_USER_AGENT),
+    );
     headers
 }
 
@@ -1206,6 +1211,10 @@ mod tests {
             HeaderValue::from_static("provider-originator"),
         );
         provider_headers.insert("x-priority", HeaderValue::from_static("provider"));
+        provider_headers.insert(
+            http::header::USER_AGENT,
+            HeaderValue::from_static("provider-agent"),
+        );
 
         let mut extra_headers = HeaderMap::new();
         extra_headers.insert("x-priority", HeaderValue::from_static("extra"));
@@ -1214,6 +1223,10 @@ mod tests {
         default_headers.insert("originator", HeaderValue::from_static("default-originator"));
         default_headers.insert("x-priority", HeaderValue::from_static("default"));
         default_headers.insert("x-default-only", HeaderValue::from_static("default-only"));
+        default_headers.insert(
+            http::header::USER_AGENT,
+            HeaderValue::from_static("default-agent"),
+        );
 
         let merged = merge_request_headers(&provider_headers, extra_headers, default_headers);
 
@@ -1228,6 +1241,10 @@ mod tests {
         assert_eq!(
             merged.get("x-default-only"),
             Some(&HeaderValue::from_static("default-only"))
+        );
+        assert_eq!(
+            merged.get(http::header::USER_AGENT),
+            Some(&HeaderValue::from_static(AICODEX_USER_AGENT))
         );
     }
 

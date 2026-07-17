@@ -66,6 +66,7 @@ use tracing_test::traced_test;
 const MODEL: &str = "gpt-5.4";
 const OPENAI_BETA_HEADER: &str = "OpenAI-Beta";
 const USER_AGENT_HEADER: &str = "user-agent";
+const EXPECTED_AICODEX_USER_AGENT: &str = concat!("aicodex/", env!("CARGO_PKG_VERSION"));
 const WS_V2_BETA_HEADER_VALUE: &str = "responses_websockets=2026-02-06";
 const X_CLIENT_REQUEST_ID_HEADER: &str = "x-client-request-id";
 const WS_REQUEST_HEADER_RESPONSES_LITE_CLIENT_METADATA_KEY: &str =
@@ -194,7 +195,7 @@ async fn responses_websocket_streams_request() {
     );
     assert_eq!(
         handshake.header(USER_AGENT_HEADER),
-        Some(codex_login::default_client::get_codex_user_agent())
+        Some(EXPECTED_AICODEX_USER_AGENT.to_string())
     );
     assert_eq!(
         body["client_metadata"]["x-codex-installation-id"].as_str(),
@@ -361,7 +362,7 @@ async fn responses_websocket_reuses_connection_with_per_turn_trace_payloads() {
     assert_eq!(server.handshakes().len(), 1);
     assert_eq!(
         server.single_handshake().header(USER_AGENT_HEADER),
-        Some(codex_login::default_client::get_codex_user_agent())
+        Some(codex_api::AICODEX_USER_AGENT.to_string())
     );
     let connection = server.single_connection();
     assert_eq!(connection.len(), 2);
@@ -452,7 +453,7 @@ async fn responses_websocket_preconnect_reuses_connection() {
     assert_eq!(server.handshakes().len(), 1);
     assert_eq!(
         server.single_handshake().header(USER_AGENT_HEADER),
-        Some(codex_login::default_client::get_codex_user_agent())
+        Some(codex_api::AICODEX_USER_AGENT.to_string())
     );
     assert_eq!(
         server.single_handshake().header("x-codex-window-id"),
@@ -503,7 +504,7 @@ async fn responses_websocket_request_prewarm_reuses_connection() {
     assert_eq!(server.handshakes().len(), 1);
     assert_eq!(
         server.single_handshake().header(USER_AGENT_HEADER),
-        Some(codex_login::default_client::get_codex_user_agent())
+        Some(codex_api::AICODEX_USER_AGENT.to_string())
     );
     let connection = server.single_connection();
     assert_eq!(connection.len(), 2);
@@ -1676,8 +1677,8 @@ async fn responses_websocket_connection_limit_error_reconnects_and_completes() {
     assert_eq!(
         handshake_user_agents,
         vec![
-            Some(codex_login::default_client::get_codex_user_agent()),
-            Some(codex_login::default_client::get_codex_user_agent()),
+            Some(codex_api::AICODEX_USER_AGENT.to_string()),
+            Some(codex_api::AICODEX_USER_AGENT.to_string()),
         ]
     );
 

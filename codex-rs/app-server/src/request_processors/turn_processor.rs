@@ -1310,7 +1310,6 @@ impl TurnRequestProcessor {
             .await
             .map_err(|err| internal_error(format!("failed to start detached review: {err}")))?;
 
-        let fallback_provider = self.config.model_provider_id.as_str();
         let stored_thread = match review_thread
             .read_thread(
                 /*include_archived*/ true, /*include_history*/ false,
@@ -1319,7 +1318,7 @@ impl TurnRequestProcessor {
         {
             Ok(stored_thread) => {
                 let (thread, _) =
-                    thread_from_stored_thread(stored_thread, fallback_provider, &self.config.cwd);
+                    thread_from_stored_thread_with_config(stored_thread, &self.config);
                 Some(thread)
             }
             Err(err) => {

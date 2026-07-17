@@ -1,6 +1,9 @@
+pub(crate) mod chat;
 pub(crate) mod claude;
+mod progress;
 pub(crate) mod responses;
 
+pub use chat::spawn_chat_response_stream;
 pub use claude::spawn_claude_response_stream;
 pub(crate) use responses::ResponsesStreamEvent;
 pub(crate) use responses::process_responses_event;

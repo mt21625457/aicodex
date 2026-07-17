@@ -1,4 +1,5 @@
 #![allow(clippy::expect_used)]
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -8,6 +9,12 @@ use bytes::Bytes;
 use codex_api::ApiError;
 use codex_api::AuthError;
 use codex_api::AuthProvider;
+use codex_api::ChatCompletionsApiRequest;
+use codex_api::ChatCompletionsClient;
+use codex_api::ChatCompletionsOptions;
+use codex_api::ChatMessage;
+use codex_api::ChatMessageRole;
+use codex_api::ChatStreamOptions;
 use codex_api::ClaudeContentBlock;
 use codex_api::ClaudeCountTokensRequest;
 use codex_api::ClaudeMcpServer;
@@ -131,6 +138,18 @@ struct NoAuth;
 
 impl AuthProvider for NoAuth {
     fn add_auth_headers(&self, _headers: &mut HeaderMap) {}
+}
+
+#[derive(Clone, Default)]
+struct ConflictingUserAgentAuth;
+
+impl AuthProvider for ConflictingUserAgentAuth {
+    fn add_auth_headers(&self, headers: &mut HeaderMap) {
+        headers.insert(
+            http::header::USER_AGENT,
+            HeaderValue::from_static("auth-override"),
+        );
+    }
 }
 
 #[derive(Clone)]
@@ -406,6 +425,117 @@ async fn responses_client_uses_responses_path() -> Result<()> {
 
     let requests = state.take_stream_requests();
     assert_path_ends_with(&requests, "/responses");
+    assert_eq!(
+        requests[0]
+            .headers
+            .get(http::header::USER_AGENT)
+            .and_then(|value| value.to_str().ok()),
+        Some(codex_api::AICODEX_USER_AGENT)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn auth_headers_cannot_override_the_product_user_agent() -> Result<()> {
+    let state = RecordingState::default();
+    let transport = RecordingTransport::new(state.clone());
+    let client = ResponsesClient::new(
+        transport,
+        provider("openai"),
+        Arc::new(ConflictingUserAgentAuth),
+    );
+
+    let _stream = client
+        .stream(
+            serde_json::json!({"echo": true}),
+            HeaderMap::new(),
+            Compression::None,
+            /*turn_state*/ None,
+        )
+        .await?;
+
+    let requests = state.take_stream_requests();
+    assert_eq!(
+        requests[0]
+            .headers
+            .get(http::header::USER_AGENT)
+            .and_then(|value| value.to_str().ok()),
+        Some(codex_api::AICODEX_USER_AGENT)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn chat_completions_client_uses_chat_path_auth_stream_headers_and_fixed_user_agent()
+-> Result<()> {
+    let state = RecordingState::default();
+    let transport = RecordingTransport::new(state.clone());
+    let mut provider = provider("chat");
+    provider.headers.insert(
+        http::header::USER_AGENT,
+        HeaderValue::from_static("provider-override"),
+    );
+    let client = ChatCompletionsClient::new(
+        transport,
+        provider,
+        Arc::new(StaticAuth::new("test-token", "account")),
+    );
+    let request = ChatCompletionsApiRequest {
+        model: "chat-model".to_string(),
+        messages: vec![ChatMessage::text(
+            ChatMessageRole::User,
+            "hello".to_string(),
+        )],
+        stream: true,
+        stream_options: ChatStreamOptions {
+            include_usage: true,
+        },
+        tools: Vec::new(),
+        tool_choice: None,
+        parallel_tool_calls: None,
+        reasoning_effort: None,
+        service_tier: None,
+        response_format: None,
+        tool_call_info: HashMap::new(),
+    };
+
+    let _stream = client
+        .stream_request(request, ChatCompletionsOptions::default())
+        .await?;
+
+    let requests = state.take_stream_requests();
+    assert_path_ends_with(&requests, "/chat/completions");
+    let request = &requests[0];
+    assert_eq!(
+        request
+            .headers
+            .get(http::header::ACCEPT)
+            .and_then(|value| value.to_str().ok()),
+        Some("text/event-stream")
+    );
+    assert_eq!(
+        request
+            .headers
+            .get(http::header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok()),
+        Some("Bearer test-token")
+    );
+    assert_eq!(
+        request
+            .headers
+            .get(http::header::USER_AGENT)
+            .and_then(|value| value.to_str().ok()),
+        Some(codex_api::AICODEX_USER_AGENT)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(request_body_bytes(request))?,
+        serde_json::json!({
+            "model": "chat-model",
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": true,
+            "stream_options": {"include_usage": true}
+        })
+    );
     Ok(())
 }
 
@@ -436,7 +566,7 @@ async fn claude_messages_client_uses_messages_path_and_version_header() -> Resul
         req.headers
             .get(http::header::USER_AGENT)
             .and_then(|value| value.to_str().ok()),
-        Some("aicodex")
+        Some(codex_api::AICODEX_USER_AGENT)
     );
     assert_eq!(
         req.headers
@@ -552,7 +682,7 @@ async fn claude_messages_client_counts_tokens_on_count_tokens_path() -> Result<(
         req.headers
             .get(http::header::USER_AGENT)
             .and_then(|value| value.to_str().ok()),
-        Some("aicodex")
+        Some(codex_api::AICODEX_USER_AGENT)
     );
     assert_eq!(
         req.headers

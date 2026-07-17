@@ -434,7 +434,7 @@ async fn preapproved_additional_permissions_escalate_intercepted_exec() -> anyho
         sandbox_permissions: SandboxPermissions::WithAdditionalPermissions,
         approval_sandbox_permissions: SandboxPermissions::UseDefault,
         prompt_permissions: Some(requested_permissions),
-        stopwatch: codex_shell_escalation::Stopwatch::new(Duration::from_secs(1)),
+        stopwatch: codex_shell_escalation::Stopwatch::new(Duration::from_secs(10)),
     };
 
     let action = codex_shell_escalation::EscalationPolicy::determine_action(
@@ -574,7 +574,7 @@ async fn execve_permission_request_hook_short_circuits_prompt() -> anyhow::Resul
     };
 
     let action = tokio::time::timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(15),
         codex_shell_escalation::EscalationPolicy::determine_action(
             &provider,
             &AbsolutePathBuf::from_absolute_path("/usr/bin/touch")

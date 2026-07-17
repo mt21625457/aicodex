@@ -33,6 +33,8 @@ use std::sync::atomic::Ordering;
 use codex_api::AgentIdentityTelemetry;
 use codex_api::ApiError;
 use codex_api::AuthProvider;
+use codex_api::ChatCompletionsClient as ApiChatCompletionsClient;
+use codex_api::ChatCompletionsOptions as ApiChatCompletionsOptions;
 use codex_api::ClaudeCountTokensRequest as ApiClaudeCountTokensRequest;
 use codex_api::ClaudeMessagesClient as ApiClaudeMessagesClient;
 use codex_api::ClaudeMessagesOptions as ApiClaudeMessagesOptions;
@@ -162,6 +164,7 @@ const X_OPENAI_INTERNAL_CODEX_RESPONSES_LITE_HEADER: &str =
 const REALTIME_CALLS_ENDPOINT: &str = "/realtime/calls";
 const RESPONSES_ENDPOINT: &str = "/responses";
 const CLAUDE_MESSAGES_ENDPOINT: &str = "/messages";
+const CHAT_COMPLETIONS_ENDPOINT: &str = "/chat/completions";
 const CLAUDE_COUNT_TOKENS_ENDPOINT: &str = "/messages/count_tokens";
 const RESPONSES_COMPACT_ENDPOINT: &str = "/responses/compact";
 // `/responses/compact` is unary, so the timeout covers the full response rather than one idle
@@ -1000,7 +1003,7 @@ impl ModelClient {
     ///
     /// WebSocket use is controlled by provider capability and session-scoped fallback state.
     pub fn responses_websocket_enabled(&self) -> bool {
-        if !self.state.provider.info().supports_websockets
+        if !self.state.provider.info().supports_responses_websocket()
             || self.state.disable_websockets.load(Ordering::Relaxed)
         {
             return false;
@@ -1151,6 +1154,10 @@ impl ModelClient {
             /*turn_state*/ None,
         );
         add_originator_header(&mut headers, self.state.originator.as_str());
+        headers.insert(
+            http::header::USER_AGENT,
+            HeaderValue::from_static(codex_api::AICODEX_USER_AGENT),
+        );
         if let Ok(header_value) = HeaderValue::from_str(&responses_metadata.thread_id) {
             headers.insert("x-client-request-id", header_value);
         }
@@ -1754,6 +1761,127 @@ impl ModelClientSession {
         }
     }
 
+    /// Streams a turn via an OpenAI-compatible Chat Completions endpoint.
+    #[allow(clippy::too_many_arguments)]
+    #[instrument(
+        name = "model_client.stream_chat_completions",
+        level = "info",
+        skip_all,
+        fields(
+            model = %model_info.slug,
+            wire_api = %self.client.state.provider.info().wire_api,
+            transport = "chat_completions_http",
+            http.method = "POST",
+            api.path = "chat/completions",
+            turn.has_metadata_header = responses_metadata.has_turn_metadata()
+        )
+    )]
+    async fn stream_chat_completions(
+        &self,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        session_telemetry: &SessionTelemetry,
+        effort: Option<ReasoningEffortConfig>,
+        service_tier: Option<String>,
+        responses_metadata: &CodexResponsesMetadata,
+        inference_trace: &InferenceTraceContext,
+    ) -> Result<ResponseStream> {
+        let auth_manager = self.client.state.provider.auth_manager();
+        let mut auth_recovery = auth_manager
+            .as_ref()
+            .map(AuthManager::unauthorized_recovery);
+        let mut pending_retry = PendingUnauthorizedRetry::default();
+        loop {
+            let client_setup = self.client.current_client_setup().await?;
+            let transport = self
+                .client
+                .build_api_transport(&client_setup.api_provider, CHAT_COMPLETIONS_ENDPOINT)?;
+            let request_auth_context = AuthRequestTelemetryContext::new(
+                client_setup.auth.as_ref().map(CodexAuth::auth_mode),
+                client_setup.api_auth.as_ref(),
+                client_setup.agent_identity_telemetry.clone(),
+                pending_retry,
+            );
+            let (request_telemetry, sse_telemetry) = Self::build_streaming_telemetry(
+                session_telemetry,
+                request_auth_context,
+                RequestRouteTelemetry::for_endpoint(CHAT_COMPLETIONS_ENDPOINT),
+                self.client.state.auth_env_telemetry.clone(),
+            );
+            let request = crate::chat_completions::build_chat_completions_request(
+                prompt,
+                model_info,
+                effort.clone().map(reasoning_effort_for_request),
+                service_tier.clone(),
+            )?;
+            let request_session_telemetry = session_telemetry.clone().with_inference_request(
+                request.service_tier.as_deref(),
+                request.reasoning_effort.as_ref(),
+            );
+            let inference_trace_attempt = inference_trace.start_attempt();
+            inference_trace_attempt.record_started(&request);
+            let client = ApiChatCompletionsClient::new(
+                transport,
+                client_setup.api_provider,
+                client_setup.api_auth,
+            )
+            .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
+            let stream_result = client
+                .stream_request(
+                    request,
+                    ApiChatCompletionsOptions {
+                        conversation_id: Some(self.client.state.thread_id.to_string()),
+                        extra_headers: responses_metadata.compatibility_headers(),
+                    },
+                )
+                .await;
+
+            match stream_result {
+                Ok(stream) => {
+                    let (stream, _) = map_response_stream(
+                        stream,
+                        request_session_telemetry,
+                        inference_trace_attempt,
+                        Arc::clone(&self.client.state.provider),
+                    );
+                    return Ok(stream);
+                }
+                Err(ApiError::Transport(
+                    unauthorized_transport @ TransportError::Http { status, .. },
+                )) if status == StatusCode::UNAUTHORIZED => {
+                    let response_debug_context =
+                        extract_response_debug_context(&unauthorized_transport);
+                    inference_trace_attempt.record_failed(
+                        &unauthorized_transport,
+                        response_debug_context.request_id.as_deref(),
+                        /*output_items*/ &[],
+                    );
+                    pending_retry = PendingUnauthorizedRetry::from_recovery(
+                        handle_unauthorized(
+                            unauthorized_transport,
+                            &mut auth_recovery,
+                            session_telemetry,
+                            &self.client.state.provider,
+                        )
+                        .await?,
+                    );
+                    continue;
+                }
+                Err(error) => {
+                    let response_debug_context =
+                        extract_response_debug_context_from_api_error(&error);
+                    let error = self.client.state.provider.map_api_error(error);
+                    inference_trace_attempt.record_failed(
+                        &error,
+                        response_debug_context.request_id.as_deref(),
+                        /*output_items*/ &[],
+                    );
+                    return Err(error);
+                }
+            }
+        }
+    }
+
     /// Counts the current Claude Messages request context with Anthropic's native endpoint.
     #[allow(clippy::too_many_arguments)]
     #[instrument(
@@ -2184,6 +2312,18 @@ impl ModelClientSession {
                     service_tier
                         .as_deref()
                         .and_then(ServiceTier::from_request_value),
+                    responses_metadata,
+                    inference_trace,
+                )
+                .await
+            }
+            WireApi::Chat => {
+                self.stream_chat_completions(
+                    prompt,
+                    model_info,
+                    session_telemetry,
+                    effort,
+                    service_tier,
                     responses_metadata,
                     inference_trace,
                 )

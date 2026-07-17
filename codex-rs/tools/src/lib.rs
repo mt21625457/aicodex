@@ -1,6 +1,7 @@
 //! Shared tool definitions and Responses API tool primitives that can live
 //! outside `codex-core`.
 
+mod chat_completions;
 mod claude_native;
 mod code_mode;
 mod dynamic_tool;
@@ -21,6 +22,11 @@ mod tool_payload;
 mod tool_search;
 mod tool_spec;
 
+pub use chat_completions::ChatToolCallInfo;
+pub use chat_completions::ChatToolCallKind;
+pub use chat_completions::ChatToolsJson;
+pub use chat_completions::chat_tool_name;
+pub use chat_completions::create_tools_json_for_chat_completions;
 pub use claude_native::CLAUDE_ADVISOR_20260301_TOOL_TYPE;
 pub use claude_native::CLAUDE_ADVISOR_TOOL_NAME;
 pub use claude_native::CLAUDE_BASH_20250124_TOOL_TYPE;

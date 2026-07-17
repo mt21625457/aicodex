@@ -107,7 +107,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
 }
 
 #[test]
-fn test_deserialize_chat_wire_api_shows_helpful_error() {
+fn test_deserialize_chat_wire_api() {
     let provider_toml = r#"
 name = "OpenAI using Chat Completions"
 base_url = "https://api.openai.com/v1"
@@ -115,8 +115,8 @@ env_key = "OPENAI_API_KEY"
 wire_api = "chat"
         "#;
 
-    let err = toml::from_str::<ModelProviderInfo>(provider_toml).unwrap_err();
-    assert!(err.to_string().contains(CHAT_WIRE_API_REMOVED_ERROR));
+    let provider: ModelProviderInfo = toml::from_str(provider_toml).unwrap();
+    assert_eq!(provider.wire_api, WireApi::Chat);
 }
 
 #[test]
@@ -159,10 +159,27 @@ supports_websockets = true
 }
 
 #[test]
+fn test_chat_wire_disables_responses_websocket_capability() {
+    let mut provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
+    provider.wire_api = WireApi::Chat;
+    provider.supports_websockets = true;
+
+    assert!(!provider.supports_responses_websocket());
+}
+
+#[test]
 fn test_supports_remote_compaction_for_openai() {
     let provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
 
     assert!(provider.supports_remote_compaction());
+}
+
+#[test]
+fn test_chat_wire_disables_remote_compaction_for_openai() {
+    let mut provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
+    provider.wire_api = WireApi::Chat;
+
+    assert!(!provider.supports_remote_compaction());
 }
 
 #[test]
@@ -206,6 +223,18 @@ fn test_supports_remote_compaction_for_azure_name() {
     };
 
     assert!(provider.supports_remote_compaction());
+}
+
+#[test]
+fn test_chat_wire_disables_remote_compaction_for_azure() {
+    let provider = ModelProviderInfo {
+        wire_api: WireApi::Chat,
+        ..ModelProviderInfo::create_openai_provider(Some(
+            "https://example.openai.azure.com/openai/v1".to_string(),
+        ))
+    };
+
+    assert!(!provider.supports_remote_compaction());
 }
 
 #[test]

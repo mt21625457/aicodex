@@ -1,3 +1,4 @@
+use crate::AICODEX_USER_AGENT;
 use crate::endpoint::realtime_websocket::methods_common::conversation_function_call_output_message;
 use crate::endpoint::realtime_websocket::methods_common::conversation_handoff_append_message;
 use crate::endpoint::realtime_websocket::methods_common::conversation_item_create_message;
@@ -887,6 +888,10 @@ fn merge_request_headers(
             entry.insert(value.clone());
         }
     }
+    headers.insert(
+        http::header::USER_AGENT,
+        HeaderValue::from_static(AICODEX_USER_AGENT),
+    );
     headers
 }
 
@@ -1630,6 +1635,10 @@ mod tests {
             HeaderValue::from_static("provider-originator"),
         );
         provider_headers.insert("x-priority", HeaderValue::from_static("provider"));
+        provider_headers.insert(
+            http::header::USER_AGENT,
+            HeaderValue::from_static("provider-agent"),
+        );
 
         let mut extra_headers = HeaderMap::new();
         extra_headers.insert("x-priority", HeaderValue::from_static("extra"));
@@ -1652,6 +1661,10 @@ mod tests {
         assert_eq!(
             merged.get("x-default-only"),
             Some(&HeaderValue::from_static("default-only"))
+        );
+        assert_eq!(
+            merged.get(http::header::USER_AGENT),
+            Some(&HeaderValue::from_static(AICODEX_USER_AGENT))
         );
     }
 

@@ -1018,6 +1018,14 @@ fn claude_messages_mock() -> (MockBuilder, ResponseMock) {
     (mock, response_mock)
 }
 
+fn chat_completions_mock() -> (MockBuilder, ResponseMock) {
+    let response_mock = ResponseMock::new();
+    let mock = Mock::given(method("POST"))
+        .and(path_regex(".*/chat/completions$"))
+        .and(response_mock.clone());
+    (mock, response_mock)
+}
+
 fn claude_count_tokens_mock() -> (MockBuilder, ResponseMock) {
     let response_mock = ResponseMock::new();
     let mock = Mock::given(method("POST"))
@@ -1519,6 +1527,11 @@ pub async fn mount_sse_sequence(server: &MockServer, bodies: Vec<String>) -> Res
 /// behavior instead of reusing the OpenAI Responses mock path.
 pub async fn mount_claude_sse_sequence(server: &MockServer, bodies: Vec<String>) -> ResponseMock {
     mount_sse_sequence_with_mock(server, bodies, claude_messages_mock()).await
+}
+
+/// Mounts a sequence of responses for each POST to `/v1/chat/completions`.
+pub async fn mount_chat_sse_sequence(server: &MockServer, bodies: Vec<String>) -> ResponseMock {
+    mount_sse_sequence_with_mock(server, bodies, chat_completions_mock()).await
 }
 
 pub async fn mount_claude_sse_sequence_with_delays(

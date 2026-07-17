@@ -12,9 +12,25 @@ use codex_client::StreamResponse;
 use codex_client::TransportError;
 use http::HeaderMap;
 use http::Method;
+use http::header::USER_AGENT;
 use serde_json::Value;
 use std::sync::Arc;
 use tracing::instrument;
+
+async fn apply_auth_with_product_user_agent(
+    auth: &SharedAuthProvider,
+    request: Request,
+) -> Result<Request, TransportError> {
+    let mut request = auth
+        .apply_auth(request)
+        .await
+        .map_err(TransportError::from)?;
+    request.headers.insert(
+        USER_AGENT,
+        http::HeaderValue::from_static(crate::AICODEX_USER_AGENT),
+    );
+    Ok(request)
+}
 
 pub(crate) struct EndpointSession<T: HttpTransport> {
     transport: T,
@@ -54,6 +70,10 @@ impl<T: HttpTransport> EndpointSession<T> {
     ) -> Request {
         let mut req = self.provider.build_request(method.clone(), path);
         req.headers.extend(extra_headers.clone());
+        req.headers.insert(
+            USER_AGENT,
+            http::HeaderValue::from_static(crate::AICODEX_USER_AGENT),
+        );
         if let Some(body) = body {
             req.body = Some(body.clone());
         }
@@ -103,7 +123,7 @@ impl<T: HttpTransport> EndpointSession<T> {
                 let auth = self.auth.clone();
                 let transport = &self.transport;
                 async move {
-                    let req = auth.apply_auth(req).await.map_err(TransportError::from)?;
+                    let req = apply_auth_with_product_user_agent(&auth, req).await?;
                     transport.execute(req).await
                 }
             },
@@ -144,7 +164,7 @@ impl<T: HttpTransport> EndpointSession<T> {
                 let auth = self.auth.clone();
                 let transport = &self.transport;
                 async move {
-                    let req = auth.apply_auth(req).await.map_err(TransportError::from)?;
+                    let req = apply_auth_with_product_user_agent(&auth, req).await?;
                     transport.stream(req).await
                 }
             },
@@ -186,7 +206,7 @@ impl<T: HttpTransport> EndpointSession<T> {
                 let auth = self.auth.clone();
                 let transport = &self.transport;
                 async move {
-                    let req = auth.apply_auth(req).await.map_err(TransportError::from)?;
+                    let req = apply_auth_with_product_user_agent(&auth, req).await?;
                     transport.stream(req).await
                 }
             },

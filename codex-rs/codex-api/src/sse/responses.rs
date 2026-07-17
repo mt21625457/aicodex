@@ -5,6 +5,7 @@ use crate::common::SafetyBufferingTreatment;
 use crate::error::ApiError;
 use crate::rate_limits::parse_all_rate_limits;
 use crate::safety_buffering::treatment_from_headers;
+use crate::sse::progress::ProgressDeadline;
 use crate::telemetry::SseTelemetry;
 use codex_client::ByteStream;
 use codex_client::StreamResponse;
@@ -208,6 +209,32 @@ impl ResponsesStreamEvent {
         self.headers
             .as_ref()
             .and_then(header_turn_state_value_from_json)
+    }
+
+    fn is_meaningful(&self) -> bool {
+        let kind = self.kind.as_str();
+        matches!(
+            kind,
+            "response.created"
+                | "response.output_item.added"
+                | "response.output_item.done"
+                | "response.reasoning_summary_text.done"
+                | "response.reasoning_summary_part.added"
+                | "response.failed"
+                | "response.incomplete"
+                | "response.completed"
+                | "response.metadata"
+                | "codex.rate_limits"
+        ) || matches!(
+            kind,
+            "response.output_text.delta"
+                | "response.custom_tool_call_input.delta"
+                | "response.function_call_arguments.delta"
+                | "response.reasoning_summary_text.delta"
+                | "response.reasoning_text.delta"
+        ) && self.delta.as_ref().is_some_and(|delta| !delta.is_empty())
+            || self.safety_buffering.is_some()
+            || self.metadata.is_some()
     }
 
     pub(crate) fn model_verifications(&self) -> Option<Vec<ModelVerification>> {
@@ -500,10 +527,11 @@ async fn process_sse_with_treatment(
     let mut stream = stream.eventsource();
     let mut response_error: Option<ApiError> = None;
     let mut last_server_model: Option<String> = None;
+    let mut progress = ProgressDeadline::new(idle_timeout);
 
     loop {
         let start = Instant::now();
-        let response = timeout(idle_timeout, stream.next()).await;
+        let response = timeout(progress.remaining(), stream.next()).await;
         if let Some(t) = telemetry.as_ref() {
             t.on_sse_poll(&response, start.elapsed());
         }
@@ -538,6 +566,9 @@ async fn process_sse_with_treatment(
                 continue;
             }
         };
+        if event.is_meaningful() {
+            progress.mark_progress();
+        }
         let model_verifications = event.model_verifications();
         let turn_moderation_metadata = event.turn_moderation_metadata();
         let safety_buffering = event.safety_buffering(&safety_buffering_treatment);
@@ -1001,6 +1032,86 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unknown_events_do_not_extend_idle_deadline() {
+        let stream = stream::unfold((), |()| async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            Some((
+                Ok(Bytes::from_static(
+                    b"event: ping\ndata: {\"type\":\"ping\"}\n\n",
+                )),
+                (),
+            ))
+        });
+        let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent, ApiError>>(8);
+        tokio::spawn(process_sse(
+            Box::pin(stream),
+            tx,
+            Duration::from_millis(50),
+            /*telemetry*/ None,
+        ));
+
+        assert_matches!(
+            rx.recv().await,
+            Some(Err(ApiError::Stream(message)))
+                if message == "idle timeout waiting for SSE"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn meaningful_events_extend_idle_deadline() {
+        let chunks = [
+            Bytes::from_static(
+                b"event: response.created\ndata: {\"type\":\"response.created\"}\n\n",
+            ),
+            Bytes::from_static(
+                b"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
+            ),
+            Bytes::from_static(
+                b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_progress\"}}\n\n",
+            ),
+        ];
+        let stream = stream::iter(chunks).then(|chunk| async move {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            Ok(chunk)
+        });
+        let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent, ApiError>>(8);
+        tokio::spawn(process_sse(
+            Box::pin(stream),
+            tx,
+            Duration::from_millis(50),
+            /*telemetry*/ None,
+        ));
+
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            events.push(event);
+        }
+
+        assert_matches!(
+            events.last(),
+            Some(Ok(ResponseEvent::Completed { response_id, .. }))
+                if response_id == "resp_progress"
+        );
+    }
+
+    #[test]
+    fn responses_delta_progress_requires_non_empty_content() {
+        let empty_text = serde_json::from_value::<ResponsesStreamEvent>(json!({
+            "type": "response.output_text.delta",
+            "delta": ""
+        }))
+        .expect("empty text delta parses");
+        let function_arguments = serde_json::from_value::<ResponsesStreamEvent>(json!({
+            "type": "response.function_call_arguments.delta",
+            "delta": "{\"path\":"
+        }))
+        .expect("function arguments delta parses");
+
+        assert!(!empty_text.is_meaningful());
+        assert!(function_arguments.is_meaningful());
     }
 
     #[tokio::test]

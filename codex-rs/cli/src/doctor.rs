@@ -2316,7 +2316,7 @@ async fn websocket_reachability_check(
     ];
     push_proxy_env_details(&mut details);
 
-    if !provider.supports_websockets {
+    if !provider.supports_responses_websocket() {
         return DoctorCheck::new(
             "network.websocket_reachability",
             "websocket",
@@ -3162,6 +3162,27 @@ mod tests {
             DoctorCheck::new("b", "auth", CheckStatus::Fail, "fail"),
         ];
         assert_eq!(overall_status(&checks), CheckStatus::Fail);
+    }
+
+    #[tokio::test]
+    async fn chat_provider_skips_responses_websocket_probe() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut config = ConfigBuilder::default()
+            .codex_home(temp.path().to_path_buf())
+            .build()
+            .await
+            .expect("config");
+        config.model_provider.wire_api =
+            serde_json::from_str("\"chat\"").expect("deserialize Chat wire API");
+        config.model_provider.supports_websockets = true;
+
+        let check = websocket_reachability_check(&config, /*auth_manager*/ None).await;
+
+        assert_eq!(check.status, CheckStatus::Ok);
+        assert_eq!(
+            check.summary,
+            "Responses WebSocket is not enabled for the active provider"
+        );
     }
 
     #[test]

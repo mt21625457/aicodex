@@ -9,6 +9,7 @@ use codex_http_client::OutboundProxyPolicy;
 use futures::Stream;
 use reqwest::StatusCode;
 use reqwest::header::CONTENT_LENGTH;
+use reqwest::header::USER_AGENT;
 use serde::Deserialize;
 use tokio::time::Instant;
 use uuid::Uuid;
@@ -170,6 +171,7 @@ pub async fn upload_openai_file(
     let upload_response = build_reqwest_client(http_client_factory, &create_payload.upload_url)?
         .put(&create_payload.upload_url)
         .timeout(OPENAI_FILE_REQUEST_TIMEOUT)
+        .header(USER_AGENT, crate::AICODEX_USER_AGENT)
         .header("x-ms-blob-type", "BlockBlob")
         .header("x-ms-client-request-id", &azure_client_request_id)
         .header(CONTENT_LENGTH, file_size_bytes)
@@ -319,6 +321,10 @@ fn authorized_request(
 ) -> Result<reqwest::RequestBuilder, OpenAiFileError> {
     let mut headers = http::HeaderMap::new();
     auth.add_auth_headers(&mut headers);
+    headers.insert(
+        USER_AGENT,
+        http::HeaderValue::from_static(crate::AICODEX_USER_AGENT),
+    );
 
     let client = build_reqwest_client(http_client_factory, url)?;
     Ok(client
@@ -411,6 +417,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/backend-api/files"))
             .and(header("chatgpt-account-id", "account_id"))
+            .and(header("user-agent", crate::AICODEX_USER_AGENT))
             .and(body_json(serde_json::json!({
                 "file_name": "hello.txt",
                 "file_size": 5,
@@ -424,6 +431,7 @@ mod tests {
             .await;
         Mock::given(method("PUT"))
             .and(path("/upload/file_123"))
+            .and(header("user-agent", crate::AICODEX_USER_AGENT))
             .and(header("content-length", "5"))
             .and(header_regex("x-ms-client-request-id", "^[0-9a-f-]{36}$"))
             .respond_with(ResponseTemplate::new(200))
@@ -434,6 +442,7 @@ mod tests {
         let download_url = format!("{}/download/file_123", server.uri());
         Mock::given(method("POST"))
             .and(path("/backend-api/files/file_123/uploaded"))
+            .and(header("user-agent", crate::AICODEX_USER_AGENT))
             .respond_with(move |_request: &Request| {
                 if finalize_attempts_responder.fetch_add(1, Ordering::SeqCst) == 0 {
                     return ResponseTemplate::new(200).set_body_json(serde_json::json!({

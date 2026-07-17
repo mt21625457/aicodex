@@ -1712,13 +1712,10 @@ impl ThreadRequestProcessor {
                 .await
                 .map_err(|err| core_thread_write_error("update thread metadata", err))?
         };
-        let (mut thread, _) = thread_from_stored_thread(
-            updated_thread,
-            self.config.model_provider_id.as_str(),
-            &self.config.cwd,
-        );
+        let (mut thread, _) = thread_from_stored_thread_with_config(updated_thread, &self.config);
         if let Ok(loaded_thread) = self.thread_manager.get_thread(thread_uuid).await {
             thread.session_id = loaded_thread.session_configured().session_id.to_string();
+            thread.wire_api = Some(loaded_thread.config_snapshot().await.wire_api.to_string());
         }
         self.attach_thread_name(thread_uuid, &mut thread).await;
         thread.status = resolve_thread_status(
@@ -1764,14 +1761,12 @@ impl ThreadRequestProcessor {
         let thread_id = ThreadId::from_string(&params.thread_id)
             .map_err(|err| invalid_request(format!("invalid session id: {err}")))?;
 
-        let fallback_provider = self.config.model_provider_id.clone();
         let stored_thread = self
             .thread_store
             .unarchive_thread(StoreArchiveThreadParams { thread_id })
             .await
             .map_err(|err| thread_store_archive_error("unarchive", err))?;
-        let (mut thread, _) =
-            thread_from_stored_thread(stored_thread, fallback_provider.as_str(), &self.config.cwd);
+        let (mut thread, _) = thread_from_stored_thread_with_config(stored_thread, &self.config);
 
         thread.status = resolve_thread_status(
             self.thread_watch_manager
@@ -2056,14 +2051,8 @@ impl ThreadRequestProcessor {
         });
         let mut threads = Vec::with_capacity(stored_threads.len());
         let mut status_ids = Vec::with_capacity(stored_threads.len());
-        let fallback_provider = self.config.model_provider_id.clone();
-
         for stored_thread in stored_threads {
-            let (thread, _) = thread_from_stored_thread(
-                stored_thread,
-                fallback_provider.as_str(),
-                &self.config.cwd,
-            );
+            let (thread, _) = thread_from_stored_thread_with_config(stored_thread, &self.config);
             status_ids.push(thread.id.clone());
             threads.push(thread);
         }
@@ -2182,15 +2171,10 @@ impl ThreadRequestProcessor {
                 store_sort_direction,
             )
         });
-        let fallback_provider = self.config.model_provider_id.clone();
         let mut results = Vec::with_capacity(search_results.len());
         let mut status_ids = Vec::with_capacity(search_results.len());
         for result in search_results {
-            let (thread, _) = thread_from_stored_thread(
-                result.thread,
-                fallback_provider.as_str(),
-                &self.config.cwd,
-            );
+            let (thread, _) = thread_from_stored_thread_with_config(result.thread, &self.config);
             status_ids.push(thread.id.clone());
             results.push((thread, result.snippet));
         }
@@ -2344,6 +2328,9 @@ impl ThreadRequestProcessor {
         };
 
         let has_live_in_progress_turn = if let Some(loaded_thread) = loaded_thread.as_ref() {
+            let config_snapshot = loaded_thread.config_snapshot().await;
+            thread.wire_api = Some(config_snapshot.wire_api.to_string());
+            thread.model_provider = config_snapshot.model_provider_id.clone();
             matches!(loaded_thread.agent_status().await, AgentStatus::Running)
         } else {
             false
@@ -2384,11 +2371,8 @@ impl ThreadRequestProcessor {
         else {
             return Ok(None);
         };
-        let (mut thread, history) = thread_from_stored_thread(
-            stored_thread,
-            self.config.model_provider_id.as_str(),
-            &self.config.cwd,
-        );
+        let (mut thread, history) =
+            thread_from_stored_thread_with_config(stored_thread, &self.config);
         if include_turns && let Some(history) = history {
             thread.turns = build_api_turns_for_items_view(&history.items, items_view);
         }
@@ -2458,6 +2442,10 @@ impl ThreadRequestProcessor {
             }
             thread.session_id.clone_from(&fallback_thread.session_id);
             thread.ephemeral = fallback_thread.ephemeral;
+            // Prefer the live session wire API over static config / heuristics so
+            // thread/read matches thread/start and thread/resume for the same id.
+            thread.wire_api = fallback_thread.wire_api.clone();
+            thread.model_provider = fallback_thread.model_provider.clone();
             thread
         } else {
             fallback_thread
@@ -3422,8 +3410,8 @@ impl ThreadRequestProcessor {
 
             let mut thread_summary = self.stored_thread_to_api_thread(
                 source_thread,
-                config_snapshot.model_provider_id.as_str(),
                 /*include_turns*/ false,
+                Some(config_snapshot.wire_api.to_string()),
             );
             thread_summary.session_id = existing_thread.session_configured().session_id.to_string();
             thread_summary.thread_source = config_snapshot.thread_source.clone().map(Into::into);
@@ -3597,11 +3585,18 @@ impl ThreadRequestProcessor {
     fn stored_thread_to_api_thread(
         &self,
         stored_thread: StoredThread,
-        fallback_provider: &str,
         include_turns: bool,
+        wire_api: Option<String>,
     ) -> Thread {
-        let (mut thread, history) =
-            thread_from_stored_thread(stored_thread, fallback_provider, &self.config.cwd);
+        let (mut thread, history) = match wire_api {
+            Some(wire_api) => thread_from_stored_thread_with_wire_api(
+                stored_thread,
+                self.config.model_provider_id.as_str(),
+                &self.config.cwd,
+                Some(wire_api),
+            ),
+            None => thread_from_stored_thread_with_config(stored_thread, &self.config),
+        };
         if include_turns && let Some(history) = history {
             populate_thread_turns_from_history(
                 &mut thread,
@@ -3640,7 +3635,6 @@ impl ThreadRequestProcessor {
         let session_id = thread.session_configured().session_id.to_string();
         let thread = match thread_history {
             InitialHistory::Resumed(resumed) => {
-                let fallback_provider = config_snapshot.model_provider_id.as_str();
                 if let Some(stored_thread) = resume_source_thread {
                     let stored_thread =
                         if let Some(rollout_path) = stored_thread.rollout_path.clone() {
@@ -3668,10 +3662,11 @@ impl ThreadRequestProcessor {
                                     ..stored_thread
                                 })
                         };
-                    Ok(thread_from_stored_thread(
+                    Ok(thread_from_stored_thread_with_wire_api(
                         stored_thread,
-                        fallback_provider,
+                        config_snapshot.model_provider_id.as_str(),
                         &self.config.cwd,
+                        Some(config_snapshot.wire_api.to_string()),
                     )
                     .0)
                 } else {
@@ -3684,10 +3679,11 @@ impl ThreadRequestProcessor {
                         })
                         .await
                     {
-                        Ok(stored_thread) => Ok(thread_from_stored_thread(
+                        Ok(stored_thread) => Ok(thread_from_stored_thread_with_wire_api(
                             stored_thread,
-                            fallback_provider,
+                            config_snapshot.model_provider_id.as_str(),
                             &self.config.cwd,
+                            Some(config_snapshot.wire_api.to_string()),
                         )
                         .0),
                         Err(read_err) => {
@@ -3881,8 +3877,6 @@ impl ThreadRequestProcessor {
             .map_err(|err| config_load_error(&err))?;
         let goals_enabled = config.features.enabled(Feature::Goals);
 
-        let fallback_model_provider = config.model_provider_id.clone();
-
         let NewThread {
             thread_id,
             thread: forked_thread,
@@ -3977,17 +3971,17 @@ impl ThreadRequestProcessor {
 
         // Persistent forks materialize their own rollout immediately. Ephemeral forks stay
         // pathless, so they rebuild their visible history from the copied source history instead.
+        let config_snapshot = forked_thread.config_snapshot().await;
         let mut thread = if session_configured.rollout_path.is_some() {
             let stored_thread = self
                 .read_stored_thread_for_new_fork(thread_id, include_turns)
                 .await?;
             self.stored_thread_to_api_thread(
                 stored_thread,
-                fallback_model_provider.as_str(),
                 include_turns,
+                Some(config_snapshot.wire_api.to_string()),
             )
         } else {
-            let config_snapshot = forked_thread.config_snapshot().await;
             let mut thread = build_thread_from_snapshot(
                 thread_id,
                 session_configured.session_id.to_string(),
@@ -4009,11 +4003,7 @@ impl ThreadRequestProcessor {
             set_thread_name_from_title(&mut thread, name);
         }
         thread.session_id = session_configured.session_id.to_string();
-        thread.thread_source = forked_thread
-            .config_snapshot()
-            .await
-            .thread_source
-            .map(Into::into);
+        thread.thread_source = config_snapshot.thread_source.map(Into::into);
 
         self.thread_watch_manager
             .upsert_thread_silently(thread.clone())
@@ -4759,6 +4749,29 @@ fn set_thread_name_from_title(thread: &mut Thread, title: String) {
 }
 
 fn infer_thread_wire_api(model: Option<&str>, model_provider: &str) -> Option<String> {
+    let provider = model_provider.trim().to_ascii_lowercase();
+    if provider_indicates_chat_wire_api(&provider) {
+        return Some("chat".to_string());
+    }
+    if provider == "aicodex_gateway_claude"
+        || provider == "claude"
+        || provider.starts_with("claude_")
+        || provider.ends_with("_claude")
+        || provider.contains("claude_relay")
+    {
+        return Some("claude".to_string());
+    }
+    if provider == "aicodex_gateway"
+        || provider == "aicodex_gateway_responses"
+        || provider == "openai"
+        || provider.starts_with("openai_")
+        || provider.ends_with("_openai")
+        || provider.ends_with("_responses")
+        || provider.contains("gateway_responses")
+    {
+        return Some("responses".to_string());
+    }
+
     let model = model
         .unwrap_or_default()
         .trim()
@@ -4777,32 +4790,49 @@ fn infer_thread_wire_api(model: Option<&str>, model_provider: &str) -> Option<St
     if model.starts_with("gpt-") || model.starts_with("chatgpt-") {
         return Some("responses".to_string());
     }
-
-    let provider = model_provider.trim().to_ascii_lowercase();
-    if provider == "aicodex_gateway_claude"
-        || provider == "claude"
-        || provider.starts_with("claude_")
-        || provider.ends_with("_claude")
-        || provider.contains("claude_relay")
-    {
-        return Some("claude".to_string());
-    }
-    if provider == "aicodex_gateway"
-        || provider == "aicodex_gateway_responses"
-        || provider == "openai"
-        || provider.starts_with("openai_")
-        || provider.ends_with("_openai")
-        || provider.contains("responses")
-    {
-        return Some("responses".to_string());
-    }
     None
 }
 
-pub(crate) fn thread_from_stored_thread(
+fn provider_indicates_chat_wire_api(provider: &str) -> bool {
+    if provider == "chat" || provider.starts_with("chat_") || provider.contains("chat_completions")
+    {
+        return true;
+    }
+    // Accept `openai_chat`-style ids (`<vendor>_chat`) without matching English
+    // phrases such as `not_a_chat`.
+    let mut segments = provider.split('_');
+    matches!(
+        (segments.next(), segments.next(), segments.next()),
+        (Some(_), Some("chat"), None)
+    )
+}
+
+pub(crate) fn thread_from_stored_thread_with_config(
+    thread: StoredThread,
+    config: &Config,
+) -> (Thread, Option<codex_thread_store::StoredThreadHistory>) {
+    let provider_id = if thread.model_provider.is_empty() {
+        config.model_provider_id.as_str()
+    } else {
+        thread.model_provider.as_str()
+    };
+    let wire_api = config
+        .model_providers
+        .get(provider_id)
+        .map(|provider| provider.wire_api.to_string());
+    thread_from_stored_thread_with_wire_api(
+        thread,
+        config.model_provider_id.as_str(),
+        &config.cwd,
+        wire_api,
+    )
+}
+
+pub(crate) fn thread_from_stored_thread_with_wire_api(
     thread: StoredThread,
     fallback_provider: &str,
     fallback_cwd: &AbsolutePathBuf,
+    wire_api: Option<String>,
 ) -> (Thread, Option<codex_thread_store::StoredThreadHistory>) {
     let path = thread.rollout_path;
     let git_info = thread.git_info.map(|info| ApiGitInfo {
@@ -4829,7 +4859,8 @@ pub(crate) fn thread_from_stored_thread(
     } else {
         thread.model_provider
     };
-    let wire_api = infer_thread_wire_api(thread.model.as_deref(), model_provider.as_str());
+    let wire_api = wire_api
+        .or_else(|| infer_thread_wire_api(thread.model.as_deref(), model_provider.as_str()));
     let thread = Thread {
         id: thread_id.clone(),
         extra: None,
@@ -5040,7 +5071,7 @@ fn build_thread_from_snapshot(
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let model_provider = config_snapshot.model_provider_id.clone();
     let model_id = Some(config_snapshot.model.clone());
-    let wire_api = infer_thread_wire_api(model_id.as_deref(), model_provider.as_str());
+    let wire_api = Some(config_snapshot.wire_api.to_string());
     Thread {
         id: thread_id.to_string(),
         extra: None,

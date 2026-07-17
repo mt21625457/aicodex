@@ -229,6 +229,10 @@ async fn claude_wire_tool_loop_posts_messages_and_tool_result() -> anyhow::Resul
             request.header("accept").as_deref(),
             Some("text/event-stream")
         );
+        assert_eq!(
+            request.header("user-agent").as_deref(),
+            Some(codex_api::AICODEX_USER_AGENT)
+        );
         assert!(request.header("x-api-key").is_some());
         assert_eq!(request.header("authorization"), None);
     }
@@ -273,7 +277,12 @@ async fn claude_wire_tool_loop_posts_messages_and_tool_result() -> anyhow::Resul
             .contains("claude")
     );
 
-    let count_request = count_tokens.single_request().body_json();
+    let captured_count_request = count_tokens.single_request();
+    assert_eq!(
+        captured_count_request.header("user-agent").as_deref(),
+        Some(codex_api::AICODEX_USER_AGENT)
+    );
+    let count_request = captured_count_request.body_json();
     assert!(
         message_content_blocks(&count_request)
             .iter()

@@ -160,6 +160,7 @@ fn model_provider_from_proto(
     let wire_api = match proto::WireApi::try_from(provider.wire_api) {
         Ok(proto::WireApi::Responses) => WireApi::Responses,
         Ok(proto::WireApi::Claude) => WireApi::Claude,
+        Ok(proto::WireApi::Chat) => WireApi::Chat,
         Ok(proto::WireApi::Unspecified) => {
             return Err(parse_error("remote thread config omitted wire_api"));
         }
@@ -291,6 +292,7 @@ fn proto_wire_api(wire_api: WireApi) -> proto::WireApi {
     match wire_api {
         WireApi::Responses => proto::WireApi::Responses,
         WireApi::Claude => proto::WireApi::Claude,
+        WireApi::Chat => proto::WireApi::Chat,
     }
 }
 
@@ -427,6 +429,19 @@ mod tests {
 
         assert_eq!(id, "local");
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn model_provider_proto_roundtrips_chat_wire_api() {
+        let mut expected = expected_provider();
+        expected.wire_api = WireApi::Chat;
+        expected.supports_websockets = false;
+        let proto = model_provider_to_proto("chat_local", expected.clone());
+        let (id, actual) = model_provider_from_proto(proto).expect("chat provider from proto");
+
+        assert_eq!(id, "chat_local");
+        assert_eq!(actual, expected);
+        assert_eq!(actual.wire_api, WireApi::Chat);
     }
 
     fn proto_sources() -> Vec<proto::ThreadConfigSource> {

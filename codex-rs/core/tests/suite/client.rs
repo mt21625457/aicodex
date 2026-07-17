@@ -1315,6 +1315,38 @@ async fn provider_auth_command_refreshes_after_claude_401_error_envelope() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn provider_auth_command_refreshes_after_chat_401() {
+    skip_if_no_network!();
+
+    let server = MockServer::start().await;
+    let auth_fixture = ProviderAuthCommandFixture::new(&["first-token", "second-token"]).unwrap();
+
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(header_regex("Authorization", "Bearer first-token"))
+        .respond_with(ResponseTemplate::new(401).set_body_string("unauthorized"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(header_regex("Authorization", "Bearer second-token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(
+                    "data: {\"id\":\"chatcmpl_1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+                    "text/event-stream",
+                ),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    send_provider_auth_request_for_wire_api(&server, auth_fixture.auth(), WireApi::Chat).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn provider_auth_command_surfaces_claude_401_when_recovery_exhausted() {
     skip_if_no_network!();
 

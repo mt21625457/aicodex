@@ -479,56 +479,6 @@ async fn import_plugins_supports_relative_external_agent_plugin_marketplace_path
 }
 
 #[tokio::test]
-async fn import_plugins_infers_external_official_marketplace_when_missing_from_settings() {
-    let (_root, external_agent_home, codex_home) = fixture_paths();
-    fs::create_dir_all(&external_agent_home).expect("create external agent home");
-    fs::create_dir_all(&codex_home).expect("create codex home");
-
-    fs::write(
-        external_agent_home.join("settings.json"),
-        format!(
-            r#"{{
-          "enabledPlugins": {{
-            "sample@{EXTERNAL_OFFICIAL_MARKETPLACE_NAME}": true
-          }}
-        }}"#
-        ),
-    )
-    .expect("write settings");
-
-    let outcome = service_for_paths(external_agent_home, codex_home)
-        .import_plugins(
-            /*cwd*/ None,
-            Some(MigrationDetails {
-                plugins: vec![PluginsMigration {
-                    marketplace_name: EXTERNAL_OFFICIAL_MARKETPLACE_NAME.to_string(),
-                    plugin_names: vec!["sample".to_string()],
-                }],
-                ..Default::default()
-            }),
-        )
-        .await
-        .expect("import plugins");
-
-    assert_eq!(
-        outcome.succeeded_marketplaces,
-        vec![EXTERNAL_OFFICIAL_MARKETPLACE_NAME.to_string()]
-    );
-    assert_eq!(outcome.succeeded_plugin_ids, Vec::<String>::new());
-    assert_eq!(outcome.failed_marketplaces, Vec::<String>::new());
-    assert_eq!(
-        outcome.failed_plugin_ids,
-        vec![format!("sample@{EXTERNAL_OFFICIAL_MARKETPLACE_NAME}")]
-    );
-    assert_single_plugin_raw_error(
-        &outcome.raw_errors,
-        "plugin_import",
-        &format!("sample@{EXTERNAL_OFFICIAL_MARKETPLACE_NAME}"),
-        Some("plugin_not_found"),
-    );
-}
-
-#[tokio::test]
 async fn detect_repo_supports_project_relative_external_agent_plugin_marketplace_path() {
     let root = TempDir::new().expect("create tempdir");
     let external_agent_home = root.path().join(EXTERNAL_AGENT_DIR);

@@ -36,6 +36,7 @@ use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::built_in_model_providers;
 use codex_models_manager::bundled_models_response;
+use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelsResponse;
@@ -312,6 +313,7 @@ pub struct TestCodexBuilder {
     external_time_provider: Option<Arc<dyn TimeProvider>>,
     code_mode_host_program: Option<PathBuf>,
     history_mode: Option<ThreadHistoryMode>,
+    dynamic_tools: Vec<DynamicToolSpec>,
 }
 
 impl TestCodexBuilder {
@@ -337,6 +339,11 @@ impl TestCodexBuilder {
 
     pub fn with_history_mode(mut self, history_mode: ThreadHistoryMode) -> Self {
         self.history_mode = Some(history_mode);
+        self
+    }
+
+    pub fn with_dynamic_tools(mut self, dynamic_tools: Vec<DynamicToolSpec>) -> Self {
+        self.dynamic_tools = dynamic_tools;
         self
     }
 
@@ -713,7 +720,7 @@ impl TestCodexBuilder {
                         history_mode: self.history_mode,
                         session_source: None,
                         thread_source: None,
-                        dynamic_tools: Vec::new(),
+                        dynamic_tools: self.dynamic_tools.clone(),
                         metrics_service_name: None,
                         parent_trace: None,
                         environments,
@@ -1274,6 +1281,7 @@ pub fn test_codex() -> TestCodexBuilder {
         external_time_provider: None,
         code_mode_host_program: None,
         history_mode: None,
+        dynamic_tools: Vec::new(),
     }
 }
 

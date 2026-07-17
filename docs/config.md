@@ -6,6 +6,20 @@ For advanced configuration instructions, see [this documentation](https://develo
 
 For a full configuration reference, see [this documentation](https://developers.openai.com/codex/config-reference).
 
+## Model-provider wire protocol policy
+
+The internal `model_providers.<id>.wire_api` selector controls only the provider wire adapter:
+
+- omitted or `"responses"` uses OpenAI Responses and remains the default;
+- `"claude"` (alias `"anthropic"`) uses Anthropic Messages;
+- `"chat"` uses OpenAI-compatible Chat Completions at `chat/completions` relative to the
+  configured provider base URL.
+
+All model-provider HTTP requests and WebSocket handshakes, including Responses and Realtime
+transports, use the exact versioned product token `aicodex/<workspace package version>` as
+`User-Agent`, independent of the selected wire protocol. Host-protocol identity returned by
+app-server or MCP initialization is a separate compatibility surface.
+
 ## Lifecycle hooks
 
 Admins can set top-level `allow_managed_hooks_only = true` in

@@ -1,5 +1,6 @@
 pub(crate) mod api_bridge;
 pub(crate) mod auth;
+mod chat_completions;
 pub(crate) mod common;
 pub(crate) mod endpoint;
 pub(crate) mod error;
@@ -12,6 +13,9 @@ pub(crate) mod safety_buffering;
 pub(crate) mod search;
 pub(crate) mod sse;
 pub(crate) mod telemetry;
+
+/// Product token sent by every model-provider protocol and transport.
+pub const AICODEX_USER_AGENT: &str = concat!("aicodex/", env!("CARGO_PKG_VERSION"));
 
 pub use crate::requests::headers::build_session_headers;
 pub use codex_client::RequestTelemetry;
@@ -26,6 +30,18 @@ pub use crate::auth::AuthProvider;
 pub use crate::auth::AuthProviderFuture;
 pub use crate::auth::SharedAuthProvider;
 pub use crate::auth::auth_header_telemetry;
+pub use crate::chat_completions::ChatCompletionsApiRequest;
+pub use crate::chat_completions::ChatContentPart;
+pub use crate::chat_completions::ChatImageUrl;
+pub use crate::chat_completions::ChatMessage;
+pub use crate::chat_completions::ChatMessageContent;
+pub use crate::chat_completions::ChatMessageRole;
+pub use crate::chat_completions::ChatStreamOptions;
+pub use crate::chat_completions::ChatToolCall;
+pub use crate::chat_completions::ChatToolCallFunction;
+pub use crate::chat_completions::ChatToolCallInfo;
+pub use crate::chat_completions::ChatToolCallKind;
+pub use crate::chat_completions::ChatToolType;
 pub use crate::common::ClaudeCacheControl;
 pub use crate::common::ClaudeCacheControlType;
 pub use crate::common::ClaudeCacheEdit;
@@ -71,6 +87,8 @@ pub use crate::common::WS_REQUEST_HEADER_TRACEPARENT_CLIENT_METADATA_KEY;
 pub use crate::common::WS_REQUEST_HEADER_TRACESTATE_CLIENT_METADATA_KEY;
 pub use crate::common::create_text_param_for_request;
 pub use crate::common::response_create_client_metadata;
+pub use crate::endpoint::ChatCompletionsClient;
+pub use crate::endpoint::ChatCompletionsOptions;
 pub use crate::endpoint::ClaudeMessagesClient;
 pub use crate::endpoint::ClaudeMessagesOptions;
 pub use crate::endpoint::CompactClient;

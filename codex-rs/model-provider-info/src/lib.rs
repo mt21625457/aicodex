@@ -47,7 +47,6 @@ pub const AMAZON_BEDROCK_DEFAULT_BASE_URL: &str =
     "https://bedrock-mantle.us-east-1.api.aws/openai/v1";
 const AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_HEADER: &str = "x-amzn-mantle-client-agent";
 const AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_VALUE: &str = "codex";
-const CHAT_WIRE_API_REMOVED_ERROR: &str = "`wire_api = \"chat\"` is no longer supported.\nHow to fix: set `wire_api = \"responses\"` in your provider config.\nMore info: https://github.com/openai/codex/discussions/7782";
 pub const LEGACY_OLLAMA_CHAT_PROVIDER_ID: &str = "ollama-chat";
 pub const OLLAMA_CHAT_PROVIDER_REMOVED_ERROR: &str = "`ollama-chat` is no longer supported.\nHow to fix: replace `ollama-chat` with `ollama` in `model_provider`, `oss_provider`, or `--local-provider`.\nMore info: https://github.com/openai/codex/discussions/7782";
 
@@ -60,6 +59,8 @@ pub enum WireApi {
     Responses,
     /// The Claude Messages API exposed by Anthropic at `/v1/messages`.
     Claude,
+    /// The OpenAI-compatible Chat Completions API exposed at `/v1/chat/completions`.
+    Chat,
 }
 
 impl fmt::Display for WireApi {
@@ -67,6 +68,7 @@ impl fmt::Display for WireApi {
         let value = match self {
             Self::Responses => "responses",
             Self::Claude => "claude",
+            Self::Chat => "chat",
         };
         f.write_str(value)
     }
@@ -81,10 +83,10 @@ impl<'de> Deserialize<'de> for WireApi {
         match value.as_str() {
             "responses" => Ok(Self::Responses),
             "claude" | "anthropic" => Ok(Self::Claude),
-            "chat" => Err(serde::de::Error::custom(CHAT_WIRE_API_REMOVED_ERROR)),
+            "chat" => Ok(Self::Chat),
             _ => Err(serde::de::Error::unknown_variant(
                 &value,
-                &["responses", "claude"],
+                &["responses", "claude", "chat"],
             )),
         }
     }
@@ -421,7 +423,13 @@ impl ModelProviderInfo {
     }
 
     pub fn supports_remote_compaction(&self) -> bool {
-        self.is_openai() || is_azure_responses_provider(&self.name, self.base_url.as_deref())
+        self.wire_api == WireApi::Responses
+            && (self.is_openai()
+                || is_azure_responses_provider(&self.name, self.base_url.as_deref()))
+    }
+
+    pub fn supports_responses_websocket(&self) -> bool {
+        self.wire_api == WireApi::Responses && self.supports_websockets
     }
 
     pub fn has_command_auth(&self) -> bool {

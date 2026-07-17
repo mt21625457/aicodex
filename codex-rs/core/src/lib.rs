@@ -7,6 +7,7 @@
 
 mod apply_patch;
 mod apps;
+mod chat_completions;
 mod claude;
 mod client;
 mod client_common;

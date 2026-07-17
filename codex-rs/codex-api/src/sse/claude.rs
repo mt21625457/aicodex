@@ -6,6 +6,7 @@ use crate::error::ApiError;
 use crate::error::ProviderMediaErrorKind;
 use crate::error::ProviderStreamErrorKind;
 use crate::rate_limits::parse_all_rate_limits;
+use crate::sse::progress::ProgressDeadline;
 use crate::telemetry::SseTelemetry;
 use codex_client::ByteStream;
 use codex_client::StreamResponse;
@@ -121,6 +122,24 @@ impl ClaudeStreamEvent {
             _ => Self::Unknown,
         }
     }
+
+    fn is_meaningful(&self) -> bool {
+        match self {
+            Self::Unknown => false,
+            Self::ContentBlockDelta { delta, .. } => delta.is_meaningful(),
+            Self::MessageDelta { delta, usage } => {
+                delta
+                    .as_ref()
+                    .is_some_and(ClaudeMessageDelta::is_meaningful)
+                    || usage.as_ref().is_some_and(ClaudeUsage::is_meaningful)
+            }
+            Self::MessageStart { .. }
+            | Self::ContentBlockStart { .. }
+            | Self::ContentBlockStop { .. }
+            | Self::MessageStop
+            | Self::Error { .. } => true,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -138,6 +157,16 @@ struct ClaudeMessageDelta {
     stop_reason: Option<ClaudeStopReason>,
     #[serde(default)]
     stop_sequence: Option<String>,
+}
+
+impl ClaudeMessageDelta {
+    fn is_meaningful(&self) -> bool {
+        self.stop_reason.is_some()
+            || self
+                .stop_sequence
+                .as_ref()
+                .is_some_and(|sequence| !sequence.is_empty())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -321,6 +350,19 @@ enum ClaudeStreamDelta {
     Unknown,
 }
 
+impl ClaudeStreamDelta {
+    fn is_meaningful(&self) -> bool {
+        match self {
+            Self::TextDelta { text } => !text.is_empty(),
+            Self::InputJsonDelta { partial_json } => !partial_json.is_empty(),
+            Self::ThinkingDelta { thinking } => !thinking.is_empty(),
+            Self::SignatureDelta { signature } => !signature.is_empty(),
+            Self::CitationsDelta { citation } => !citation.is_null(),
+            Self::Unknown => false,
+        }
+    }
+}
+
 fn empty_json_object() -> Value {
     Value::Object(Map::new())
 }
@@ -342,6 +384,15 @@ struct ClaudeUsage {
 }
 
 impl ClaudeUsage {
+    fn is_meaningful(&self) -> bool {
+        self.input_tokens.is_some()
+            || self.output_tokens.is_some()
+            || self.cache_read_input_tokens.is_some()
+            || self.cache_creation_input_tokens.is_some()
+            || self.server_tool_use.is_some()
+            || self.iterations.is_some()
+    }
+
     fn merge(&mut self, usage: ClaudeUsage) {
         merge_non_zero_usage_field(&mut self.input_tokens, usage.input_tokens);
         self.output_tokens = usage.output_tokens.or(self.output_tokens);
@@ -1564,10 +1615,11 @@ async fn process_sse(
 ) {
     let mut stream = stream.eventsource();
     let mut state = ClaudeStreamState::new(tool_call_info);
+    let mut progress = ProgressDeadline::new(idle_timeout);
 
     loop {
         let start = Instant::now();
-        let response = timeout(idle_timeout, stream.next()).await;
+        let response = timeout(progress.remaining(), stream.next()).await;
         if let Some(t) = telemetry.as_ref() {
             t.on_sse_poll(&response, start.elapsed());
         }
@@ -1611,6 +1663,9 @@ async fn process_sse(
                 return;
             }
         };
+        if event.is_meaningful() {
+            progress.mark_progress();
+        }
 
         match state.handle_event(event, &tx_event).await {
             Ok(true) => return,
@@ -1626,8 +1681,10 @@ async fn process_sse(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use assert_matches::assert_matches;
     use bytes::Bytes;
     use codex_client::TransportError;
+    use futures::StreamExt;
     use futures::stream;
     use http::HeaderMap;
     use http::HeaderValue;
@@ -1825,6 +1882,106 @@ mod tests {
         };
         assert_eq!(kind, ProviderStreamErrorKind::IdleTimeout);
         assert_eq!(message, "idle timeout waiting for SSE");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn claude_unknown_events_do_not_extend_idle_deadline() {
+        let bytes = stream::unfold((), |()| async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            Some((
+                Ok(Bytes::from_static(
+                    b"event: ping\ndata: {\"type\":\"ping\"}\n\n",
+                )),
+                (),
+            ))
+        });
+        let stream = spawn_claude_response_stream(
+            codex_client::StreamResponse {
+                status: StatusCode::OK,
+                headers: HeaderMap::new(),
+                bytes: Box::pin(bytes),
+            },
+            Duration::from_millis(50),
+            /*telemetry*/ None,
+            HashMap::new(),
+        );
+
+        let ApiError::StreamFailure { kind, message } = recv_stream_error(stream).await else {
+            panic!("expected stream failure");
+        };
+        assert_eq!(kind, ProviderStreamErrorKind::IdleTimeout);
+        assert_eq!(message, "idle timeout waiting for SSE");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn claude_empty_known_deltas_do_not_extend_idle_deadline() {
+        let start = Bytes::from_static(
+            b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\"}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+        );
+        let empty_deltas = stream::unfold((), |()| async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            Some((
+                Ok(Bytes::from_static(
+                    b"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"\"}}\n\n",
+                )),
+                (),
+            ))
+        });
+        let bytes = stream::once(async { Ok(start) }).chain(empty_deltas);
+        let stream = spawn_claude_response_stream(
+            codex_client::StreamResponse {
+                status: StatusCode::OK,
+                headers: HeaderMap::new(),
+                bytes: Box::pin(bytes),
+            },
+            Duration::from_millis(50),
+            /*telemetry*/ None,
+            HashMap::new(),
+        );
+
+        let ApiError::StreamFailure { kind, message } = recv_stream_error(stream).await else {
+            panic!("expected stream failure");
+        };
+        assert_eq!(kind, ProviderStreamErrorKind::IdleTimeout);
+        assert_eq!(message, "idle timeout waiting for SSE");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn claude_meaningful_events_extend_idle_deadline() {
+        let chunks = [
+            Bytes::from_static(
+                b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_progress\",\"content\":[]}}\n\n",
+            ),
+            Bytes::from_static(
+                b"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n",
+            ),
+            Bytes::from_static(b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"),
+        ];
+        let bytes = stream::iter(chunks).then(|chunk| async move {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            Ok(chunk)
+        });
+        let stream = spawn_claude_response_stream(
+            codex_client::StreamResponse {
+                status: StatusCode::OK,
+                headers: HeaderMap::new(),
+                bytes: Box::pin(bytes),
+            },
+            Duration::from_millis(50),
+            /*telemetry*/ None,
+            HashMap::new(),
+        );
+        let mut rx = stream.rx_event;
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            events.push(event);
+        }
+
+        assert_matches!(
+            events.last(),
+            Some(Ok(ResponseEvent::Completed { response_id, .. }))
+                if response_id == "msg_progress"
+        );
     }
 
     #[tokio::test]

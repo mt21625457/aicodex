@@ -130,6 +130,7 @@ async fn recorded_context_tokens_for_context_window(
     sess: &Session,
     turn_context: &TurnContext,
 ) -> i64 {
+    // Chat has no Responses server-context source marker, so it keeps the local estimate.
     let should_ignore_local_estimate = turn_context.provider.info().wire_api == WireApi::Responses
         && sess.token_usage_info().await.is_some_and(|info| {
             info.context_source == Some(ContextTokenUsageSource::LocalEstimate)

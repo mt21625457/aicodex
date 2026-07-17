@@ -17,7 +17,6 @@ use http::HeaderMap;
 use http::HeaderValue;
 use http::Method;
 use http::StatusCode;
-use http::header::USER_AGENT;
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
@@ -25,7 +24,6 @@ use std::time::Duration;
 use tracing::instrument;
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
-const AICODEX_USER_AGENT: &str = "aicodex";
 const CLAUDE_COUNT_TOKENS_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct ClaudeMessagesClient<T: HttpTransport> {
@@ -74,7 +72,6 @@ impl<T: HttpTransport> ClaudeMessagesClient<T> {
         options: ClaudeMessagesOptions,
     ) -> Result<ResponseStream, ApiError> {
         let mut headers = options.extra_headers;
-        headers.insert(USER_AGENT, HeaderValue::from_static(AICODEX_USER_AGENT));
         if let Some(ref conv_id) = options.conversation_id {
             insert_header(&mut headers, "x-client-request-id", conv_id);
         }
@@ -108,7 +105,6 @@ impl<T: HttpTransport> ClaudeMessagesClient<T> {
         options: ClaudeMessagesOptions,
     ) -> Result<ClaudeCountTokensResponse, ApiError> {
         let mut headers = options.extra_headers;
-        headers.insert(USER_AGENT, HeaderValue::from_static(AICODEX_USER_AGENT));
         if let Some(ref conv_id) = options.conversation_id {
             insert_header(&mut headers, "x-client-request-id", conv_id);
         }

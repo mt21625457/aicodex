@@ -1371,7 +1371,9 @@ mod tests {
 
     #[tokio::test]
     async fn host_blocked_subdomain_wildcards_exclude_apex() {
-        let state = network_proxy_state_for_policy(network_settings(&["*.openai.com"], &[]));
+        let mut config = network_settings(&["*.openai.com"], &[]);
+        config.allow_local_binding = true;
+        let state = network_proxy_state_for_policy(config);
 
         assert_eq!(
             state

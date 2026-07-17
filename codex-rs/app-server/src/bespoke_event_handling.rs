@@ -3,7 +3,7 @@ use crate::error_code::invalid_request;
 use crate::outgoing_message::ClientRequestResult;
 use crate::outgoing_message::ThreadScopedOutgoingMessageSender;
 use crate::request_processors::populate_thread_turns_from_history;
-use crate::request_processors::thread_from_stored_thread;
+use crate::request_processors::thread_from_stored_thread_with_wire_api;
 use crate::request_processors::thread_settings_from_core_snapshot;
 use crate::server_request_error::is_turn_transition_server_request_error;
 use crate::thread_state::ThreadState;
@@ -1119,7 +1119,8 @@ pub(crate) async fn apply_bespoke_event_handling(
                         return;
                     }
                 };
-                let fallback_cwd = conversation.config_snapshot().await.cwd().clone();
+                let config_snapshot = conversation.config_snapshot().await;
+                let fallback_cwd = config_snapshot.cwd().clone();
                 let stored_thread = match conversation
                     .read_thread(
                         /*include_archived*/ true, /*include_history*/ true,
@@ -1147,6 +1148,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                     conversation.session_configured().session_id.to_string(),
                     fallback_model_provider.as_str(),
                     &fallback_cwd,
+                    config_snapshot.wire_api.to_string(),
                     loaded_status,
                 ) {
                     Ok(response) => response,
@@ -1549,11 +1551,16 @@ fn thread_rollback_response_from_stored_thread(
     session_id: String,
     fallback_model_provider: &str,
     fallback_cwd: &AbsolutePathBuf,
+    wire_api: String,
     loaded_status: ThreadStatus,
 ) -> std::result::Result<ThreadRollbackResponse, String> {
     let thread_id = stored_thread.thread_id;
-    let (mut thread, history) =
-        thread_from_stored_thread(stored_thread, fallback_model_provider, fallback_cwd);
+    let (mut thread, history) = thread_from_stored_thread_with_wire_api(
+        stored_thread,
+        fallback_model_provider,
+        fallback_cwd,
+        Some(wire_api),
+    );
     thread.session_id = session_id;
     let Some(history) = history else {
         return Err(format!(
@@ -2257,6 +2264,7 @@ mod tests {
             thread_id.to_string(),
             "fallback-provider",
             &fallback_cwd,
+            "chat".to_string(),
             ThreadStatus::NotLoaded,
         )
         .expect("rollback response should rebuild from stored history");
@@ -2266,6 +2274,7 @@ mod tests {
         assert_eq!(response.thread.preview, "fallback preview");
         assert_eq!(response.thread.name.as_deref(), Some("Rollback thread"));
         assert_eq!(response.thread.status, ThreadStatus::NotLoaded);
+        assert_eq!(response.thread.wire_api.as_deref(), Some("chat"));
         assert_eq!(response.thread.turns.len(), 1);
         assert_eq!(response.thread.turns[0].items.len(), 2);
         Ok(())

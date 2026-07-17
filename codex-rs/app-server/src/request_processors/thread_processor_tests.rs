@@ -49,6 +49,34 @@ mod thread_wire_api_tests {
             );
         }
     }
+
+    #[test]
+    fn provider_identity_takes_precedence_over_model_name() {
+        assert_eq!(
+            infer_thread_wire_api(Some("gpt-5.2"), "openai_chat"),
+            Some("chat".to_string())
+        );
+        assert_eq!(
+            infer_thread_wire_api(Some("gpt-5.2"), "aicodex_gateway_claude"),
+            Some("claude".to_string())
+        );
+    }
+
+    #[test]
+    fn does_not_treat_english_chat_suffix_as_chat_wire_api() {
+        assert_eq!(
+            infer_thread_wire_api(Some("gpt-5.2"), "not_a_chat"),
+            Some("responses".to_string())
+        );
+    }
+
+    #[test]
+    fn does_not_treat_responses_substring_as_responses_wire_api() {
+        assert_eq!(
+            infer_thread_wire_api(Some("claude-sonnet-4"), "custom_responses_proxy"),
+            Some("claude".to_string())
+        );
+    }
 }
 
 mod background_terminal_pagination_tests {
@@ -775,6 +803,7 @@ mod thread_processor_behavior_tests {
         let config_snapshot = ThreadConfigSnapshot {
             model: "gpt-5".to_string(),
             model_provider_id: "openai".to_string(),
+            wire_api: WireApi::Responses,
             service_tier: Some("flex".to_string()),
             approval_policy: codex_protocol::protocol::AskForApproval::OnRequest,
             approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer::User,

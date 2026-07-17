@@ -280,6 +280,8 @@ pub(crate) async fn run_turn(
         let is_initial_sampling_request = next_step_context.is_some();
         let skip_pre_sampling_admission = skip_pre_sampling_admission_once;
         skip_pre_sampling_admission_once = false;
+        // Chat intentionally follows Responses here: only Claude performs admission before the
+        // initial sampling request because its native context recovery depends on this estimate.
         let should_run_pre_sampling_admission = !skip_pre_sampling_admission
             && !post_compaction_model_follow_up_active
             && pending_input.is_empty()
@@ -556,6 +558,8 @@ pub(crate) async fn run_turn(
                 }
                 continue;
             }
+            // Chat intentionally follows Responses and surfaces this error without Claude's
+            // provider-specific in-turn recovery attempt.
             Err(CodexErr::ContextWindowExceeded)
                 if turn_context.provider.info().wire_api == WireApi::Claude =>
             {
@@ -1056,6 +1060,7 @@ async fn pre_sampling_admission_status(
                 .auto_compact_scope_limit
                 .is_some_and(|limit| tokens >= limit)
         });
+    // Chat intentionally follows Responses; this full-window estimate is Claude-specific.
     let estimated_full_context_window_limit_reached =
         turn_context.config.model_auto_compact_token_limit.is_none()
             && turn_context.provider.info().wire_api == WireApi::Claude
@@ -1575,6 +1580,7 @@ async fn run_sampling_request(
             turn_context.as_ref(),
             base_instructions.clone(),
         );
+        // Chat intentionally does not emit Claude's native in-flight context estimate.
         if turn_context.provider.info().wire_api == WireApi::Claude {
             sess.emit_in_flight_context_estimate(&turn_context).await;
         }
@@ -2769,6 +2775,7 @@ async fn try_run_sampling_request(
                     }),
                 )
                 .await;
+                // Chat uses the same provider-usage accounting path as Responses.
                 let budget_result = if turn_context.provider.info().wire_api == WireApi::Claude {
                     completed_claude_response = true;
                     completed_claude_token_usage = token_usage;
@@ -2976,6 +2983,7 @@ async fn try_run_sampling_request(
         // counts only after pending tools resolve so clients do not see progress events while the
         // turn is waiting on the user. This also needs to happen before returning cancellation so
         // token usage already recorded from the completed response is still persisted.
+        // Chat usage is already recorded but does not use Responses server-context estimation.
         if turn_context.provider.info().wire_api == WireApi::Responses {
             update_responses_token_usage_context_estimate(sess.as_ref(), turn_context.as_ref())
                 .await;

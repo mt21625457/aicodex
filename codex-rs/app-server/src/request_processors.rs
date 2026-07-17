@@ -648,7 +648,8 @@ use self::thread_resume_redaction::*;
 use self::thread_summary::*;
 
 pub(crate) use self::thread_lifecycle::populate_thread_turns_from_history;
-pub(crate) use self::thread_processor::thread_from_stored_thread;
+pub(crate) use self::thread_processor::thread_from_stored_thread_with_config;
+pub(crate) use self::thread_processor::thread_from_stored_thread_with_wire_api;
 #[cfg(test)]
 pub(crate) use self::thread_summary::read_summary_from_rollout;
 #[cfg(test)]

@@ -101,6 +101,7 @@ pub enum WireApi {
     Unspecified = 0,
     Responses = 1,
     Claude = 2,
+    Chat = 3,
 }
 impl WireApi {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -112,6 +113,7 @@ impl WireApi {
             Self::Unspecified => "WIRE_API_UNSPECIFIED",
             Self::Responses => "WIRE_API_RESPONSES",
             Self::Claude => "WIRE_API_CLAUDE",
+            Self::Chat => "WIRE_API_CHAT",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -120,6 +122,7 @@ impl WireApi {
             "WIRE_API_UNSPECIFIED" => Some(Self::Unspecified),
             "WIRE_API_RESPONSES" => Some(Self::Responses),
             "WIRE_API_CLAUDE" => Some(Self::Claude),
+            "WIRE_API_CHAT" => Some(Self::Chat),
             _ => None,
         }
     }

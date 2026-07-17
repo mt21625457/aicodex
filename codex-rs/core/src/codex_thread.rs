@@ -7,6 +7,7 @@ use crate::session::SteerInputError;
 use crate::session::session::Session;
 use codex_exec_server::SelectedCapabilityRootsStatus;
 use codex_features::Feature;
+use codex_model_provider_info::WireApi;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ApprovalsReviewer;
@@ -62,6 +63,7 @@ use codex_rollout::state_db::StateDbHandle;
 pub struct ThreadConfigSnapshot {
     pub model: String,
     pub model_provider_id: String,
+    pub wire_api: WireApi,
     pub service_tier: Option<String>,
     pub approval_policy: AskForApproval,
     pub approvals_reviewer: ApprovalsReviewer,
