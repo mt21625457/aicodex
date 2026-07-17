@@ -2,8 +2,9 @@
 
 ## 状态
 
-**提案已完成内部审核修订（2026-07-17）。**  
-审核决议已写入 `design.md`「审核决议」；实现前仍须人工确认该节后勾选 `tasks.md` §0。
+**提案已完成第二轮安全与可实施性审核修订（2026-07-17）。**
+审核决议已写入 `design.md`「审核决议」；本次批准仅授权修订提案文档，Rust
+实现前仍须人工确认该节后勾选 `tasks.md` §0.1。
 
 ## 目标（一句话）
 
@@ -14,7 +15,7 @@
 | 文件 | 内容 |
 | --- | --- |
 | [proposal.md](./proposal.md) | Why / What / Capabilities / Impact |
-| [design.md](./design.md) | 架构、**已锁定**决策、鉴权、分期、风险 |
+| [design.md](./design.md) | 架构、**已锁定**决策、鉴权、硬上限、分期、风险 |
 | [tasks.md](./tasks.md) | 可勾选实施清单（含审核门禁 §0） |
 | [specs/kimi-moonshot-web-search/spec.md](./specs/kimi-moonshot-web-search/spec.md) | Kimi 路径 Moonshot 搜索行为需求 |
 
@@ -38,6 +39,10 @@
 | 5 | 出现任一富命令（open/click/…）→ **整次调用** unsupported；`recency`/`domains` 忽略并注明 |
 | 6 | `web.run` 与 plain `web_search` **共用** Moonshot 后端（若 standalone 开启） |
 | 7 | Feature `kimi_moonshot_web_search` **默认 true**；`moonshot_search.enabled=false` 可退回 OpenAI 路径 |
+| 8 | 跨域显式 search URL **不得**复用主 provider 凭据；必须使用独立 Moonshot 凭据 |
+| 9 | HTTP 响应、字段、结果数与最终 tool 输出均有硬上限；最终注入模型不超过 8K tokens |
+| 10 | 共享解析/路由放入独立 `codex-web-search` crate，禁止扩张 `codex-core` 公共 API |
+| 11 | Kimi `web.run` 可见性、结构化事件结果、外部上下文标记和集成测试均为 Phase A 必做 |
 
 ## 校验
 

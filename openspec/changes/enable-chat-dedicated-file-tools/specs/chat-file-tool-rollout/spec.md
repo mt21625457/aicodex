@@ -29,11 +29,27 @@ foundation and MUST fail closed when that dependency is unavailable.
 
 #### Scenario: unavailable foundation fails closed
 
-- **WHEN** a non-legacy Chat mode is configured but the dedicated handlers or
-  safety foundation are unavailable
-- **THEN** Codex rejects configuration or session startup with an actionable
-  dependency error
+- **WHEN** a non-legacy Chat mode is resolved for a new Chat session while the
+  `dedicated_file_tools` gate is disabled
+- **THEN** Codex rejects the resolved session configuration with an actionable
+  dependency error identifying the selected mode and `legacy` rollback
 - **AND** Codex does not silently send a legacy sampling request
+
+#### Scenario: incomplete runtime plan fails before HTTP sampling
+
+- **WHEN** a non-legacy Chat session reaches request construction but any
+  dedicated runtime, visible declaration, or reverse mapping is missing
+- **THEN** Codex fails request construction before making the first provider HTTP
+  call
+- **AND** the error identifies the missing dependency and suggests `legacy`
+  rollback
+
+#### Scenario: non-Chat session ignores the Chat rollout field
+
+- **WHEN** a Responses or Claude session carries a non-legacy
+  `chat_file_tool_mode` while the Chat dependency gate is disabled
+- **THEN** the session retains its existing tool policy
+- **AND** it does not fail solely because the Chat-only gate is disabled
 
 ### Requirement: Chat file-tool rollout MUST remain isolated from other wires
 
@@ -52,6 +68,7 @@ policies, and changing the Chat mode MUST NOT rewrite conversation history.
 
 - **WHEN** a user changes Chat mode for a new session
 - **THEN** the new tool plan reflects the selected mode
+- **AND** an already-running session does not switch mode at a turn boundary
 - **AND** previously stored assistant tool calls and outputs are not rewritten
 
 ### Requirement: Chat dedicated guidance MUST reference callable mapped tools
@@ -60,7 +77,10 @@ When dedicated file tools are model-visible, Codex MUST derive bounded Chat
 guidance from the actual serialized tool declarations and reverse metadata. The
 guidance MUST unambiguously reference each callable mapped read/edit/write tool,
 MUST require dependent Read then Edit/Write operations to occur across
-completions, and MUST preserve documented specialized shell fallbacks.
+completions, and MUST preserve documented specialized shell fallbacks. The
+guidance MUST be represented by a fixed-marker `ContextualUserFragment` under
+`core/context`, MUST have a hard limit below 1K tokens, and MUST require both an
+explicit non-legacy mode and matching first-party serialized metadata.
 
 #### Scenario: guidance uses actual mapped names
 
@@ -80,6 +100,21 @@ completions, and MUST preserve documented specialized shell fallbacks.
 
 - **WHEN** Chat mode is `legacy`
 - **THEN** no guidance claims that dedicated file tools are available
+
+#### Scenario: same-named third-party tools do not activate guidance
+
+- **WHEN** Chat mode is `legacy` and dynamic or third-party tools use semantic
+  names `read_file`, `edit_file`, and `write_file`
+- **THEN** Codex does not infer rollout mode from those names
+- **AND** no dedicated Chat guidance is injected
+
+#### Scenario: guidance remains stable and bounded within the session
+
+- **WHEN** a non-legacy Chat session retries or performs later sampling steps
+- **THEN** the rendered guidance stays below its hard token cap and is
+  deep-equal for the same resolved tool identities
+- **AND** Codex does not append duplicate guidance fragments to conversation
+  history
 
 ### Requirement: Chat provider incompatibility MUST NOT trigger automatic legacy replay
 

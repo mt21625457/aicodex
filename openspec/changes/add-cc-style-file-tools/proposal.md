@@ -27,15 +27,18 @@ Responses 上已验证的 `apply_patch` 默认。
   - `edit_file`：精确 `old_string` / `new_string` 替换（可选 `replace_all`）
   - `write_file`：创建或整文件覆盖写
 - 执行层复用 Codex 既有 `ExecutorFileSystem`、workspace 边界、审批/sandbox、
-  diff/patch 上报；写操作进入共享的 reviewable file-mutation 路径，不通过递归
-  调用公开 `apply_patch` handler 改写工具身份。
+  diff/patch 上报；扩展 filesystem/exec-server 边界以支持 sandbox-compatible bounded
+  streaming read 与 executor-side conditional write。写操作进入共享的 reviewable
+  file-mutation 路径，不通过递归调用公开 `apply_patch` handler 改写工具身份。
 - 引入 **turn-scoped read receipt**（先读后写）：以
-  `(environment_id, canonical PathUri)` 为键，保存固定大小 fingerprint、mtime、文件
-  大小与已读范围。Edit/Write 在未先读或内容 fingerprint 冲突时拒绝；mtime 只作
-  诊断/快速信号，不能成为一致性的唯一依据。
+  `(environment_id, canonical PathUri)` 为键，保存原始文件字节 SHA-256、mtime、文件
+  大小、已读范围与 originating sampling step。Edit/Write 在未先读、receipt 来自同一
+  provider response/batch 或 SHA-256 冲突时拒绝；mtime 只作诊断/快速信号，不能成为
+  一致性的唯一依据。
 - partial read 可为范围内的精确 Edit 建立 receipt；整文件 Write 必须有完整读取覆盖。
-  文件工具对可 fingerprint/可编辑文件设置硬大小上限，超限时返回允许使用专门
-  shell/脚本处理的明确例外，而不是让文件永久不可编辑。
+  文件工具锁定输出、输入、editable、scan 与 receipt-store 硬上限。超限时返回允许
+  使用专门 shell/脚本处理的明确例外；大文件局部读取若未扫描到 EOF，`total_lines`
+  明确为未知，不能为计算总行数做无界扫描。
 - 工具选型引导（CC 思路）：
   - 仅当三个 dedicated 工具实际 model-visible 时注入：读用 `read_file`，改用
     `edit_file`，新建/整写用 `write_file`；普通文件 IO 不走 shell
@@ -52,11 +55,15 @@ Responses 上已验证的 `apply_patch` 默认。
   - `apply_patch` 默认仅保留 hidden dispatch 兼容；只有显式
     `dedicated_with_apply_patch` 模式才同时广告
 - OpenAI Responses 在本变更中保留 `apply_patch` 为主编辑面且不广告 dedicated
-  文件工具；未来若要开启必须另开增量提案。
+  文件工具；Chat Completions 同样保持现有工具面。未来若要开启必须另开增量提案。
+- rollout 使用一个 typed feature config：
+  `[features.dedicated_file_tools]` 的 `enabled` 与 `mode`。布尔简写仍可仅开关 feature；
+  object 形式的 `mode` 默认为 `auto`，未知字段或枚举值加载失败。gate 关闭时三个新
+  handlers 不注册、不广告，直接调用返回 unsupported-tool。
 - 增加 mock 端到端工具环测试（Claude 工具真值表、先读后写、连续编辑、远程
   Linux/Windows executor、多 environment、CRLF/编码、拒绝 shell 偏置回归）。
-- 在 `docs/config.md` 记录 Claude/Windows 文件工具策略与 feature 门控；若
-  触及 `ConfigToml`/feature flags，同步 regenerate `config.schema.json`。
+- 在 `docs/config.md` 记录 Claude/Windows 文件工具策略与 feature 门控，并同步
+  regenerate `config.schema.json`。
 
 ## Capabilities
 
@@ -80,15 +87,18 @@ Responses 上已验证的 `apply_patch` 默认。
 ## Impact
 
 - 受影响 crate：
+  - `codex-rs/file-system` — bounded streaming/metadata 契约与条件写 precondition 类型
+  - `codex-rs/exec-server-protocol` / `codex-rs/exec-server` — 远程 sandbox-compatible
+    stream 与 executor-side `must_not_exist` / `match_sha256` 条件提交
+  - `codex-rs/features` — `dedicated_file_tools` typed feature config 与 mode enum
   - `codex-rs/core` — 新 handler、turn-scoped read receipt、共享 reviewable
     mutation 路径、spec_plan 注册、提示片段、Claude 工具选择与 mock 集成测试
   - `codex-rs/tools` — 仅当现有普通 function-tool Claude 序列化不能满足 schema
     时才修改；不得为 dedicated 工具引入 provider-specific 重复协议层
-  - `codex-rs/apply-patch`（若需要）— 抽取/扩展可复用的文本解码、编码保持或
-    commit-time precondition；不复制第二套编码实现
+  - `codex-rs/apply-patch` — 抽取/扩展可复用的文本解码、编码保持与 mutation
+    preparation；不复制第二套编码实现
   - `codex-rs/prompts`（若指令模板落于此）— 文件工具使用指引
-  - `docs/config.md` / `codex-rs/core/config.schema.json` — feature/策略说明与
-    schema（若配置变更）
+  - `docs/config.md` / `codex-rs/core/config.schema.json` — feature/策略说明与 schema
 - 明确复用、不重造：
   - ApplyPatch 的 FS sandbox / 审批 / file-change 流作为共享写路径底层，但不递归
     调用公开 handler 或把 dedicated tool identity 改成 `apply_patch`
@@ -108,6 +118,10 @@ Responses 上已验证的 `apply_patch` 默认。
     `PathUri` 和远程 executor 测试锁定
   - partial/full read 与大小上限冲突 — receipt 记录读取覆盖，Edit 只改已见范围，
     Write 要求完整覆盖
+  - remote sandbox 不支持 streaming 或局部读取为总行数无界扫描 — 扩展 exec-server
+    stream，并以 `64 MiB` scan cap 和 nullable `total_lines` 失败关闭
+  - 审批/并发期间发生覆盖 — expected SHA-256 在目标 executor 内紧邻提交重验；创建
+    使用原子 `must_not_exist`，Codex mutation 按 environment/path 串行化
   - CRLF/legacy encoding 被静默改写 — Edit 保持未修改字节/行尾，无法安全往返
     的编码必须拒绝
   - 写路径若绕过 apply-patch 审阅会破坏现有 UX — 设计要求突变仍进审阅路径
@@ -115,16 +129,22 @@ Responses 上已验证的 `apply_patch` 默认。
     Responses 默认保持 `apply_patch` 优先
 - 回滚策略：
   - rollout feature 关闭 dedicated 文件工具广告与注册，恢复
-    `apply_patch`/`text_editor`/shell 现状；handlers 可保留但不可见
+    `apply_patch`/`text_editor`/shell 现状；共享内部 primitives 可保留，但三个新工具名
+    不得留在 dispatch registry
 - 验证命令（实现阶段，审核通过后）：
   - `cd codex-rs && just fmt`
   - `cd codex-rs && just test -p codex-tools`（仅当 tools crate 变更）
   - `cd codex-rs && just test -p codex-apply-patch`（仅当共享 mutation/编码层变更）
+  - `cd codex-rs && just test -p codex-file-system`
+  - `cd codex-rs && just test -p codex-exec-server-protocol`
+  - `cd codex-rs && just test -p codex-exec-server`
+  - `cd codex-rs && just test -p codex-features`
   - `cd codex-rs && just test -p codex-core`（文件工具与 Claude wire 相关用例，
     使用 `build_with_auto_env()`）
   - 远程 Linux executor：按 `$remote-tests` 运行 core integration suite
   - 远程 Windows executor：`bazel test //codex-rs/core:core-all-wine-exec-test`
-  - schema 变更时：`cd codex-rs && just write-config-schema`
+  - `cd codex-rs && just write-config-schema`
+  - Cargo 依赖清单变更时：仓库根目录运行 `just bazel-lock-update`
   - `openspec validate add-cc-style-file-tools --strict`
 - 外部参考（只比较行为，不引入依赖）：
   - `/Users/mt/code/mt-ai/cc/src/tools/FileReadTool`

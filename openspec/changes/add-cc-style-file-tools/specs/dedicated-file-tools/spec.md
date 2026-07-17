@@ -14,8 +14,10 @@ operations.
 - **THEN** Codex reads the file through its filesystem layer
 - **AND** the tool result includes file contents with line numbers
 - **AND** no `shell_command` or native bash tool is invoked for that read
-- **AND** the result reports the 1-based returned range, total line count,
-  completeness, and whether the read established a write-eligible receipt
+- **AND** the result uses the fixed `Path`/`Lines`/`Total lines`/`Complete`/
+  `Write eligible`/`Receipt scope` header
+- **AND** `Total lines` is `unknown` when a bounded large-file scan did not reach
+  EOF rather than triggering an unbounded scan
 
 #### Scenario: edit_file applies a unique string replacement
 
@@ -44,14 +46,25 @@ operations.
 - **AND** Codex does not reinterpret the path using the core host's native
   `PathBuf` convention
 
+#### Scenario: remote sandboxed range read stays bounded
+
+- **WHEN** `read_file` targets a remote environment whose filesystem operations
+  require platform sandboxing
+- **THEN** Codex uses a sandbox-compatible bounded stream or range primitive
+- **AND** it does not fall back to loading the entire file through an unbounded
+  read RPC
+
 ### Requirement: edit_file and write_file MUST enforce read-before-write state
 
 Codex MUST maintain bounded, turn-scoped per-path read receipts from successful
 `read_file` calls. Receipt identity MUST include the selected environment id and
-the executor-canonical `PathUri`.
+the executor-canonical `PathUri`; content identity MUST be a 32-byte SHA-256 of
+the original file bytes; and every receipt MUST record the sampling step that
+created or refreshed it.
 `edit_file` on an existing file and `write_file` overwrite of an existing file
 MUST fail without mutating the file when no prior successful read exists for
-that path, or when the file changed since the recorded read.
+that path, when the only qualifying receipt originated in the same provider
+tool-call batch, or when the file changed since the recorded read.
 
 #### Scenario: edit_file rejects when file was never read
 
@@ -70,7 +83,7 @@ that path, or when the file changed since the recorded read.
 #### Scenario: conflicting mtime with unchanged content still allows edit on Windows-style false dirty
 
 - **WHEN** a file's modification time is newer than the last `read_file` record
-  but a full-file read fingerprint still matches the on-disk contents
+  but its raw-byte SHA-256 still matches the on-disk contents
 - **THEN** Codex treats the receipt as still valid and may allow `edit_file`
   or overwrite `write_file`
 - **AND** if contents differ, Codex MUST reject the mutation and require a new
@@ -78,7 +91,7 @@ that path, or when the file changed since the recorded read.
 
 #### Scenario: same mtime with changed content rejects mutation
 
-- **WHEN** the current file content fingerprint differs from the receipt but its
+- **WHEN** the current file raw-byte SHA-256 differs from the receipt but its
   modification time is unchanged
 - **THEN** Codex rejects `edit_file` or overwrite `write_file`
 - **AND** no mutation occurs
@@ -87,9 +100,20 @@ that path, or when the file changed since the recorded read.
 
 - **WHEN** a new user turn starts or a receipt-store hard limit is reached
 - **THEN** receipts from the previous turn are unavailable and store growth
-  remains within its configured hard bounds
+  remains within its locked hard bounds
 - **AND** an evicted receipt causes a read-first error rather than bypassing the
   safety check
+
+#### Scenario: same-batch read or create cannot authorize a dependent mutation
+
+- **WHEN** one provider response emits `read_file` or create `write_file` and a
+  dependent `edit_file` or overwrite `write_file` for the same path
+- **THEN** the mutation rejects the receipt created in that same sampling step,
+  regardless of runtime scheduling order
+- **AND** the model is instructed to issue the dependent mutation in a later
+  completion
+- **AND** the dependent mutation makes no additional change; an independently
+  valid create may remain committed
 
 ### Requirement: Successful edit_file and write_file mutations MUST refresh read state
 
@@ -103,15 +127,15 @@ MUST invalidate the old receipt instead of retaining stale authorization.
 
 - **WHEN** `edit_file` successfully changes an existing file
 - **THEN** Codex refreshes the receipt with the committed fingerprint
-- **AND** a subsequent `edit_file` in the same user turn can proceed without a
-  redundant read when no external change occurred
+- **AND** a subsequent `edit_file` from a later sampling step in the same user
+  turn can proceed without a redundant read when no external change occurred
 
 #### Scenario: create establishes receipt for immediate refinement
 
 - **WHEN** `write_file` successfully creates a new file
 - **THEN** Codex creates a full-coverage receipt for the committed contents
-- **AND** a following `edit_file` in the same user turn can refine that file
-  without first calling `read_file`
+- **AND** an `edit_file` from a later sampling step in the same user turn can
+  refine that file without first calling `read_file`
 
 #### Scenario: unconfirmed commit invalidates stale receipt
 
@@ -123,8 +147,8 @@ MUST invalidate the old receipt instead of retaining stale authorization.
 
 ### Requirement: Partial reads MUST support safe targeted edits without enabling blind overwrite
 
-For files below the file-tool editable byte cap, `read_file` MUST compute a
-full-file fingerprint even when it returns only an `offset`/`limit` range. A
+For files no larger than 8 MiB, `read_file` MUST compute a full raw-byte SHA-256
+even when it returns only an `offset`/`limit` range. A
 partial read MAY authorize `edit_file` only for occurrences fully contained in
 observed ranges. It MUST NOT authorize whole-file `write_file` overwrite.
 
@@ -144,11 +168,42 @@ observed ranges. It MUST NOT authorize whole-file `write_file` overwrite.
 
 #### Scenario: file above editable cap has non-write-eligible receipt
 
-- **WHEN** `read_file` returns a requested range from a file above the dedicated
-  editable byte cap
+- **WHEN** `read_file` returns a requested range from a file above 8 MiB
 - **THEN** the output is bounded and the receipt is marked non-write-eligible
+- **AND** scanning stops by 64 MiB; total lines are unknown unless EOF was reached
 - **AND** the error guidance permits a specialized script or shell workflow as
   an explicit exception
+
+### Requirement: Dedicated file tools MUST enforce fixed resource bounds
+
+The initial dedicated-file-tools rollout MUST enforce the following non-configurable
+hard limits: path length 4,096 UTF-8 bytes; `offset` 1 through 1,000,000; `limit`
+1 through 2,000; model-visible read output 64 KiB and approximately 10,000 tokens;
+editable file size 8 MiB; per-call scan 64 MiB; complete serialized mutation
+arguments 64 KiB and approximately 10,000 tokens; and a receipt store bounded to
+128 entries, 64 merged ranges per entry, 1,024 merged ranges total, and 256 KiB
+of accounted memory.
+
+#### Scenario: output stops before exceeding context limits
+
+- **WHEN** line-numbered content would exceed 64 KiB or approximately 10,000 tokens
+- **THEN** `read_file` stops at a complete line boundary before the first limit
+- **AND** preserves the fixed metadata header and reports `Complete: false`
+
+#### Scenario: receipt storage reaches a hard limit
+
+- **WHEN** an entry-count, total-range, or accounted-memory limit is reached
+- **THEN** Codex evicts whole least-recently-used receipts until within bounds
+- **AND** a path whose receipt was evicted requires a new read
+- **AND** exceeding 64 merged ranges in one receipt invalidates that receipt
+  instead of dropping arbitrary observed ranges
+
+#### Scenario: mutation arguments exceed their combined cap
+
+- **WHEN** the complete serialized `edit_file` or `write_file` arguments exceed
+  either mutation-argument cap
+- **THEN** Codex rejects the call without reading or mutating the target
+- **AND** returns guidance to use a smaller Edit or an explicit specialized fallback
 
 ### Requirement: edit_file MUST use exact string replacement semantics
 
@@ -181,7 +236,10 @@ grammar as its primary input contract. Creating brand-new files MUST use
 policy, deny rules, and canonical containment equivalent to existing Codex
 file-edit controls. Lexical `..` MAY resolve to a legal path inside an allowed
 root, but resolved/canonical escape MUST be rejected. Mutations MUST NOT bypass
-the reviewable file-change path.
+the reviewable file-change path. After approval, overwrite mutations MUST commit
+through an executor-side `MatchSha256` precondition and creates through atomic
+`MustNotExist`. An executor that cannot enforce the selected precondition MUST
+fail closed and MUST NOT retry through unconditional `write_file`.
 
 #### Scenario: path outside workspace is rejected
 
@@ -200,14 +258,29 @@ the reviewable file-change path.
 
 - **WHEN** a proposed Edit/Write waits for approval and the target changes before
   commit
-- **THEN** the commit-time expected-content precondition fails
+- **THEN** the executor-side `MatchSha256` precondition fails
 - **AND** Codex returns a read-again error without overwriting the external change
 
 #### Scenario: concurrent create does not clobber a newly appeared file
 
 - **WHEN** `write_file` planned a create but the target exists by commit time
-- **THEN** the no-clobber precondition rejects the create
+- **THEN** atomic `MustNotExist` rejects the create
 - **AND** the newly appeared file remains unchanged
+
+#### Scenario: old remote executor cannot enforce conditional write
+
+- **WHEN** the selected executor does not support the conditional-write method
+- **THEN** Codex returns a model-correctable unsupported-capability error
+- **AND** it does not retry using the legacy unconditional write RPC
+
+#### Scenario: concurrent Codex writes do not inherit same-batch refreshes
+
+- **WHEN** two overwrite mutations for the same path are emitted in one provider
+  response from the same prior-step receipt
+- **THEN** mutations are serialized by environment and canonical path
+- **AND** the first completion cannot refresh receipt provenance to authorize the
+  second same-step mutation
+- **AND** at most a mutation whose original precondition still matches may commit
 
 ### Requirement: Text edits MUST preserve supported encoding and line-ending semantics
 
@@ -216,6 +289,7 @@ round-trip text decoding. Model-visible read text and edit matching MUST use a
 documented LF-normalized representation, while successful edits preserve
 untouched content, supported encoding, and line endings. Unsupported binary or
 non-round-trippable text MUST be rejected rather than silently transcoded.
+Conflict identity MUST use raw bytes, not the LF-normalized representation.
 
 #### Scenario: edit preserves CRLF and UTF-8 BOM
 
@@ -231,3 +305,17 @@ non-round-trippable text MUST be rejected rather than silently transcoded.
 - **THEN** `read_file` or the requested mutation returns a model-correctable
   unsupported-text error
 - **AND** no bytes are modified
+
+#### Scenario: existing lossless legacy text remains editable
+
+- **WHEN** the shared apply-patch decoder accepts a legacy-encoded file and can
+  encode the edited text back without loss
+- **THEN** dedicated Edit preserves that encoding and untouched bytes
+- **AND** it does not reject the file merely because it is non-UTF-8
+
+#### Scenario: line-ending-only external change invalidates receipt
+
+- **WHEN** an external actor changes only BOM, encoding bytes, or LF/CRLF bytes
+  after `read_file`
+- **THEN** raw-byte SHA-256 differs and the mutation is rejected
+- **AND** LF-normalized equality does not bypass the stale-read check

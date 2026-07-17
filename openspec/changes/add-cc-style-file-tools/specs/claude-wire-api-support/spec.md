@@ -3,10 +3,27 @@
 ### Requirement: Claude Messages MUST advertise file tools according to the selected policy
 
 When the `dedicated_file_tools` rollout gate is disabled, Claude Messages MUST
-preserve the existing tool plan. When it is enabled, `claude_file_tool_mode`
-MUST resolve to the finite policy described below. Dedicated tools MUST be
+preserve the existing model-visible and dispatch plans. When it is enabled, the
+typed feature-config `mode` MUST resolve to the finite policy described below;
+omission defaults to `auto`. Dedicated tools MUST be
 ordinary Claude function tools with JSON `input_schema` values that preserve
 required fields and descriptions.
+
+#### Scenario: disabled gate restores the prior dispatch plan
+
+- **WHEN** `[features] dedicated_file_tools = false`, the object config has
+  `enabled = false`, or the feature is absent
+- **THEN** `read_file`, `edit_file`, and `write_file` are absent from the Claude
+  request and the tool registry
+- **AND** a forged call to one of those names returns unsupported-tool without
+  filesystem access
+
+#### Scenario: feature config rejects an unknown mode
+
+- **WHEN** `features.dedicated_file_tools.mode` is not `auto`, `dedicated`, or
+  `dedicated_with_apply_patch`, or the object contains an unknown field
+- **THEN** config loading fails with a field-specific error
+- **AND** Codex does not silently fall back to another tool plan
 
 #### Scenario: auto mode preserves the Anthropic native editor as the sole primary editor
 
@@ -47,8 +64,9 @@ required fields and descriptions.
 When dedicated file tools are model-visible on a Claude turn, Codex MUST NOT
 also advertise Anthropic native `text_editor` tools. Codex MUST advertise
 `apply_patch` only in the explicit `dedicated_with_apply_patch` mode. In all
-other rollout-enabled modes, non-visible legacy handlers MAY remain registered
-for hidden dispatch compatibility.
+other rollout-enabled modes, pre-existing non-visible legacy handlers MAY remain
+registered for hidden dispatch compatibility. That legacy exception does not
+keep the three new dedicated names registered after their gate is disabled.
 
 #### Scenario: dedicated tools suppress native text_editor advertisement
 
@@ -89,7 +107,8 @@ allow the turn to continue.
 #### Scenario: Claude edit_file tool_use mutates a workspace file
 
 - **WHEN** a Claude stream issues `tool_use` for `edit_file` with valid
-  arguments after a successful `read_file` of the same path
+  arguments after a successful `read_file` of the same path in an earlier
+  provider response within the same user turn
 - **THEN** Codex executes the edit handler
 - **AND** the follow-up Claude request includes a non-error `tool_result` for
   that `tool_use` id

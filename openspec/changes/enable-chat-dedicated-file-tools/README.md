@@ -2,7 +2,7 @@
 
 ## 状态
 
-**提案阶段 — 未经人工批准且依赖 Phase A 未完成前不得实施。**
+**提案阶段 — 审核修订已批准；依赖 Phase A 未完成且未获实现授权前不得实施。**
 
 ## 目标
 
@@ -11,16 +11,20 @@
 
 ## 依赖
 
-1. `add-cc-style-file-tools`：提供 hidden handlers、receipt、PathUri、安全 mutation
+1. `add-cc-style-file-tools` Phase A：提供默认关闭的 rollout gate、hidden handlers、
+   带 sampling-step provenance 的 receipt、PathUri 与安全 mutation
 2. `unify-multi-backend-sampling-normalization`：提供 Chat request/SSE/tool loop 基础
 
 ## 已选定默认
 
 - `chat_file_tool_mode = "legacy"`
+- 配置字段固定为顶层 typed `ConfigToml` 字段，只对新建 Chat session 生效
 - `dedicated` 只广告 `read_file` / `edit_file` / `write_file`
 - `dedicated_with_apply_patch` 才同时广告 `apply_patch`
 - Chat wire 使用稳定 hashed tool name；prompt 使用实际 mapped name
 - provider 不兼容时显式失败，不自动重试/降级
+- guidance 由显式 mode 与实际 serialized mapping 共同驱动，并通过有界
+  `ContextualUserFragment` 注入
 - Responses 与 Claude 策略保持不变
 
 ## 文档地图

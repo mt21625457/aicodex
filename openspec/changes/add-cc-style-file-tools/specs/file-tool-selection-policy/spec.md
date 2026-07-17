@@ -67,3 +67,18 @@ Responses rollout requires a separate proposal.
   to existing model or provider defaults
 - **AND** `read_file` / `edit_file` / `write_file` do not appear because of this
   change
+
+### Requirement: Chat Completions tool surface remains unchanged in this change
+
+The `dedicated_file_tools` rollout defined by this change MUST NOT advertise or
+register `read_file`, `edit_file`, or `write_file` for Chat Completions turns.
+A future Chat Completions rollout requires a separate proposal.
+
+#### Scenario: Chat Completions turn keeps its existing tool plan
+
+- **WHEN** a Chat Completions-wire turn runs while the Claude dedicated feature
+  is either enabled or disabled
+- **THEN** its model-visible tool list remains governed by the existing Chat
+  tool policy
+- **AND** the three dedicated handler names are not added to that turn's dispatch
+  registry because of this change

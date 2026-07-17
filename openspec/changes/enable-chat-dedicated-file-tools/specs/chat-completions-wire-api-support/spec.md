@@ -82,6 +82,15 @@ receipt refresh, stale failure, and remote executor path handling.
 - **THEN** the create establishes a full receipt
 - **AND** the edit succeeds without an intervening read
 
+#### Scenario: same-batch dependency cannot consume a new receipt
+
+- **WHEN** one mocked Chat completion emits Read/Create and a dependent
+  Edit/Write in the same tool-call batch
+- **THEN** sampling-step provenance prevents the dependent mutation from using
+  the receipt created in that batch, regardless of dispatch order
+- **AND** the failure is returned as a model-correctable tool result without an
+  unauthorized overwrite
+
 #### Scenario: remote executor preserves environment-aware paths
 
 - **WHEN** the mocked Chat tool loop runs with an auto-selected remote Linux or
