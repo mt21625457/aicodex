@@ -62,6 +62,9 @@ const TOOL_INPUT_FIELD: &str = "input";
 const OUTPUT_SCHEMA_INSTRUCTIONS: &str =
     "Respond with JSON only. It must strictly match this schema:";
 const CLAUDE_LANGUAGE_INSTRUCTION: &str = "For visible thinking summaries and user-facing responses, use the dominant language of the latest user message.";
+const KIMI_K3_TOOL_INSTRUCTION: &str = "When the task requires tools, use the provided tools instead of guessing results. Follow each tool's input_schema exactly. If tool_search is available and the needed tool is not already provided, call tool_search first. After tool results arrive, continue from those results. Do not repeat an unchanged tool call unless new state or new evidence requires it.";
+const KIMI_K3_PARALLEL_TOOL_INSTRUCTION: &str =
+    "Put independent tool calls in the same assistant message so they can run in parallel.";
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct ClaudeToolHistoryRepairStats {
@@ -247,12 +250,22 @@ pub(crate) fn build_claude_messages_request(
         system_segments.push(output_schema_instruction(output_schema));
     }
     system_segments.push(CLAUDE_LANGUAGE_INSTRUCTION.to_string());
+    let is_kimi_k3 = claude_model_is_kimi_k3(&model_info.slug);
+    if is_kimi_k3 && !prompt.tools.is_empty() {
+        system_segments.push(KIMI_K3_TOOL_INSTRUCTION.to_string());
+        if prompt.parallel_tool_calls {
+            system_segments.push(KIMI_K3_PARALLEL_TOOL_INSTRUCTION.to_string());
+        }
+    }
+    let uses_local_tools =
+        options.provider_compat == ClaudeProviderCompat::Compatible || is_kimi_k3;
     let tools_json = create_tools_json_for_claude_messages_with_options(
         &prompt.tools,
         ClaudeMessagesToolOptions {
-            web_search_tool_kind: match options.provider_compat {
-                ClaudeProviderCompat::Anthropic => ClaudeWebSearchToolKind::NativeServerTool,
-                ClaudeProviderCompat::Compatible => ClaudeWebSearchToolKind::LocalFunctionTool,
+            web_search_tool_kind: if uses_local_tools {
+                ClaudeWebSearchToolKind::LocalFunctionTool
+            } else {
+                ClaudeWebSearchToolKind::NativeServerTool
             },
             native_tool_selection: native_tool_selection_for_prompt(
                 &prompt.tools,
@@ -578,7 +591,9 @@ pub(crate) fn build_claude_messages_request(
         Some(max_tokens) => max_tokens,
         None => DEFAULT_MAX_TOKENS,
     };
-    let thinking = if requires_budgetless_thinking {
+    let thinking = if is_kimi_k3 {
+        None
+    } else if requires_budgetless_thinking {
         Some(ClaudeThinkingConfig::Enabled {
             budget_tokens: None,
         })
@@ -612,9 +627,11 @@ fn native_tool_selection_for_prompt(
     model_info: &ModelInfo,
     provider_compat: ClaudeProviderCompat,
 ) -> ClaudeNativeToolSelection {
-    let provider_platform = match provider_compat {
-        ClaudeProviderCompat::Anthropic => ClaudeProviderPlatform::AnthropicApi,
-        ClaudeProviderCompat::Compatible => ClaudeProviderPlatform::Unknown,
+    let is_kimi_k3 = claude_model_is_kimi_k3(&model_info.slug);
+    let provider_platform = match (provider_compat, is_kimi_k3) {
+        (_, true) => ClaudeProviderPlatform::Unknown,
+        (ClaudeProviderCompat::Anthropic, false) => ClaudeProviderPlatform::AnthropicApi,
+        (ClaudeProviderCompat::Compatible, false) => ClaudeProviderPlatform::Unknown,
     };
     let mut selection = ClaudeNativeToolSelection {
         provider_platform,
@@ -622,7 +639,10 @@ fn native_tool_selection_for_prompt(
         ..ClaudeNativeToolSelection::default()
     };
 
-    if provider_compat == ClaudeProviderCompat::Anthropic && has_tool_spec(tools, "apply_patch") {
+    if provider_compat == ClaudeProviderCompat::Anthropic
+        && !is_kimi_k3
+        && has_tool_spec(tools, "apply_patch")
+    {
         selection.allowed_tools.extend([
             ClaudeNativeToolKind::TextEditor20250728,
             ClaudeNativeToolKind::TextEditor20250124,
@@ -874,6 +894,10 @@ fn claude_model_requires_enabled_thinking_without_budget(model: &str) -> bool {
         normalized.as_str(),
         "kimi-k2.7-code" | "kimi-k2.7-code-highspeed"
     )
+}
+
+fn claude_model_is_kimi_k3(model: &str) -> bool {
+    model.trim().eq_ignore_ascii_case("k3")
 }
 
 fn claude_service_tier(service_tier: Option<ServiceTier>) -> Option<ClaudeServiceTier> {
@@ -3206,6 +3230,245 @@ mod tests {
                 "unexpected Kimi request budget or thinking shape for {slug}"
             );
         }
+    }
+
+    #[test]
+    fn builds_k3_request_with_provider_default_thinking_and_local_tools() {
+        let string_params = JsonSchema::object(
+            BTreeMap::from([(
+                "query".to_string(),
+                JsonSchema::string(Some("Search query".to_string())),
+            )]),
+            Some(vec!["query".to_string()]),
+            Some(AdditionalProperties::Boolean(false)),
+        );
+        let prompt = Prompt {
+            input: vec![ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "inspect the repository and verify the result".to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            }],
+            tools: vec![
+                ToolSpec::Function(ResponsesApiTool {
+                    name: "apply_patch".to_string(),
+                    description: "Edit files".to_string(),
+                    strict: false,
+                    defer_loading: None,
+                    parameters: string_params.clone(),
+                    output_schema: None,
+                }),
+                ToolSpec::ToolSearch {
+                    execution: "client".to_string(),
+                    description: "Search available tools".to_string(),
+                    parameters: string_params,
+                },
+                ToolSpec::WebSearch {
+                    external_web_access: Some(true),
+                    indexed_web_access: None,
+                    filters: None,
+                    user_location: None,
+                    search_context_size: None,
+                    search_content_types: None,
+                },
+            ],
+            parallel_tool_calls: true,
+            ..Default::default()
+        };
+        let mut kimi_model = model_info();
+        kimi_model.slug = "k3".to_string();
+        kimi_model.max_output_tokens = Some(131_072);
+
+        for reasoning_effort in [
+            ReasoningEffortConfig::None,
+            ReasoningEffortConfig::Low,
+            ReasoningEffortConfig::Max,
+        ] {
+            let request = build_claude_messages_request(
+                &prompt,
+                &kimi_model,
+                ClaudeRequestOptions {
+                    reasoning_effort: Some(reasoning_effort),
+                    // K3 must stay on ordinary local tools even if a provider is
+                    // accidentally classified as first-party Anthropic.
+                    provider_compat: ClaudeProviderCompat::Anthropic,
+                    ..Default::default()
+                },
+            )
+            .expect("request");
+            let value = serde_json::to_value(&request).expect("serialize request");
+
+            assert_eq!(request.model, "k3");
+            assert_eq!(request.max_tokens, 131_072);
+            assert!(value.get("thinking").is_none());
+            assert_eq!(
+                request.tool_choice,
+                Some(ClaudeToolChoice::Auto {
+                    disable_parallel_tool_use: false,
+                })
+            );
+            assert!(
+                value["system"]
+                    .as_str()
+                    .is_some_and(|system| system.contains(KIMI_K3_TOOL_INSTRUCTION)
+                        && system.contains(KIMI_K3_PARALLEL_TOOL_INSTRUCTION))
+            );
+            assert!(request.beta_headers.is_empty());
+
+            let tools = value["tools"].as_array().expect("tools array");
+            let tool_names = tools
+                .iter()
+                .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+                .collect::<HashSet<_>>();
+            assert_eq!(
+                tool_names,
+                HashSet::from(["apply_patch", "tool_search", "web_search"])
+            );
+            assert!(
+                tools.iter().all(|tool| tool
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .is_none_or(|kind| !kind.contains("_202"))),
+                "K3 must not receive unsupported Claude native tools: {tools:?}"
+            );
+            assert_openai_web_search_function_tool(
+                tools
+                    .iter()
+                    .find(|tool| tool["name"] == json!("web_search"))
+                    .expect("local web_search tool"),
+            );
+        }
+
+        let mut serial_prompt = prompt;
+        serial_prompt.parallel_tool_calls = false;
+        let request = build_claude_messages_request(
+            &serial_prompt,
+            &kimi_model,
+            ClaudeRequestOptions {
+                reasoning_effort: Some(ReasoningEffortConfig::Max),
+                provider_compat: ClaudeProviderCompat::Compatible,
+                ..Default::default()
+            },
+        )
+        .expect("serial request");
+        let value = serde_json::to_value(&request).expect("serialize serial request");
+        let system = value["system"].as_str().expect("system prompt");
+
+        assert!(system.contains(KIMI_K3_TOOL_INSTRUCTION));
+        assert!(!system.contains(KIMI_K3_PARALLEL_TOOL_INSTRUCTION));
+        assert_eq!(
+            request.tool_choice,
+            Some(ClaudeToolChoice::Auto {
+                disable_parallel_tool_use: true,
+            })
+        );
+    }
+
+    #[test]
+    fn replays_complete_k3_thinking_and_parallel_tool_history() {
+        let prompt = Prompt {
+            input: vec![
+                ResponseItem::Reasoning {
+                    id: Some(ResponseItemId::from_server(
+                        "msg_k3_reasoning_0".to_string(),
+                    )),
+                    summary: Vec::new(),
+                    content: Some(vec![ReasoningItemContent::ReasoningText {
+                        text: "inspect both sources".to_string(),
+                    }]),
+                    encrypted_content: None,
+                    internal_chat_message_metadata_passthrough: None,
+                },
+                ResponseItem::FunctionCall {
+                    id: None,
+                    name: "lookup".to_string(),
+                    namespace: None,
+                    arguments: "{\"query\":\"alpha\"}".to_string(),
+                    call_id: "call_1".to_string(),
+                    internal_chat_message_metadata_passthrough: None,
+                },
+                ResponseItem::FunctionCall {
+                    id: None,
+                    name: "read".to_string(),
+                    namespace: None,
+                    arguments: "{\"query\":\"beta\"}".to_string(),
+                    call_id: "call_2".to_string(),
+                    internal_chat_message_metadata_passthrough: None,
+                },
+                ResponseItem::FunctionCallOutput {
+                    id: None,
+                    call_id: "call_2".to_string(),
+                    output: FunctionCallOutputPayload::from_text("beta result".to_string()),
+                    internal_chat_message_metadata_passthrough: None,
+                },
+                ResponseItem::FunctionCallOutput {
+                    id: None,
+                    call_id: "call_1".to_string(),
+                    output: FunctionCallOutputPayload::from_text("alpha result".to_string()),
+                    internal_chat_message_metadata_passthrough: None,
+                },
+            ],
+            parallel_tool_calls: true,
+            ..Default::default()
+        };
+        let mut kimi_model = model_info();
+        kimi_model.slug = "k3".to_string();
+
+        let request = build_claude_messages_request(
+            &prompt,
+            &kimi_model,
+            ClaudeRequestOptions {
+                reasoning_effort: Some(ReasoningEffortConfig::Max),
+                provider_compat: ClaudeProviderCompat::Compatible,
+                ..Default::default()
+            },
+        )
+        .expect("request");
+
+        assert_eq!(
+            request.messages,
+            vec![
+                ClaudeMessage {
+                    role: ClaudeMessageRole::Assistant,
+                    content: vec![
+                        ClaudeContentBlock::Thinking {
+                            thinking: "inspect both sources".to_string(),
+                            signature: None,
+                        },
+                        ClaudeContentBlock::ToolUse {
+                            id: "call_1".to_string(),
+                            name: "lookup".to_string(),
+                            input: json!({"query": "alpha"}),
+                        },
+                        ClaudeContentBlock::ToolUse {
+                            id: "call_2".to_string(),
+                            name: "read".to_string(),
+                            input: json!({"query": "beta"}),
+                        },
+                    ],
+                },
+                ClaudeMessage {
+                    role: ClaudeMessageRole::User,
+                    content: vec![
+                        ClaudeContentBlock::ToolResult {
+                            tool_use_id: "call_1".to_string(),
+                            content: ClaudeToolResultContent::Text("alpha result".to_string()),
+                            is_error: false,
+                            cache_reference: None,
+                        },
+                        ClaudeContentBlock::ToolResult {
+                            tool_use_id: "call_2".to_string(),
+                            content: ClaudeToolResultContent::Text("beta result".to_string()),
+                            is_error: false,
+                            cache_reference: None,
+                        },
+                    ],
+                },
+            ]
+        );
     }
 
     #[test]
