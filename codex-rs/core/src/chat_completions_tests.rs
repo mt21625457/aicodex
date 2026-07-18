@@ -130,6 +130,48 @@ fn serializes_complete_text_request() {
 }
 
 #[test]
+fn provider_without_developer_role_support_serializes_instructions_as_system_messages() {
+    let prompt = Prompt {
+        input: vec![
+            message(
+                "developer",
+                vec![ContentItem::InputText {
+                    text: "follow project rules".to_string(),
+                }],
+            ),
+            message(
+                "user",
+                vec![ContentItem::InputText {
+                    text: "hello".to_string(),
+                }],
+            ),
+        ],
+        base_instructions: BaseInstructions {
+            text: "base instructions".to_string(),
+        },
+        ..Default::default()
+    };
+
+    let request = build_chat_completions_request_for_provider(
+        &prompt,
+        &model_info(),
+        /*reasoning_effort*/ None,
+        /*service_tier*/ None,
+        false,
+    )
+    .expect("build Chat request for a legacy-role provider");
+
+    assert_eq!(
+        serde_json::to_value(request.messages).expect("serialize legacy Chat messages"),
+        json!([
+            {"role": "system", "content": "base instructions"},
+            {"role": "system", "content": "follow project rules"},
+            {"role": "user", "content": "hello"}
+        ])
+    );
+}
+
+#[test]
 fn merges_assistant_text_and_tool_calls_into_one_message() {
     let lookup_name = chat_tool_name(
         /*namespace*/ None,

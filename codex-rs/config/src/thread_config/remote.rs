@@ -183,6 +183,7 @@ fn model_provider_from_proto(
             .transpose()?,
         aws: None,
         wire_api,
+        supports_developer_role: provider.supports_developer_role,
         query_params: provider.query_params.map(|map| map.values),
         http_headers: provider.http_headers.map(|map| map.values),
         env_http_headers: provider.env_http_headers.map(|map| map.values),
@@ -210,6 +211,7 @@ fn model_provider_to_proto(
         auth,
         aws: _,
         wire_api,
+        supports_developer_role,
         query_params,
         http_headers,
         env_http_headers,
@@ -230,6 +232,7 @@ fn model_provider_to_proto(
         experimental_bearer_token,
         auth: auth.map(model_provider_auth_to_proto),
         wire_api: proto_wire_api(wire_api).into(),
+        supports_developer_role,
         query_params: query_params.map(proto_string_map),
         http_headers: http_headers.map(proto_string_map),
         env_http_headers: env_http_headers.map(proto_string_map),
@@ -432,16 +435,22 @@ mod tests {
     }
 
     #[test]
-    fn model_provider_proto_roundtrips_chat_wire_api() {
-        let mut expected = expected_provider();
-        expected.wire_api = WireApi::Chat;
-        expected.supports_websockets = false;
-        let proto = model_provider_to_proto("chat_local", expected.clone());
-        let (id, actual) = model_provider_from_proto(proto).expect("chat provider from proto");
+    fn model_provider_proto_roundtrips_chat_role_capability() {
+        for supports_developer_role in [None, Some(false)] {
+            let mut expected = expected_provider();
+            expected.wire_api = WireApi::Chat;
+            expected.supports_websockets = false;
+            expected.supports_developer_role = supports_developer_role;
+            let proto = model_provider_to_proto("chat_local", expected.clone());
+            let (id, actual) = model_provider_from_proto(proto).expect("chat provider from proto");
 
-        assert_eq!(id, "chat_local");
-        assert_eq!(actual, expected);
-        assert_eq!(actual.wire_api, WireApi::Chat);
+            assert_eq!(id, "chat_local");
+            assert_eq!(actual, expected);
+            assert_eq!(
+                actual.supports_developer_role(),
+                supports_developer_role.unwrap_or(true)
+            );
+        }
     }
 
     fn proto_sources() -> Vec<proto::ThreadConfigSource> {
@@ -490,6 +499,7 @@ mod tests {
                             websocket_connect_timeout_ms: Some(10_000),
                             requires_openai_auth: false,
                             supports_websockets: true,
+                            supports_developer_role: None,
                         }],
                         features: HashMap::from([
                             ("plugins".to_string(), false),
@@ -535,6 +545,7 @@ mod tests {
                 cwd: workspace_dir(),
             }),
             wire_api: WireApi::Responses,
+            supports_developer_role: None,
             query_params: Some(HashMap::from([(
                 "api-version".to_string(),
                 "2026-04-16".to_string(),

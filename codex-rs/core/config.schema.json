@@ -1783,6 +1783,11 @@
           "minimum": 0.0,
           "type": "integer"
         },
+        "supports_developer_role": {
+          "default": null,
+          "description": "Whether a Chat Completions provider accepts the modern `developer` message role.\n\n`None` preserves the OpenAI-compatible default (`true`). Set this to `false` only for a provider that implements the legacy role set and requires developer instructions to be serialized as `system` messages.",
+          "type": "boolean"
+        },
         "supports_websockets": {
           "default": false,
           "description": "Whether this provider supports the Responses API WebSocket transport.",

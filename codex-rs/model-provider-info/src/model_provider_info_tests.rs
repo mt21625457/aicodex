@@ -20,6 +20,7 @@ base_url = "http://localhost:11434/v1"
         auth: None,
         aws: None,
         wire_api: WireApi::Responses,
+        supports_developer_role: None,
         query_params: None,
         http_headers: None,
         env_http_headers: None,
@@ -52,6 +53,7 @@ query_params = { api-version = "2025-04-01-preview" }
         auth: None,
         aws: None,
         wire_api: WireApi::Responses,
+        supports_developer_role: None,
         query_params: Some(maplit::hashmap! {
             "api-version".to_string() => "2025-04-01-preview".to_string(),
         }),
@@ -87,6 +89,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
         auth: None,
         aws: None,
         wire_api: WireApi::Responses,
+        supports_developer_role: None,
         query_params: None,
         http_headers: Some(maplit::hashmap! {
             "X-Example-Header".to_string() => "example-value".to_string(),
@@ -117,6 +120,30 @@ wire_api = "chat"
 
     let provider: ModelProviderInfo = toml::from_str(provider_toml).unwrap();
     assert_eq!(provider.wire_api, WireApi::Chat);
+}
+
+#[test]
+fn test_deserialize_chat_developer_role_capability() {
+    let provider_toml = r#"
+name = "Legacy Chat Completions"
+base_url = "https://chat.example.com/v1"
+env_key = "OPENAI_API_KEY"
+wire_api = "chat"
+supports_developer_role = false
+        "#;
+
+    let provider: ModelProviderInfo = toml::from_str(provider_toml).unwrap();
+    assert_eq!(provider.wire_api, WireApi::Chat);
+    assert!(!provider.supports_developer_role());
+
+    let modern_provider: ModelProviderInfo = toml::from_str(
+        r#"
+name = "Modern Chat Completions"
+wire_api = "chat"
+        "#,
+    )
+    .unwrap();
+    assert!(modern_provider.supports_developer_role());
 }
 
 #[test]
@@ -211,6 +238,7 @@ fn test_supports_remote_compaction_for_azure_name() {
         auth: None,
         aws: None,
         wire_api: WireApi::Responses,
+        supports_developer_role: None,
         query_params: None,
         http_headers: None,
         env_http_headers: None,
@@ -248,6 +276,7 @@ fn test_supports_remote_compaction_for_non_openai_non_azure_provider() {
         auth: None,
         aws: None,
         wire_api: WireApi::Responses,
+        supports_developer_role: None,
         query_params: None,
         http_headers: None,
         env_http_headers: None,
@@ -353,6 +382,7 @@ fn test_create_amazon_bedrock_provider() {
                 region: None,
             }),
             wire_api: WireApi::Responses,
+            supports_developer_role: None,
             query_params: None,
             http_headers: Some(maplit::hashmap! {
                 AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_HEADER.to_string() =>

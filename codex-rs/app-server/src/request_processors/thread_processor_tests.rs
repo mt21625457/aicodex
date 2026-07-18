@@ -722,6 +722,7 @@ mod thread_processor_behavior_tests {
             auth: None,
             aws: None,
             wire_api: WireApi::Responses,
+            supports_developer_role: None,
             query_params: None,
             http_headers: None,
             env_http_headers: None,

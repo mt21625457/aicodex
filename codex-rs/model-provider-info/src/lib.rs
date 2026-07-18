@@ -118,6 +118,13 @@ pub struct ModelProviderInfo {
     /// Which wire protocol this provider expects.
     #[serde(default)]
     pub wire_api: WireApi,
+    /// Whether a Chat Completions provider accepts the modern `developer` message role.
+    ///
+    /// `None` preserves the OpenAI-compatible default (`true`). Set this to `false` only for a
+    /// provider that implements the legacy role set and requires developer instructions to be
+    /// serialized as `system` messages.
+    #[serde(default)]
+    pub supports_developer_role: Option<bool>,
     /// Optional query parameters to append to the base URL.
     pub query_params: Option<HashMap<String, String>>,
     /// Additional HTTP headers to include in requests to this provider where
@@ -347,6 +354,7 @@ impl ModelProviderInfo {
             auth: None,
             aws: None,
             wire_api: WireApi::Responses,
+            supports_developer_role: None,
             query_params: None,
             http_headers: Some(
                 [("version".to_string(), env!("CARGO_PKG_VERSION").to_string())]
@@ -389,6 +397,7 @@ impl ModelProviderInfo {
                 region: None,
             })),
             wire_api: WireApi::Responses,
+            supports_developer_role: None,
             query_params: None,
             http_headers: Some(HashMap::from([(
                 AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_HEADER.to_string(),
@@ -430,6 +439,10 @@ impl ModelProviderInfo {
 
     pub fn supports_responses_websocket(&self) -> bool {
         self.wire_api == WireApi::Responses && self.supports_websockets
+    }
+
+    pub fn supports_developer_role(&self) -> bool {
+        self.supports_developer_role.unwrap_or(true)
     }
 
     pub fn has_command_auth(&self) -> bool {
@@ -539,6 +552,7 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         auth: None,
         aws: None,
         wire_api,
+        supports_developer_role: None,
         query_params: None,
         http_headers: None,
         env_http_headers: None,

@@ -40,11 +40,28 @@ const MAX_CHAT_REQUEST_TOTAL_TOKENS: usize = 250_000;
 const MAX_CHAT_MESSAGE_TOOL_CALLS: usize = 64;
 const UNSUPPORTED_IMAGE_PLACEHOLDER: &str = "[unsupported image reference omitted]";
 
+#[cfg(test)]
 pub(crate) fn build_chat_completions_request(
     prompt: &Prompt,
     model_info: &ModelInfo,
     reasoning_effort: Option<ReasoningEffort>,
     service_tier: Option<String>,
+) -> Result<ChatCompletionsApiRequest> {
+    build_chat_completions_request_for_provider(
+        prompt,
+        model_info,
+        reasoning_effort,
+        service_tier,
+        true,
+    )
+}
+
+pub(crate) fn build_chat_completions_request_for_provider(
+    prompt: &Prompt,
+    model_info: &ModelInfo,
+    reasoning_effort: Option<ReasoningEffort>,
+    service_tier: Option<String>,
+    supports_developer_role: bool,
 ) -> Result<ChatCompletionsApiRequest> {
     let codex_tools::ChatToolsJson {
         tools,
@@ -71,14 +88,17 @@ pub(crate) fn build_chat_completions_request(
     }
     if !matches!(prompt.chat_file_tool_mode, ChatFileToolMode::Legacy) {
         let guidance = dedicated_chat_guidance(prompt, &visible_tool_call_info)?;
-        messages.push(ChatMessage::text(ChatMessageRole::Developer, guidance));
+        messages.push(ChatMessage::text(
+            developer_role(supports_developer_role),
+            guidance,
+        ));
     }
     let mut pending_reasoning = String::new();
 
     for item in prompt.get_formatted_input_for_request(false) {
         match item {
             ResponseItem::Message { role, content, .. } => {
-                let Some(role) = chat_role(&role) else {
+                let Some(role) = chat_role(&role, supports_developer_role) else {
                     continue;
                 };
                 if role != ChatMessageRole::Assistant {
@@ -403,10 +423,18 @@ fn validate_chat_request_item(
     Ok(())
 }
 
-fn chat_role(role: &str) -> Option<ChatMessageRole> {
+fn developer_role(supports_developer_role: bool) -> ChatMessageRole {
+    if supports_developer_role {
+        ChatMessageRole::Developer
+    } else {
+        ChatMessageRole::System
+    }
+}
+
+fn chat_role(role: &str, supports_developer_role: bool) -> Option<ChatMessageRole> {
     match role {
         "system" => Some(ChatMessageRole::System),
-        "developer" => Some(ChatMessageRole::Developer),
+        "developer" => Some(developer_role(supports_developer_role)),
         "user" => Some(ChatMessageRole::User),
         "assistant" => Some(ChatMessageRole::Assistant),
         _ => None,

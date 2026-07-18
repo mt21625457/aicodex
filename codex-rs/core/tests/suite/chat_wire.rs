@@ -127,6 +127,50 @@ async fn chat_wire_streams_text_on_chat_path_with_uniform_headers() -> anyhow::R
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_provider_without_developer_role_support_maps_instructions_to_system()
+-> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let responses = mount_chat_sse_sequence(
+        &server,
+        vec![chat_sse(vec![json!({
+            "id": "chatcmpl_legacy",
+            "choices": [{
+                "index": 0,
+                "delta": {"content": "ok"},
+                "finish_reason": "stop"
+            }]
+        })])],
+    )
+    .await;
+    let test = test_codex()
+        .with_model("deepseek-v4-pro")
+        .with_config(configure_legacy_chat_provider)
+        .build_with_auto_env(&server)
+        .await?;
+
+    submit_text_turn(&test, "say hello").await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let body = responses.single_request().body_json();
+    let messages = body["messages"].as_array().expect("Chat messages");
+    assert!(messages.iter().any(|message| message["role"] == "system"));
+    assert!(
+        messages
+            .iter()
+            .all(|message| message["role"] != "developer")
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| { message["role"] == "user" && message["content"] == "say hello" })
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn chat_wire_tool_loop_posts_tool_result_and_completes() -> anyhow::Result<()> {
     let server = start_mock_server().await;
     let exec_command_name = chat_tool_name(
@@ -860,6 +904,11 @@ fn configure_chat_provider(config: &mut Config) {
     config.model_provider.supports_websockets = true;
     config.model_provider.stream_max_retries = Some(0);
     config.model_provider.wire_api = WireApi::Chat;
+}
+
+fn configure_legacy_chat_provider(config: &mut Config) {
+    configure_chat_provider(config);
+    config.model_provider.supports_developer_role = Some(false);
 }
 
 fn configure_dedicated_chat_provider(config: &mut Config) {

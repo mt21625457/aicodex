@@ -48,6 +48,7 @@ message ModelProvider {
   optional uint64 websocket_connect_timeout_ms = 15;
   bool requires_openai_auth = 16;
   bool supports_websockets = 17;
+  optional bool supports_developer_role = 18;
 }
 
 message StringMap {

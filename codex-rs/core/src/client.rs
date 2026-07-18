@@ -1827,11 +1827,12 @@ impl ModelClientSession {
                 RequestRouteTelemetry::for_endpoint(CHAT_COMPLETIONS_ENDPOINT),
                 self.client.state.auth_env_telemetry.clone(),
             );
-            let request = crate::chat_completions::build_chat_completions_request(
+            let request = crate::chat_completions::build_chat_completions_request_for_provider(
                 prompt,
                 model_info,
                 effort.clone().map(reasoning_effort_for_request),
                 service_tier.clone(),
+                self.client.state.provider.info().supports_developer_role(),
             )?;
             let request_session_telemetry = session_telemetry.clone().with_inference_request(
                 request.service_tier.as_deref(),
