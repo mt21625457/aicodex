@@ -7,8 +7,6 @@ use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::util::backoff;
 use codex_protocol::error::CodexErr;
-use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::WarningEvent;
 use tracing::warn;
 
 #[derive(Debug, Clone, Copy)]
@@ -34,13 +32,13 @@ pub(crate) async fn handle_retryable_response_stream_error(
             &turn_context.model_info,
         )
     {
-        sess.send_event(
-            turn_context,
-            EventMsg::Warning(WarningEvent {
-                message: format!("Falling back from WebSockets to HTTPS transport. {err:#}"),
-            }),
-        )
-        .await;
+        // Transport fallback is expected recovery, not a user-facing failure.
+        // Keep diagnostics in logs only; do not emit WarningEvent to the UI banner.
+        warn!(
+            turn_id = %turn_context.sub_id,
+            error = %err,
+            "Falling back from WebSockets to HTTPS transport"
+        );
         *retries = 0;
         return Ok(());
     }

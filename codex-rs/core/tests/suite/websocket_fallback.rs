@@ -181,6 +181,7 @@ async fn websocket_fallback_hides_first_websocket_retry_stream_error() -> Result
         .await?;
 
     let mut stream_error_messages = Vec::new();
+    let mut transport_fallback_warnings = Vec::new();
     loop {
         let event = timeout(Duration::from_secs(10), codex.next_event())
             .await
@@ -189,6 +190,13 @@ async fn websocket_fallback_hides_first_websocket_retry_stream_error() -> Result
             .msg;
         match event {
             EventMsg::StreamError(e) => stream_error_messages.push(e.message),
+            EventMsg::Warning(warning)
+                if warning
+                    .message
+                    .contains("Falling back from WebSockets to HTTPS transport") =>
+            {
+                transport_fallback_warnings.push(warning.message);
+            }
             EventMsg::TurnComplete(_) => break,
             _ => {}
         }
@@ -200,6 +208,11 @@ async fn websocket_fallback_hides_first_websocket_retry_stream_error() -> Result
         vec!["Reconnecting... 2/2"]
     };
     assert_eq!(stream_error_messages, expected_stream_errors);
+    assert_eq!(
+        transport_fallback_warnings,
+        Vec::<String>::new(),
+        "WebSocket→HTTPS transport fallback must stay log-only"
+    );
     assert_eq!(response_mock.requests().len(), 1);
 
     Ok(())

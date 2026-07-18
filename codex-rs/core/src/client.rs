@@ -175,6 +175,19 @@ const MEMORIES_SUMMARIZE_ENDPOINT: &str = "/memories/trace_summarize";
 pub(crate) const WEBSOCKET_CONNECT_TIMEOUT: Duration =
     Duration::from_millis(DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS);
 
+/// Grok Responses is HTTP-only. Shared Gateway providers may still advertise WebSockets for
+/// OpenAI models, so transport selection must also consult the active model slug.
+fn responses_websocket_allowed_for_model(model: &str) -> bool {
+    let model = model
+        .trim()
+        .rsplit(':')
+        .next()
+        .unwrap_or(model)
+        .trim()
+        .to_ascii_lowercase();
+    !(model.starts_with("grok-") || model.starts_with("grok_"))
+}
+
 pub(crate) struct CompactConversationRequestSettings {
     pub(crate) effort: Option<ReasoningEffortConfig>,
     pub(crate) summary: ReasoningSummaryConfig,
@@ -1010,6 +1023,12 @@ impl ModelClient {
         }
 
         true
+    }
+
+    /// Like [`Self::responses_websocket_enabled`], but also respects models that require HTTP-only
+    /// Responses transport (for example Grok), even when the shared provider advertises WebSockets.
+    pub fn responses_websocket_enabled_for_model(&self, model: &str) -> bool {
+        self.responses_websocket_enabled() && responses_websocket_allowed_for_model(model)
     }
 
     /// Returns auth + provider configuration resolved from the current session auth state.
@@ -2202,7 +2221,10 @@ impl ModelClientSession {
         service_tier: Option<String>,
         responses_metadata: &CodexResponsesMetadata,
     ) -> Result<()> {
-        if !self.client.responses_websocket_enabled() {
+        if !self
+            .client
+            .responses_websocket_enabled_for_model(model_info.slug.as_str())
+        {
             return Ok(());
         }
         if self.websocket_session.last_request.is_some() {
@@ -2267,7 +2289,10 @@ impl ModelClientSession {
         let wire_api = self.client.state.provider.info().wire_api;
         match wire_api {
             WireApi::Responses => {
-                if self.client.responses_websocket_enabled() {
+                if self
+                    .client
+                    .responses_websocket_enabled_for_model(model_info.slug.as_str())
+                {
                     let request_trace = current_span_w3c_trace_context();
                     match self
                         .stream_responses_websocket(
