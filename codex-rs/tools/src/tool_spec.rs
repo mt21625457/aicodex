@@ -346,7 +346,7 @@ pub fn create_tools_json_for_claude_messages_with_options(
                         );
                         claude_tools.push(claude_function_tool_json(
                             &claude_name,
-                            "Access the web using Codex's OpenAI web search command surface. Supports search_query, image_query, open, click, find, screenshot, finance, weather, sports, time, and legacy query/queries aliases.",
+                            "Access the web using Codex's configured search backend. The OpenAI web search command surface supports search_query, image_query, open, click, find, screenshot, finance, weather, sports, time, and legacy query/queries aliases; simple-search backends accept query-only calls. Results may be bounded snippets: cite returned URLs with markdown links and use an available fetch/read-page capability when full-page context is needed.",
                             web_search_function_schema_json(),
                         ));
                         tool_call_info.push(ClaudeToolCallInfo {

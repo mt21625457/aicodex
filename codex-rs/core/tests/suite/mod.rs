@@ -39,6 +39,7 @@ mod apply_patch_cli;
 mod approvals;
 mod auto_review;
 mod catalog_permission_messages;
+mod chat_file_tools;
 mod chat_wire;
 mod claude_wire;
 mod cli_stream;

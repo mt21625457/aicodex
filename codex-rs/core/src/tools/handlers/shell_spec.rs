@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 pub struct CommandToolOptions {
     pub allow_login_shell: bool,
     pub exec_permission_approvals_enabled: bool,
+    pub prefer_dedicated_file_tools: bool,
 }
 
 #[cfg(test)]
@@ -88,17 +89,21 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
         options.exec_permission_approvals_enabled,
     ));
 
+    let mut description = if cfg!(windows) {
+        format!(
+            "Runs a command in a PTY, returning output or a session ID for ongoing interaction.\n\n{}",
+            windows_shell_guidance()
+        )
+    } else {
+        "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
+            .to_string()
+    };
+    if options.prefer_dedicated_file_tools {
+        description.push_str(dedicated_file_tool_shell_guidance());
+    }
     ToolSpec::Function(ResponsesApiTool {
         name: "exec_command".to_string(),
-        description: if cfg!(windows) {
-            format!(
-                "Runs a command in a PTY, returning output or a session ID for ongoing interaction.\n\n{}",
-                windows_shell_guidance()
-            )
-        } else {
-            "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
-                .to_string()
-        },
+        description,
         strict: false,
         defer_loading: None,
         parameters: JsonSchema::object(
@@ -188,7 +193,7 @@ pub fn create_shell_command_tool(options: CommandToolOptions) -> ToolSpec {
         options.exec_permission_approvals_enabled,
     ));
 
-    let description = if cfg!(windows) {
+    let mut description = if cfg!(windows) {
         format!(
             r#"Runs a Powershell command (Windows) and returns its output.
 
@@ -209,6 +214,9 @@ Examples of valid command strings:
 - Always set the `workdir` param when using the shell_command function. Do not use `cd` unless absolutely necessary."#
             .to_string()
     };
+    if options.prefer_dedicated_file_tools {
+        description.push_str(dedicated_file_tool_shell_guidance());
+    }
 
     ToolSpec::Function(ResponsesApiTool {
         name: "shell_command".to_string(),
@@ -407,6 +415,10 @@ fn windows_shell_guidance() -> &'static str {
 - Do not compose destructive filesystem commands across shells. Do not enumerate paths in PowerShell and then pass them to `cmd /c`, batch builtins, or another shell for deletion or moving. Use one shell end-to-end, prefer native PowerShell cmdlets such as `Remove-Item` / `Move-Item` with `-LiteralPath`, and avoid string-built shell commands for file operations.
 - Before any recursive delete or move on Windows, verify the resolved absolute target paths stay within the intended workspace or explicitly named target directory. Never issue a recursive delete or move against a computed path if the final target has not been checked.
 - When using `Start-Process` to launch a background helper or service, pass `-WindowStyle Hidden` unless the user explicitly asked for a visible interactive window. Use visible windows only for interactive tools the user needs to see or control."#
+}
+
+fn dedicated_file_tool_shell_guidance() -> &'static str {
+    "\n\nDedicated read_file, edit_file, and write_file tools are available. Use them for ordinary text file IO; use the shell only for binary or unsupported encodings, files above the dedicated limits, or specialized operations."
 }
 
 #[cfg(test)]

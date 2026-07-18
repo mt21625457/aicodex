@@ -91,6 +91,46 @@ const fn default_true() -> bool {
     true
 }
 
+/// Selects the model-visible dedicated file-tool policy for Chat Completions.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatFileToolMode {
+    #[default]
+    Legacy,
+    Dedicated,
+    DedicatedWithApplyPatch,
+}
+
+/// Moonshot simple-search routing and credential settings for Kimi sessions.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MoonshotSearchConfig {
+    /// Kill switch. When false, Kimi sessions retain the OpenAI alpha/search path.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Complete HTTP(S) search URL. When omitted, `{provider_base_url}/search` is derived.
+    pub base_url: Option<String>,
+    /// Environment variable containing an independent Moonshot Bearer token.
+    pub env_key: Option<String>,
+    /// Plaintext Bearer token fallback. Prefer `env_key` to avoid storing secrets in TOML.
+    pub api_key: Option<String>,
+    /// Additional non-reserved request headers.
+    #[serde(default)]
+    pub custom_headers: BTreeMap<String, String>,
+}
+
+impl Default for MoonshotSearchConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            base_url: None,
+            env_key: None,
+            api_key: None,
+            custom_headers: BTreeMap::new(),
+        }
+    }
+}
+
 /// Backward-compatible shape for ChatGPT workspace login restrictions in config.toml.
 #[derive(Serialize, Debug, Clone, PartialEq, JsonSchema)]
 #[serde(untagged)]
@@ -154,6 +194,9 @@ pub struct OrchestratorFeatureToml {
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct ConfigToml {
+    /// Selects dedicated file tools for new Chat Completions sessions.
+    #[serde(default)]
+    pub chat_file_tool_mode: ChatFileToolMode,
     /// Optional override of model selection.
     pub model: Option<String>,
     /// Review model override used by the `/review` feature.
@@ -432,6 +475,10 @@ pub struct ConfigToml {
 
     /// Nested tools section for feature toggles
     pub tools: Option<ToolsToml>,
+
+    /// Moonshot simple-search configuration used only by the Kimi routing policy.
+    #[serde(default)]
+    pub moonshot_search: MoonshotSearchConfig,
 
     /// Additional discoverable tools that can be suggested for installation.
     pub tool_suggest: Option<ToolSuggestConfig>,
@@ -1023,5 +1070,45 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("TOML list of strings"));
         assert!(message.contains("comma-separated strings are not supported"));
+    }
+
+    #[test]
+    fn chat_file_tool_mode_defaults_to_legacy_and_rejects_unknown_values() {
+        assert_eq!(
+            ConfigToml::default().chat_file_tool_mode,
+            ChatFileToolMode::Legacy
+        );
+        let config: ConfigToml = toml::from_str("chat_file_tool_mode = 'dedicated'")
+            .expect("dedicated mode should deserialize");
+        assert_eq!(config.chat_file_tool_mode, ChatFileToolMode::Dedicated);
+        assert!(toml::from_str::<ConfigToml>("chat_file_tool_mode = 'unknown'").is_err());
+    }
+
+    #[test]
+    fn moonshot_search_defaults_enabled_and_rejects_unknown_fields() {
+        assert!(ConfigToml::default().moonshot_search.enabled);
+        let config: ConfigToml = toml::from_str(
+            r#"
+                [moonshot_search]
+                enabled = false
+                base_url = "https://search.example/v1/search"
+                env_key = "MOONSHOT_API_KEY"
+            "#,
+        )
+        .expect("Moonshot search config should deserialize");
+        assert!(!config.moonshot_search.enabled);
+        assert_eq!(
+            config.moonshot_search.base_url.as_deref(),
+            Some("https://search.example/v1/search")
+        );
+        assert!(
+            toml::from_str::<ConfigToml>(
+                r#"
+                    [moonshot_search]
+                    future_option = true
+                "#,
+            )
+            .is_err()
+        );
     }
 }

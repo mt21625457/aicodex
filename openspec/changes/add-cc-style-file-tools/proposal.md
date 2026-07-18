@@ -62,8 +62,8 @@ Responses 上已验证的 `apply_patch` 默认。
   handlers 不注册、不广告，直接调用返回 unsupported-tool。
 - 增加 mock 端到端工具环测试（Claude 工具真值表、先读后写、连续编辑、远程
   Linux/Windows executor、多 environment、CRLF/编码、拒绝 shell 偏置回归）。
-- 在 `docs/config.md` 记录 Claude/Windows 文件工具策略与 feature 门控，并同步
-  regenerate `config.schema.json`。
+- 同步 regenerate `config.schema.json`；通用产品文档按仓库规则记录为官方外部文档
+  follow-up，不写入本仓库 `docs/`。
 
 ## Capabilities
 
@@ -98,7 +98,8 @@ Responses 上已验证的 `apply_patch` 默认。
   - `codex-rs/apply-patch` — 抽取/扩展可复用的文本解码、编码保持与 mutation
     preparation；不复制第二套编码实现
   - `codex-rs/prompts`（若指令模板落于此）— 文件工具使用指引
-  - `docs/config.md` / `codex-rs/core/config.schema.json` — feature/策略说明与 schema
+  - `codex-rs/core/config.schema.json` — feature/config schema
+  - 官方外部文档仓库（follow-up）— feature、策略、限制与回滚说明
 - 明确复用、不重造：
   - ApplyPatch 的 FS sandbox / 审批 / file-change 流作为共享写路径底层，但不递归
     调用公开 handler 或把 dedicated tool identity 改成 `apply_patch`

@@ -554,3 +554,27 @@ refresh_interval_ms = 0
     assert_eq!(auth.refresh_interval_ms, 0);
     assert_eq!(auth.refresh_interval(), None);
 }
+
+#[test]
+fn kimi_model_slug_detection_matches_the_shared_routing_matrix() {
+    for slug in [
+        "k3",
+        "K3",
+        "gateway:k3",
+        "kimi-k2.7-code",
+        "kimi-k2.7-code-highspeed",
+        "kimi-k3.1",
+        "gateway:KIMI-custom",
+    ] {
+        assert!(is_kimi_model_slug(slug), "expected Kimi slug: {slug}");
+    }
+    for slug in [
+        "k30",
+        "not-kimi-k3",
+        "deepseek-chat",
+        "claude-sonnet-4-5",
+        "gateway:compatible",
+    ] {
+        assert!(!is_kimi_model_slug(slug), "unexpected Kimi slug: {slug}");
+    }
+}

@@ -60,6 +60,7 @@ pub(crate) struct ShellCommandHandlerOptions {
     pub(crate) backend_config: ShellCommandBackendConfig,
     pub(crate) allow_login_shell: bool,
     pub(crate) exec_permission_approvals_enabled: bool,
+    pub(crate) prefer_dedicated_file_tools: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -157,6 +158,7 @@ impl From<ShellCommandBackendConfig> for ShellCommandHandler {
             backend_config,
             allow_login_shell: false,
             exec_permission_approvals_enabled: false,
+            prefer_dedicated_file_tools: false,
         })
     }
 }
@@ -170,6 +172,7 @@ impl ToolExecutor<ToolInvocation> for ShellCommandHandler {
         create_shell_command_tool(CommandToolOptions {
             allow_login_shell: self.options.allow_login_shell,
             exec_permission_approvals_enabled: self.options.exec_permission_approvals_enabled,
+            prefer_dedicated_file_tools: self.options.prefer_dedicated_file_tools,
         })
     }
 

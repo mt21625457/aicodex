@@ -18,6 +18,7 @@ fn exec_command_tool_matches_expected_spec() {
     let tool = create_exec_command_tool(CommandToolOptions {
         allow_login_shell: true,
         exec_permission_approvals_enabled: false,
+        prefer_dedicated_file_tools: false,
     });
 
     let description = if cfg!(windows) {
@@ -104,6 +105,7 @@ fn exec_command_tool_can_hide_shell_parameter() {
         CommandToolOptions {
             allow_login_shell: true,
             exec_permission_approvals_enabled: false,
+            prefer_dedicated_file_tools: false,
         },
         /*include_environment_id*/ false,
         /*include_shell_parameter*/ false,
@@ -207,6 +209,7 @@ fn shell_command_tool_matches_expected_spec() {
     let tool = create_shell_command_tool(CommandToolOptions {
         allow_login_shell: true,
         exec_permission_approvals_enabled: false,
+        prefer_dedicated_file_tools: false,
     });
 
     let description = if cfg!(windows) {
@@ -274,4 +277,23 @@ Examples of valid command strings:
             output_schema: None,
         })
     );
+}
+
+#[test]
+fn shell_specs_prefer_dedicated_file_tools_only_when_requested() {
+    let options = CommandToolOptions {
+        allow_login_shell: false,
+        exec_permission_approvals_enabled: false,
+        prefer_dedicated_file_tools: true,
+    };
+    for tool in [
+        create_exec_command_tool(options),
+        create_shell_command_tool(options),
+    ] {
+        let ToolSpec::Function(tool) = tool else {
+            panic!("expected function tool");
+        };
+        assert!(tool.description.contains("read_file"));
+        assert!(tool.description.contains("binary or unsupported encodings"));
+    }
 }

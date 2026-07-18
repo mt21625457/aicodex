@@ -1,14 +1,17 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
+use bytes::Bytes;
 use codex_exec_server_protocol::JSONRPCErrorError;
 use codex_utils_path_uri::PathUri;
 use tokio::io;
 
+use crate::ConditionalWritePrecondition;
 use crate::CopyOptions;
 use crate::CreateDirectoryOptions;
 use crate::ExecServerRuntimePaths;
 use crate::ExecutorFileSystem;
 use crate::ExecutorFileSystemFuture;
+use crate::FILE_READ_CHUNK_SIZE;
 use crate::FileMetadata;
 use crate::FileSystemReadStream;
 use crate::FileSystemResult;
@@ -21,10 +24,13 @@ use crate::fs_helper::FsHelperPayload;
 use crate::fs_helper::FsHelperRequest;
 use crate::fs_sandbox::FileSystemSandboxRunner;
 use crate::protocol::FsCanonicalizeParams;
+use crate::protocol::FsConditionalWriteFileParams;
+use crate::protocol::FsConditionalWritePrecondition;
 use crate::protocol::FsCopyParams;
 use crate::protocol::FsCreateDirectoryParams;
 use crate::protocol::FsGetMetadataParams;
 use crate::protocol::FsReadDirectoryParams;
+use crate::protocol::FsReadFileBlockParams;
 use crate::protocol::FsReadFileParams;
 use crate::protocol::FsRemoveParams;
 use crate::protocol::FsWalkParams;
@@ -102,6 +108,79 @@ impl SandboxedFileSystem {
         })
     }
 
+    pub(crate) async fn read_file_block(
+        &self,
+        path: &PathUri,
+        offset: u64,
+        len: usize,
+        sandbox: Option<&FileSystemSandboxContext>,
+    ) -> FileSystemResult<(Vec<u8>, bool)> {
+        let sandbox = require_platform_sandbox(sandbox)?;
+        validate_native_path(path)?;
+        let response = self
+            .run_sandboxed(
+                sandbox,
+                FsHelperRequest::ReadFileBlock(FsReadFileBlockParams {
+                    path: path.clone(),
+                    offset,
+                    len,
+                    sandbox: None,
+                }),
+            )
+            .await?
+            .expect_read_file_block()
+            .map_err(map_sandbox_error)?;
+        Ok((response.chunk.into_inner(), response.eof))
+    }
+
+    async fn read_file_stream(
+        &self,
+        path: &PathUri,
+        sandbox: Option<&FileSystemSandboxContext>,
+    ) -> FileSystemResult<FileSystemReadStream> {
+        let sandbox = require_platform_sandbox(sandbox)?.clone();
+        validate_native_path(path)?;
+        let file_system = self.clone();
+        let path = path.clone();
+        Ok(FileSystemReadStream::new(futures::stream::try_unfold(
+            Some(0_u64),
+            move |offset| {
+                let file_system = file_system.clone();
+                let sandbox = sandbox.clone();
+                let path = path.clone();
+                async move {
+                    let Some(offset) = offset else {
+                        return Ok(None);
+                    };
+                    let (bytes, eof) = file_system
+                        .read_file_block(&path, offset, FILE_READ_CHUNK_SIZE, Some(&sandbox))
+                        .await?;
+                    let chunk = Bytes::from(bytes);
+                    if eof {
+                        return if chunk.is_empty() {
+                            Ok(None)
+                        } else {
+                            Ok(Some((chunk, None)))
+                        };
+                    }
+                    if chunk.is_empty() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "sandbox helper returned an empty non-terminal file block",
+                        ));
+                    }
+                    let next_offset = offset.checked_add(chunk.len() as u64).ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("sandbox file read offset overflowed after {offset} bytes"),
+                        )
+                    })?;
+                    Ok(Some((chunk, Some(next_offset))))
+                }
+            },
+        )))
+    }
+
     async fn write_file(
         &self,
         path: &PathUri,
@@ -120,6 +199,38 @@ impl SandboxedFileSystem {
         )
         .await?
         .expect_write_file()
+        .map_err(map_sandbox_error)?;
+        Ok(())
+    }
+
+    async fn write_file_conditional(
+        &self,
+        path: &PathUri,
+        contents: Vec<u8>,
+        precondition: ConditionalWritePrecondition,
+        sandbox: Option<&FileSystemSandboxContext>,
+    ) -> FileSystemResult<()> {
+        let sandbox = require_platform_sandbox(sandbox)?;
+        validate_native_path(path)?;
+        let precondition = match precondition {
+            ConditionalWritePrecondition::MustNotExist => {
+                FsConditionalWritePrecondition::MustNotExist
+            }
+            ConditionalWritePrecondition::MatchSha256(digest) => {
+                FsConditionalWritePrecondition::MatchSha256 { digest }
+            }
+        };
+        self.run_sandboxed(
+            sandbox,
+            FsHelperRequest::ConditionalWriteFile(FsConditionalWriteFileParams {
+                path: path.clone(),
+                data_base64: STANDARD.encode(contents),
+                precondition,
+                sandbox: None,
+            }),
+        )
+        .await?
+        .expect_conditional_write_file()
         .map_err(map_sandbox_error)?;
         Ok(())
     }
@@ -294,15 +405,10 @@ impl ExecutorFileSystem for SandboxedFileSystem {
 
     fn read_file_stream<'a>(
         &'a self,
-        _path: &'a PathUri,
-        _sandbox: Option<&'a FileSystemSandboxContext>,
+        path: &'a PathUri,
+        sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, FileSystemReadStream> {
-        Box::pin(async {
-            Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "streaming file reads do not support platform sandboxing",
-            ))
-        })
+        Box::pin(SandboxedFileSystem::read_file_stream(self, path, sandbox))
     }
 
     fn write_file<'a>(
@@ -313,6 +419,22 @@ impl ExecutorFileSystem for SandboxedFileSystem {
     ) -> ExecutorFileSystemFuture<'a, ()> {
         Box::pin(SandboxedFileSystem::write_file(
             self, path, contents, sandbox,
+        ))
+    }
+
+    fn write_file_conditional<'a>(
+        &'a self,
+        path: &'a PathUri,
+        contents: Vec<u8>,
+        precondition: ConditionalWritePrecondition,
+        sandbox: Option<&'a FileSystemSandboxContext>,
+    ) -> ExecutorFileSystemFuture<'a, ()> {
+        Box::pin(SandboxedFileSystem::write_file_conditional(
+            self,
+            path,
+            contents,
+            precondition,
+            sandbox,
         ))
     }
 
@@ -403,6 +525,9 @@ fn require_platform_sandbox(
 fn map_sandbox_error(error: JSONRPCErrorError) -> io::Error {
     match error.code {
         -32004 => io::Error::new(io::ErrorKind::NotFound, error.message),
+        crate::rpc::FILE_CONFLICT_ERROR_CODE => {
+            io::Error::new(io::ErrorKind::InvalidData, error.message)
+        }
         -32600 => io::Error::new(io::ErrorKind::InvalidInput, error.message),
         _ => io::Error::other(error.message),
     }

@@ -21,9 +21,11 @@ use codex_config::ResidencyRequirement;
 use codex_config::SandboxModeRequirement;
 use codex_config::Sourced;
 use codex_config::ThreadConfigLoader;
+use codex_config::config_toml::ChatFileToolMode;
 use codex_config::config_toml::ConfigLockfileToml;
 use codex_config::config_toml::ConfigToml;
 use codex_config::config_toml::DEFAULT_PROJECT_DOC_MAX_BYTES;
+use codex_config::config_toml::MoonshotSearchConfig;
 use codex_config::config_toml::ProjectConfig;
 use codex_config::config_toml::RealtimeAudioConfig;
 use codex_config::config_toml::RealtimeConfig;
@@ -56,10 +58,12 @@ use codex_core_plugins::PluginLoadOutcome;
 use codex_core_plugins::PluginsConfigInput;
 use codex_exec_server::ExecutorFileSystem;
 use codex_exec_server::LOCAL_FS;
+use codex_features::ClaudeFileToolMode;
 use codex_features::CodeModeConfigToml;
 use codex_features::CurrentTimeReminderConfigToml;
 use codex_features::CurrentTimeReminderDeliveryMode;
 use codex_features::CurrentTimeSource;
+use codex_features::DedicatedFileToolsConfigToml;
 use codex_features::Feature;
 use codex_features::FeatureConfigSource;
 use codex_features::FeatureOverrides;
@@ -621,6 +625,15 @@ pub struct Config {
 
     /// Optional override of model selection.
     pub model: Option<String>,
+
+    /// Dedicated file-tool policy for new Chat Completions sessions.
+    pub chat_file_tool_mode: ChatFileToolMode,
+
+    /// Dedicated file-tool policy for Claude-compatible sessions.
+    pub claude_file_tool_mode: ClaudeFileToolMode,
+
+    /// Effective Moonshot simple-search settings for Kimi sessions.
+    pub moonshot_search: MoonshotSearchConfig,
 
     /// Effective service tier request id preference for new turns.
     /// `default` means the user explicitly selected standard routing.
@@ -2863,6 +2876,15 @@ fn current_time_reminder_toml_config(
     }
 }
 
+fn dedicated_file_tools_toml_config(
+    features: Option<&FeaturesToml>,
+) -> Option<&DedicatedFileToolsConfigToml> {
+    match features?.dedicated_file_tools.as_ref()? {
+        FeatureToml::Enabled(_) => None,
+        FeatureToml::Config(config) => Some(config),
+    }
+}
+
 fn network_proxy_toml_config(features: Option<&FeaturesToml>) -> Option<&NetworkProxyConfigToml> {
     match features?.network_proxy.as_ref()? {
         FeatureToml::Enabled(_) => None,
@@ -3052,6 +3074,9 @@ impl Config {
 
         validate_model_providers(&cfg.model_providers)
             .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
+        codex_web_search::validate_moonshot_search_config(&cfg.moonshot_search).map_err(
+            |error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error.to_string()),
+        )?;
         let orchestrator = cfg.orchestrator.as_ref();
         let orchestrator_skills_enabled =
             resolve_orchestrator_feature_enabled(orchestrator.and_then(|value| value.skills.as_ref()));
@@ -3169,6 +3194,9 @@ impl Config {
             feature_requirements,
             &mut startup_warnings,
         )?;
+        let claude_file_tool_mode = dedicated_file_tools_toml_config(cfg.features.as_ref())
+            .and_then(|config| config.mode)
+            .unwrap_or_default();
         let respect_system_proxy = features.enabled(Feature::RespectSystemProxy);
         let enable_network_proxy = features.enabled(Feature::NetworkProxy);
         let configured_windows_sandbox_mode = resolve_windows_sandbox_mode(&cfg);
@@ -3892,6 +3920,9 @@ impl Config {
         let otel = otel::resolve_config(cfg.otel.unwrap_or_default(), &mut startup_warnings);
         let config = Self {
             model,
+            chat_file_tool_mode: cfg.chat_file_tool_mode,
+            claude_file_tool_mode,
+            moonshot_search: cfg.moonshot_search,
             service_tier,
             review_model,
             model_context_window: cfg.model_context_window,

@@ -258,6 +258,15 @@ fn apply_patch_payload_command(payload: &ToolPayload) -> Option<String> {
     }
 }
 
+fn mutation_hook_input(payload: &ToolPayload, patch: &str) -> serde_json::Value {
+    match payload {
+        ToolPayload::Function { arguments } => serde_json::from_str(arguments)
+            .unwrap_or_else(|_| serde_json::Value::String(arguments.clone())),
+        ToolPayload::Custom { .. } => serde_json::json!({ "command": patch }),
+        _ => serde_json::Value::Null,
+    }
+}
+
 async fn effective_patch_permissions(
     session: &Session,
     turn: &TurnContext,
@@ -345,6 +354,30 @@ impl ApplyPatchHandler {
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
+        let patch_input = match &invocation.payload {
+            ToolPayload::Custom { input } => input.clone(),
+            _ => {
+                return Err(FunctionCallError::RespondToModel(
+                    "apply_patch handler received unsupported payload".to_string(),
+                ));
+            }
+        };
+        self.handle_patch(invocation, patch_input).await
+    }
+
+    pub(crate) async fn handle_generated_patch(
+        &self,
+        invocation: ToolInvocation,
+        patch_input: String,
+    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
+        self.handle_patch(invocation, patch_input).await
+    }
+
+    async fn handle_patch(
+        &self,
+        invocation: ToolInvocation,
+        patch_input: String,
+    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
         let ToolInvocation {
             session,
             turn,
@@ -355,11 +388,17 @@ impl ApplyPatchHandler {
             payload,
             ..
         } = invocation;
-
-        let ToolPayload::Custom { input: patch_input } = payload else {
-            return Err(FunctionCallError::RespondToModel(
-                "apply_patch handler received unsupported payload".to_string(),
-            ));
+        let is_apply_patch = tool_name.to_string() == "apply_patch";
+        let hook_tool_name = if is_apply_patch {
+            HookToolName::apply_patch()
+        } else {
+            HookToolName::new(tool_name.to_string())
+        };
+        let hook_input = mutation_hook_input(&payload, &patch_input);
+        let approval_cache_namespace = if is_apply_patch {
+            "apply_patch"
+        } else {
+            "file_mutation"
         };
         let args = match codex_apply_patch::parse_patch(&patch_input) {
             Ok(args) => args,
@@ -427,6 +466,9 @@ impl ApplyPatchHandler {
                         emitter.begin(event_ctx).await;
 
                         let req = ApplyPatchRequest {
+                            hook_input,
+                            hook_tool_name,
+                            approval_cache_namespace: approval_cache_namespace.to_string(),
                             turn_environment: turn_environment.clone(),
                             action: apply.action,
                             file_paths,
@@ -591,6 +633,11 @@ pub(crate) async fn intercept_apply_patch(
                     emitter.begin(event_ctx).await;
 
                     let req = ApplyPatchRequest {
+                        hook_input: serde_json::json!({
+                            "command": apply.action.patch.clone(),
+                        }),
+                        hook_tool_name: HookToolName::apply_patch(),
+                        approval_cache_namespace: "apply_patch".to_string(),
                         turn_environment,
                         action: apply.action,
                         file_paths: approval_keys,

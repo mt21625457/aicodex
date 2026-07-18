@@ -1,5 +1,7 @@
 #![allow(clippy::expect_used)]
 
+use codex_exec_server_protocol::JSONRPCError;
+use codex_exec_server_protocol::JSONRPCErrorError;
 use codex_exec_server_protocol::JSONRPCMessage;
 use codex_exec_server_protocol::JSONRPCResponse;
 use codex_protocol::models::PermissionProfile;
@@ -25,7 +27,9 @@ use tokio_tungstenite::tungstenite::Message;
 use super::*;
 use crate::client_api::DEFAULT_REMOTE_EXEC_SERVER_CONNECT_TIMEOUT;
 use crate::client_api::ExecServerTransportParams;
+use crate::protocol::FS_CONDITIONAL_WRITE_FILE_METHOD;
 use crate::protocol::FS_READ_FILE_METHOD;
+use crate::protocol::FS_WRITE_FILE_METHOD;
 use crate::protocol::FsReadFileParams;
 use crate::protocol::FsReadFileResponse;
 use crate::protocol::INITIALIZE_METHOD;
@@ -80,6 +84,76 @@ async fn remote_file_system_sends_path_and_sandbox_cwd_uris_without_native_conve
         expected_params
     );
     server.await.expect("recording server should succeed");
+}
+
+#[tokio::test]
+async fn conditional_write_to_legacy_server_fails_without_unconditional_fallback() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let websocket_url = format!("ws://{}", listener.local_addr().expect("listener address"));
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("listener should accept");
+        let mut websocket = accept_async(stream)
+            .await
+            .expect("websocket handshake should succeed");
+        complete_websocket_initialize(&mut websocket).await;
+        let request = match read_jsonrpc_websocket(&mut websocket).await {
+            JSONRPCMessage::Request(request)
+                if request.method == FS_CONDITIONAL_WRITE_FILE_METHOD =>
+            {
+                request
+            }
+            other => panic!("expected conditional write request, got {other:?}"),
+        };
+        write_jsonrpc_websocket(
+            &mut websocket,
+            JSONRPCMessage::Error(JSONRPCError {
+                id: request.id,
+                error: JSONRPCErrorError {
+                    code: -32601,
+                    message: "method not found".to_string(),
+                    data: None,
+                },
+            }),
+        )
+        .await;
+        if let Ok(Some(Ok(message))) = timeout(Duration::from_millis(250), websocket.next()).await {
+            let message = match message {
+                Message::Text(text) => serde_json::from_str(text.as_ref())
+                    .expect("follow-up JSON-RPC text should parse"),
+                Message::Binary(bytes) => serde_json::from_slice(bytes.as_ref())
+                    .expect("follow-up JSON-RPC binary should parse"),
+                Message::Ping(_) | Message::Pong(_) => return,
+                other => panic!("unexpected follow-up websocket frame: {other:?}"),
+            };
+            if let JSONRPCMessage::Request(request) = message {
+                assert_ne!(
+                    request.method, FS_WRITE_FILE_METHOD,
+                    "legacy unconditional write fallback must never be attempted"
+                );
+            }
+        }
+    });
+    let file_system = RemoteFileSystem::new(LazyRemoteExecServerClient::new(
+        ExecServerTransportParams::websocket_url(
+            websocket_url,
+            DEFAULT_REMOTE_EXEC_SERVER_CONNECT_TIMEOUT,
+        ),
+    ));
+
+    let error = file_system
+        .write_file_conditional(
+            &PathUri::parse("file:///workspace/legacy.txt").expect("valid path"),
+            b"never write".to_vec(),
+            ConditionalWritePrecondition::MustNotExist,
+            /*sandbox*/ None,
+        )
+        .await
+        .expect_err("legacy server must fail closed");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+    server.await.expect("legacy server should complete");
 }
 
 async fn record_read_file_params(

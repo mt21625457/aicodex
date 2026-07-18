@@ -78,6 +78,13 @@ pub(super) async fn run_remote_compact_v2_attempt(
     let prompt = Prompt {
         input,
         tools: tool_router.model_visible_specs(),
+        hidden_tools: tool_router.hidden_specs(),
+        chat_file_tool_mode: turn_context.config.chat_file_tool_mode,
+        claude_file_tool_mode: turn_context.config.claude_file_tool_mode,
+        dedicated_file_tools_enabled: turn_context
+            .config
+            .features
+            .enabled(codex_features::Feature::DedicatedFileTools),
         parallel_tool_calls: turn_context.model_info.supports_parallel_tool_calls,
         base_instructions,
         output_schema: None,

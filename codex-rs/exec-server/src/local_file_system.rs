@@ -1,5 +1,6 @@
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
+use sha2::Digest;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -8,6 +9,8 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 use tokio::io;
 use tokio::io::AsyncReadExt;
+use tokio::io::AsyncSeekExt;
+use tokio::io::AsyncWriteExt;
 use tokio_util::io::ReaderStream;
 
 use crate::CopyOptions;
@@ -26,6 +29,8 @@ use crate::WalkOptions;
 use crate::WalkOutcome;
 use crate::regular_file;
 use crate::sandboxed_file_system::SandboxedFileSystem;
+use codex_file_system::ConditionalWritePrecondition;
+use sha2::Sha256;
 
 const MAX_READ_FILE_BYTES: u64 = 512 * 1024 * 1024;
 
@@ -34,6 +39,42 @@ fn file_too_large_error() -> io::Error {
         io::ErrorKind::InvalidInput,
         format!("file is too large to read: limit is {MAX_READ_FILE_BYTES} bytes"),
     )
+}
+
+fn sibling_write_temp_path(path: &Path) -> io::Result<PathBuf> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty());
+    let file_name = path.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "conditional write path is missing a file name",
+        )
+    })?;
+    let temp_name = format!(
+        ".{}.codex-write-{}",
+        file_name.to_string_lossy(),
+        uuid::Uuid::new_v4()
+    );
+    Ok(match parent {
+        Some(parent) => parent.join(temp_name),
+        None => PathBuf::from(temp_name),
+    })
+}
+
+async fn write_exclusive_file(path: &Path, contents: &[u8]) -> io::Result<()> {
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .await?;
+    write_and_flush(&mut file, contents).await
+}
+
+async fn write_and_flush(file: &mut tokio::fs::File, contents: &[u8]) -> io::Result<()> {
+    file.write_all(contents).await?;
+    file.flush().await?;
+    Ok(())
 }
 
 pub static LOCAL_FS: LazyLock<Arc<dyn ExecutorFileSystem>> =
@@ -107,6 +148,33 @@ impl LocalFileSystem {
         self.unsandboxed.open_file_for_read(path, sandbox).await
     }
 
+    pub(crate) async fn read_file_block(
+        &self,
+        path: &PathUri,
+        offset: u64,
+        len: usize,
+        sandbox: Option<&FileSystemSandboxContext>,
+    ) -> FileSystemResult<(Vec<u8>, bool)> {
+        if !(1..=FILE_READ_CHUNK_SIZE).contains(&len) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("file read block length must be between 1 and {FILE_READ_CHUNK_SIZE}"),
+            ));
+        }
+        if sandbox.is_some_and(FileSystemSandboxContext::should_run_in_sandbox) {
+            return self
+                .sandboxed()?
+                .read_file_block(path, offset, len, sandbox)
+                .await;
+        }
+        let mut file = self.unsandboxed.open_file_for_read(path, sandbox).await?;
+        file.seek(std::io::SeekFrom::Start(offset)).await?;
+        let mut bytes = Vec::with_capacity(len);
+        file.take(len as u64).read_to_end(&mut bytes).await?;
+        let eof = bytes.len() < len;
+        Ok((bytes, eof))
+    }
+
     async fn canonicalize(
         &self,
         path: &PathUri,
@@ -142,6 +210,19 @@ impl LocalFileSystem {
     ) -> FileSystemResult<()> {
         let (file_system, sandbox) = self.file_system_for(sandbox)?;
         file_system.write_file(path, contents, sandbox).await
+    }
+
+    async fn write_file_conditional(
+        &self,
+        path: &PathUri,
+        contents: Vec<u8>,
+        precondition: ConditionalWritePrecondition,
+        sandbox: Option<&FileSystemSandboxContext>,
+    ) -> FileSystemResult<()> {
+        let (file_system, sandbox) = self.file_system_for(sandbox)?;
+        file_system
+            .write_file_conditional(path, contents, precondition, sandbox)
+            .await
     }
 
     async fn create_directory(
@@ -238,6 +319,22 @@ impl ExecutorFileSystem for LocalFileSystem {
         sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, ()> {
         Box::pin(LocalFileSystem::write_file(self, path, contents, sandbox))
+    }
+
+    fn write_file_conditional<'a>(
+        &'a self,
+        path: &'a PathUri,
+        contents: Vec<u8>,
+        precondition: ConditionalWritePrecondition,
+        sandbox: Option<&'a FileSystemSandboxContext>,
+    ) -> ExecutorFileSystemFuture<'a, ()> {
+        Box::pin(LocalFileSystem::write_file_conditional(
+            self,
+            path,
+            contents,
+            precondition,
+            sandbox,
+        ))
     }
 
     fn create_directory<'a>(
@@ -355,6 +452,19 @@ impl UnsandboxedFileSystem {
             .await
     }
 
+    async fn write_file_conditional(
+        &self,
+        path: &PathUri,
+        contents: Vec<u8>,
+        precondition: ConditionalWritePrecondition,
+        sandbox: Option<&FileSystemSandboxContext>,
+    ) -> FileSystemResult<()> {
+        reject_platform_sandbox_context(sandbox)?;
+        self.file_system
+            .write_file_conditional(path, contents, precondition, /*sandbox*/ None)
+            .await
+    }
+
     async fn create_directory(
         &self,
         path: &PathUri,
@@ -454,6 +564,22 @@ impl ExecutorFileSystem for UnsandboxedFileSystem {
         ))
     }
 
+    fn write_file_conditional<'a>(
+        &'a self,
+        path: &'a PathUri,
+        contents: Vec<u8>,
+        precondition: ConditionalWritePrecondition,
+        sandbox: Option<&'a FileSystemSandboxContext>,
+    ) -> ExecutorFileSystemFuture<'a, ()> {
+        Box::pin(UnsandboxedFileSystem::write_file_conditional(
+            self,
+            path,
+            contents,
+            precondition,
+            sandbox,
+        ))
+    }
+
     fn create_directory<'a>(
         &'a self,
         path: &'a PathUri,
@@ -508,7 +634,7 @@ impl ExecutorFileSystem for UnsandboxedFileSystem {
 }
 
 impl DirectFileSystem {
-    async fn open_file_for_read(
+    pub(crate) async fn open_file_for_read(
         &self,
         path: &PathUri,
         sandbox: Option<&FileSystemSandboxContext>,
@@ -571,6 +697,65 @@ impl DirectFileSystem {
         reject_sandbox_context(sandbox)?;
         let path = path.to_abs_path()?;
         tokio::fs::write(path.as_path(), contents).await
+    }
+
+    async fn write_file_conditional(
+        &self,
+        path: &PathUri,
+        contents: Vec<u8>,
+        precondition: ConditionalWritePrecondition,
+        sandbox: Option<&FileSystemSandboxContext>,
+    ) -> FileSystemResult<()> {
+        reject_sandbox_context(sandbox)?;
+        let path = path.to_abs_path()?;
+        match precondition {
+            ConditionalWritePrecondition::MustNotExist => {
+                let mut file = tokio::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(path.as_path())
+                    .await?;
+                if let Err(error) = write_and_flush(&mut file, &contents).await {
+                    drop(file);
+                    let _ = tokio::fs::remove_file(path.as_path()).await;
+                    return Err(error);
+                }
+            }
+            ConditionalWritePrecondition::MatchSha256(expected) => {
+                let current = tokio::fs::read(path.as_path()).await?;
+                if Sha256::digest(&current).as_slice() != expected {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "conditional write conflict: file changed since read",
+                    ));
+                }
+                let temp_path = sibling_write_temp_path(path.as_path())?;
+                if let Err(error) = write_exclusive_file(&temp_path, &contents).await {
+                    let _ = tokio::fs::remove_file(&temp_path).await;
+                    return Err(error);
+                }
+                // Re-check immediately before replacing the live file.
+                let current = match tokio::fs::read(path.as_path()).await {
+                    Ok(current) => current,
+                    Err(error) => {
+                        let _ = tokio::fs::remove_file(&temp_path).await;
+                        return Err(error);
+                    }
+                };
+                if Sha256::digest(&current).as_slice() != expected {
+                    let _ = tokio::fs::remove_file(&temp_path).await;
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "conditional write conflict: file changed since read",
+                    ));
+                }
+                if let Err(error) = tokio::fs::rename(&temp_path, path.as_path()).await {
+                    let _ = tokio::fs::remove_file(&temp_path).await;
+                    return Err(error);
+                }
+            }
+        }
+        Ok(())
     }
 
     async fn create_directory(
@@ -743,6 +928,22 @@ impl ExecutorFileSystem for DirectFileSystem {
         sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, ()> {
         Box::pin(DirectFileSystem::write_file(self, path, contents, sandbox))
+    }
+
+    fn write_file_conditional<'a>(
+        &'a self,
+        path: &'a PathUri,
+        contents: Vec<u8>,
+        precondition: ConditionalWritePrecondition,
+        sandbox: Option<&'a FileSystemSandboxContext>,
+    ) -> ExecutorFileSystemFuture<'a, ()> {
+        Box::pin(DirectFileSystem::write_file_conditional(
+            self,
+            path,
+            contents,
+            precondition,
+            sandbox,
+        ))
     }
 
     fn create_directory<'a>(
@@ -921,6 +1122,8 @@ mod path_uri_tests;
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use codex_file_system::ConditionalWritePrecondition;
+    use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
     use std::os::unix::fs::symlink;
 
@@ -945,6 +1148,46 @@ mod tests {
             resolved,
             resolve_existing_path(temp_dir.path())?.join("secret.txt")
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn conditional_write_is_atomic_for_create_and_rejects_stale_bytes() -> io::Result<()> {
+        let temp_dir = tempfile::TempDir::new()?;
+        let path = temp_dir.path().join("file.txt");
+        let absolute = AbsolutePathBuf::from_absolute_path(&path)?;
+        let uri = PathUri::from_abs_path(&absolute);
+        let fs = LocalFileSystem::unsandboxed();
+
+        fs.write_file_conditional(
+            &uri,
+            b"first".to_vec(),
+            ConditionalWritePrecondition::MustNotExist,
+            None,
+        )
+        .await?;
+        let create_error = fs
+            .write_file_conditional(
+                &uri,
+                b"second".to_vec(),
+                ConditionalWritePrecondition::MustNotExist,
+                None,
+            )
+            .await
+            .expect_err("create-new must not clobber an existing file");
+        assert_eq!(create_error.kind(), io::ErrorKind::AlreadyExists);
+
+        let stale_error = fs
+            .write_file_conditional(
+                &uri,
+                b"third".to_vec(),
+                ConditionalWritePrecondition::MatchSha256([0; 32]),
+                None,
+            )
+            .await
+            .expect_err("stale bytes must fail closed");
+        assert_eq!(stale_error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(tokio::fs::read(path).await?, b"first");
         Ok(())
     }
 }

@@ -1397,6 +1397,13 @@ pub(crate) fn build_prompt(
     Prompt {
         input,
         tools: router.model_visible_specs(),
+        hidden_tools: router.hidden_specs(),
+        chat_file_tool_mode: turn_context.config.chat_file_tool_mode,
+        claude_file_tool_mode: turn_context.config.claude_file_tool_mode,
+        dedicated_file_tools_enabled: turn_context
+            .config
+            .features
+            .enabled(Feature::DedicatedFileTools),
         parallel_tool_calls: turn_context.model_info.supports_parallel_tool_calls,
         base_instructions,
         output_schema: turn_context.final_output_json_schema.clone(),
@@ -1410,6 +1417,10 @@ fn prompt_for_current_context(sess_history: Vec<ResponseItem>, prompt: &Prompt) 
     Prompt {
         input: sess_history,
         tools: prompt.tools.clone(),
+        hidden_tools: prompt.hidden_tools.clone(),
+        chat_file_tool_mode: prompt.chat_file_tool_mode,
+        claude_file_tool_mode: prompt.claude_file_tool_mode,
+        dedicated_file_tools_enabled: prompt.dedicated_file_tools_enabled,
         parallel_tool_calls: prompt.parallel_tool_calls,
         base_instructions: prompt.base_instructions.clone(),
         output_schema: prompt.output_schema.clone(),

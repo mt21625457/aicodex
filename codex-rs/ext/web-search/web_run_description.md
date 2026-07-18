@@ -50,9 +50,11 @@ Below is a list of scenarios where browsing the internet MUST be used. PAY CLOSE
 
 ## Citations
 
-Results from `web.run` include internal reference IDs such as `turn2search5`. Use
-those reference IDs only in calls to `web.run`; do not expose them in the final
-response.
+Search results may be bounded snippets rather than full pages. When a snippet is
+not enough, use an available fetch or read-page capability to inspect the
+source. OpenAI search results may include internal reference IDs such as
+`turn2search5`; use those IDs only in calls to `web.run` and never expose them
+in the final response.
 
 Cite sources in the final response using Markdown links:
 

@@ -14,18 +14,25 @@ workspace = true
 
 [dependencies]
 codex-api = { workspace = true }
+codex-config = { workspace = true }
 codex-core = { workspace = true }
 codex-extension-api = { workspace = true }
 codex-extension-items = { workspace = true }
+codex-features = { workspace = true }
 codex-login = { workspace = true }
 codex-model-provider = { workspace = true }
 codex-model-provider-info = { workspace = true }
 codex-protocol = { workspace = true }
 codex-tools = { workspace = true }
+codex-web-search = { workspace = true }
 http = { workspace = true }
 schemars = { workspace = true }
 serde_json = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
+codex-utils-output-truncation = { workspace = true }
 pretty_assertions = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
+wiremock = { workspace = true }

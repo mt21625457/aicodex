@@ -284,6 +284,147 @@ async fn standalone_web_search_round_trips_output() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn kimi_moonshot_web_search_emits_bounded_public_results() -> Result<()> {
+    let call_id = "moonshot-web-run-1";
+    let server = responses::start_mock_server().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "search_results": [{
+                "title": "Rust release",
+                "url": "https://example.com/rust",
+                "snippet": "Rust is current.",
+                "content": "full page content must not cross the public API",
+                "unknown": "ignored"
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let response_mock = responses::mount_sse_sequence(
+        &server,
+        vec![
+            responses::sse(vec![
+                responses::ev_response_created("resp-1"),
+                responses::ev_function_call_with_namespace(
+                    call_id,
+                    "web",
+                    "run",
+                    &json!({"query": "rust release"}).to_string(),
+                ),
+                responses::ev_completed("resp-1"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("msg-1", "Done"),
+                responses::ev_completed("resp-2"),
+            ]),
+        ],
+    )
+    .await;
+
+    let codex_home = TempDir::new()?;
+    create_kimi_config_toml(codex_home.path(), &server.uri())?;
+    write_chatgpt_auth(
+        codex_home.path(),
+        ChatGptAuthFixture::new("access-chatgpt"),
+        AuthCredentialsStoreMode::File,
+    )?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .with_env_overrides(&[("OPENAI_API_KEY", None)])
+        .build()
+        .await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let thread_req = mcp
+        .send_thread_start_request_with_auto_env(ThreadStartParams::default())
+        .await?;
+    let thread_resp = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
+    let turn_req = mcp
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id,
+            input: vec![V2UserInput::Text {
+                text: "Search the web".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    let turn_resp = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(turn_req)),
+    )
+    .await??;
+    let _: TurnStartResponse = to_response(turn_resp)?;
+
+    let _started = timeout(DEFAULT_READ_TIMEOUT, wait_for_web_search_started(&mut mcp)).await??;
+    let completed = timeout(
+        DEFAULT_READ_TIMEOUT,
+        wait_for_web_search_completed(&mut mcp),
+    )
+    .await??;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    assert_eq!(
+        completed.item,
+        ThreadItem::WebSearch(WebSearchItem {
+            id: call_id.to_string(),
+            query: "rust release".to_string(),
+            action: Some(WebSearchAction::Search {
+                query: Some("rust release".to_string()),
+                queries: None,
+            }),
+            results: Some(vec![json!({
+                "type": "text_result",
+                "title": "Rust release",
+                "url": "https://example.com/rust",
+                "snippet": "Rust is current."
+            })]),
+        })
+    );
+    let moonshot_request = server
+        .received_requests()
+        .await
+        .context("failed to fetch received requests")?
+        .into_iter()
+        .find(|request| request.url.path() == "/v1/search")
+        .context("expected Moonshot search request")?;
+    assert_eq!(
+        moonshot_request
+            .headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok()),
+        Some("Bearer moonshot-token")
+    );
+    assert_eq!(
+        moonshot_request
+            .headers
+            .get("x-msh-tool-call-id")
+            .and_then(|value| value.to_str().ok()),
+        Some(call_id)
+    );
+    assert_eq!(
+        moonshot_request.body_json::<Value>()?,
+        json!({"text_query": "rust release"})
+    );
+    let continuation = response_mock.requests()[1].function_call_output(call_id);
+    let continuation_text = continuation.to_string();
+    assert!(continuation_text.contains("Rust is current."));
+    assert!(!continuation_text.contains("full page content"));
+
+    Ok(())
+}
+
 async fn wait_for_web_search_started(mcp: &mut TestAppServer) -> Result<ItemStartedNotification> {
     loop {
         let notification = mcp
@@ -372,6 +513,38 @@ chatgpt_base_url = "{server_uri}"
 
 [features]
 standalone_web_search = true
+
+[model_providers.openai-custom]
+name = "OpenAI"
+base_url = "{server_uri}/api/codex"
+wire_api = "responses"
+request_max_retries = 0
+stream_max_retries = 0
+supports_websockets = false
+requires_openai_auth = true
+"#
+        ),
+    )
+}
+
+fn create_kimi_config_toml(codex_home: &Path, server_uri: &str) -> std::io::Result<()> {
+    std::fs::write(
+        codex_home.join("config.toml"),
+        format!(
+            r#"
+model = "gateway:k3"
+approval_policy = "never"
+sandbox_mode = "read-only"
+model_provider = "openai-custom"
+chatgpt_base_url = "{server_uri}"
+
+[features]
+standalone_web_search = true
+kimi_moonshot_web_search = true
+
+[moonshot_search]
+base_url = "{server_uri}/v1/search"
+api_key = "moonshot-token"
 
 [model_providers.openai-custom]
 name = "OpenAI"

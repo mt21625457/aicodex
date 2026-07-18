@@ -93,7 +93,7 @@ pub fn create_tools_json_for_chat_completions(
                 ChatToolDefinition {
                     namespace: None,
                     name: tool.name(),
-                    description: "Access the web using Codex's web search command surface.",
+                    description: "Access the web using Codex's configured search backend. Results may be bounded snippets: cite returned URLs with markdown links and use an available fetch/read-page capability when full-page context is needed.",
                     parameters: web_search_function_schema_json(),
                     kind: ChatToolCallKind::Function,
                 },

@@ -1,8 +1,12 @@
+use std::path::PathBuf;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use codex_core::compact::SUMMARIZATION_PROMPT;
 use codex_core::compact::SUMMARY_PREFIX;
 use codex_core::config::Config;
+use codex_features::ClaudeFileToolMode;
 use codex_features::Feature;
 use codex_model_provider_info::WireApi;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
@@ -40,6 +44,8 @@ use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
 use wiremock::Mock;
+use wiremock::Request;
+use wiremock::Respond;
 use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
@@ -362,6 +368,108 @@ async fn claude_wire_local_web_search_fallback_posts_function_tool_result() -> a
         "unexpected tool result content: {content}"
     );
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kimi_claude_local_web_search_uses_moonshot_and_continues_with_snippets()
+-> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let responses = mount_claude_sse_sequence(
+        &server,
+        vec![
+            claude_custom_tool_use_sse(
+                "toolu_moonshot",
+                "web_search",
+                json!({"query": "latest rust release"}),
+            ),
+            claude_text_sse("msg_2", "handled"),
+        ],
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "search_results": [{
+                "title": "Rust release",
+                "url": "https://example.com/rust",
+                "snippet": "Rust release snippet",
+                "content": "full page must not reach the next model request"
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/alpha/search"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let search_url = format!("{}/v1/search", server.uri());
+    let test = test_codex()
+        .with_model("gateway:k3")
+        .with_config(move |config| {
+            configure_claude_provider_with_web_search_context_size(config);
+            config.moonshot_search.base_url = Some(search_url);
+            config.moonshot_search.api_key = Some("moonshot-test-token".to_string());
+            config
+                .features
+                .enable(Feature::KimiMoonshotWebSearch)
+                .expect("Moonshot routing feature should enable");
+            config
+                .features
+                .enable(Feature::Sqlite)
+                .expect("state database should enable");
+            config.memories.disable_on_external_context = true;
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    let db = test.codex.state_db().expect("state db enabled");
+    let thread_id = test.session_configured.thread_id;
+
+    test.submit_turn("search through Moonshot").await?;
+
+    let mut memory_mode = None;
+    for _ in 0..100 {
+        memory_mode = db.get_thread_memory_mode(thread_id).await?;
+        if memory_mode.as_deref() == Some("polluted") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(memory_mode.as_deref(), Some("polluted"));
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 2);
+    let second = requests[1].body_json();
+    let tool_result = tool_result_block(&second, "toolu_moonshot");
+    assert_ne!(tool_result["is_error"].as_bool(), Some(true));
+    let content = tool_result_text(&tool_result);
+    assert!(content.contains("Rust release snippet"));
+    assert!(content.contains("https://example.com/rust"));
+    assert!(!content.contains("full page must not reach"));
+
+    let moonshot_requests = server
+        .received_requests()
+        .await
+        .expect("request capture")
+        .into_iter()
+        .filter(|request| request.url.path() == "/v1/search")
+        .collect::<Vec<_>>();
+    assert_eq!(moonshot_requests.len(), 1);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&moonshot_requests[0].body)?["text_query"],
+        "latest rust release"
+    );
+    assert_eq!(
+        moonshot_requests[0]
+            .headers
+            .get(codex_api::MOONSHOT_TOOL_CALL_ID_HEADER)
+            .and_then(|value| value.to_str().ok()),
+        Some("toolu_moonshot")
+    );
     Ok(())
 }
 
@@ -1386,6 +1494,330 @@ async fn compatible_claude_wire_exposes_apply_patch_for_fallback_model() -> anyh
     let written = std::fs::read_to_string(test.config.cwd.join("compatible_patch.txt"))?;
     assert_eq!(written, "hello from compatible claude\n");
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compatible_claude_dedicated_read_then_edit_succeeds() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let responses = mount_claude_sse_sequence(
+        &server,
+        vec![
+            claude_custom_tool_use_sse(
+                "toolu_dedicated_read",
+                "read_file",
+                json!({"path": "dedicated-claude.txt"}),
+            ),
+            claude_custom_tool_use_sse(
+                "toolu_dedicated_edit",
+                "edit_file",
+                json!({
+                    "path": "dedicated-claude.txt",
+                    "old_string": "before",
+                    "new_string": "after"
+                }),
+            ),
+            claude_text_sse("msg_3", "done"),
+        ],
+    )
+    .await;
+
+    let test = test_codex()
+        .with_config(|config| {
+            configure_compatible_claude_provider_with_fallback_model(config);
+            config.workspace_roots = vec![config.cwd.clone()];
+            config
+                .permissions
+                .set_workspace_roots(config.workspace_roots.clone());
+            config
+                .features
+                .enable(Feature::DedicatedFileTools)
+                .expect("dedicated file tools should be enableable");
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    let target_path = test
+        .executor_environment()
+        .cwd()
+        .join("dedicated-claude.txt");
+    let target_uri = codex_utils_path_uri::PathUri::from_abs_path(&target_path);
+    test.fs()
+        .write_file(&target_uri, b"before\n".to_vec(), None)
+        .await?;
+
+    test.submit_turn("read and edit through compatible Claude")
+        .await?;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 3);
+    let first = requests[0].body_json();
+    let first_tool_names = tool_names(&first);
+    for name in ["read_file", "edit_file", "write_file"] {
+        assert!(
+            first_tool_names.iter().any(|tool_name| tool_name == name),
+            "missing {name}: {first_tool_names:?}"
+        );
+    }
+    assert!(!first_tool_names.iter().any(|name| name == "apply_patch"));
+    assert!(
+        !first_tool_names
+            .iter()
+            .any(|name| name.starts_with("text_editor_"))
+    );
+    assert!(
+        first["system"].as_str().is_some_and(|system| {
+            system.contains("<dedicated_file_tool_guidance>")
+                && system.contains("separate completions")
+        }),
+        "dedicated guidance should be present: {}",
+        first["system"]
+    );
+    let read_result = tool_result_block(&requests[1].body_json(), "toolu_dedicated_read");
+    assert_ne!(read_result["is_error"].as_bool(), Some(true));
+    let edit_result = tool_result_block(&requests[2].body_json(), "toolu_dedicated_edit");
+    assert_ne!(edit_result["is_error"].as_bool(), Some(true));
+    assert!(tool_result_text(&edit_result).contains("completed"));
+    assert_eq!(test.fs().read_file(&target_uri, None).await?, b"after\n");
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compatible_claude_dedicated_missing_and_stale_receipts_are_correctable()
+-> anyhow::Result<()> {
+    struct MutatingClaudeSequence {
+        call_count: AtomicUsize,
+        target_path: PathBuf,
+        responses: Vec<String>,
+    }
+
+    impl Respond for MutatingClaudeSequence {
+        fn respond(&self, _request: &Request) -> ResponseTemplate {
+            let call = self.call_count.fetch_add(1, Ordering::SeqCst);
+            if call == 2 {
+                std::fs::write(&self.target_path, "external\n")
+                    .expect("external modification should succeed");
+            }
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(
+                    self.responses
+                        .get(call)
+                        .unwrap_or_else(|| panic!("missing Claude response {call}"))
+                        .clone(),
+                )
+        }
+    }
+
+    let server = start_mock_server().await;
+    let test = test_codex()
+        .with_config(|config| {
+            configure_compatible_claude_provider_with_fallback_model(config);
+            config.workspace_roots = vec![config.cwd.clone()];
+            config
+                .permissions
+                .set_workspace_roots(config.workspace_roots.clone());
+            config
+                .features
+                .enable(Feature::DedicatedFileTools)
+                .expect("dedicated file tools should be enableable");
+        })
+        .build(&server)
+        .await?;
+    let target_path = test.config.cwd.join("dedicated-stale.txt");
+    std::fs::write(&target_path, "before\n")?;
+    let edit_input = json!({
+        "path": "dedicated-stale.txt",
+        "old_string": "before",
+        "new_string": "after"
+    });
+    let response_bodies = vec![
+        claude_custom_tool_use_sse("toolu_missing_edit", "edit_file", edit_input.clone()),
+        claude_custom_tool_use_sse(
+            "toolu_stale_read",
+            "read_file",
+            json!({"path": "dedicated-stale.txt"}),
+        ),
+        claude_custom_tool_use_sse("toolu_stale_edit", "edit_file", edit_input),
+        claude_text_sse("msg_done", "handled"),
+    ];
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(MutatingClaudeSequence {
+            call_count: AtomicUsize::new(0),
+            target_path: target_path.to_path_buf(),
+            responses: response_bodies,
+        })
+        .expect(4)
+        .mount(&server)
+        .await;
+
+    test.submit_turn("recover from missing and stale receipts")
+        .await?;
+
+    assert_eq!(std::fs::read_to_string(&target_path)?, "external\n");
+    let requests = server
+        .received_requests()
+        .await
+        .expect("Claude requests should be captured")
+        .into_iter()
+        .filter(|request| request.url.path() == "/v1/messages")
+        .map(|request| serde_json::from_slice::<Value>(&request.body))
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(requests.len(), 4);
+    let missing = tool_result_block(&requests[1], "toolu_missing_edit");
+    assert_eq!(missing["is_error"].as_bool(), Some(true));
+    assert!(tool_result_text(&missing).contains("read_file is required"));
+    let stale = tool_result_block(&requests[3], "toolu_stale_edit");
+    assert_eq!(stale["is_error"].as_bool(), Some(true));
+    assert!(tool_result_text(&stale).contains("read it again"));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_dedicated_hidden_apply_patch_dispatches_without_advertising() -> anyhow::Result<()>
+{
+    let server = start_mock_server().await;
+    let responses = mount_claude_sse_sequence(
+        &server,
+        vec![
+            claude_custom_tool_use_sse(
+                "toolu_hidden_patch",
+                "apply_patch",
+                json!({
+                    "input": "*** Begin Patch\n*** Add File: hidden-patch.txt\n+hidden compatibility\n*** End Patch"
+                }),
+            ),
+            claude_text_sse("msg_hidden_done", "done"),
+        ],
+    )
+    .await;
+
+    let test = test_codex()
+        .with_config(|config| {
+            configure_claude_provider_with_apply_patch(config);
+            config.workspace_roots = vec![config.cwd.clone()];
+            config
+                .permissions
+                .set_workspace_roots(config.workspace_roots.clone());
+            config.claude_file_tool_mode = ClaudeFileToolMode::Dedicated;
+            config
+                .features
+                .enable(Feature::DedicatedFileTools)
+                .expect("dedicated file tools should be enableable");
+        })
+        .build(&server)
+        .await?;
+
+    test.submit_turn("dispatch a legacy hidden apply_patch call")
+        .await?;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 2);
+    for request in &requests {
+        let names = tool_names(&request.body_json());
+        assert!(!names.iter().any(|name| name == "apply_patch"), "{names:?}");
+    }
+    let result = tool_result_block(&requests[1].body_json(), "toolu_hidden_patch");
+    assert_ne!(result["is_error"].as_bool(), Some(true));
+    assert_eq!(
+        std::fs::read_to_string(test.config.cwd.join("hidden-patch.txt"))?,
+        "hidden compatibility\n"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resumed_claude_history_keeps_legacy_apply_patch_hidden_and_serializable()
+-> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let responses = mount_claude_sse_sequence(
+        &server,
+        vec![
+            claude_custom_tool_use_sse(
+                "toolu_legacy_patch",
+                "apply_patch",
+                json!({
+                    "input": "*** Begin Patch\n*** Add File: resumed-claude-hidden.txt\n+legacy history\n*** End Patch"
+                }),
+            ),
+            claude_text_sse("msg_legacy_done", "patched"),
+            claude_custom_tool_use_sse(
+                "toolu_resumed_native",
+                "str_replace_based_edit_tool",
+                json!({
+                    "command": "create",
+                    "path": "resumed-native.txt",
+                    "file_text": "native compatibility\n"
+                }),
+            ),
+            claude_text_sse("msg_resumed_done", "resumed"),
+        ],
+    )
+    .await;
+    let initial = test_codex()
+        .with_config(configure_claude_provider_with_apply_patch)
+        .build(&server)
+        .await?;
+    let rollout_path = initial
+        .session_configured
+        .rollout_path
+        .clone()
+        .expect("rollout path");
+    initial
+        .submit_turn("create legacy Claude patch history")
+        .await?;
+
+    let mut resume_builder = test_codex().with_config(|config| {
+        configure_claude_provider_with_apply_patch(config);
+        config.workspace_roots = vec![config.cwd.clone()];
+        config
+            .permissions
+            .set_workspace_roots(config.workspace_roots.clone());
+        config.claude_file_tool_mode = ClaudeFileToolMode::Dedicated;
+        config
+            .features
+            .enable(Feature::DedicatedFileTools)
+            .expect("dedicated file tools should enable");
+    });
+    let resumed = resume_builder
+        .resume(&server, initial.home.clone(), rollout_path)
+        .await?;
+    resumed.submit_turn("continue after Claude resume").await?;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 4);
+    let resumed_request = requests[2].body_json();
+    assert!(
+        !tool_names(&resumed_request)
+            .iter()
+            .any(|name| name == "apply_patch")
+    );
+    let messages = resumed_request["messages"].as_array().expect("messages");
+    assert!(messages.iter().any(|message| {
+        message["role"] == "assistant"
+            && message["content"].as_array().is_some_and(|content| {
+                content.iter().any(|block| {
+                    block["type"] == "tool_use"
+                        && block["id"] == "toolu_legacy_patch"
+                        && block["name"] == "apply_patch"
+                })
+            })
+    }));
+    assert!(messages.iter().any(|message| {
+        message["role"] == "user"
+            && message["content"].as_array().is_some_and(|content| {
+                content.iter().any(|block| {
+                    block["type"] == "tool_result" && block["tool_use_id"] == "toolu_legacy_patch"
+                })
+            })
+    }));
+    let native_result = tool_result_block(&requests[3].body_json(), "toolu_resumed_native");
+    assert_ne!(native_result["is_error"].as_bool(), Some(true));
+    assert_eq!(
+        std::fs::read_to_string(resumed.config.cwd.join("resumed-native.txt"))?,
+        "native compatibility\n"
+    );
     Ok(())
 }
 

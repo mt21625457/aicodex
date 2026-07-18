@@ -40,6 +40,13 @@ struct BarrierArgs {
 }
 
 #[derive(Debug, Deserialize)]
+struct FileBarrierArgs {
+    create_path: String,
+    wait_for_path: String,
+    timeout_ms: u64,
+}
+
+#[derive(Debug, Deserialize)]
 struct TestSyncArgs {
     #[serde(default)]
     sleep_before_ms: Option<u64>,
@@ -47,6 +54,8 @@ struct TestSyncArgs {
     sleep_after_ms: Option<u64>,
     #[serde(default)]
     barrier: Option<BarrierArgs>,
+    #[serde(default)]
+    file_barrier: Option<FileBarrierArgs>,
 }
 
 fn default_timeout_ms() -> u64 {
@@ -103,6 +112,10 @@ impl TestSyncHandler {
             wait_on_barrier(barrier).await?;
         }
 
+        if let Some(file_barrier) = args.file_barrier {
+            wait_on_file_barrier(file_barrier).await?;
+        }
+
         if let Some(delay) = args.sleep_after_ms
             && delay > 0
         {
@@ -113,6 +126,24 @@ impl TestSyncHandler {
             "ok".to_string(),
             Some(true),
         )))
+    }
+}
+
+async fn wait_on_file_barrier(args: FileBarrierArgs) -> Result<(), FunctionCallError> {
+    tokio::fs::write(&args.create_path, b"ready")
+        .await
+        .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(args.timeout_ms);
+    loop {
+        if tokio::fs::metadata(&args.wait_for_path).await.is_ok() {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(FunctionCallError::RespondToModel(
+                "test_sync_tool file barrier wait timed out".to_string(),
+            ));
+        }
+        sleep(Duration::from_millis(10)).await;
     }
 }
 

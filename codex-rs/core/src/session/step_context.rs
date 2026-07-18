@@ -1,4 +1,6 @@
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
 use crate::agents_md::LoadedAgentsMd;
 use crate::environment_selection::TurnEnvironmentSnapshot;
@@ -8,9 +10,12 @@ use codex_exec_server::ResolvedSelectedCapabilityRoot;
 use codex_mcp::ToolInfo;
 use tokio::sync::OnceCell;
 
+static NEXT_STEP_ID: AtomicU64 = AtomicU64::new(1);
+
 /// Request-scoped state that may change between model sampling requests.
 #[derive(Debug)]
 pub(crate) struct StepContext {
+    id: u64,
     pub(crate) turn: Arc<TurnContext>,
     pub(crate) environments: TurnEnvironmentSnapshot,
     /// Capability roots bound to ready environments in this exact step.
@@ -32,6 +37,7 @@ impl StepContext {
         loaded_agents_md: Option<Arc<LoadedAgentsMd>>,
     ) -> Self {
         Self {
+            id: NEXT_STEP_ID.fetch_add(1, Ordering::Relaxed),
             turn,
             environments,
             selected_capability_roots,
@@ -39,6 +45,10 @@ impl StepContext {
             mcp_tool_snapshot: OnceCell::new(),
             loaded_agents_md,
         }
+    }
+
+    pub(crate) fn id(&self) -> u64 {
+        self.id
     }
 
     pub(crate) async fn mcp_tools(&self) -> &[ToolInfo] {

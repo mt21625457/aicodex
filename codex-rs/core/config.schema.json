@@ -368,6 +368,41 @@
       },
       "type": "object"
     },
+    "ChatFileToolMode": {
+      "description": "Selects the model-visible dedicated file-tool policy for Chat Completions.",
+      "enum": [
+        "legacy",
+        "dedicated",
+        "dedicated_with_apply_patch"
+      ],
+      "type": "string"
+    },
+    "ClaudeFileToolMode": {
+      "description": "Claude-wire rollout policy for dedicated file tools.",
+      "oneOf": [
+        {
+          "description": "Prefer Anthropic's native editor, but use dedicated tools for compatible providers.",
+          "enum": [
+            "auto"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Advertise only the dedicated read/edit/write tools.",
+          "enum": [
+            "dedicated"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Advertise dedicated tools together with apply_patch.",
+          "enum": [
+            "dedicated_with_apply_patch"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "CodeModeConfigToml": {
       "additionalProperties": false,
       "properties": {
@@ -494,6 +529,9 @@
             "current_time_reminder": {
               "$ref": "#/definitions/FeatureToml_for_CurrentTimeReminderConfigToml"
             },
+            "dedicated_file_tools": {
+              "$ref": "#/definitions/FeatureToml_for_DedicatedFileToolsConfigToml"
+            },
             "default_mode_request_user_input": {
               "type": "boolean"
             },
@@ -561,6 +599,9 @@
               "type": "boolean"
             },
             "js_repl_tools_only": {
+              "type": "boolean"
+            },
+            "kimi_moonshot_web_search": {
               "type": "boolean"
             },
             "local_thread_store_compression": {
@@ -921,6 +962,18 @@
       },
       "type": "object"
     },
+    "DedicatedFileToolsConfigToml": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "mode": {
+          "$ref": "#/definitions/ClaudeFileToolMode"
+        }
+      },
+      "type": "object"
+    },
     "ExperimentalRequestUserInput": {
       "additionalProperties": false,
       "properties": {
@@ -981,6 +1034,16 @@
         },
         {
           "$ref": "#/definitions/CurrentTimeReminderConfigToml"
+        }
+      ]
+    },
+    "FeatureToml_for_DedicatedFileToolsConfigToml": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "$ref": "#/definitions/DedicatedFileToolsConfigToml"
         }
       ]
     },
@@ -1739,6 +1802,38 @@
           ],
           "default": "responses",
           "description": "Which wire protocol this provider expects."
+        }
+      },
+      "type": "object"
+    },
+    "MoonshotSearchConfig": {
+      "additionalProperties": false,
+      "description": "Moonshot simple-search routing and credential settings for Kimi sessions.",
+      "properties": {
+        "api_key": {
+          "description": "Plaintext Bearer token fallback. Prefer `env_key` to avoid storing secrets in TOML.",
+          "type": "string"
+        },
+        "base_url": {
+          "description": "Complete HTTP(S) search URL. When omitted, `{provider_base_url}/search` is derived.",
+          "type": "string"
+        },
+        "custom_headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Additional non-reserved request headers.",
+          "type": "object"
+        },
+        "enabled": {
+          "default": true,
+          "description": "Kill switch. When false, Kimi sessions retain the OpenAI alpha/search path.",
+          "type": "boolean"
+        },
+        "env_key": {
+          "description": "Environment variable containing an independent Moonshot Bearer token.",
+          "type": "string"
         }
       },
       "type": "object"
@@ -4731,6 +4826,15 @@
       "minimum": 0.0,
       "type": "integer"
     },
+    "chat_file_tool_mode": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ChatFileToolMode"
+        }
+      ],
+      "default": "legacy",
+      "description": "Selects dedicated file tools for new Chat Completions sessions."
+    },
     "chatgpt_base_url": {
       "description": "Base URL for requests to ChatGPT (as opposed to the OpenAI API).",
       "type": "string"
@@ -4902,6 +5006,9 @@
         "current_time_reminder": {
           "$ref": "#/definitions/FeatureToml_for_CurrentTimeReminderConfigToml"
         },
+        "dedicated_file_tools": {
+          "$ref": "#/definitions/FeatureToml_for_DedicatedFileToolsConfigToml"
+        },
         "default_mode_request_user_input": {
           "type": "boolean"
         },
@@ -4969,6 +5076,9 @@
           "type": "boolean"
         },
         "js_repl_tools_only": {
+          "type": "boolean"
+        },
+        "kimi_moonshot_web_search": {
           "type": "boolean"
         },
         "local_thread_store_compression": {
@@ -5356,6 +5466,21 @@
         }
       ],
       "description": "Optional verbosity control for GPT-5 models (Responses API `text.verbosity`)."
+    },
+    "moonshot_search": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/MoonshotSearchConfig"
+        }
+      ],
+      "default": {
+        "api_key": null,
+        "base_url": null,
+        "custom_headers": {},
+        "enabled": true,
+        "env_key": null
+      },
+      "description": "Moonshot simple-search configuration used only by the Kimi routing policy."
     },
     "notice": {
       "allOf": [

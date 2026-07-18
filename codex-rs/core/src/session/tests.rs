@@ -25,6 +25,7 @@ use codex_config::NetworkDomainPermissionToml;
 use codex_config::NetworkDomainPermissionsToml;
 use codex_config::RequirementSource;
 use codex_config::Sourced;
+use codex_config::config_toml::ChatFileToolMode;
 use codex_config::loader::project_trust_key;
 use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerTransportConfig;
@@ -1586,6 +1587,12 @@ disabled_tools = [
 async fn refresh_runtime_config_updates_runtime_refreshable_fields_and_keeps_session_static_settings()
  {
     let (session, _turn_context) = make_session_and_context().await;
+    {
+        let mut state = session.state.lock().await;
+        let mut config = (*state.session_configuration.original_config_do_not_use).clone();
+        config.chat_file_tool_mode = ChatFileToolMode::Dedicated;
+        state.session_configuration.original_config_do_not_use = Arc::new(config);
+    }
     let codex_home = session.codex_home().await;
     std::fs::create_dir_all(&codex_home).expect("create codex home");
     std::fs::write(
@@ -1607,6 +1614,7 @@ disabled_tools = [
     let mut next_config = load_latest_config_for_session(&session).await;
     next_config.model = Some("gpt-5.4".to_string());
     next_config.notify = Some(vec!["echo".to_string()]);
+    next_config.chat_file_tool_mode = ChatFileToolMode::Legacy;
 
     session.refresh_runtime_config(next_config).await;
 
@@ -1629,6 +1637,7 @@ disabled_tools = [
     assert_eq!(app.destructive_enabled, Some(false));
     assert_eq!(config.model, original.model);
     assert_eq!(config.notify, original.notify);
+    assert_eq!(config.chat_file_tool_mode, ChatFileToolMode::Dedicated);
     assert_eq!(
         config.tool_suggest.disabled_tools,
         vec![

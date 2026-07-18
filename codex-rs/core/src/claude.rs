@@ -1,5 +1,6 @@
 use crate::client_common::Prompt;
 use crate::client_common::is_claude_reasoning_item_id;
+use crate::context::DedicatedFileToolGuidance;
 use codex_api::ClaudeCacheControl;
 use codex_api::ClaudeCacheEdit;
 use codex_api::ClaudeCacheTtl;
@@ -18,6 +19,7 @@ use codex_api::ClaudeToolCallInfo as ApiClaudeToolCallInfo;
 use codex_api::ClaudeToolCallKind as ApiClaudeToolCallKind;
 use codex_api::ClaudeToolChoice;
 use codex_api::ClaudeToolResultContent;
+use codex_context_fragments::ContextualUserFragment;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::error::CodexErr;
 use codex_protocol::models::ContentItem;
@@ -250,6 +252,39 @@ pub(crate) fn build_claude_messages_request(
         system_segments.push(output_schema_instruction(output_schema));
     }
     system_segments.push(CLAUDE_LANGUAGE_INSTRUCTION.to_string());
+    let policy_expects_dedicated =
+        crate::tools::dedicated_file_tool_plan::claude_policy_uses_dedicated_file_tools(
+            prompt.dedicated_file_tools_enabled,
+            prompt.claude_file_tool_mode,
+            options.provider_compat,
+            &model_info.slug,
+        );
+    let dedicated_file_tools_visible = policy_expects_dedicated
+        && ["read_file", "edit_file", "write_file"]
+            .into_iter()
+            .all(|name| {
+                crate::tools::dedicated_file_tool_plan::has_first_party_dedicated_file_tool(
+                    &prompt.tools,
+                    name,
+                )
+            });
+    let explicit_dedicated_mode = matches!(
+        prompt.claude_file_tool_mode,
+        codex_features::ClaudeFileToolMode::Dedicated
+            | codex_features::ClaudeFileToolMode::DedicatedWithApplyPatch
+    );
+    if explicit_dedicated_mode
+        && prompt.dedicated_file_tools_enabled
+        && !dedicated_file_tools_visible
+    {
+        return Err(codex_protocol::error::CodexErr::InvalidRequest(format!(
+            "Claude file tool mode `{:?}` requires first-party read_file, edit_file, and write_file tools in the request plan; enable the dedicated_file_tools gate with an environment that plans those tools, or set claude_file_tool_mode = auto/legacy",
+            prompt.claude_file_tool_mode
+        )));
+    }
+    if dedicated_file_tools_visible {
+        system_segments.push(DedicatedFileToolGuidance.render());
+    }
     let is_kimi_k3 = claude_model_is_kimi_k3(&model_info.slug);
     if is_kimi_k3 && !prompt.tools.is_empty() {
         system_segments.push(KIMI_K3_TOOL_INSTRUCTION.to_string());
@@ -268,20 +303,44 @@ pub(crate) fn build_claude_messages_request(
                 ClaudeWebSearchToolKind::NativeServerTool
             },
             native_tool_selection: native_tool_selection_for_prompt(
-                &prompt.tools,
+                prompt,
                 model_info,
                 options.provider_compat,
             ),
         },
     )?;
+    let hidden_tool_call_metadata = create_tools_json_for_claude_messages_with_options(
+        &prompt.hidden_tools,
+        ClaudeMessagesToolOptions {
+            web_search_tool_kind: if uses_local_tools {
+                ClaudeWebSearchToolKind::LocalFunctionTool
+            } else {
+                ClaudeWebSearchToolKind::NativeServerTool
+            },
+            native_tool_selection: native_tool_selection_for_prompt(
+                prompt,
+                model_info,
+                options.provider_compat,
+            ),
+        },
+    )?
+    .tool_call_info;
     let codex_tools::ClaudeToolsJson {
         tools,
-        tool_call_info: tool_call_metadata,
+        tool_call_info: mut tool_call_metadata,
         mcp_servers,
         beta_headers,
         history_requirements,
         ..
     } = tools_json;
+    for info in hidden_tool_call_metadata {
+        if !tool_call_metadata
+            .iter()
+            .any(|existing| existing.claude_name == info.claude_name)
+        {
+            tool_call_metadata.push(info);
+        }
+    }
     let preserve_advisor_provider_state =
         beta_headers.contains(&codex_tools::ClaudeBetaFeature::AdvisorTool20260301);
     let mut tools = tools
@@ -630,7 +689,7 @@ pub(crate) fn build_claude_messages_request(
 }
 
 fn native_tool_selection_for_prompt(
-    tools: &[codex_tools::ToolSpec],
+    prompt: &Prompt,
     model_info: &ModelInfo,
     provider_compat: ClaudeProviderCompat,
 ) -> ClaudeNativeToolSelection {
@@ -646,9 +705,16 @@ fn native_tool_selection_for_prompt(
         ..ClaudeNativeToolSelection::default()
     };
 
+    let dedicated_auto = prompt.dedicated_file_tools_enabled
+        && matches!(
+            prompt.claude_file_tool_mode,
+            codex_features::ClaudeFileToolMode::Auto
+        );
+    let legacy_native =
+        !prompt.dedicated_file_tools_enabled && has_tool_spec(&prompt.tools, "apply_patch");
     if provider_compat == ClaudeProviderCompat::Anthropic
         && !is_kimi_k3
-        && has_tool_spec(tools, "apply_patch")
+        && (dedicated_auto || legacy_native)
     {
         selection.allowed_tools.extend([
             ClaudeNativeToolKind::TextEditor20250728,
@@ -903,7 +969,7 @@ fn claude_model_requires_enabled_thinking_without_budget(model: &str) -> bool {
     )
 }
 
-fn claude_model_is_kimi_k3(model: &str) -> bool {
+pub(crate) fn claude_model_is_kimi_k3(model: &str) -> bool {
     model
         .trim()
         .rsplit(':')

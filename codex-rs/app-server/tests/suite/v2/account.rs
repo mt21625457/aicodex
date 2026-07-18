@@ -57,6 +57,8 @@ use serial_test::serial;
 use std::path::Path;
 use std::time::Duration;
 use tempfile::TempDir;
+use tokio::time::Instant;
+use tokio::time::sleep;
 use tokio::time::timeout;
 use url::Url;
 use wiremock::Mock;
@@ -2250,10 +2252,17 @@ async fn login_account_chatgpt_redirects_to_hosted_success_page() -> Result<()> 
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
 
-    let response = client
-        .get(format!("{callback_url}?code=test-code&state={state}"))
-        .send()
-        .await?;
+    let callback_url = format!("{callback_url}?code=test-code&state={state}");
+    let callback_deadline = Instant::now() + Duration::from_secs(15);
+    let response = loop {
+        match client.get(&callback_url).send().await {
+            Ok(response) => break response,
+            Err(err) if err.is_connect() && Instant::now() < callback_deadline => {
+                sleep(Duration::from_millis(50)).await;
+            }
+            Err(err) => return Err(err.into()),
+        }
+    };
 
     assert_eq!(response.status(), 302);
     assert_eq!(

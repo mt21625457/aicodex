@@ -1,4 +1,6 @@
 pub use codex_api::ResponseEvent;
+use codex_config::config_toml::ChatFileToolMode;
+use codex_features::ClaudeFileToolMode;
 use codex_protocol::error::Result;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
@@ -26,6 +28,18 @@ pub struct Prompt {
     /// external MCP servers.
     pub(crate) tools: Vec<ToolSpec>,
 
+    /// Model-hidden tool specs retained only to decode valid legacy tool calls.
+    pub(crate) hidden_tools: Vec<ToolSpec>,
+
+    /// Resolved Chat-only file-tool policy carried as non-wire request metadata.
+    pub(crate) chat_file_tool_mode: ChatFileToolMode,
+
+    /// Resolved Claude file-tool rollout policy carried as non-wire request metadata.
+    pub(crate) claude_file_tool_mode: ClaudeFileToolMode,
+
+    /// Whether the dedicated file-tool rollout gate is enabled for this session.
+    pub(crate) dedicated_file_tools_enabled: bool,
+
     /// Whether parallel tool calls are permitted for this prompt.
     pub(crate) parallel_tool_calls: bool,
 
@@ -43,6 +57,10 @@ impl Default for Prompt {
         Self {
             input: Vec::new(),
             tools: Vec::new(),
+            hidden_tools: Vec::new(),
+            chat_file_tool_mode: ChatFileToolMode::Legacy,
+            claude_file_tool_mode: ClaudeFileToolMode::Auto,
+            dedicated_file_tools_enabled: false,
             parallel_tool_calls: false,
             base_instructions: BaseInstructions::default(),
             output_schema: None,

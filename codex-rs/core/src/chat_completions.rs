@@ -1,4 +1,5 @@
 use crate::client_common::Prompt;
+use crate::context::ChatFileToolGuidance;
 use codex_api::ChatCompletionsApiRequest;
 use codex_api::ChatContentPart;
 use codex_api::ChatImageUrl;
@@ -11,6 +12,8 @@ use codex_api::ChatToolCallFunction;
 use codex_api::ChatToolCallInfo as ApiChatToolCallInfo;
 use codex_api::ChatToolCallKind as ApiChatToolCallKind;
 use codex_api::ChatToolType;
+use codex_config::config_toml::ChatFileToolMode;
+use codex_context_fragments::ContextualUserFragment;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result;
 use codex_protocol::models::ContentItem;
@@ -45,8 +48,19 @@ pub(crate) fn build_chat_completions_request(
 ) -> Result<ChatCompletionsApiRequest> {
     let codex_tools::ChatToolsJson {
         tools,
-        tool_call_info,
+        tool_call_info: visible_tool_call_info,
     } = create_tools_json_for_chat_completions(&prompt.tools)?;
+    let mut tool_call_info = visible_tool_call_info.clone();
+    let hidden_tool_call_info =
+        create_tools_json_for_chat_completions(&prompt.hidden_tools)?.tool_call_info;
+    for info in hidden_tool_call_info {
+        if !tool_call_info
+            .iter()
+            .any(|existing| existing.chat_name == info.chat_name)
+        {
+            tool_call_info.push(info);
+        }
+    }
     let tool_names = tool_names_by_identity(&tool_call_info);
     let mut messages = Vec::new();
     if !prompt.base_instructions.text.trim().is_empty() {
@@ -54,6 +68,10 @@ pub(crate) fn build_chat_completions_request(
             ChatMessageRole::System,
             prompt.base_instructions.text.clone(),
         ));
+    }
+    if !matches!(prompt.chat_file_tool_mode, ChatFileToolMode::Legacy) {
+        let guidance = dedicated_chat_guidance(prompt, &visible_tool_call_info)?;
+        messages.push(ChatMessage::text(ChatMessageRole::Developer, guidance));
     }
     let mut pending_reasoning = String::new();
 
@@ -226,9 +244,12 @@ pub(crate) fn build_chat_completions_request(
     flush_pending_reasoning(&mut messages, &mut pending_reasoning);
 
     if messages.is_empty()
-        || messages
-            .iter()
-            .all(|message| message.role == ChatMessageRole::System)
+        || messages.iter().all(|message| {
+            matches!(
+                message.role,
+                ChatMessageRole::System | ChatMessageRole::Developer
+            )
+        })
     {
         return Err(CodexErr::InvalidRequest(
             "Chat Completions request has no model-visible messages".to_string(),
@@ -281,6 +302,54 @@ pub(crate) fn build_chat_completions_request(
     };
     validate_chat_request_context(&request)?;
     Ok(request)
+}
+
+fn dedicated_chat_guidance(prompt: &Prompt, tool_call_info: &[ChatToolCallInfo]) -> Result<String> {
+    let mode = prompt.chat_file_tool_mode;
+    if !prompt.dedicated_file_tools_enabled {
+        return Err(CodexErr::InvalidRequest(format!(
+            "Chat file tool mode `{mode:?}` requires the dedicated_file_tools gate; enable the gate or set chat_file_tool_mode = legacy"
+        )));
+    }
+    let find_unique_first_party = |name: &str| {
+        if !crate::tools::dedicated_file_tool_plan::has_first_party_dedicated_file_tool(
+            &prompt.tools,
+            name,
+        ) {
+            return None;
+        }
+        let matches = tool_call_info
+            .iter()
+            .filter(|info| {
+                info.name == name
+                    && info.namespace.is_none()
+                    && info.kind == ChatToolCallKind::Function
+            })
+            .collect::<Vec<_>>();
+        (matches.len() == 1).then(|| matches[0].chat_name.clone())
+    };
+    let Some(read_name) = find_unique_first_party("read_file") else {
+        return Err(CodexErr::InvalidRequest(format!(
+            "Chat file tool mode `{mode:?}` requires a unique first-party read_file tool in the request plan (gate on alone is not enough; same-named third-party tools are rejected)"
+        )));
+    };
+    let Some(edit_name) = find_unique_first_party("edit_file") else {
+        return Err(CodexErr::InvalidRequest(format!(
+            "Chat file tool mode `{mode:?}` requires a unique first-party edit_file tool in the request plan (gate on alone is not enough; same-named third-party tools are rejected)"
+        )));
+    };
+    let Some(write_name) = find_unique_first_party("write_file") else {
+        return Err(CodexErr::InvalidRequest(format!(
+            "Chat file tool mode `{mode:?}` requires a unique first-party write_file tool in the request plan (gate on alone is not enough; same-named third-party tools are rejected)"
+        )));
+    };
+    let guidance = ChatFileToolGuidance::new(read_name, edit_name, write_name).render();
+    if approx_token_count(&guidance) >= MAX_CHAT_CONTEXT_ITEM_TOKENS {
+        return Err(CodexErr::InvalidRequest(
+            "Chat dedicated file guidance exceeds the context-item limit".to_string(),
+        ));
+    }
+    Ok(guidance)
 }
 
 fn validate_chat_request_context(request: &ChatCompletionsApiRequest) -> Result<()> {

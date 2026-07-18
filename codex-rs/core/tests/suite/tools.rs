@@ -179,6 +179,57 @@ async fn custom_tool_unknown_returns_custom_output_error() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dedicated_file_tool_gate_off_rejects_forged_write_without_touching_file() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let mut builder = test_codex();
+    let test = builder.build(&server).await?;
+    let target = test.config.cwd.join("forged-dedicated-write.txt");
+    let call_id = "forged-write-file";
+    let first = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_function_call(
+                call_id,
+                "write_file",
+                &json!({"path": "forged-dedicated-write.txt", "content": "forged"}).to_string(),
+            ),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    let continuation = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-1", "done"),
+            ev_completed("resp-2"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn_with_approval_and_permission_profile(
+        "attempt a forged dedicated write",
+        AskForApproval::Never,
+        PermissionProfile::Disabled,
+    )
+    .await?;
+
+    let visible_tools = tool_names(&first.single_request().body_json());
+    for name in ["read_file", "edit_file", "write_file"] {
+        assert!(!visible_tools.iter().any(|tool| tool == name));
+    }
+    assert_eq!(
+        continuation.single_request().function_call_output(call_id)["output"].as_str(),
+        Some("unsupported call: write_file"),
+    );
+    assert!(!target.exists());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn namespaced_custom_tool_call_preserves_namespace_through_dispatch_and_replay() -> Result<()>
 {
     skip_if_no_network!(Ok(()));

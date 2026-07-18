@@ -151,6 +151,10 @@ pub(super) async fn spawn_review_thread(
         terminal_error: Arc::new(Mutex::new(None)),
         server_model_warning_emitted: AtomicBool::new(false),
         model_verification_emitted: AtomicBool::new(false),
+        file_tool_state: Arc::new(Mutex::new(crate::tools::handlers::FileToolState::default())),
+        file_mutation_locks: Arc::new(
+            crate::tools::file_mutation_lock::FileMutationLocks::default(),
+        ),
     };
 
     // Seed the child task with the review prompt as the initial user message.

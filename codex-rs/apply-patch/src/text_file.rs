@@ -14,21 +14,26 @@ use encoding_rs::UTF_8;
 use encoding_rs::UTF_16BE;
 use encoding_rs::UTF_16LE;
 use encoding_rs::WINDOWS_1252;
+use sha2::Digest;
+use sha2::Sha256;
 
+/// Decoded text plus the encoding required to write it back without format drift.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct PatchableTextFile {
-    pub(crate) contents: String,
-    pub(crate) encoding: PatchableTextEncoding,
+pub struct PatchableTextFile {
+    pub contents: String,
+    pub encoding: PatchableTextEncoding,
 }
 
+/// Text encoding accepted by the shared patchable-file decoder.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum PatchableTextEncoding {
+pub enum PatchableTextEncoding {
     Utf8,
     Legacy(&'static Encoding),
 }
 
 impl PatchableTextEncoding {
-    pub(crate) fn encode(self, contents: &str) -> io::Result<Vec<u8>> {
+    /// Encodes updated contents using the original file encoding.
+    pub fn encode(self, contents: &str) -> io::Result<Vec<u8>> {
         match self {
             PatchableTextEncoding::Utf8 => Ok(contents.as_bytes().to_vec()),
             PatchableTextEncoding::Legacy(encoding) => {
@@ -57,12 +62,27 @@ pub(crate) async fn read_patchable_text_file(
     decode_patchable_text(bytes)
 }
 
-fn decode_patchable_text(bytes: Vec<u8>) -> io::Result<PatchableTextFile> {
+pub(crate) async fn read_patchable_text_file_with_fingerprint(
+    path: &PathUri,
+    fs: &dyn ExecutorFileSystem,
+    sandbox: Option<&FileSystemSandboxContext>,
+) -> io::Result<(PatchableTextFile, [u8; 32])> {
+    let bytes = fs.read_file(path, sandbox).await?;
+    let fingerprint = Sha256::digest(&bytes).into();
+    decode_patchable_text(bytes).map(|file| (file, fingerprint))
+}
+
+/// Decodes UTF-8 or a supported round-trippable legacy text encoding.
+pub fn decode_patchable_text(bytes: Vec<u8>) -> io::Result<PatchableTextFile> {
     match String::from_utf8(bytes) {
-        Ok(contents) => Ok(PatchableTextFile {
+        Ok(contents) if looks_like_plain_text(&contents) => Ok(PatchableTextFile {
             contents,
             encoding: PatchableTextEncoding::Utf8,
         }),
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "UTF-8 file contains binary control characters",
+        )),
         Err(error) => decode_legacy_patchable_text(error.into_bytes()),
     }
 }
@@ -205,6 +225,14 @@ mod tests {
             .expect("updated text should encode as UTF-8");
 
         assert_eq!(updated, "// 你好 🙂\nint value = 2;\n".as_bytes());
+    }
+
+    #[test]
+    fn utf8_with_binary_control_characters_is_rejected() {
+        let error = decode_patchable_text(b"text\0binary".to_vec())
+            .expect_err("NUL-containing UTF-8 must not be treated as patchable text");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]

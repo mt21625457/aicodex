@@ -11,6 +11,7 @@ use codex_api::ApproximateLocation;
 use codex_api::ExternalWebAccess;
 use codex_api::ExternalWebAccessMode;
 use codex_api::LocationType;
+use codex_api::MoonshotSearchClient;
 use codex_api::ReqwestTransport;
 use codex_api::SearchClient;
 use codex_api::SearchCommands;
@@ -21,6 +22,7 @@ use codex_api::SearchQuery;
 use codex_api::SearchRequest;
 use codex_api::SearchResponse;
 use codex_api::SearchSettings;
+use codex_features::Feature;
 use codex_login::default_client::build_reqwest_client;
 use codex_model_provider::create_model_provider;
 use codex_model_provider_info::ModelProviderInfo;
@@ -39,6 +41,12 @@ use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use codex_tools::retain_tail_from_last_n_user_messages;
 use codex_tools::truncate_assistant_output_text_to_token_budget;
+use codex_web_search::MoonshotSearchExecution;
+use codex_web_search::WebSearchBackendKind;
+use codex_web_search::execute_moonshot_search;
+use codex_web_search::normalize_moonshot_commands;
+use codex_web_search::resolve_moonshot_search_config;
+use codex_web_search::select_web_search_backend;
 use serde::Deserialize;
 use serde_json::Value;
 use url::Url;
@@ -125,6 +133,55 @@ impl WebSearchHandler {
             .map_err(|err| FunctionCallError::RespondToModel(format!("web_search failed: {err}")))
     }
 
+    async fn run_moonshot_web_search(
+        &self,
+        turn: &crate::session::turn_context::TurnContext,
+        arguments: &str,
+        call_id: &str,
+    ) -> Result<MoonshotSearchExecution, FunctionCallError> {
+        let commands = normalize_moonshot_commands(arguments)
+            .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
+        let api_provider = turn.provider.api_provider().await.map_err(|error| {
+            FunctionCallError::RespondToModel(format!(
+                "Moonshot web search could not resolve the primary provider URL: {error}"
+            ))
+        })?;
+        let provider_bearer = match turn.provider.api_auth().await {
+            Ok(auth) => codex_web_search::provider_token_from_auth_headers(&auth.to_auth_headers()),
+            Err(_) => None,
+        };
+        let resolved = resolve_moonshot_search_config(
+            &turn.config.moonshot_search,
+            Some(&api_provider.base_url),
+            provider_bearer.as_deref(),
+        )
+        .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
+        let client = MoonshotSearchClient::new(
+            codex_api::build_moonshot_search_http_client()
+                .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?,
+            resolved.url,
+            resolved.bearer_token,
+            resolved.custom_headers,
+        )
+        .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
+        execute_moonshot_search(
+            &client,
+            &commands,
+            Some(call_id),
+            usize::try_from(search_output_token_budget(turn)).unwrap_or(usize::MAX),
+        )
+        .await
+        .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))
+    }
+
+    fn backend(&self, turn: &crate::session::turn_context::TurnContext) -> WebSearchBackendKind {
+        select_web_search_backend(
+            turn.config.features.enabled(Feature::KimiMoonshotWebSearch),
+            turn.config.moonshot_search.enabled,
+            &turn.model_info.slug,
+        )
+    }
+
     fn search_provider_info(
         &self,
         turn: &crate::session::turn_context::TurnContext,
@@ -167,6 +224,10 @@ struct OpenAiSearchOutput {
     output: String,
 }
 
+struct MoonshotSearchOutput {
+    output: String,
+}
+
 impl ToolExecutor<ToolInvocation> for WebSearchHandler {
     fn tool_name(&self) -> ToolName {
         ToolName::plain(WEB_SEARCH_TOOL_NAME)
@@ -193,6 +254,53 @@ impl ToolExecutor<ToolInvocation> for WebSearchHandler {
                     ));
                 }
             };
+
+            if self.backend(turn.as_ref()) == WebSearchBackendKind::MoonshotSimpleSearch {
+                let parsed = normalize_moonshot_commands(&arguments);
+                let action = parsed
+                    .as_ref()
+                    .map(|commands| query_action_from_strings(&commands.queries))
+                    .unwrap_or(WebSearchAction::Other);
+                let query_detail = web_search_action_detail(&action);
+                let started_item = ProtocolTurnItem::WebSearch(WebSearchItem {
+                    id: call_id.clone(),
+                    query: query_detail.clone(),
+                    action: action.clone(),
+                    results: None,
+                });
+                session
+                    .emit_turn_item_started(turn.as_ref(), &started_item)
+                    .await;
+                let result = match parsed {
+                    Ok(_) => {
+                        self.run_moonshot_web_search(turn.as_ref(), &arguments, &call_id)
+                            .await
+                    }
+                    Err(error) => Err(FunctionCallError::RespondToModel(error.to_string())),
+                };
+                let results = result.as_ref().ok().map(|execution| {
+                    execution
+                        .results
+                        .iter()
+                        .filter_map(|result| serde_json::to_value(result).ok())
+                        .collect()
+                });
+                session
+                    .emit_turn_item_completed(
+                        turn.as_ref(),
+                        ProtocolTurnItem::WebSearch(WebSearchItem {
+                            id: call_id,
+                            query: query_detail,
+                            action,
+                            results,
+                        }),
+                    )
+                    .await;
+                let execution = result?;
+                return Ok(boxed_tool_output(MoonshotSearchOutput {
+                    output: execution.output,
+                }));
+            }
 
             let commands = parse_search_commands(&arguments)?;
             let action = command_action(&commands);
@@ -371,6 +479,20 @@ fn query_action(queries: &[SearchQuery]) -> Option<WebSearchAction> {
     }
 }
 
+fn query_action_from_strings(queries: &[String]) -> WebSearchAction {
+    match queries {
+        [] => WebSearchAction::Other,
+        [query] => WebSearchAction::Search {
+            query: Some(query.clone()),
+            queries: None,
+        },
+        queries => WebSearchAction::Search {
+            query: None,
+            queries: Some(queries.to_vec()),
+        },
+    }
+}
+
 fn literal_url(ref_id: &str) -> Option<String> {
     Url::parse(ref_id).is_ok().then(|| ref_id.to_string())
 }
@@ -445,6 +567,31 @@ fn push_visible_message(messages: &mut Vec<ResponseItem>, item: &ResponseItem) {
 impl ToolOutput for OpenAiSearchOutput {
     fn log_preview(&self) -> String {
         "[openai web search output]".to_string()
+    }
+
+    fn success_for_logging(&self) -> bool {
+        true
+    }
+
+    fn contains_external_context(&self) -> bool {
+        true
+    }
+
+    fn to_response_item(&self, call_id: &str, _payload: &ToolPayload) -> ResponseInputItem {
+        ResponseInputItem::FunctionCallOutput {
+            call_id: call_id.to_string(),
+            output: FunctionCallOutputPayload::from_content_items(vec![
+                FunctionCallOutputContentItem::InputText {
+                    text: self.output.clone(),
+                },
+            ]),
+        }
+    }
+}
+
+impl ToolOutput for MoonshotSearchOutput {
+    fn log_preview(&self) -> String {
+        "[moonshot web search output]".to_string()
     }
 
     fn success_for_logging(&self) -> bool {

@@ -551,6 +551,21 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
     }
 }
 
+/// Returns whether a model slug identifies a Kimi model for provider-specific routing.
+pub fn is_kimi_model_slug(model: &str) -> bool {
+    let normalized = model
+        .rsplit(':')
+        .next()
+        .unwrap_or(model)
+        .to_ascii_lowercase();
+    normalized == "k3"
+        || matches!(
+            normalized.as_str(),
+            "kimi-k2.7-code" | "kimi-k2.7-code-highspeed"
+        )
+        || normalized.starts_with("kimi-")
+}
+
 #[cfg(test)]
 #[path = "model_provider_info_tests.rs"]
 mod tests;

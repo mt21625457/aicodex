@@ -218,6 +218,34 @@ async fn load_config_normalizes_relative_cwd_override() -> std::io::Result<()> {
 }
 
 #[tokio::test]
+async fn load_config_rejects_invalid_moonshot_url_and_reserved_headers() {
+    for moonshot_search in [
+        codex_config::config_toml::MoonshotSearchConfig {
+            base_url: Some("file:///tmp/search".to_string()),
+            ..Default::default()
+        },
+        codex_config::config_toml::MoonshotSearchConfig {
+            custom_headers: [("authorization".to_string(), "secret".to_string())]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        },
+    ] {
+        let error = Config::load_from_base_config_with_overrides(
+            ConfigToml {
+                moonshot_search,
+                ..Default::default()
+            },
+            ConfigOverrides::default(),
+            tempdir().expect("tempdir").abs(),
+        )
+        .await
+        .expect_err("invalid Moonshot search config should fail during config load");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    }
+}
+
+#[tokio::test]
 async fn test_toml_parsing() {
     let history_with_persistence = r#"
 [history]

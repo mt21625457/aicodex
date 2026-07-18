@@ -181,7 +181,8 @@ chat_file_tool_mode = "legacy"
 但不得影响其工具面或触发 gate 依赖错误；诊断可提示该字段当前未生效。模式在 session
 创建时解析并锁定，配置文件后续变化只影响新 session。
 
-配置进入 `ConfigToml` 时更新 schema 和 `docs/config.md`。unknown value 在配置加载时失败；
+配置进入 `ConfigToml` 时更新 schema，并记录官方外部文档 follow-up；本仓库不新增通用
+产品文档。unknown value 在配置加载时失败；
 Chat non-legacy + disabled gate 在 resolved session config 时失败；runtime/declaration/
 mapping 不完整在首次 HTTP sampling 前失败。所有失败都必须指出 selected mode、缺失依赖和
 回滚到 `legacy` 的方法。

@@ -1,7 +1,9 @@
 mod approvals;
 pub(crate) mod code_mode;
 pub(crate) mod context;
+pub(crate) mod dedicated_file_tool_plan;
 pub(crate) mod events;
+pub(crate) mod file_mutation_lock;
 pub(crate) mod handlers;
 pub(crate) mod hook_names;
 pub(crate) mod hosted_spec;

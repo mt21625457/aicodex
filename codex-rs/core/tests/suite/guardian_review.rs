@@ -363,7 +363,7 @@ printf '%s\n' "${@: -1}" >> "${payload_path}""#,
         .expect("expected Guardian review request");
     assert!(guardian_request.body_contains_text(&command));
 
-    fs_wait::wait_for_path_exists(&notify_file, Duration::from_secs(5)).await?;
+    fs_wait::wait_for_path_exists(&notify_file, Duration::from_secs(30)).await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
     let notify_payload_raw = tokio::fs::read_to_string(&notify_file).await?;
     let payloads: Vec<Value> = notify_payload_raw

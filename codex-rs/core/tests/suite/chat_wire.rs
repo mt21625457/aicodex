@@ -1,8 +1,12 @@
+use codex_config::config_toml::ChatFileToolMode;
 use codex_core::config::Config;
+use codex_features::Feature;
 use codex_model_provider_info::WireApi;
 use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::items::TurnItem;
+use codex_protocol::models::PermissionProfile;
+use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ItemCompletedEvent;
@@ -12,12 +16,15 @@ use codex_protocol::protocol::TokenUsage;
 use codex_protocol::user_input::UserInput;
 use codex_tools::ChatToolCallKind;
 use codex_tools::chat_tool_name;
+use codex_utils_path_uri::PathUri;
 use core_test_support::responses::mount_chat_sse_sequence;
 use core_test_support::responses::start_mock_server;
 use core_test_support::streaming_sse::StreamingSseChunk;
 use core_test_support::streaming_sse::start_streaming_sse_server;
 use core_test_support::test_codex::TestCodex;
+use core_test_support::test_codex::local_selections;
 use core_test_support::test_codex::test_codex;
+use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
@@ -202,7 +209,310 @@ async fn chat_wire_tool_loop_posts_tool_result_and_completes() -> anyhow::Result
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn chat_wire_provider_error_reaches_the_turn() -> anyhow::Result<()> {
+async fn chat_dedicated_file_tools_read_edit_edit_loop_uses_mapped_names() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let read_name = chat_tool_name(None, "read_file", ChatToolCallKind::Function);
+    let edit_name = chat_tool_name(None, "edit_file", ChatToolCallKind::Function);
+    let write_name = chat_tool_name(None, "write_file", ChatToolCallKind::Function);
+    let edit_1_args = json!({
+        "path": "target.txt",
+        "old_string": "before",
+        "new_string": "after",
+    })
+    .to_string();
+    let edit_2_args = json!({
+        "path": "target.txt",
+        "old_string": "after",
+        "new_string": "final",
+    })
+    .to_string();
+    let responses = mount_chat_sse_sequence(
+        &server,
+        vec![
+            chat_sse(vec![
+                json!({
+                    "id": "dedicated_read",
+                    "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "read_1", "function": {"name": read_name, "arguments": "{\"path\":\"target"}}]}}]
+                }),
+                json!({
+                    "id": "dedicated_read",
+                    "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "function": {"arguments": ".txt\"}"}}]}, "finish_reason": "tool_calls"}]
+                }),
+            ]),
+            chat_sse(vec![json!({
+                "id": "dedicated_edit_1",
+                "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "edit_1", "function": {"name": edit_name, "arguments": edit_1_args}}]}, "finish_reason": "tool_calls"}]
+            })]),
+            chat_sse(vec![json!({
+                "id": "dedicated_edit_2",
+                "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "edit_2", "function": {"name": edit_name, "arguments": edit_2_args}}]}, "finish_reason": "tool_calls"}]
+            })]),
+            chat_sse(vec![json!({
+                "id": "dedicated_final",
+                "choices": [{"index": 0, "delta": {"content": "finished"}, "finish_reason": "stop"}]
+            })]),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_model("gpt-5.2")
+        .with_config(configure_dedicated_chat_provider)
+        .build_with_auto_env(&server)
+        .await?;
+    let target_path = test.executor_environment().cwd().join("target.txt");
+    let target = PathUri::from_abs_path(&target_path);
+    test.fs()
+        .write_file(&target, b"before\n".to_vec(), None)
+        .await?;
+
+    submit_dedicated_text_turn(&test, "update target.txt twice").await?;
+    let message = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::AgentMessage(message) => Some(message.message.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(message, "finished");
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 4);
+    let first = requests[0].body_json();
+    let tools = first["tools"].as_array().expect("dedicated Chat tools");
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool["function"]["name"] == read_name)
+    );
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool["function"]["name"] == edit_name)
+    );
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool["function"]["name"] == write_name)
+    );
+    assert!(!tools.iter().any(|tool| tool["function"]["name"]
+        == chat_tool_name(None, "apply_patch", ChatToolCallKind::Custom)));
+    assert!(
+        first["messages"]
+            .as_array()
+            .is_some_and(
+                |messages| messages.iter().any(|message| message["role"] == "developer"
+                    && message["content"]
+                        .as_str()
+                        .is_some_and(|content| content.contains(&read_name)
+                            && content.contains(&edit_name)
+                            && content.contains(&write_name)))
+            )
+    );
+
+    for (request, call_id) in requests.iter().skip(1).zip(["read_1", "edit_1", "edit_2"]) {
+        let messages = request.body_json()["messages"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let result = messages
+            .iter()
+            .find(|message| message["role"] == "tool" && message["tool_call_id"] == call_id)
+            .unwrap_or_else(|| panic!("missing tool result {call_id}: {messages:?}"));
+        assert!(
+            result["content"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("completed")
+                || call_id == "read_1",
+            "{result:?}"
+        );
+    }
+    assert_eq!(tokio::fs::read(&target_path).await?, b"final\n");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_dedicated_hidden_apply_patch_dispatches_without_advertising() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let apply_patch_name = chat_tool_name(None, "apply_patch", ChatToolCallKind::Custom);
+    let patch_arguments = json!({
+        "input": "*** Begin Patch\n*** Add File: chat-hidden-patch.txt\n+hidden chat compatibility\n*** End Patch"
+    })
+    .to_string();
+    let responses = mount_chat_sse_sequence(
+        &server,
+        vec![
+            chat_sse(vec![json!({
+                "id": "hidden_patch",
+                "choices": [{"index": 0, "delta": {"tool_calls": [{
+                    "index": 0,
+                    "id": "chat_hidden_patch",
+                    "function": {"name": apply_patch_name.clone(), "arguments": patch_arguments}
+                }]}, "finish_reason": "tool_calls"}]
+            })]),
+            chat_sse(vec![json!({
+                "id": "hidden_patch_done",
+                "choices": [{"index": 0, "delta": {"content": "done"}, "finish_reason": "stop"}]
+            })]),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_model("gpt-5.2")
+        .with_config(configure_dedicated_chat_provider)
+        .build_with_auto_env(&server)
+        .await?;
+
+    submit_dedicated_text_turn(&test, "dispatch a hidden historical patch").await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 2);
+    for request in &requests {
+        let tools = request.body_json()["tools"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            !tools
+                .iter()
+                .any(|tool| tool["function"]["name"] == apply_patch_name),
+            "hidden apply_patch must not be advertised: {tools:?}"
+        );
+    }
+    let messages = requests[1].body_json()["messages"]
+        .as_array()
+        .cloned()
+        .expect("Chat messages");
+    let result = messages
+        .iter()
+        .find(|message| message["role"] == "tool" && message["tool_call_id"] == "chat_hidden_patch")
+        .expect("hidden patch result");
+    assert!(
+        result["content"]
+            .as_str()
+            .is_some_and(|content| content.contains("Success")),
+        "{result:?}"
+    );
+    let target = PathUri::from_abs_path(
+        &test
+            .executor_environment()
+            .cwd()
+            .join("chat-hidden-patch.txt"),
+    );
+    assert_eq!(
+        test.fs().read_file(&target, None).await?,
+        b"hidden chat compatibility\n"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resumed_chat_history_keeps_legacy_apply_patch_hidden_and_serializable()
+-> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let apply_patch_name = chat_tool_name(None, "apply_patch", ChatToolCallKind::Custom);
+    let responses = mount_chat_sse_sequence(
+        &server,
+        vec![
+            chat_sse(vec![json!({
+                "id": "legacy_patch",
+                "choices": [{"index": 0, "delta": {"tool_calls": [{
+                    "index": 0,
+                    "id": "legacy_patch_call",
+                    "function": {
+                        "name": apply_patch_name.clone(),
+                        "arguments": json!({
+                            "input": "*** Begin Patch\n*** Add File: resumed-hidden.txt\n+legacy history\n*** End Patch"
+                        }).to_string()
+                    }
+                }]}, "finish_reason": "tool_calls"}]
+            })]),
+            chat_sse(vec![json!({
+                "id": "legacy_done",
+                "choices": [{"index": 0, "delta": {"content": "patched"}, "finish_reason": "stop"}]
+            })]),
+            chat_sse(vec![json!({
+                "id": "resumed_done",
+                "choices": [{"index": 0, "delta": {"content": "resumed"}, "finish_reason": "stop"}]
+            })]),
+        ],
+    )
+    .await;
+    let initial = test_codex()
+        .with_model("gpt-5.2")
+        .with_config(configure_chat_provider)
+        .build_with_auto_env(&server)
+        .await?;
+    let rollout_path = initial
+        .session_configured
+        .rollout_path
+        .clone()
+        .expect("rollout path");
+    submit_dedicated_text_turn(&initial, "create a legacy patch history").await?;
+    wait_for_event(&initial.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let mut resume_builder = test_codex()
+        .with_model("gpt-5.2")
+        .with_config(configure_dedicated_chat_provider);
+    let resumed = resume_builder
+        .resume(&server, initial.home.clone(), rollout_path)
+        .await?;
+    submit_dedicated_text_turn(&resumed, "continue after resume").await?;
+    wait_for_event(&resumed.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 3);
+    let resumed_request = requests[2].body_json();
+    assert!(resumed_request["tools"].as_array().is_some_and(|tools| {
+        tools
+            .iter()
+            .all(|tool| tool.pointer("/function/name") != Some(&json!(apply_patch_name)))
+    }));
+    let messages = resumed_request["messages"].as_array().expect("messages");
+    assert!(messages.iter().any(|message| {
+        message["role"] == "assistant"
+            && message["tool_calls"][0]["function"]["name"] == apply_patch_name
+    }));
+    assert!(messages.iter().any(|message| {
+        message["role"] == "tool" && message["tool_call_id"] == "legacy_patch_call"
+    }));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_dedicated_mode_fails_before_sampling_when_gate_is_disabled() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let result = test_codex()
+        .with_model("gpt-5.2")
+        .with_config(|config| {
+            configure_chat_provider(config);
+            config.chat_file_tool_mode = ChatFileToolMode::Dedicated;
+        })
+        .build_with_auto_env(&server)
+        .await;
+    let error = match result {
+        Ok(_) => anyhow::bail!("dedicated mode should require the rollout gate"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("dedicated_file_tools"));
+    assert!(error.to_string().contains("legacy"));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_dedicated_provider_error_does_not_retry_with_legacy_tools() -> anyhow::Result<()> {
     let server = start_mock_server().await;
     let responses = mount_chat_sse_sequence(
         &server,
@@ -219,7 +529,7 @@ async fn chat_wire_provider_error_reaches_the_turn() -> anyhow::Result<()> {
     .await;
     let test = test_codex()
         .with_model("gpt-5.2")
-        .with_config(configure_chat_provider)
+        .with_config(configure_dedicated_chat_provider)
         .build_with_auto_env(&server)
         .await?;
 
@@ -518,6 +828,30 @@ async fn submit_text_turn(test: &TestCodex, text: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn submit_dedicated_text_turn(test: &TestCodex, text: &str) -> anyhow::Result<()> {
+    let (sandbox_policy, permission_profile) =
+        turn_permission_fields(PermissionProfile::Disabled, test.config.cwd.as_path());
+    test.codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: text.to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
+                environments: Some(local_selections(test.config.cwd.clone())),
+                approval_policy: Some(AskForApproval::Never),
+                sandbox_policy: Some(sandbox_policy),
+                permission_profile,
+                ..Default::default()
+            },
+        })
+        .await?;
+    Ok(())
+}
+
 fn configure_chat_provider(config: &mut Config) {
     config.model_provider.name = "Chat Completions".to_string();
     config.model_provider.env_key = None;
@@ -526,6 +860,19 @@ fn configure_chat_provider(config: &mut Config) {
     config.model_provider.supports_websockets = true;
     config.model_provider.stream_max_retries = Some(0);
     config.model_provider.wire_api = WireApi::Chat;
+}
+
+fn configure_dedicated_chat_provider(config: &mut Config) {
+    configure_chat_provider(config);
+    config.chat_file_tool_mode = ChatFileToolMode::Dedicated;
+    config.workspace_roots = vec![config.cwd.clone()];
+    config
+        .permissions
+        .set_workspace_roots(config.workspace_roots.clone());
+    config
+        .features
+        .enable(Feature::DedicatedFileTools)
+        .expect("dedicated file-tools gate should be enableable in tests");
 }
 
 fn chat_sse(events: Vec<Value>) -> String {

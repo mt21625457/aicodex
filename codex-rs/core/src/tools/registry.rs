@@ -363,6 +363,22 @@ impl ToolRegistry {
         self.tools.get(name).map(Arc::clone)
     }
 
+    pub(crate) fn hidden_specs(&self) -> Vec<ToolSpec> {
+        let mut tools = self
+            .tools
+            .values()
+            .filter_map(|tool| {
+                if tool.exposure() != ToolExposure::Hidden {
+                    return None;
+                }
+                let spec = tool.spec();
+                matches!(&spec, ToolSpec::Freeform(_)).then(|| (tool.tool_name(), spec))
+            })
+            .collect::<Vec<_>>();
+        tools.sort_by(|(left, _), (right, _)| left.cmp(right));
+        tools.into_iter().map(|(_, spec)| spec).collect()
+    }
+
     #[cfg(test)]
     pub(crate) fn tool_names_for_test(&self) -> Vec<ToolName> {
         let mut names = self.tools.keys().cloned().collect::<Vec<_>>();

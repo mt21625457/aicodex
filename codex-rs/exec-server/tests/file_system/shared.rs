@@ -1,5 +1,6 @@
 use anyhow::Context;
 use anyhow::Result;
+use codex_exec_server::ConditionalWritePrecondition;
 use codex_exec_server::CopyOptions;
 use codex_exec_server::CreateDirectoryOptions;
 use codex_exec_server::FILE_READ_CHUNK_SIZE;
@@ -18,6 +19,8 @@ use codex_sandboxing::policy_transforms::effective_network_sandbox_policy;
 use codex_utils_path_uri::PathUri;
 use futures::TryStreamExt;
 use pretty_assertions::assert_eq;
+use sha2::Digest;
+use sha2::Sha256;
 use std::path::Path;
 use tempfile::TempDir;
 use test_case::test_case;
@@ -161,6 +164,108 @@ async fn file_system_write_file_writes_bytes(
     Ok(())
 }
 
+#[test_case(FileSystemImplementation::Local ; "local")]
+#[test_case(FileSystemImplementation::Remote ; "remote")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn conditional_write_is_atomic_and_fails_closed(
+    implementation: FileSystemImplementation,
+) -> Result<()> {
+    let context = create_file_system_context(implementation).await?;
+    let file_system = context.file_system;
+    let tmp = TempDir::new()?;
+    let file_path = tmp.path().join("conditional.txt");
+    let path = PathUri::from_host_native_path(&file_path)?;
+
+    file_system
+        .write_file_conditional(
+            &path,
+            b"first".to_vec(),
+            ConditionalWritePrecondition::MustNotExist,
+            /*sandbox*/ None,
+        )
+        .await?;
+    assert!(
+        file_system
+            .write_file_conditional(
+                &path,
+                b"clobber".to_vec(),
+                ConditionalWritePrecondition::MustNotExist,
+                /*sandbox*/ None,
+            )
+            .await
+            .is_err()
+    );
+
+    let digest = Sha256::digest(b"first").into();
+    file_system
+        .write_file_conditional(
+            &path,
+            b"second".to_vec(),
+            ConditionalWritePrecondition::MatchSha256(digest),
+            /*sandbox*/ None,
+        )
+        .await?;
+    let stale = file_system
+        .write_file_conditional(
+            &path,
+            b"stale".to_vec(),
+            ConditionalWritePrecondition::MatchSha256(digest),
+            /*sandbox*/ None,
+        )
+        .await
+        .expect_err("stale digest must fail closed");
+
+    assert_eq!(stale.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(std::fs::read(file_path)?, b"second");
+    Ok(())
+}
+
+#[test_case(FileSystemImplementation::Local ; "local")]
+#[test_case(FileSystemImplementation::Remote ; "remote")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sandboxed_conditional_write_preserves_preconditions(
+    implementation: FileSystemImplementation,
+) -> Result<()> {
+    let context = create_file_system_context(implementation).await?;
+    let file_system = context.file_system;
+    let tmp = TempDir::new()?;
+    let file_path = tmp.path().join("sandboxed-conditional.txt");
+    let path = PathUri::from_host_native_path(&file_path)?;
+    let sandbox = workspace_write_sandbox(tmp.path().to_path_buf());
+
+    file_system
+        .write_file_conditional(
+            &path,
+            b"first".to_vec(),
+            ConditionalWritePrecondition::MustNotExist,
+            Some(&sandbox),
+        )
+        .await?;
+    let digest = Sha256::digest(b"first").into();
+    file_system
+        .write_file_conditional(
+            &path,
+            b"second".to_vec(),
+            ConditionalWritePrecondition::MatchSha256(digest),
+            Some(&sandbox),
+        )
+        .await?;
+    assert!(
+        file_system
+            .write_file_conditional(
+                &path,
+                b"stale".to_vec(),
+                ConditionalWritePrecondition::MatchSha256(digest),
+                Some(&sandbox),
+            )
+            .await
+            .is_err()
+    );
+
+    assert_eq!(std::fs::read(file_path)?, b"second");
+    Ok(())
+}
+
 #[test]
 fn path_uri_join_and_parent_preserve_lexical_paths() -> Result<()> {
     let tmp = TempDir::new()?;
@@ -248,6 +353,41 @@ async fn file_system_read_file_stream_returns_bounded_chunks(
         contents
     );
 
+    Ok(())
+}
+
+#[test_case(FileSystemImplementation::Local ; "local")]
+#[test_case(FileSystemImplementation::Remote ; "remote")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sandboxed_file_stream_reads_are_supported(
+    implementation: FileSystemImplementation,
+) -> Result<()> {
+    let context = create_file_system_context(implementation).await?;
+    let file_system = context.file_system;
+    let tmp = TempDir::new()?;
+    let file_path = tmp.path().join("sandboxed-blocks.txt");
+    let contents = vec![b'x'; FILE_READ_CHUNK_SIZE + 17];
+    std::fs::write(&file_path, &contents)?;
+    let sandbox = read_only_sandbox(tmp.path().to_path_buf());
+
+    let chunks = file_system
+        .read_file_stream(&PathUri::from_host_native_path(file_path)?, Some(&sandbox))
+        .await?
+        .try_collect::<Vec<_>>()
+        .await?;
+
+    assert!(
+        chunks
+            .iter()
+            .all(|chunk| chunk.len() <= FILE_READ_CHUNK_SIZE)
+    );
+    assert_eq!(
+        chunks
+            .iter()
+            .flat_map(|chunk| chunk.iter().copied())
+            .collect::<Vec<_>>(),
+        contents
+    );
     Ok(())
 }
 

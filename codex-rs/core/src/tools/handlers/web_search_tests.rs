@@ -1,5 +1,7 @@
 use super::*;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::WireApi;
+use codex_model_provider_info::create_oss_provider_with_base_url;
 use codex_protocol::config_types::WebSearchContextSize as ConfigWebSearchContextSize;
 use codex_tools::ResponsesApiWebSearchFilters;
 use codex_tools::ResponsesApiWebSearchUserLocation;
@@ -19,6 +21,7 @@ use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::turn_diff_tracker::TurnDiffTracker;
+use codex_model_provider::create_model_provider;
 
 #[test]
 fn parse_search_commands_accepts_openai_commands_and_legacy_aliases() {
@@ -190,6 +193,104 @@ async fn handler_calls_openai_search_endpoint_and_returns_search_output() {
         body["max_output_tokens"]
             .as_u64()
             .is_some_and(|value| value > 0)
+    );
+}
+
+#[tokio::test]
+async fn kimi_handler_calls_moonshot_and_returns_bounded_external_context() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "search_results": [{
+                "title": "Rust 1.90",
+                "url": "https://blog.rust-lang.org/release",
+                "snippet": "Rust 1.90 is available.",
+                "content": "full page must not enter context"
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let spec = ToolSpec::WebSearch {
+        external_web_access: Some(true),
+        indexed_web_access: None,
+        filters: None,
+        user_location: None,
+        search_context_size: None,
+        search_content_types: None,
+    };
+    let handler = WebSearchHandler::new(spec);
+    let (session, mut turn) = make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(codex_features::Feature::KimiMoonshotWebSearch)
+        .expect("test feature should enable");
+    config.moonshot_search.base_url = Some(format!("{}/v1/search", server.uri()));
+    config.moonshot_search.api_key = Some("moonshot-test-token".to_string());
+    turn.config = Arc::new(config);
+    turn.model_info.slug = "gateway:k3".to_string();
+    let mut provider =
+        create_oss_provider_with_base_url(&format!("{}/v1", server.uri()), WireApi::Claude);
+    provider.experimental_bearer_token = Some("provider-token".to_string());
+    turn.provider = create_model_provider(provider, /*auth_manager*/ None);
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let step_context = session.capture_step_context(Arc::clone(&turn)).await;
+    let output = handler
+        .handle(ToolInvocation {
+            session,
+            turn,
+            step_context,
+            cancellation_token: CancellationToken::new(),
+            tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
+            call_id: "call-moonshot".to_string(),
+            tool_name: codex_tools::ToolName::plain("web_search"),
+            source: ToolCallSource::Direct,
+            payload: ToolPayload::Function {
+                arguments: r#"{"query":"latest rust release"}"#.to_string(),
+            },
+        })
+        .await
+        .expect("Moonshot search should succeed");
+
+    assert_eq!(output.log_preview(), "[moonshot web search output]");
+    assert!(output.contains_external_context());
+    let response = output.to_response_item(
+        "call-moonshot",
+        &ToolPayload::Function {
+            arguments: "{}".to_string(),
+        },
+    );
+    let ResponseInputItem::FunctionCallOutput { output, .. } = response else {
+        panic!("expected function call output");
+    };
+    let text = output
+        .content_items()
+        .and_then(|items| items.first())
+        .and_then(|item| match item {
+            FunctionCallOutputContentItem::InputText { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .expect("text output");
+    assert!(text.contains("Rust 1.90 is available."));
+    assert!(text.contains("https://blog.rust-lang.org/release"));
+    assert!(!text.contains("full page must not enter context"));
+
+    let requests = server
+        .received_requests()
+        .await
+        .expect("mock server should capture request");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url.path(), "/v1/search");
+    assert_eq!(
+        requests[0]
+            .headers
+            .get(codex_api::MOONSHOT_TOOL_CALL_ID_HEADER)
+            .and_then(|value| value.to_str().ok()),
+        Some("call-moonshot")
     );
 }
 

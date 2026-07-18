@@ -58,12 +58,14 @@ use crate::protocol::ExecParams;
 use crate::protocol::ExecResponse;
 use crate::protocol::FS_CANONICALIZE_METHOD;
 use crate::protocol::FS_CLOSE_METHOD;
+use crate::protocol::FS_CONDITIONAL_WRITE_FILE_METHOD;
 use crate::protocol::FS_COPY_METHOD;
 use crate::protocol::FS_CREATE_DIRECTORY_METHOD;
 use crate::protocol::FS_GET_METADATA_METHOD;
 use crate::protocol::FS_OPEN_METHOD;
 use crate::protocol::FS_READ_BLOCK_METHOD;
 use crate::protocol::FS_READ_DIRECTORY_METHOD;
+use crate::protocol::FS_READ_FILE_BLOCK_METHOD;
 use crate::protocol::FS_READ_FILE_METHOD;
 use crate::protocol::FS_REMOVE_METHOD;
 use crate::protocol::FS_WALK_METHOD;
@@ -72,6 +74,8 @@ use crate::protocol::FsCanonicalizeParams;
 use crate::protocol::FsCanonicalizeResponse;
 use crate::protocol::FsCloseParams;
 use crate::protocol::FsCloseResponse;
+use crate::protocol::FsConditionalWriteFileParams;
+use crate::protocol::FsConditionalWriteFileResponse;
 use crate::protocol::FsCopyParams;
 use crate::protocol::FsCopyResponse;
 use crate::protocol::FsCreateDirectoryParams;
@@ -84,6 +88,8 @@ use crate::protocol::FsReadBlockParams;
 use crate::protocol::FsReadBlockResponse;
 use crate::protocol::FsReadDirectoryParams;
 use crate::protocol::FsReadDirectoryResponse;
+use crate::protocol::FsReadFileBlockParams;
+use crate::protocol::FsReadFileBlockResponse;
 use crate::protocol::FsReadFileParams;
 use crate::protocol::FsReadFileResponse;
 use crate::protocol::FsRemoveParams;
@@ -764,6 +770,13 @@ impl ExecServerClient {
         self.call(FS_READ_BLOCK_METHOD, &params).await
     }
 
+    pub async fn fs_read_file_block(
+        &self,
+        params: FsReadFileBlockParams,
+    ) -> Result<FsReadFileBlockResponse, ExecServerError> {
+        self.call(FS_READ_FILE_BLOCK_METHOD, &params).await
+    }
+
     pub async fn fs_close(
         &self,
         params: FsCloseParams,
@@ -776,6 +789,13 @@ impl ExecServerClient {
         params: FsWriteFileParams,
     ) -> Result<FsWriteFileResponse, ExecServerError> {
         self.call(FS_WRITE_FILE_METHOD, &params).await
+    }
+
+    pub async fn fs_conditional_write_file(
+        &self,
+        params: FsConditionalWriteFileParams,
+    ) -> Result<FsConditionalWriteFileResponse, ExecServerError> {
+        self.call(FS_CONDITIONAL_WRITE_FILE_METHOD, &params).await
     }
 
     pub async fn fs_create_directory(

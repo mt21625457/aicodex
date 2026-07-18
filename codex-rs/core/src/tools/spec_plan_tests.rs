@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use codex_config::config_toml::ChatFileToolMode;
+use codex_features::ClaudeFileToolMode;
 use codex_features::Feature;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
@@ -281,6 +283,24 @@ fn use_bedrock_provider(turn: &mut TurnContext) {
 fn use_claude_provider(turn: &mut TurnContext) {
     let provider_info =
         create_oss_provider_with_base_url("https://api.anthropic.com/v1", WireApi::Claude);
+    update_config(turn, |config| {
+        config.model_provider = provider_info.clone();
+    });
+    turn.provider = create_model_provider(provider_info, turn.auth_manager.clone());
+}
+
+fn use_compatible_claude_provider(turn: &mut TurnContext) {
+    let provider_info =
+        create_oss_provider_with_base_url("https://example.com/v1", WireApi::Claude);
+    update_config(turn, |config| {
+        config.model_provider = provider_info.clone();
+    });
+    turn.provider = create_model_provider(provider_info, turn.auth_manager.clone());
+}
+
+fn use_chat_provider(turn: &mut TurnContext) {
+    let mut provider_info = turn.config.model_provider.clone();
+    provider_info.wire_api = WireApi::Chat;
     update_config(turn, |config| {
         config.model_provider = provider_info.clone();
     });
@@ -674,6 +694,176 @@ async fn environment_count_controls_environment_backed_tools() {
         multiple_environments.visible_spec("view_image"),
         "environment_id"
     ));
+}
+
+#[tokio::test]
+async fn chat_dedicated_file_tool_modes_follow_the_visibility_truth_table() {
+    let legacy = probe(|turn| {
+        use_chat_provider(turn);
+        set_feature(turn, Feature::DedicatedFileTools, /*enabled*/ true);
+    })
+    .await;
+    assert!(!tool_description(legacy.visible_spec("exec_command")).contains("read_file"));
+
+    let dedicated = probe(|turn| {
+        use_chat_provider(turn);
+        set_feature(turn, Feature::DedicatedFileTools, /*enabled*/ true);
+        update_config(turn, |config| {
+            config.chat_file_tool_mode = ChatFileToolMode::Dedicated;
+        });
+    })
+    .await;
+    dedicated.assert_visible_contains(&["read_file", "edit_file", "write_file"]);
+    dedicated.assert_registered_contains(&["apply_patch"]);
+    dedicated.assert_visible_lacks(&["apply_patch"]);
+    assert_eq!(dedicated.exposure("apply_patch"), ToolExposure::Hidden);
+    assert!(tool_description(dedicated.visible_spec("exec_command")).contains("read_file"));
+
+    let with_apply_patch = probe(|turn| {
+        use_chat_provider(turn);
+        set_feature(turn, Feature::DedicatedFileTools, /*enabled*/ true);
+        update_config(turn, |config| {
+            config.chat_file_tool_mode = ChatFileToolMode::DedicatedWithApplyPatch;
+        });
+    })
+    .await;
+    with_apply_patch.assert_visible_contains(&[
+        "read_file",
+        "edit_file",
+        "write_file",
+        "apply_patch",
+    ]);
+    assert_eq!(
+        with_apply_patch.exposure("apply_patch"),
+        ToolExposure::Direct
+    );
+}
+
+fn tool_description(spec: &ToolSpec) -> &str {
+    match spec {
+        ToolSpec::Function(tool) => &tool.description,
+        ToolSpec::ToolSearch { description, .. } => description,
+        ToolSpec::Freeform(tool) => &tool.description,
+        ToolSpec::Namespace(_) | ToolSpec::WebSearch { .. } => "",
+    }
+}
+
+#[tokio::test]
+async fn chat_file_tool_mode_does_not_change_claude_visible_tools() {
+    let baseline = probe(|turn| {
+        use_claude_provider(turn);
+        turn.model_info.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
+    })
+    .await;
+    let configured = probe(|turn| {
+        use_claude_provider(turn);
+        turn.model_info.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
+        set_feature(turn, Feature::DedicatedFileTools, /*enabled*/ true);
+        update_config(turn, |config| {
+            config.chat_file_tool_mode = ChatFileToolMode::Dedicated;
+        });
+    })
+    .await;
+    assert_eq!(configured.visible_specs, baseline.visible_specs);
+    configured.assert_registered_lacks(&["read_file", "edit_file", "write_file"]);
+}
+
+#[tokio::test]
+async fn chat_file_tool_mode_does_not_change_responses_visible_tools() {
+    let baseline = probe(|turn| {
+        turn.model_info.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
+    })
+    .await;
+    let configured = probe(|turn| {
+        turn.model_info.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
+        set_feature(turn, Feature::DedicatedFileTools, /*enabled*/ true);
+        update_config(turn, |config| {
+            config.chat_file_tool_mode = ChatFileToolMode::Dedicated;
+        });
+    })
+    .await;
+    assert_eq!(configured.visible_specs, baseline.visible_specs);
+    configured.assert_registered_lacks(&["read_file", "edit_file", "write_file"]);
+}
+
+#[tokio::test]
+async fn claude_dedicated_file_tool_modes_follow_the_visibility_truth_table() {
+    let gate_off = probe(|turn| {
+        use_compatible_claude_provider(turn);
+        turn.model_info.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
+    })
+    .await;
+    gate_off.assert_registered_lacks(&["read_file", "edit_file", "write_file"]);
+
+    let compatible_auto = probe(|turn| {
+        use_compatible_claude_provider(turn);
+        turn.model_info.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
+        set_feature(turn, Feature::DedicatedFileTools, /*enabled*/ true);
+    })
+    .await;
+    compatible_auto.assert_visible_contains(&["read_file", "edit_file", "write_file"]);
+    compatible_auto.assert_visible_lacks(&["apply_patch"]);
+    assert_eq!(
+        compatible_auto.exposure("apply_patch"),
+        ToolExposure::Hidden
+    );
+
+    let kimi_auto = probe(|turn| {
+        use_claude_provider(turn);
+        turn.model_info.slug = "gateway:k3".to_string();
+        turn.model_info.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
+        set_feature(turn, Feature::DedicatedFileTools, /*enabled*/ true);
+    })
+    .await;
+    kimi_auto.assert_visible_contains(&["read_file", "edit_file", "write_file"]);
+    kimi_auto.assert_visible_lacks(&["apply_patch"]);
+    assert_eq!(kimi_auto.exposure("apply_patch"), ToolExposure::Hidden);
+
+    let kimi_k2_auto = probe(|turn| {
+        use_claude_provider(turn);
+        turn.model_info.slug = "kimi-k2.7-code".to_string();
+        turn.model_info.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
+        set_feature(turn, Feature::DedicatedFileTools, /*enabled*/ true);
+    })
+    .await;
+    kimi_k2_auto.assert_registered_lacks(&["read_file", "edit_file", "write_file"]);
+    kimi_k2_auto.assert_registered_contains(&[CLAUDE_TEXT_EDITOR_TOOL_NAME]);
+    kimi_k2_auto.assert_visible_contains(&["apply_patch"]);
+
+    let anthropic_auto = probe(|turn| {
+        use_claude_provider(turn);
+        turn.model_info.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
+        set_feature(turn, Feature::DedicatedFileTools, /*enabled*/ true);
+    })
+    .await;
+    anthropic_auto.assert_registered_lacks(&["read_file", "edit_file", "write_file"]);
+    anthropic_auto.assert_visible_contains(&["apply_patch"]);
+
+    let anthropic_dedicated = probe(|turn| {
+        use_claude_provider(turn);
+        set_feature(turn, Feature::DedicatedFileTools, /*enabled*/ true);
+        update_config(turn, |config| {
+            config.claude_file_tool_mode = ClaudeFileToolMode::Dedicated;
+        });
+    })
+    .await;
+    anthropic_dedicated.assert_visible_contains(&["read_file", "edit_file", "write_file"]);
+    anthropic_dedicated.assert_visible_lacks(&["apply_patch"]);
+
+    let anthropic_with_apply_patch = probe(|turn| {
+        use_claude_provider(turn);
+        set_feature(turn, Feature::DedicatedFileTools, /*enabled*/ true);
+        update_config(turn, |config| {
+            config.claude_file_tool_mode = ClaudeFileToolMode::DedicatedWithApplyPatch;
+        });
+    })
+    .await;
+    anthropic_with_apply_patch.assert_visible_contains(&[
+        "read_file",
+        "edit_file",
+        "write_file",
+        "apply_patch",
+    ]);
 }
 
 #[tokio::test]
@@ -1685,6 +1875,43 @@ async fn hosted_web_search_and_standalone_image_generation_follow_runtime_gates(
     )
     .await;
     standalone_web_search.assert_visible_lacks(&["web_search"]);
+
+    let kimi_standalone = probe_with(
+        |turn| {
+            use_compatible_claude_provider(turn);
+            turn.model_info.slug = "gateway:k3".to_string();
+            set_feature(turn, Feature::StandaloneWebSearch, /*enabled*/ true);
+            set_web_search_mode(turn, WebSearchMode::Live);
+        },
+        ToolPlanInputs {
+            extension_tool_executors: vec![Arc::new(TestNamespaceExtensionTool {
+                namespace: "web",
+                tool_name: "run",
+            })],
+            ..Default::default()
+        },
+    )
+    .await;
+    kimi_standalone.assert_visible_contains(&["web"]);
+    kimi_standalone.assert_visible_lacks(&["web_search"]);
+
+    let non_kimi_compatible = probe_with(
+        |turn| {
+            use_compatible_claude_provider(turn);
+            turn.model_info.slug = "deepseek-chat".to_string();
+            set_feature(turn, Feature::StandaloneWebSearch, /*enabled*/ true);
+            set_web_search_mode(turn, WebSearchMode::Live);
+        },
+        ToolPlanInputs {
+            extension_tool_executors: vec![Arc::new(TestNamespaceExtensionTool {
+                namespace: "web",
+                tool_name: "run",
+            })],
+            ..Default::default()
+        },
+    )
+    .await;
+    non_kimi_compatible.assert_visible_lacks(&["web"]);
 
     let unsupported_provider = probe(|turn| {
         set_web_search_mode(turn, WebSearchMode::Live);

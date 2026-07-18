@@ -13,6 +13,7 @@ use crate::protocol::FS_READ_BLOCK_METHOD;
 use crate::protocol::FsCloseParams;
 use crate::protocol::FsOpenParams;
 use crate::protocol::FsReadBlockParams;
+use crate::protocol::FsReadFileBlockParams;
 
 struct FileReadRegistration {
     client: ExecServerClient,
@@ -99,6 +100,63 @@ pub(super) async fn open(
             Ok(Some((chunk, Some((registration, next_offset)))))
         },
     )))
+}
+
+pub(super) fn open_stateless(
+    client: ExecServerClient,
+    path: PathUri,
+    sandbox: FileSystemSandboxContext,
+) -> FileSystemReadStream {
+    FileSystemReadStream::new(futures::stream::try_unfold(Some(0_u64), move |offset| {
+        let client = client.clone();
+        let path = path.clone();
+        let sandbox = sandbox.clone();
+        async move {
+            let Some(offset) = offset else {
+                return Ok(None);
+            };
+            let response = client
+                .fs_read_file_block(FsReadFileBlockParams {
+                    path,
+                    offset,
+                    len: FILE_READ_CHUNK_SIZE,
+                    sandbox: Some(sandbox),
+                })
+                .await
+                .map_err(map_remote_error)?;
+            let chunk = Bytes::from(response.chunk.into_inner());
+            if chunk.len() > FILE_READ_CHUNK_SIZE {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "stateless file block returned {} bytes, maximum is {}",
+                        chunk.len(),
+                        FILE_READ_CHUNK_SIZE
+                    ),
+                ));
+            }
+            if response.eof {
+                return if chunk.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some((chunk, None)))
+                };
+            }
+            if chunk.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "stateless file block returned an empty non-terminal block",
+                ));
+            }
+            let next_offset = offset.checked_add(chunk.len() as u64).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("stateless file read offset overflowed after {offset} bytes"),
+                )
+            })?;
+            Ok(Some((chunk, Some(next_offset))))
+        }
+    }))
 }
 
 impl Drop for FileReadRegistration {

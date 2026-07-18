@@ -1,3 +1,5 @@
+use crate::ClaudeFileToolMode;
+use crate::DedicatedFileToolsConfigToml;
 use crate::Feature;
 use crate::FeatureConfigSource;
 use crate::FeatureOverrides;
@@ -431,6 +433,43 @@ fn multi_agent_is_stable_and_enabled_by_default() {
 fn enable_fanout_is_under_development() {
     assert_eq!(Feature::SpawnCsv.stage(), Stage::UnderDevelopment);
     assert_eq!(Feature::SpawnCsv.default_enabled(), false);
+}
+
+#[test]
+fn dedicated_file_tools_accepts_boolean_and_typed_mode_config() {
+    let boolean: FeaturesToml =
+        toml::from_str("dedicated_file_tools = true").expect("boolean shorthand should parse");
+    assert_eq!(
+        boolean
+            .dedicated_file_tools
+            .as_ref()
+            .and_then(FeatureToml::enabled),
+        Some(true)
+    );
+
+    let typed: FeaturesToml = toml::from_str(
+        "dedicated_file_tools = { enabled = true, mode = 'dedicated_with_apply_patch' }",
+    )
+    .expect("typed feature config should parse");
+    assert_eq!(
+        typed.dedicated_file_tools,
+        Some(FeatureToml::Config(DedicatedFileToolsConfigToml {
+            enabled: Some(true),
+            mode: Some(ClaudeFileToolMode::DedicatedWithApplyPatch),
+        }))
+    );
+    assert!(
+        toml::from_str::<FeaturesToml>(
+            "dedicated_file_tools = { enabled = true, mode = 'unknown' }"
+        )
+        .is_err()
+    );
+    assert!(
+        toml::from_str::<FeaturesToml>(
+            "dedicated_file_tools = { enabled = true, unexpected = false }"
+        )
+        .is_err()
+    );
 }
 
 #[test]

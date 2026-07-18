@@ -4,6 +4,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use codex_exec_server_protocol::JSONRPCErrorError;
 
+use crate::ConditionalWritePrecondition;
 use crate::CopyOptions;
 use crate::CreateDirectoryOptions;
 use crate::ExecServerRuntimePaths;
@@ -17,6 +18,9 @@ use crate::protocol::FsCanonicalizeParams;
 use crate::protocol::FsCanonicalizeResponse;
 use crate::protocol::FsCloseParams;
 use crate::protocol::FsCloseResponse;
+use crate::protocol::FsConditionalWriteFileParams;
+use crate::protocol::FsConditionalWriteFileResponse;
+use crate::protocol::FsConditionalWritePrecondition;
 use crate::protocol::FsCopyParams;
 use crate::protocol::FsCopyResponse;
 use crate::protocol::FsCreateDirectoryParams;
@@ -30,6 +34,8 @@ use crate::protocol::FsReadBlockResponse;
 use crate::protocol::FsReadDirectoryEntry;
 use crate::protocol::FsReadDirectoryParams;
 use crate::protocol::FsReadDirectoryResponse;
+use crate::protocol::FsReadFileBlockParams;
+use crate::protocol::FsReadFileBlockResponse;
 use crate::protocol::FsReadFileParams;
 use crate::protocol::FsReadFileResponse;
 use crate::protocol::FsRemoveParams;
@@ -38,6 +44,7 @@ use crate::protocol::FsWalkParams;
 use crate::protocol::FsWalkResponse;
 use crate::protocol::FsWriteFileParams;
 use crate::protocol::FsWriteFileResponse;
+use crate::rpc::file_conflict;
 use crate::rpc::internal_error;
 use crate::rpc::invalid_request;
 use crate::rpc::not_found;
@@ -99,6 +106,26 @@ impl FileSystemHandler {
         })
     }
 
+    pub(crate) async fn read_file_block(
+        &self,
+        params: FsReadFileBlockParams,
+    ) -> Result<FsReadFileBlockResponse, JSONRPCErrorError> {
+        let (bytes, eof) = self
+            .file_system
+            .read_file_block(
+                &params.path,
+                params.offset,
+                params.len,
+                params.sandbox.as_ref(),
+            )
+            .await
+            .map_err(map_fs_error)?;
+        Ok(FsReadFileBlockResponse {
+            chunk: bytes.into(),
+            eof,
+        })
+    }
+
     pub(crate) async fn close(
         &self,
         params: FsCloseParams,
@@ -136,6 +163,30 @@ impl FileSystemHandler {
             .await
             .map_err(map_fs_error)?;
         Ok(FsWriteFileResponse {})
+    }
+
+    pub(crate) async fn conditional_write_file(
+        &self,
+        params: FsConditionalWriteFileParams,
+    ) -> Result<FsConditionalWriteFileResponse, JSONRPCErrorError> {
+        let bytes = STANDARD.decode(params.data_base64).map_err(|err| {
+            invalid_request(format!(
+                "conditional write requires valid base64 dataBase64: {err}"
+            ))
+        })?;
+        let precondition = match params.precondition {
+            FsConditionalWritePrecondition::MustNotExist => {
+                ConditionalWritePrecondition::MustNotExist
+            }
+            FsConditionalWritePrecondition::MatchSha256 { digest } => {
+                ConditionalWritePrecondition::MatchSha256(digest)
+            }
+        };
+        self.file_system
+            .write_file_conditional(&params.path, bytes, precondition, params.sandbox.as_ref())
+            .await
+            .map_err(map_conditional_write_error)?;
+        Ok(FsConditionalWriteFileResponse {})
     }
 
     pub(crate) async fn create_directory(
@@ -276,6 +327,13 @@ fn map_fs_error(err: io::Error) -> JSONRPCErrorError {
     }
 }
 
+fn map_conditional_write_error(err: io::Error) -> JSONRPCErrorError {
+    match err.kind() {
+        io::ErrorKind::AlreadyExists | io::ErrorKind::InvalidData => file_conflict(err.to_string()),
+        _ => map_fs_error(err),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use codex_protocol::protocol::NetworkAccess;
@@ -287,6 +345,17 @@ mod tests {
     use crate::FileSystemSandboxContext;
     use crate::protocol::FsReadFileParams;
     use crate::protocol::FsWriteFileParams;
+    use crate::rpc::FILE_CONFLICT_ERROR_CODE;
+
+    #[test]
+    fn conflict_error_code_is_reserved_for_conditional_writes() {
+        let legacy = map_fs_error(io::Error::new(io::ErrorKind::AlreadyExists, "exists"));
+        let conditional =
+            map_conditional_write_error(io::Error::new(io::ErrorKind::AlreadyExists, "exists"));
+
+        assert_eq!(legacy.code, -32603);
+        assert_eq!(conditional.code, FILE_CONFLICT_ERROR_CODE);
+    }
 
     #[tokio::test]
     async fn no_platform_sandbox_policies_do_not_require_configured_sandbox_helper() {

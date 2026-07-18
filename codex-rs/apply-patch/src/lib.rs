@@ -5,12 +5,17 @@ mod standalone_executable;
 mod streaming_parser;
 mod text_file;
 
+pub use text_file::PatchableTextEncoding;
+pub use text_file::PatchableTextFile;
+pub use text_file::decode_patchable_text;
+
 use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
 
 use anyhow::Context;
 use anyhow::Result;
+use codex_exec_server::ConditionalWritePrecondition;
 use codex_exec_server::CreateDirectoryOptions;
 use codex_exec_server::ExecutorFileSystem;
 use codex_exec_server::FileSystemSandboxContext;
@@ -22,6 +27,8 @@ pub use parser::ParseError;
 use parser::ParseError::*;
 pub use parser::UpdateFileChunk;
 pub use parser::parse_patch;
+use sha2::Digest;
+use sha2::Sha256;
 use similar::TextDiff;
 pub use streaming_parser::StreamingPatchParser;
 use thiserror::Error;
@@ -31,8 +38,8 @@ pub use invocation::verify_apply_patch_args;
 pub use standalone_executable::main;
 
 use crate::invocation::ExtractHeredocError;
-use crate::text_file::PatchableTextFile;
 use crate::text_file::read_patchable_text_file;
+use crate::text_file::read_patchable_text_file_with_fingerprint;
 
 /// Special argv[1] flag used when the Codex executable self-invokes to run the
 /// internal `apply_patch` path.
@@ -208,6 +215,11 @@ impl AppliedPatchDelta {
 
     pub fn is_exact(&self) -> bool {
         self.exact
+    }
+
+    /// Builds an exact delta for one already committed text-file mutation.
+    pub fn from_change(change: AppliedPatchChange) -> Self {
+        Self::new(vec![change], /*exact*/ true)
     }
 
     /// Appends a later committed prefix while preserving the aggregate exactness.
@@ -396,14 +408,19 @@ async fn apply_hunks_to_files(
         let path_uri = hunk.resolve_path(cwd)?;
         match hunk {
             Hunk::AddFile { contents, .. } => {
-                let overwritten_content =
-                    read_optional_file_text_for_delta(&path_uri, fs, sandbox, &mut delta.exact)
-                        .await;
+                let existing =
+                    read_optional_file_for_delta(&path_uri, fs, sandbox, &mut delta.exact).await;
+                let precondition = existing.as_ref().map_or(
+                    ConditionalWritePrecondition::MustNotExist,
+                    |(_, fingerprint)| ConditionalWritePrecondition::MatchSha256(*fingerprint),
+                );
+                let overwritten_content = existing.and_then(|(content, _)| content);
                 try_write!(
-                    write_file_with_missing_parent_retry(
+                    write_file_conditional_with_missing_parent_retry(
                         fs,
                         &path_uri,
                         contents.clone().into_bytes(),
+                        precondition,
                         sandbox,
                     )
                     .await
@@ -474,19 +491,26 @@ async fn apply_hunks_to_files(
                 note_existing_path_delta_support(&path_uri, fs, sandbox, &mut delta.exact).await;
                 let AppliedPatch {
                     original_contents,
+                    original_fingerprint,
                     new_contents,
                     new_bytes,
                 } = derive_new_contents_from_chunks(&path_uri, chunks, fs, sandbox).await?;
                 if let Some(dest) = move_path {
                     let dest_uri = cwd.join(&dest.to_string_lossy())?;
-                    let overwritten_move_content =
-                        read_optional_file_text_for_delta(&dest_uri, fs, sandbox, &mut delta.exact)
+                    let existing =
+                        read_optional_file_for_delta(&dest_uri, fs, sandbox, &mut delta.exact)
                             .await;
+                    let precondition = existing.as_ref().map_or(
+                        ConditionalWritePrecondition::MustNotExist,
+                        |(_, fingerprint)| ConditionalWritePrecondition::MatchSha256(*fingerprint),
+                    );
+                    let overwritten_move_content = existing.and_then(|(content, _)| content);
                     try_write!(
-                        write_file_with_missing_parent_retry(
+                        write_file_conditional_with_missing_parent_retry(
                             fs,
                             &dest_uri,
                             new_bytes.clone(),
+                            precondition,
                             sandbox,
                         )
                         .await
@@ -545,12 +569,17 @@ async fn apply_hunks_to_files(
                     modified.push(affected_path);
                 } else {
                     try_write!(
-                        fs.write_file(&path_uri, new_bytes, sandbox)
-                            .await
-                            .with_context(|| format!(
-                                "Failed to write file {}",
-                                path_uri.inferred_native_path_string()
-                            ))
+                        fs.write_file_conditional(
+                            &path_uri,
+                            new_bytes,
+                            ConditionalWritePrecondition::MatchSha256(original_fingerprint),
+                            sandbox,
+                        )
+                        .await
+                        .with_context(|| format!(
+                            "Failed to write file {}",
+                            path_uri.inferred_native_path_string()
+                        ))
                     );
                     delta.changes.push(AppliedPatchChange {
                         path: path_uri.to_path_buf(),
@@ -602,15 +631,25 @@ async fn remove_failure_was_side_effect_free(
     }
 }
 
-async fn read_optional_file_text_for_delta(
+async fn read_optional_file_for_delta(
     path: &PathUri,
     fs: &dyn ExecutorFileSystem,
     sandbox: Option<&FileSystemSandboxContext>,
     exact: &mut bool,
-) -> Option<String> {
+) -> Option<(Option<String>, [u8; 32])> {
     note_existing_path_delta_support(path, fs, sandbox, exact).await;
-    match read_patchable_text_file(path, fs, sandbox).await {
-        Ok(file) => Some(file.contents),
+    match fs.read_file(path, sandbox).await {
+        Ok(bytes) => {
+            let fingerprint = Sha256::digest(&bytes).into();
+            let content = match decode_patchable_text(bytes) {
+                Ok(file) => Some(file.contents),
+                Err(_) => {
+                    *exact = false;
+                    None
+                }
+            };
+            Some((content, fingerprint))
+        }
         Err(source) if source.kind() == io::ErrorKind::NotFound => None,
         Err(_) => {
             *exact = false;
@@ -633,15 +672,22 @@ async fn note_existing_path_delta_support(
     }
 }
 
-async fn write_file_with_missing_parent_retry(
+async fn write_file_conditional_with_missing_parent_retry(
     fs: &dyn ExecutorFileSystem,
     path: &PathUri,
     contents: Vec<u8>,
+    precondition: ConditionalWritePrecondition,
     sandbox: Option<&FileSystemSandboxContext>,
 ) -> anyhow::Result<()> {
-    match fs.write_file(path, contents.clone(), sandbox).await {
+    match fs
+        .write_file_conditional(path, contents.clone(), precondition, sandbox)
+        .await
+    {
         Ok(()) => Ok(()),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+        Err(err)
+            if err.kind() == io::ErrorKind::NotFound
+                && precondition == ConditionalWritePrecondition::MustNotExist =>
+        {
             if let Some(parent) = path.parent() {
                 fs.create_directory(&parent, CreateDirectoryOptions { recursive: true }, sandbox)
                     .await
@@ -652,7 +698,7 @@ async fn write_file_with_missing_parent_retry(
                         )
                     })?;
             }
-            fs.write_file(path, contents, sandbox)
+            fs.write_file_conditional(path, contents, precondition, sandbox)
                 .await
                 .with_context(|| {
                     format!(
@@ -673,6 +719,7 @@ async fn write_file_with_missing_parent_retry(
 
 struct AppliedPatch {
     original_contents: String,
+    original_fingerprint: [u8; 32],
     new_contents: String,
     new_bytes: Vec<u8>,
 }
@@ -685,17 +732,18 @@ async fn derive_new_contents_from_chunks(
     fs: &dyn ExecutorFileSystem,
     sandbox: Option<&FileSystemSandboxContext>,
 ) -> std::result::Result<AppliedPatch, ApplyPatchError> {
-    let original_file = read_patchable_text_file(path, fs, sandbox)
-        .await
-        .map_err(|err| {
-            ApplyPatchError::IoError(IoError {
-                context: format!(
-                    "Failed to read file to update {}",
-                    path.inferred_native_path_string()
-                ),
-                source: err,
-            })
-        })?;
+    let (original_file, original_fingerprint) =
+        read_patchable_text_file_with_fingerprint(path, fs, sandbox)
+            .await
+            .map_err(|err| {
+                ApplyPatchError::IoError(IoError {
+                    context: format!(
+                        "Failed to read file to update {}",
+                        path.inferred_native_path_string()
+                    ),
+                    source: err,
+                })
+            })?;
     let PatchableTextFile {
         contents: original_contents,
         encoding,
@@ -728,6 +776,7 @@ async fn derive_new_contents_from_chunks(
     })?;
     Ok(AppliedPatch {
         original_contents,
+        original_fingerprint,
         new_contents,
         new_bytes,
     })

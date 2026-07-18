@@ -16,10 +16,12 @@ use toml::Table;
 
 mod feature_configs;
 mod legacy;
+pub use feature_configs::ClaudeFileToolMode;
 pub use feature_configs::CodeModeConfigToml;
 pub use feature_configs::CurrentTimeReminderConfigToml;
 pub use feature_configs::CurrentTimeReminderDeliveryMode;
 pub use feature_configs::CurrentTimeSource;
+pub use feature_configs::DedicatedFileToolsConfigToml;
 pub use feature_configs::MultiAgentV2ConfigToml;
 pub use feature_configs::NetworkProxyConfigToml;
 pub use feature_configs::NetworkProxyDomainPermissionToml;
@@ -112,6 +114,8 @@ pub enum Feature {
     TerminalVisualizationInstructions,
     /// Stream structured progress while apply_patch input is being generated.
     ApplyPatchStreamingEvents,
+    /// Register first-party dedicated file tools for explicit wire rollouts.
+    DedicatedFileTools,
     /// Allow exec tools to request additional permissions while staying sandboxed.
     ExecPermissionApprovals,
     /// Expose the built-in request_permissions tool.
@@ -123,6 +127,8 @@ pub enum Feature {
     WebSearchCached,
     /// Expose the extension-backed standalone web search tool.
     StandaloneWebSearch,
+    /// Route Kimi local web search through Moonshot simple search.
+    KimiMoonshotWebSearch,
     /// Use the legacy Landlock Linux sandbox fallback instead of the default
     /// bubblewrap pipeline.
     UseLegacyLandlock,
@@ -651,6 +657,8 @@ pub struct FeaturesToml {
     pub rollout_budget: Option<FeatureToml<RolloutBudgetConfigToml>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_time_reminder: Option<FeatureToml<CurrentTimeReminderConfigToml>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dedicated_file_tools: Option<FeatureToml<DedicatedFileToolsConfigToml>>,
     #[serde(default, rename = "apps_mcp_path_override", skip_serializing)]
     #[schemars(skip)]
     removed_apps_mcp_path_override: Option<FeatureToml<RemovedAppsMcpPathOverrideConfigToml>>,
@@ -696,6 +704,13 @@ impl FeaturesToml {
         {
             entries.insert(Feature::CurrentTimeReminder.key().to_string(), enabled);
         }
+        if let Some(enabled) = self
+            .dedicated_file_tools
+            .as_ref()
+            .and_then(FeatureToml::enabled)
+        {
+            entries.insert(Feature::DedicatedFileTools.key().to_string(), enabled);
+        }
         if let Some(enabled) = self.network_proxy.as_ref().and_then(FeatureToml::enabled) {
             entries.insert(Feature::NetworkProxy.key().to_string(), enabled);
         }
@@ -710,6 +725,7 @@ impl FeaturesToml {
             token_budget,
             rollout_budget,
             current_time_reminder,
+            dedicated_file_tools,
             removed_apps_mcp_path_override: _,
             network_proxy,
             entries,
@@ -729,6 +745,8 @@ impl FeaturesToml {
                 materialize_resolved_feature_enabled(rollout_budget, enabled);
             } else if spec.id == Feature::CurrentTimeReminder {
                 materialize_resolved_feature_enabled(current_time_reminder, enabled);
+            } else if spec.id == Feature::DedicatedFileTools {
+                materialize_resolved_feature_enabled(dedicated_file_tools, enabled);
             } else if spec.id == Feature::NetworkProxy {
                 materialize_resolved_feature_enabled(network_proxy, enabled);
             } else {
@@ -903,6 +921,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
+        id: Feature::KimiMoonshotWebSearch,
+        key: "kimi_moonshot_web_search",
+        stage: Stage::Stable,
+        default_enabled: true,
+    },
+    FeatureSpec {
         id: Feature::SearchTool,
         key: "search_tool",
         stage: Stage::Removed,
@@ -959,6 +983,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::ApplyPatchStreamingEvents,
         key: "apply_patch_streaming_events",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::DedicatedFileTools,
+        key: "dedicated_file_tools",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },

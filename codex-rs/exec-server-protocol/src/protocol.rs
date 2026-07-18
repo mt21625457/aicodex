@@ -28,8 +28,10 @@ pub const ENVIRONMENT_STATUS_METHOD: &str = "environment/status";
 pub const FS_READ_FILE_METHOD: &str = "fs/readFile";
 pub const FS_OPEN_METHOD: &str = "fs/open";
 pub const FS_READ_BLOCK_METHOD: &str = "fs/readBlock";
+pub const FS_READ_FILE_BLOCK_METHOD: &str = "fs/readFileBlock";
 pub const FS_CLOSE_METHOD: &str = "fs/close";
 pub const FS_WRITE_FILE_METHOD: &str = "fs/writeFile";
+pub const FS_CONDITIONAL_WRITE_FILE_METHOD: &str = "fs/conditionalWriteFile";
 pub const FS_CREATE_DIRECTORY_METHOD: &str = "fs/createDirectory";
 pub const FS_GET_METADATA_METHOD: &str = "fs/getMetadata";
 pub const FS_CANONICALIZE_METHOD: &str = "fs/canonicalize";
@@ -311,6 +313,22 @@ pub struct FsReadBlockResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct FsReadFileBlockParams {
+    pub path: PathUri,
+    pub offset: u64,
+    pub len: usize,
+    pub sandbox: Option<FileSystemSandboxContext>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsReadFileBlockResponse {
+    pub chunk: ByteChunk,
+    pub eof: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FsCloseParams {
     pub handle_id: String,
 }
@@ -330,6 +348,26 @@ pub struct FsWriteFileParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FsWriteFileResponse {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "type")]
+pub enum FsConditionalWritePrecondition {
+    MustNotExist,
+    MatchSha256 { digest: [u8; 32] },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsConditionalWriteFileParams {
+    pub path: PathUri,
+    pub data_base64: String,
+    pub precondition: FsConditionalWritePrecondition,
+    pub sandbox: Option<FileSystemSandboxContext>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FsConditionalWriteFileResponse {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -590,10 +628,14 @@ mod tests {
     use super::EnvironmentInfo;
     use super::ExecExitedNotification;
     use super::ExecParams;
+    use super::FsConditionalWriteFileParams;
+    use super::FsConditionalWritePrecondition;
     use super::FsReadFileParams;
     use super::HttpRequestParams;
     use super::ProcessId;
     use super::ShellInfo;
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
     use codex_file_system::FileSystemSandboxContext;
     use codex_network_proxy::ManagedNetworkSandboxContext;
     use codex_protocol::models::PermissionProfile;
@@ -729,6 +771,21 @@ mod tests {
                 .expect("deserialize sandbox"),
             sandbox
         );
+    }
+
+    #[test]
+    fn conditional_write_protocol_round_trips_preconditions() {
+        let path = PathUri::parse("file:///workspace/file.txt").expect("valid URI");
+        let request = FsConditionalWriteFileParams {
+            path,
+            data_base64: BASE64_STANDARD.encode(b"content"),
+            precondition: FsConditionalWritePrecondition::MatchSha256 { digest: [7; 32] },
+            sandbox: None,
+        };
+        let value = serde_json::to_value(&request).expect("serialize conditional write");
+        let decoded: FsConditionalWriteFileParams =
+            serde_json::from_value(value).expect("deserialize conditional write");
+        assert_eq!(decoded, request);
     }
 
     #[test]

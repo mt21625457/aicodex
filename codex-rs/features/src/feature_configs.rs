@@ -4,6 +4,38 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
 
+/// Claude-wire rollout policy for dedicated file tools.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaudeFileToolMode {
+    /// Prefer Anthropic's native editor, but use dedicated tools for compatible providers.
+    #[default]
+    Auto,
+    /// Advertise only the dedicated read/edit/write tools.
+    Dedicated,
+    /// Advertise dedicated tools together with apply_patch.
+    DedicatedWithApplyPatch,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DedicatedFileToolsConfigToml {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<ClaudeFileToolMode>,
+}
+
+impl FeatureConfig for DedicatedFileToolsConfigToml {
+    fn enabled(&self) -> Option<bool> {
+        self.enabled
+    }
+
+    fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = Some(enabled);
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CodeModeConfigToml {

@@ -20,7 +20,10 @@ use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::ApplyPatchHandler;
 use crate::tools::handlers::parse_arguments;
+use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::CoreToolRuntime;
+use crate::tools::registry::PostToolUsePayload;
+use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolExecutor;
 
 /// Executes Anthropic's native `text_editor` schema through Codex-controlled
@@ -181,6 +184,51 @@ impl CoreToolRuntime for ClaudeTextEditorHandler {
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Function { .. })
     }
+
+    fn pre_tool_use_payload(&self, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
+        Some(PreToolUsePayload {
+            tool_name: HookToolName::new(CLAUDE_TEXT_EDITOR_TOOL_NAME.to_string()),
+            tool_input: text_editor_hook_input(&invocation.payload)?,
+        })
+    }
+
+    fn with_updated_hook_input(
+        &self,
+        mut invocation: ToolInvocation,
+        updated_input: serde_json::Value,
+    ) -> Result<ToolInvocation, FunctionCallError> {
+        let arguments = serde_json::to_string(&updated_input).map_err(|error| {
+            FunctionCallError::RespondToModel(format!(
+                "Claude text editor hook returned invalid input: {error}"
+            ))
+        })?;
+        invocation.payload = ToolPayload::Function { arguments };
+        Ok(invocation)
+    }
+
+    fn post_tool_use_payload(
+        &self,
+        invocation: &ToolInvocation,
+        result: &dyn ToolOutput,
+    ) -> Option<PostToolUsePayload> {
+        Some(PostToolUsePayload {
+            tool_name: HookToolName::new(CLAUDE_TEXT_EDITOR_TOOL_NAME.to_string()),
+            tool_use_id: invocation.call_id.clone(),
+            tool_input: text_editor_hook_input(&invocation.payload)?,
+            tool_response: result
+                .post_tool_use_response(&invocation.call_id, &invocation.payload)?,
+        })
+    }
+}
+
+fn text_editor_hook_input(payload: &ToolPayload) -> Option<serde_json::Value> {
+    let ToolPayload::Function { arguments } = payload else {
+        return None;
+    };
+    Some(
+        serde_json::from_str(arguments)
+            .unwrap_or_else(|_| serde_json::Value::String(arguments.clone())),
+    )
 }
 
 fn resolve_text_editor_path(
@@ -307,13 +355,10 @@ async fn apply_generated_patch(
     multi_environment: bool,
     patch: String,
 ) -> Result<FunctionToolOutput, FunctionCallError> {
-    let mut invocation = invocation;
-    invocation.tool_name = ToolName::plain("apply_patch");
-    invocation.payload = ToolPayload::Custom { input: patch };
     let call_id = invocation.call_id.clone();
     let payload = invocation.payload.clone();
     let output = ApplyPatchHandler::new(multi_environment)
-        .handle(invocation)
+        .handle_generated_patch(invocation, patch)
         .await?;
     let text = output
         .post_tool_use_response(&call_id, &payload)

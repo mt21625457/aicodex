@@ -4,6 +4,7 @@ use codex_utils_path_uri::PathUri;
 use tokio::io;
 use tracing::trace;
 
+use crate::ConditionalWritePrecondition;
 use crate::CopyOptions;
 use crate::CreateDirectoryOptions;
 use crate::ExecServerError;
@@ -19,6 +20,8 @@ use crate::WalkOptions;
 use crate::WalkOutcome;
 use crate::client::LazyRemoteExecServerClient;
 use crate::protocol::FsCanonicalizeParams;
+use crate::protocol::FsConditionalWriteFileParams;
+use crate::protocol::FsConditionalWritePrecondition;
 use crate::protocol::FsCopyParams;
 use crate::protocol::FsCreateDirectoryParams;
 use crate::protocol::FsGetMetadataParams;
@@ -27,6 +30,7 @@ use crate::protocol::FsReadFileParams;
 use crate::protocol::FsRemoveParams;
 use crate::protocol::FsWalkParams;
 use crate::protocol::FsWriteFileParams;
+use crate::rpc::FILE_CONFLICT_ERROR_CODE;
 
 const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
 const METHOD_NOT_FOUND_ERROR_CODE: i64 = -32601;
@@ -89,14 +93,13 @@ impl RemoteFileSystem {
         path: &PathUri,
         sandbox: Option<&FileSystemSandboxContext>,
     ) -> FileSystemResult<FileSystemReadStream> {
-        if sandbox.is_some_and(FileSystemSandboxContext::should_run_in_sandbox) {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "streaming file reads do not support platform sandboxing",
-            ));
-        }
         trace!("remote fs read_file_stream");
         let client = self.client.get().await.map_err(map_remote_error)?;
+        if let Some(sandbox) = remote_sandbox_context(sandbox)
+            && sandbox.should_run_in_sandbox()
+        {
+            return Ok(file_stream::open_stateless(client, path.clone(), sandbox));
+        }
         file_stream::open(client, path.clone(), remote_sandbox_context(sandbox)).await
     }
 
@@ -112,6 +115,35 @@ impl RemoteFileSystem {
             .fs_write_file(FsWriteFileParams {
                 path: path.clone(),
                 data_base64: STANDARD.encode(contents),
+                sandbox: remote_sandbox_context(sandbox),
+            })
+            .await
+            .map_err(map_remote_error)?;
+        Ok(())
+    }
+
+    async fn write_file_conditional(
+        &self,
+        path: &PathUri,
+        contents: Vec<u8>,
+        precondition: ConditionalWritePrecondition,
+        sandbox: Option<&FileSystemSandboxContext>,
+    ) -> FileSystemResult<()> {
+        trace!("remote fs conditional write_file");
+        let client = self.client.get().await.map_err(map_remote_error)?;
+        let precondition = match precondition {
+            ConditionalWritePrecondition::MustNotExist => {
+                FsConditionalWritePrecondition::MustNotExist
+            }
+            ConditionalWritePrecondition::MatchSha256(digest) => {
+                FsConditionalWritePrecondition::MatchSha256 { digest }
+            }
+        };
+        client
+            .fs_conditional_write_file(FsConditionalWriteFileParams {
+                path: path.clone(),
+                data_base64: STANDARD.encode(contents),
+                precondition,
                 sandbox: remote_sandbox_context(sandbox),
             })
             .await
@@ -294,6 +326,22 @@ impl ExecutorFileSystem for RemoteFileSystem {
         Box::pin(RemoteFileSystem::write_file(self, path, contents, sandbox))
     }
 
+    fn write_file_conditional<'a>(
+        &'a self,
+        path: &'a PathUri,
+        contents: Vec<u8>,
+        precondition: ConditionalWritePrecondition,
+        sandbox: Option<&'a FileSystemSandboxContext>,
+    ) -> ExecutorFileSystemFuture<'a, ()> {
+        Box::pin(RemoteFileSystem::write_file_conditional(
+            self,
+            path,
+            contents,
+            precondition,
+            sandbox,
+        ))
+    }
+
     fn create_directory<'a>(
         &'a self,
         path: &'a PathUri,
@@ -372,6 +420,12 @@ fn map_remote_error(error: ExecServerError) -> io::Error {
         ExecServerError::Server { code, message } if code == INVALID_REQUEST_ERROR_CODE => {
             io::Error::new(io::ErrorKind::InvalidInput, message)
         }
+        ExecServerError::Server { code, message } if code == METHOD_NOT_FOUND_ERROR_CODE => {
+            io::Error::new(io::ErrorKind::Unsupported, message)
+        }
+        ExecServerError::Server { code, message } if code == FILE_CONFLICT_ERROR_CODE => {
+            io::Error::new(io::ErrorKind::InvalidData, message)
+        }
         ExecServerError::Server { message, .. } => io::Error::other(message),
         ExecServerError::Closed | ExecServerError::Disconnected(_) => {
             io::Error::new(io::ErrorKind::BrokenPipe, "exec-server transport closed")
@@ -438,6 +492,17 @@ mod tests {
             remote_sandbox_context(Some(&sandbox_context)).expect("remote sandbox context");
 
         assert_eq!(remote_context.cwd, Some(cwd));
+    }
+
+    #[test]
+    fn old_server_method_not_found_maps_to_unsupported() {
+        let error = map_remote_error(ExecServerError::Server {
+            code: METHOD_NOT_FOUND_ERROR_CODE,
+            message: "method not found".to_string(),
+        });
+
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert_eq!(error.to_string(), "method not found");
     }
 
     #[test]

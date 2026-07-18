@@ -23,6 +23,8 @@ use crate::protocol::FsCanonicalizeParams;
 use crate::protocol::FsCanonicalizeResponse;
 use crate::protocol::FsCloseParams;
 use crate::protocol::FsCloseResponse;
+use crate::protocol::FsConditionalWriteFileParams;
+use crate::protocol::FsConditionalWriteFileResponse;
 use crate::protocol::FsCopyParams;
 use crate::protocol::FsCopyResponse;
 use crate::protocol::FsCreateDirectoryParams;
@@ -35,6 +37,8 @@ use crate::protocol::FsReadBlockParams;
 use crate::protocol::FsReadBlockResponse;
 use crate::protocol::FsReadDirectoryParams;
 use crate::protocol::FsReadDirectoryResponse;
+use crate::protocol::FsReadFileBlockParams;
+use crate::protocol::FsReadFileBlockResponse;
 use crate::protocol::FsReadFileParams;
 use crate::protocol::FsReadFileResponse;
 use crate::protocol::FsRemoveParams;
@@ -274,6 +278,14 @@ impl ExecServerHandler {
         self.file_system.read_block(params).await
     }
 
+    pub(crate) async fn fs_read_file_block(
+        &self,
+        params: FsReadFileBlockParams,
+    ) -> Result<FsReadFileBlockResponse, JSONRPCErrorError> {
+        self.require_initialized_for("filesystem")?;
+        self.file_system.read_file_block(params).await
+    }
+
     pub(crate) async fn fs_close(
         &self,
         params: FsCloseParams,
@@ -288,6 +300,14 @@ impl ExecServerHandler {
     ) -> Result<FsWriteFileResponse, JSONRPCErrorError> {
         self.require_initialized_for("filesystem")?;
         self.file_system.write_file(params).await
+    }
+
+    pub(crate) async fn fs_conditional_write_file(
+        &self,
+        params: FsConditionalWriteFileParams,
+    ) -> Result<FsConditionalWriteFileResponse, JSONRPCErrorError> {
+        self.require_initialized_for("filesystem")?;
+        self.file_system.conditional_write_file(params).await
     }
 
     pub(crate) async fn fs_create_directory(

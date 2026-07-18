@@ -31,6 +31,7 @@ use crate::connection::JsonRpcConnectionEvent;
 use crate::connection::JsonRpcTransport;
 
 pub(crate) const SESSION_ALREADY_ATTACHED_ERROR_CODE: i64 = -32010;
+pub(crate) const FILE_CONFLICT_ERROR_CODE: i64 = -32009;
 const MAX_IN_FLIGHT_REGULAR_CALLS: usize = 1024;
 const RESERVED_CLEANUP_CALLS: usize = 1;
 
@@ -575,6 +576,14 @@ pub(crate) fn invalid_params(message: String) -> JSONRPCErrorError {
 pub(crate) fn not_found(message: String) -> JSONRPCErrorError {
     JSONRPCErrorError {
         code: -32004,
+        data: None,
+        message,
+    }
+}
+
+pub(crate) fn file_conflict(message: String) -> JSONRPCErrorError {
+    JSONRPCErrorError {
+        code: FILE_CONFLICT_ERROR_CODE,
         data: None,
         message,
     }

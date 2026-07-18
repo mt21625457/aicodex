@@ -54,6 +54,15 @@ pub struct CopyOptions {
     pub recursive: bool,
 }
 
+/// Precondition checked by an executor immediately before committing a file write.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConditionalWritePrecondition {
+    /// Create the target atomically and fail if it already exists.
+    MustNotExist,
+    /// Replace the target only when its raw bytes still have this SHA-256 digest.
+    MatchSha256([u8; 32]),
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileMetadata {
     pub is_directory: bool,
@@ -460,6 +469,26 @@ pub trait ExecutorFileSystem: Send + Sync {
         contents: Vec<u8>,
         sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, ()>;
+
+    /// Commits a write with an executor-side precondition.
+    ///
+    /// Implementations that cannot enforce the precondition must return an
+    /// unsupported error instead of falling back to [`Self::write_file`].
+    fn write_file_conditional<'a>(
+        &'a self,
+        path: &'a PathUri,
+        contents: Vec<u8>,
+        precondition: ConditionalWritePrecondition,
+        sandbox: Option<&'a FileSystemSandboxContext>,
+    ) -> ExecutorFileSystemFuture<'a, ()> {
+        let _ = (path, contents, precondition, sandbox);
+        Box::pin(async {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "executor does not support conditional file writes",
+            ))
+        })
+    }
 
     fn create_directory<'a>(
         &'a self,

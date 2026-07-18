@@ -5,9 +5,7 @@ use crate::session::turn_context::TurnContext;
 use crate::tools::code_mode::execute_spec::create_code_mode_tool;
 use crate::tools::context::ToolInvocation;
 use crate::tools::effective_tool_mode;
-use crate::tools::handlers::ApplyPatchHandler;
 use crate::tools::handlers::ClaudeBashHandler;
-use crate::tools::handlers::ClaudeTextEditorHandler;
 use crate::tools::handlers::CodeModeExecuteHandler;
 use crate::tools::handlers::CodeModeWaitHandler;
 use crate::tools::handlers::CurrentTimeHandler;
@@ -63,6 +61,7 @@ use crate::tools::router::ToolRouter;
 use crate::tools::router::ToolRouterParams;
 use codex_features::Feature;
 use codex_login::AuthManager;
+use codex_model_provider_info::is_kimi_model_slug;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolNamespaceTool;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
@@ -595,6 +594,7 @@ fn add_tool_sources(context: &CoreToolPlanContext<'_>, planned_tools: &mut Plann
                     turn_context,
                     context.step_context,
                 ),
+                prefer_dedicated_file_tools: false,
             }));
             planned_tools.add(WriteStdinHandler);
             planned_tools.add(ViewImageHandler::new(ViewImageToolOptions {
@@ -645,10 +645,13 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut Planne
     let allow_login_shell = turn_context.config.permissions.allow_login_shell;
     let exec_permission_approvals_enabled = features.enabled(Feature::ExecPermissionApprovals);
     let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
+    let prefer_dedicated_file_tools =
+        crate::tools::dedicated_file_tool_plan::model_visible(turn_context, environment_mode);
     let shell_command_options = ShellCommandHandlerOptions {
         backend_config: shell_command_backend_for_features(features),
         allow_login_shell,
         exec_permission_approvals_enabled,
+        prefer_dedicated_file_tools,
     };
 
     match shell_type_for_model_and_features(&turn_context.model_info, features) {
@@ -661,6 +664,7 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut Planne
                     turn_context,
                     context.step_context,
                 ),
+                prefer_dedicated_file_tools,
             }));
             planned_tools.add(WriteStdinHandler);
 
@@ -766,10 +770,12 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
         .apply_patch_tool_type
         .as_ref()
         .or(provider_capabilities.default_apply_patch_tool_type.as_ref());
-    if environment_mode.has_environment() && apply_patch_tool_type.is_some() {
-        let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
-        planned_tools.add(ApplyPatchHandler::new(include_environment_id));
-        planned_tools.add_dispatch_only(ClaudeTextEditorHandler::new(include_environment_id));
+    for runtime in crate::tools::dedicated_file_tool_plan::planned_runtimes(
+        turn_context,
+        environment_mode,
+        apply_patch_tool_type.is_some(),
+    ) {
+        planned_tools.add_arc(runtime);
     }
 
     if turn_context
@@ -1006,11 +1012,19 @@ fn append_extension_tool_executors(
 
     let standalone_web_search_enabled = standalone_web_search_enabled(turn_context);
     let web_search_mode_on = turn_context.config.web_search_mode.value() != WebSearchMode::Disabled;
+    let standalone_web_search_provider_allowed = turn_context.provider.info().is_openai()
+        || turn_context
+            .provider
+            .info()
+            .uses_openai_actor_authorization()
+        || is_kimi_model_slug(&turn_context.model_info.slug);
 
     for executor in executors.iter().cloned() {
         let tool_name = executor.tool_name();
         if tool_name == ToolName::namespaced("web", "run")
-            && (!standalone_web_search_enabled || !web_search_mode_on)
+            && (!standalone_web_search_enabled
+                || !web_search_mode_on
+                || !standalone_web_search_provider_allowed)
         {
             continue;
         }

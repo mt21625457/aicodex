@@ -527,6 +527,15 @@ impl Session {
         external_time_provider: Option<Arc<dyn TimeProvider>>,
         multi_agent_version: Option<MultiAgentVersion>,
     ) -> anyhow::Result<Arc<Self>> {
+        if session_configuration.provider.wire_api == WireApi::Chat
+            && !matches!(config.chat_file_tool_mode, ChatFileToolMode::Legacy)
+            && !config.features.enabled(Feature::DedicatedFileTools)
+        {
+            anyhow::bail!(
+                "chat_file_tool_mode={:?} requires the dedicated_file_tools gate; set chat_file_tool_mode = legacy to roll back",
+                config.chat_file_tool_mode
+            );
+        }
         debug!(
             "Configuring session: model={}; provider={:?}",
             session_configuration.collaboration_mode.model(),

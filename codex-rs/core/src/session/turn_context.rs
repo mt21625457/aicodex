@@ -1,6 +1,8 @@
 use super::*;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::shell_snapshot::ShellSnapshotFile;
+use crate::tools::file_mutation_lock::FileMutationLocks;
+use crate::tools::handlers::FileToolState;
 use codex_core_skills::HostSkillsSnapshot;
 use codex_file_system::FileSystemSandboxContext;
 use codex_model_provider::SharedModelProvider;
@@ -154,6 +156,8 @@ pub struct TurnContext {
     pub(crate) terminal_error: Arc<Mutex<Option<ErrorEvent>>>,
     pub(crate) server_model_warning_emitted: AtomicBool,
     pub(crate) model_verification_emitted: AtomicBool,
+    pub(crate) file_tool_state: Arc<Mutex<FileToolState>>,
+    pub(crate) file_mutation_locks: Arc<FileMutationLocks>,
 }
 
 enum TurnMultiAgentRuntime {
@@ -320,6 +324,8 @@ impl TurnContext {
             model_verification_emitted: AtomicBool::new(
                 self.model_verification_emitted.load(Ordering::Relaxed),
             ),
+            file_tool_state: Arc::clone(&self.file_tool_state),
+            file_mutation_locks: Arc::clone(&self.file_mutation_locks),
         }
     }
 
@@ -597,6 +603,8 @@ impl Session {
             terminal_error: Arc::new(Mutex::new(None)),
             server_model_warning_emitted: AtomicBool::new(false),
             model_verification_emitted: AtomicBool::new(false),
+            file_tool_state: Arc::new(Mutex::new(FileToolState::default())),
+            file_mutation_locks: Arc::new(FileMutationLocks::default()),
         }
     }
 

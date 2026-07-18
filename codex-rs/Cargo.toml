@@ -90,6 +90,7 @@ members = [
     "tools",
     "v8-poc",
     "websocket-client",
+    "web-search",
     "utils/absolute-path",
     "utils/path-uri",
     "utils/cargo-bin",
@@ -167,6 +168,7 @@ codex-code-mode = { path = "code-mode" }
 codex-code-mode-protocol = { path = "code-mode-protocol" }
 codex-home = { path = "codex-home" }
 codex-http-client = { path = "http-client" }
+codex-web-search = { path = "web-search" }
 codex-websocket-client = { path = "websocket-client" }
 codex-config = { path = "config" }
 codex-connectors = { path = "connectors" }

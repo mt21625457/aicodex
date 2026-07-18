@@ -82,28 +82,23 @@ async fn completed_streams_release_handle_capacity() -> Result<()> {
 }
 
 #[tokio::test]
-async fn stream_rejects_platform_sandbox() -> Result<()> {
+async fn stream_supports_platform_sandbox() -> Result<()> {
     let server = exec_server().await?;
     let file_system = connect_file_system(server.websocket_url())?;
     let tmp = TempDir::new()?;
     let path = tmp.path().join("sandboxed.txt");
     std::fs::write(&path, "sandboxed hello")?;
 
-    let result = file_system
+    let chunks = file_system
         .read_file_stream(
             &PathUri::from_host_native_path(&path)?,
             Some(&read_only_sandbox(tmp.path().to_path_buf())),
         )
-        .await;
+        .await?
+        .try_collect::<Vec<_>>()
+        .await?;
 
-    let Err(error) = result else {
-        panic!("sandboxed stream should be rejected");
-    };
-    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
-    assert_eq!(
-        error.to_string(),
-        "streaming file reads do not support platform sandboxing"
-    );
+    assert_eq!(chunks, vec![bytes::Bytes::from_static(b"sandboxed hello")]);
     Ok(())
 }
 

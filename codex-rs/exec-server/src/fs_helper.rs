@@ -4,23 +4,31 @@ use codex_exec_server_protocol::JSONRPCErrorError;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::io;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncSeekExt;
 
+use crate::ConditionalWritePrecondition;
 use crate::CopyOptions;
 use crate::CreateDirectoryOptions;
 use crate::ExecutorFileSystem;
 use crate::RemoveOptions;
 use crate::local_file_system::DirectFileSystem;
 use crate::protocol::FS_CANONICALIZE_METHOD;
+use crate::protocol::FS_CONDITIONAL_WRITE_FILE_METHOD;
 use crate::protocol::FS_COPY_METHOD;
 use crate::protocol::FS_CREATE_DIRECTORY_METHOD;
 use crate::protocol::FS_GET_METADATA_METHOD;
 use crate::protocol::FS_READ_DIRECTORY_METHOD;
+use crate::protocol::FS_READ_FILE_BLOCK_METHOD;
 use crate::protocol::FS_READ_FILE_METHOD;
 use crate::protocol::FS_REMOVE_METHOD;
 use crate::protocol::FS_WALK_METHOD;
 use crate::protocol::FS_WRITE_FILE_METHOD;
 use crate::protocol::FsCanonicalizeParams;
 use crate::protocol::FsCanonicalizeResponse;
+use crate::protocol::FsConditionalWriteFileParams;
+use crate::protocol::FsConditionalWriteFileResponse;
+use crate::protocol::FsConditionalWritePrecondition;
 use crate::protocol::FsCopyParams;
 use crate::protocol::FsCopyResponse;
 use crate::protocol::FsCreateDirectoryParams;
@@ -30,6 +38,8 @@ use crate::protocol::FsGetMetadataResponse;
 use crate::protocol::FsReadDirectoryEntry;
 use crate::protocol::FsReadDirectoryParams;
 use crate::protocol::FsReadDirectoryResponse;
+use crate::protocol::FsReadFileBlockParams;
+use crate::protocol::FsReadFileBlockResponse;
 use crate::protocol::FsReadFileParams;
 use crate::protocol::FsReadFileResponse;
 use crate::protocol::FsRemoveParams;
@@ -38,6 +48,7 @@ use crate::protocol::FsWalkParams;
 use crate::protocol::FsWalkResponse;
 use crate::protocol::FsWriteFileParams;
 use crate::protocol::FsWriteFileResponse;
+use crate::rpc::file_conflict;
 use crate::rpc::internal_error;
 use crate::rpc::invalid_request;
 use crate::rpc::not_found;
@@ -49,8 +60,12 @@ pub const CODEX_FS_HELPER_ARG1: &str = "--codex-run-as-fs-helper";
 pub(crate) enum FsHelperRequest {
     #[serde(rename = "fs/readFile")]
     ReadFile(FsReadFileParams),
+    #[serde(rename = "fs/readFileBlock")]
+    ReadFileBlock(FsReadFileBlockParams),
     #[serde(rename = "fs/writeFile")]
     WriteFile(FsWriteFileParams),
+    #[serde(rename = "fs/conditionalWriteFile")]
+    ConditionalWriteFile(FsConditionalWriteFileParams),
     #[serde(rename = "fs/createDirectory")]
     CreateDirectory(FsCreateDirectoryParams),
     #[serde(rename = "fs/getMetadata")]
@@ -79,8 +94,12 @@ pub(crate) enum FsHelperResponse {
 pub(crate) enum FsHelperPayload {
     #[serde(rename = "fs/readFile")]
     ReadFile(FsReadFileResponse),
+    #[serde(rename = "fs/readFileBlock")]
+    ReadFileBlock(FsReadFileBlockResponse),
     #[serde(rename = "fs/writeFile")]
     WriteFile(FsWriteFileResponse),
+    #[serde(rename = "fs/conditionalWriteFile")]
+    ConditionalWriteFile(FsConditionalWriteFileResponse),
     #[serde(rename = "fs/createDirectory")]
     CreateDirectory(FsCreateDirectoryResponse),
     #[serde(rename = "fs/getMetadata")]
@@ -101,7 +120,9 @@ impl FsHelperPayload {
     fn operation(&self) -> &'static str {
         match self {
             Self::ReadFile(_) => FS_READ_FILE_METHOD,
+            Self::ReadFileBlock(_) => FS_READ_FILE_BLOCK_METHOD,
             Self::WriteFile(_) => FS_WRITE_FILE_METHOD,
+            Self::ConditionalWriteFile(_) => FS_CONDITIONAL_WRITE_FILE_METHOD,
             Self::CreateDirectory(_) => FS_CREATE_DIRECTORY_METHOD,
             Self::GetMetadata(_) => FS_GET_METADATA_METHOD,
             Self::Canonicalize(_) => FS_CANONICALIZE_METHOD,
@@ -119,10 +140,34 @@ impl FsHelperPayload {
         }
     }
 
+    pub(crate) fn expect_read_file_block(
+        self,
+    ) -> Result<FsReadFileBlockResponse, JSONRPCErrorError> {
+        match self {
+            Self::ReadFileBlock(response) => Ok(response),
+            other => Err(unexpected_response(
+                FS_READ_FILE_BLOCK_METHOD,
+                other.operation(),
+            )),
+        }
+    }
+
     pub(crate) fn expect_write_file(self) -> Result<FsWriteFileResponse, JSONRPCErrorError> {
         match self {
             Self::WriteFile(response) => Ok(response),
             other => Err(unexpected_response(FS_WRITE_FILE_METHOD, other.operation())),
+        }
+    }
+
+    pub(crate) fn expect_conditional_write_file(
+        self,
+    ) -> Result<FsConditionalWriteFileResponse, JSONRPCErrorError> {
+        match self {
+            Self::ConditionalWriteFile(response) => Ok(response),
+            other => Err(unexpected_response(
+                FS_CONDITIONAL_WRITE_FILE_METHOD,
+                other.operation(),
+            )),
         }
     }
 
@@ -212,6 +257,31 @@ pub(crate) async fn run_direct_request(
                 data_base64: STANDARD.encode(data),
             }))
         }
+        FsHelperRequest::ReadFileBlock(params) => {
+            if !(1..=crate::FILE_READ_CHUNK_SIZE).contains(&params.len) {
+                return Err(invalid_request(format!(
+                    "file read block length must be between 1 and {}",
+                    crate::FILE_READ_CHUNK_SIZE
+                )));
+            }
+            let mut file = file_system
+                .open_file_for_read(&params.path, /*sandbox*/ None)
+                .await
+                .map_err(map_fs_error)?;
+            file.seek(std::io::SeekFrom::Start(params.offset))
+                .await
+                .map_err(map_fs_error)?;
+            let mut bytes = Vec::with_capacity(params.len);
+            file.take(params.len as u64)
+                .read_to_end(&mut bytes)
+                .await
+                .map_err(map_fs_error)?;
+            let eof = bytes.len() < params.len;
+            Ok(FsHelperPayload::ReadFileBlock(FsReadFileBlockResponse {
+                chunk: bytes.into(),
+                eof,
+            }))
+        }
         FsHelperRequest::WriteFile(params) => {
             let bytes = STANDARD.decode(params.data_base64).map_err(|err| {
                 invalid_request(format!(
@@ -223,6 +293,28 @@ pub(crate) async fn run_direct_request(
                 .await
                 .map_err(map_fs_error)?;
             Ok(FsHelperPayload::WriteFile(FsWriteFileResponse {}))
+        }
+        FsHelperRequest::ConditionalWriteFile(params) => {
+            let bytes = STANDARD.decode(params.data_base64).map_err(|err| {
+                invalid_request(format!(
+                    "{FS_CONDITIONAL_WRITE_FILE_METHOD} requires valid base64 dataBase64: {err}"
+                ))
+            })?;
+            let precondition = match params.precondition {
+                FsConditionalWritePrecondition::MustNotExist => {
+                    ConditionalWritePrecondition::MustNotExist
+                }
+                FsConditionalWritePrecondition::MatchSha256 { digest } => {
+                    ConditionalWritePrecondition::MatchSha256(digest)
+                }
+            };
+            file_system
+                .write_file_conditional(&params.path, bytes, precondition, /*sandbox*/ None)
+                .await
+                .map_err(map_conditional_write_error)?;
+            Ok(FsHelperPayload::ConditionalWriteFile(
+                FsConditionalWriteFileResponse {},
+            ))
         }
         FsHelperRequest::CreateDirectory(params) => {
             file_system
@@ -326,6 +418,13 @@ fn map_fs_error(err: io::Error) -> JSONRPCErrorError {
     }
 }
 
+fn map_conditional_write_error(err: io::Error) -> JSONRPCErrorError {
+    match err.kind() {
+        io::ErrorKind::AlreadyExists | io::ErrorKind::InvalidData => file_conflict(err.to_string()),
+        _ => map_fs_error(err),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use codex_utils_path_uri::PathUri;
@@ -333,6 +432,17 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::rpc::FILE_CONFLICT_ERROR_CODE;
+
+    #[test]
+    fn conflict_error_code_is_reserved_for_conditional_writes() {
+        let legacy = map_fs_error(io::Error::new(io::ErrorKind::InvalidData, "stale"));
+        let conditional =
+            map_conditional_write_error(io::Error::new(io::ErrorKind::InvalidData, "stale"));
+
+        assert_eq!(legacy.code, -32603);
+        assert_eq!(conditional.code, FILE_CONFLICT_ERROR_CODE);
+    }
 
     #[test]
     fn helper_protocol_uses_path_uris() -> serde_json::Result<()> {
