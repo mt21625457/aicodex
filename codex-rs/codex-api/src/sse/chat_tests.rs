@@ -356,6 +356,119 @@ async fn keeps_multiple_tool_call_arguments_separate_and_restores_namespaces() {
 }
 
 #[tokio::test]
+async fn separates_indexless_tool_calls_when_follow_up_omits_ids() {
+    let events = collect_events(
+        chat_sse(&[
+            json!({
+                "id": "chatcmpl_indexless_tools",
+                "choices": [{"index": 0, "delta": {"tool_calls": [
+                    {"id": "call_a", "function": {"name": "first", "arguments": "{\"a\":"}},
+                    {"id": "call_b", "function": {"name": "second", "arguments": "{\"b\":"}}
+                ]}}]
+            }),
+            json!({
+                "choices": [{"index": 0, "delta": {"tool_calls": [
+                    {"function": {"arguments": "1"}},
+                    {"function": {"arguments": "2"}}
+                ]}}]
+            }),
+            json!({
+                "choices": [{"index": 0, "delta": {"tool_calls": [
+                    {"id": "call_b", "function": {"arguments": "}"}},
+                    {"id": "call_a", "function": {"arguments": "}"}}
+                ]}, "finish_reason": "tool_calls"}]
+            }),
+        ]),
+        HashMap::new(),
+    )
+    .await;
+
+    let items = events
+        .iter()
+        .filter_map(|event| match event {
+            Ok(ResponseEvent::OutputItemDone(item @ ResponseItem::FunctionCall { .. })) => {
+                Some(item.clone())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        items,
+        vec![
+            ResponseItem::FunctionCall {
+                id: Some(ResponseItemId::with_suffix("fc", "call_a")),
+                name: "first".to_string(),
+                namespace: None,
+                arguments: "{\"a\":1}".to_string(),
+                call_id: "call_a".to_string(),
+                internal_chat_message_metadata_passthrough: None,
+            },
+            ResponseItem::FunctionCall {
+                id: Some(ResponseItemId::with_suffix("fc", "call_b")),
+                name: "second".to_string(),
+                namespace: None,
+                arguments: "{\"b\":2}".to_string(),
+                call_id: "call_b".to_string(),
+                internal_chat_message_metadata_passthrough: None,
+            },
+        ]
+    );
+}
+
+#[tokio::test]
+async fn separates_indexless_tool_call_from_an_occupied_dense_index() {
+    let events = collect_events(
+        chat_sse(&[json!({
+            "id": "chatcmpl_mixed_tool_indexes",
+            "choices": [{"index": 0, "delta": {"tool_calls": [
+                {
+                    "index": 1,
+                    "id": "call_explicit",
+                    "function": {"name": "first", "arguments": "{}"}
+                },
+                {
+                    "id": "call_indexless",
+                    "function": {"name": "second", "arguments": "{}"}
+                }
+            ]}, "finish_reason": "tool_calls"}]
+        })]),
+        HashMap::new(),
+    )
+    .await;
+
+    let items = events
+        .iter()
+        .filter_map(|event| match event {
+            Ok(ResponseEvent::OutputItemDone(item @ ResponseItem::FunctionCall { .. })) => {
+                Some(item.clone())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        items,
+        vec![
+            ResponseItem::FunctionCall {
+                id: Some(ResponseItemId::with_suffix("fc", "call_explicit")),
+                name: "first".to_string(),
+                namespace: None,
+                arguments: "{}".to_string(),
+                call_id: "call_explicit".to_string(),
+                internal_chat_message_metadata_passthrough: None,
+            },
+            ResponseItem::FunctionCall {
+                id: Some(ResponseItemId::with_suffix("fc", "call_indexless")),
+                name: "second".to_string(),
+                namespace: None,
+                arguments: "{}".to_string(),
+                call_id: "call_indexless".to_string(),
+                internal_chat_message_metadata_passthrough: None,
+            },
+        ]
+    );
+}
+
+#[tokio::test]
 async fn restores_custom_tool_input_from_function_wrapper() {
     let events = collect_events(
         chat_sse(&[json!({
@@ -561,8 +674,40 @@ async fn meaningful_frames_extend_idle_deadline() {
 }
 
 #[tokio::test]
+async fn accepts_model_context_items_between_legacy_and_current_limits() {
+    let fragment = "x".repeat(12_000);
+    let events = collect_events(
+        chat_sse(&[
+            json!({
+                "id": "chat_bounded_context",
+                "choices": [{"index": 0, "delta": {"reasoning_content": fragment}}]
+            }),
+            json!({
+                "choices": [{"index": 0, "delta": {"content": fragment}}]
+            }),
+            json!({
+                "choices": [{"index": 0, "delta": {"tool_calls": [{
+                    "index": 0,
+                    "id": "call_bounded",
+                    "function": {"name": "tool", "arguments": fragment}
+                }]}, "finish_reason": "tool_calls"}]
+            }),
+        ]),
+        HashMap::new(),
+    )
+    .await;
+
+    assert!(events.iter().all(Result::is_ok));
+    assert_matches!(
+        events.last(),
+        Some(Ok(ResponseEvent::Completed { response_id, .. }))
+            if response_id == "chat_bounded_context"
+    );
+}
+
+#[tokio::test]
 async fn rejects_unbounded_model_context_items() {
-    let fragment = "x".repeat(6_000);
+    let fragment = "x".repeat(MAX_CHAT_CONTEXT_ITEM_BYTES / 2 + 1);
     let cases = [
         (
             "assistant text",

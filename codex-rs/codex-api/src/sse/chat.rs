@@ -26,8 +26,12 @@ mod state;
 use state::ChatStreamState;
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
-const MAX_CHAT_CONTEXT_ITEM_BYTES: usize = 10_000;
-const MAX_CHAT_RESPONSE_CONTEXT_BYTES: usize = 10_000;
+// Chat providers may use different tokenizers. Apply the repository-wide four-bytes-per-token
+// estimate, then enforce the resulting byte budgets exactly while streaming.
+const MAX_CHAT_CONTEXT_ITEM_TOKENS: usize = 10_000;
+const MAX_CHAT_CONTEXT_ITEM_BYTES: usize = MAX_CHAT_CONTEXT_ITEM_TOKENS * 4;
+const MAX_CHAT_RESPONSE_CONTEXT_TOKENS: usize = 16_000;
+const MAX_CHAT_RESPONSE_CONTEXT_BYTES: usize = MAX_CHAT_RESPONSE_CONTEXT_TOKENS * 4;
 const MAX_CHAT_TOOL_CALLS: usize = 64;
 const MAX_CHAT_WIRE_IDENTIFIER_BYTES: usize = 512;
 

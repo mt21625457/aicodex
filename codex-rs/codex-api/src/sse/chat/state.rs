@@ -111,12 +111,26 @@ impl ChatStreamState {
             {
                 self.push_assistant_text(text, tx_event).await?;
             }
-            for tool_call in choice.delta.tool_calls {
-                if !tool_call.is_meaningful() {
-                    continue;
-                }
+            let meaningful_tool_call_count = choice
+                .delta
+                .tool_calls
+                .iter()
+                .filter(|tool_call| tool_call.is_meaningful())
+                .count();
+            for (position, tool_call) in choice
+                .delta
+                .tool_calls
+                .into_iter()
+                .filter(ChatToolCallDelta::is_meaningful)
+                .enumerate()
+            {
                 self.finish_reasoning(tx_event).await?;
-                self.push_tool_delta(tool_call, tx_event).await?;
+                self.push_tool_delta(
+                    tool_call,
+                    (meaningful_tool_call_count > 1).then_some(position),
+                    tx_event,
+                )
+                .await?;
             }
             if choice.finish_reason.is_some() {
                 if let Some(finish_reason) = choice.finish_reason.as_deref() {
@@ -236,12 +250,46 @@ impl ChatStreamState {
     async fn push_tool_delta(
         &mut self,
         delta: ChatToolCallDelta,
+        dense_position: Option<usize>,
         tx_event: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
     ) -> Result<(), ApiError> {
-        let provider_index = delta
-            .index
-            .or(self.last_provider_tool_index)
-            .unwrap_or(self.next_dense_index);
+        let matching_id_index = delta
+            .id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+            .and_then(|id| {
+                self.tool_calls
+                    .iter()
+                    .find_map(|(index, state)| (state.id.as_deref() == Some(id)).then_some(*index))
+            });
+        let positional_index = dense_position.and_then(|dense_position| {
+            self.tool_calls
+                .iter()
+                .find_map(|(index, state)| (state.dense_index == dense_position).then_some(*index))
+        });
+        let mut next_available_index = self.next_dense_index;
+        while self.tool_calls.contains_key(&next_available_index) {
+            next_available_index = next_available_index.checked_add(1).ok_or_else(|| {
+                provider_stream_error(
+                    ProviderStreamErrorKind::ParseError,
+                    "Chat tool-call index space was exhausted",
+                )
+            })?;
+        }
+        let provider_index = match (
+            delta.index,
+            matching_id_index,
+            delta.id.as_deref().filter(|id| !id.is_empty()),
+            dense_position,
+        ) {
+            (Some(index), _, _, _) => index,
+            (None, Some(index), _, _) => index,
+            (None, None, Some(_), _) => next_available_index,
+            (None, None, None, Some(_)) => positional_index.unwrap_or(next_available_index),
+            (None, None, None, None) => self
+                .last_provider_tool_index
+                .unwrap_or(next_available_index),
+        };
         if !self.tool_calls.contains_key(&provider_index) {
             if self.tool_calls.len() >= MAX_CHAT_TOOL_CALLS {
                 return Err(provider_stream_error(
