@@ -462,6 +462,131 @@ async fn chat_wire_tool_search_discovers_and_executes_mcp_tool() -> anyhow::Resu
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_wire_tool_search_remains_callable_on_later_turn() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let apps_server = AppsTestServer::mount_searchable(&server).await?;
+    let tool_search_name = chat_tool_name(
+        /*namespace*/ None,
+        "tool_search",
+        ChatToolCallKind::ToolSearch,
+    );
+    let calendar_name = chat_tool_name(
+        Some(SEARCH_CALENDAR_NAMESPACE),
+        SEARCH_CALENDAR_CREATE_TOOL,
+        ChatToolCallKind::Function,
+    );
+    let responses = mount_chat_sse_sequence(
+        &server,
+        vec![
+            chat_sse(vec![json!({
+                "id": "chatcmpl_tool_search_turn1",
+                "choices": [{
+                    "index": 0,
+                    "delta": {"tool_calls": [{
+                        "index": 0,
+                        "id": "search_apps_turn1",
+                        "function": {
+                            "name": tool_search_name.clone(),
+                            "arguments": "{\"query\":\"create calendar event\",\"limit\":8}"
+                        }
+                    }]},
+                    "finish_reason": "tool_calls"
+                }]
+            })]),
+            chat_sse(vec![json!({
+                "id": "chatcmpl_found_turn1",
+                "choices": [{
+                    "index": 0,
+                    "delta": {"content": "found the calendar tool"},
+                    "finish_reason": "stop"
+                }]
+            })]),
+            chat_sse(vec![json!({
+                "id": "chatcmpl_mcp_call_turn2",
+                "choices": [{
+                    "index": 0,
+                    "delta": {"tool_calls": [{
+                        "index": 0,
+                        "id": "call_calendar_turn2",
+                        "function": {
+                            "name": calendar_name.clone(),
+                            "arguments": "{\"title\":\"Later turn\",\"starts_at\":\"2026-07-19T10:00:00Z\"}"
+                        }
+                    }]},
+                    "finish_reason": "tool_calls"
+                }]
+            })]),
+            chat_sse(vec![json!({
+                "id": "chatcmpl_mcp_final_turn2",
+                "choices": [{
+                    "index": 0,
+                    "delta": {"content": "calendar updated later"},
+                    "finish_reason": "stop"
+                }]
+            })]),
+        ],
+    )
+    .await;
+    let test = search_capable_apps_builder(apps_server.chatgpt_base_url)
+        .with_config(configure_chat_provider)
+        .build_with_auto_env(&server)
+        .await?;
+
+    test.submit_turn_with_approval_and_permission_profile(
+        "find the calendar MCP tool",
+        AskForApproval::Never,
+        PermissionProfile::Disabled,
+    )
+    .await?;
+    test.submit_turn_with_approval_and_permission_profile(
+        "create the calendar event now",
+        AskForApproval::Never,
+        PermissionProfile::Disabled,
+    )
+    .await?;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 4);
+    assert!(
+        requests[0].body_json()["tools"]
+            .as_array()
+            .is_some_and(|tools| {
+                tools
+                    .iter()
+                    .all(|tool| tool["function"]["name"] != calendar_name)
+            }),
+        "calendar MCP tool should stay deferred before tool_search"
+    );
+    let later_turn_request = requests[2].body_json();
+    assert!(
+        later_turn_request["tools"].as_array().is_some_and(|tools| {
+            tools
+                .iter()
+                .any(|tool| tool["function"]["name"] == calendar_name)
+        }),
+        "discovered MCP tool missing from later Chat turn: {later_turn_request}"
+    );
+    assert!(
+        later_turn_request["messages"]
+            .as_array()
+            .is_some_and(|messages| {
+                messages.iter().any(|message| {
+                    message["role"] == "tool"
+                        && message["tool_call_id"] == "search_apps_turn1"
+                        && chat_message_text(message).contains(SEARCH_CALENDAR_CREATE_TOOL)
+                })
+            }),
+        "later Chat turn should still carry the historical tool_search result: {later_turn_request}"
+    );
+    let mcp_call = recorded_apps_tool_call_by_call_id(&server, "call_calendar_turn2").await;
+    assert_eq!(
+        mcp_call.pointer("/params/name"),
+        Some(&json!("calendar_create_event"))
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn chat_dedicated_file_tools_read_edit_edit_loop_uses_mapped_names() -> anyhow::Result<()> {
     let server = start_mock_server().await;
     let read_name = chat_tool_name(None, "read_file", ChatToolCallKind::Function);

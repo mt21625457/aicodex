@@ -675,7 +675,9 @@ async fn meaningful_frames_extend_idle_deadline() {
 
 #[tokio::test]
 async fn accepts_model_context_items_between_legacy_and_current_limits() {
-    let fragment = "x".repeat(12_000);
+    // Above the legacy 10KB byte cap, under the current per-item token cap, and within
+    // the response cumulative budget that leaves JSON headroom for the next request.
+    let fragment = "x".repeat(10_500);
     let events = collect_events(
         chat_sse(&[
             json!({

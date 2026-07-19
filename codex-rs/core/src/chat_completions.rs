@@ -28,9 +28,10 @@ use codex_tools::ChatToolCallInfo;
 use codex_tools::ChatToolCallKind;
 use codex_tools::LoadableToolSpec;
 use codex_tools::ResponsesApiNamespaceTool;
+use codex_tools::ToolSpec;
 use codex_tools::chat_tool_name;
 use codex_tools::create_tool_call_info_for_chat_completions;
-use codex_tools::create_tools_json_for_chat_completions;
+use codex_tools::create_tools_json_packing_discoveries;
 use codex_utils_string::approx_token_count;
 use codex_utils_string::truncate_middle_with_token_budget;
 use serde_json::json;
@@ -67,7 +68,6 @@ pub(crate) fn build_chat_completions_request_for_provider(
     supports_developer_role: bool,
 ) -> Result<ChatCompletionsApiRequest> {
     let formatted_input = prompt.get_formatted_input_for_request(false);
-    let mut visible_tool_specs = prompt.tools.clone();
     let mut discovered_tool_specs: Vec<LoadableToolSpec> = Vec::new();
     for item in &formatted_input {
         let ResponseItem::ToolSearchOutput {
@@ -166,18 +166,31 @@ pub(crate) fn build_chat_completions_request_for_provider(
             }
         }
     }
-    visible_tool_specs.extend(discovered_tool_specs.into_iter().map(Into::into));
+    let discovered_tool_specs = discovered_tool_specs
+        .into_iter()
+        .map(Into::into)
+        .collect::<Vec<ToolSpec>>();
     let codex_tools::ChatToolsJson {
         tools,
         tool_call_info: visible_tool_call_info,
-    } = create_tools_json_for_chat_completions(&visible_tool_specs)?;
-    let mut tool_call_info = visible_tool_call_info.clone();
-    let hidden_tool_call_info = create_tool_call_info_for_chat_completions(&prompt.hidden_tools)?;
+    } = create_tools_json_packing_discoveries(&prompt.tools, &discovered_tool_specs).map_err(
+        |err| CodexErr::InvalidRequest(format!("failed to serialize Chat tools: {err}")),
+    )?;
+    let wire_tool_call_info = wire_tool_call_info(&tools, &visible_tool_call_info);
+    let dedicated_guidance = if matches!(prompt.chat_file_tool_mode, ChatFileToolMode::Legacy) {
+        None
+    } else {
+        Some(dedicated_chat_guidance(prompt, &wire_tool_call_info)?)
+    };
+    let mut tool_call_info = visible_tool_call_info;
+    let hidden_tool_call_info = create_tool_call_info_for_chat_completions(&prompt.hidden_tools);
     for info in hidden_tool_call_info {
-        if !tool_call_info
+        if let Some(index) = tool_call_info
             .iter()
-            .any(|existing| existing.chat_name == info.chat_name)
+            .position(|existing| existing.chat_name == info.chat_name)
         {
+            tool_call_info[index] = info;
+        } else {
             tool_call_info.push(info);
         }
     }
@@ -189,8 +202,7 @@ pub(crate) fn build_chat_completions_request_for_provider(
             prompt.base_instructions.text.clone(),
         ));
     }
-    if !matches!(prompt.chat_file_tool_mode, ChatFileToolMode::Legacy) {
-        let guidance = dedicated_chat_guidance(prompt, &visible_tool_call_info)?;
+    if let Some(guidance) = dedicated_guidance {
         messages.push(ChatMessage::text(
             developer_role(supports_developer_role),
             guidance,
@@ -671,6 +683,21 @@ fn flush_pending_reasoning(messages: &mut Vec<ChatMessage>, pending_reasoning: &
         tool_call_id: None,
         reasoning_content: Some(std::mem::take(pending_reasoning)),
     });
+}
+
+fn wire_tool_call_info(
+    tools: &[serde_json::Value],
+    tool_call_info: &[ChatToolCallInfo],
+) -> Vec<ChatToolCallInfo> {
+    let by_name = tool_call_info
+        .iter()
+        .map(|info| (info.chat_name.as_str(), info))
+        .collect::<HashMap<_, _>>();
+    tools
+        .iter()
+        .filter_map(|tool| tool["function"]["name"].as_str())
+        .filter_map(|chat_name| by_name.get(chat_name).map(|info| (*info).clone()))
+        .collect()
 }
 
 fn tool_names_by_identity(

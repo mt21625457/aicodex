@@ -30,7 +30,10 @@ const REQUEST_ID_HEADER: &str = "x-request-id";
 // estimate, then enforce the resulting byte budgets exactly while streaming.
 const MAX_CHAT_CONTEXT_ITEM_TOKENS: usize = 10_000;
 const MAX_CHAT_CONTEXT_ITEM_BYTES: usize = MAX_CHAT_CONTEXT_ITEM_TOKENS * 4;
-const MAX_CHAT_RESPONSE_CONTEXT_TOKENS: usize = 16_000;
+// Leave headroom under the Chat request per-message token budget: SSE accounts
+// for raw content bytes, while the next request validates the full JSON message
+// after tool-call merging and envelope keys.
+const MAX_CHAT_RESPONSE_CONTEXT_TOKENS: usize = 8_000;
 const MAX_CHAT_RESPONSE_CONTEXT_BYTES: usize = MAX_CHAT_RESPONSE_CONTEXT_TOKENS * 4;
 const MAX_CHAT_TOOL_CALLS: usize = 64;
 const MAX_CHAT_WIRE_IDENTIFIER_BYTES: usize = 512;

@@ -9,6 +9,7 @@ use codex_tools::FreeformToolFormat;
 use codex_tools::JsonSchema;
 use codex_tools::ResponsesApiTool;
 use codex_tools::ToolSpec;
+use codex_utils_string::approx_bytes_for_tokens;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -740,6 +741,172 @@ fn tool_search_history_uses_latest_valid_schema_and_ignores_malformed_legacy_too
 }
 
 #[test]
+fn tool_search_budget_overflow_keeps_base_tools_and_reverse_metadata() {
+    let tool_search_name = chat_tool_name(
+        /*namespace*/ None,
+        "tool_search",
+        ChatToolCallKind::ToolSearch,
+    );
+    let oversized_description = "x".repeat(approx_bytes_for_tokens(9_000));
+    let prompt = Prompt {
+        input: vec![
+            message(
+                "user",
+                vec![ContentItem::InputText {
+                    text: "find tools".to_string(),
+                }],
+            ),
+            ResponseItem::ToolSearchOutput {
+                id: None,
+                call_id: None,
+                status: "completed".to_string(),
+                execution: "client".to_string(),
+                tools: (0..20)
+                    .map(|index| {
+                        json!({
+                            "type": "function",
+                            "name": format!("discovered_{index}"),
+                            "description": oversized_description,
+                            "parameters": {"type": "object", "properties": {}}
+                        })
+                    })
+                    .collect(),
+                internal_chat_message_metadata_passthrough: None,
+            },
+        ],
+        tools: vec![
+            ToolSpec::ToolSearch {
+                execution: "client".to_string(),
+                description: "Search available tools".to_string(),
+                parameters: JsonSchema::object(
+                    BTreeMap::new(),
+                    /*required*/ None,
+                    /*additional_properties*/ None,
+                ),
+            },
+            ToolSpec::Function(ResponsesApiTool {
+                name: "shell".to_string(),
+                description: "Run a shell command".to_string(),
+                strict: false,
+                defer_loading: None,
+                parameters: JsonSchema::object(
+                    BTreeMap::new(),
+                    /*required*/ None,
+                    /*additional_properties*/ None,
+                ),
+                output_schema: None,
+            }),
+        ],
+        base_instructions: BaseInstructions {
+            text: String::new(),
+        },
+        ..Default::default()
+    };
+
+    let request = build_chat_completions_request(&prompt, &model_info(), None, None)
+        .expect("budget overflow should pack a budget-safe tool subset");
+    let shell_name = chat_tool_name(/*namespace*/ None, "shell", ChatToolCallKind::Function);
+    let discovered_name = chat_tool_name(
+        /*namespace*/ None,
+        "discovered_0",
+        ChatToolCallKind::Function,
+    );
+    let newest_discovered_name = chat_tool_name(
+        /*namespace*/ None,
+        "discovered_19",
+        ChatToolCallKind::Function,
+    );
+    let wire_names = request
+        .tools
+        .iter()
+        .filter_map(|tool| tool["function"]["name"].as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        wire_names.contains(&tool_search_name.as_str()),
+        "base tool_search missing after budget packing: {wire_names:?}"
+    );
+    assert!(
+        wire_names.contains(&shell_name.as_str()),
+        "base shell missing after budget packing: {wire_names:?}"
+    );
+    assert!(
+        wire_names.contains(&newest_discovered_name.as_str()),
+        "newest discovery should be preferred when packing: {wire_names:?}"
+    );
+    assert!(
+        wire_names.len() < 22,
+        "oversized discovery set should not all fit on the wire: {}",
+        wire_names.len()
+    );
+    assert!(request.tool_call_info.contains_key(&discovered_name));
+    assert!(request.tool_call_info.contains_key(&newest_discovered_name));
+}
+
+#[test]
+fn tool_search_history_does_not_override_matching_prompt_tool_schema() {
+    let lookup_name = chat_tool_name(
+        /*namespace*/ None,
+        "lookup",
+        ChatToolCallKind::Function,
+    );
+    let prompt = Prompt {
+        input: vec![
+            message(
+                "user",
+                vec![ContentItem::InputText {
+                    text: "find lookup".to_string(),
+                }],
+            ),
+            ResponseItem::ToolSearchOutput {
+                id: None,
+                call_id: None,
+                status: "completed".to_string(),
+                execution: "client".to_string(),
+                tools: vec![json!({
+                    "type": "function",
+                    "name": "lookup",
+                    "description": "discovered schema",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"current": {"type": "integer"}}
+                    }
+                })],
+                internal_chat_message_metadata_passthrough: None,
+            },
+        ],
+        tools: vec![ToolSpec::Function(ResponsesApiTool {
+            name: "lookup".to_string(),
+            description: "prompt schema".to_string(),
+            strict: false,
+            defer_loading: None,
+            parameters: JsonSchema::object(
+                BTreeMap::from([("old".to_string(), JsonSchema::string(/*description*/ None))]),
+                Some(vec!["old".to_string()]),
+                Some(AdditionalProperties::Boolean(false)),
+            ),
+            output_schema: None,
+        })],
+        base_instructions: BaseInstructions {
+            text: String::new(),
+        },
+        ..Default::default()
+    };
+
+    let request = build_chat_completions_request(&prompt, &model_info(), None, None)
+        .expect("build Chat request with overlapping prompt and discovery tools");
+    let lookup = request
+        .tools
+        .iter()
+        .find(|tool| tool["function"]["name"] == lookup_name)
+        .expect("lookup should remain declared");
+    assert_eq!(lookup["function"]["description"], "prompt schema");
+    assert_eq!(
+        lookup["function"]["parameters"]["properties"],
+        json!({"old": {"type": "string"}})
+    );
+}
+
+#[test]
 fn dedicated_guidance_uses_actual_hashed_wire_names() {
     let info = vec![
         ChatToolCallInfo {
@@ -849,7 +1016,7 @@ fn dedicated_guidance_is_bounded_stable_single_copy_and_legacy_safe() {
                 text: "edit safely".to_string(),
             }],
         )],
-        tools: tools.clone(),
+        tools,
         chat_file_tool_mode: ChatFileToolMode::Dedicated,
         dedicated_file_tools_enabled: true,
         ..Default::default()

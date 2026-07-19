@@ -204,6 +204,12 @@ async fn open_and_read_regular_file(
     options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
     let mut file = options.open(path).await?;
     let metadata = file.metadata().await?;
+    if metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "conditional write refuses to replace a symbolic link",
+        ));
+    }
     if !metadata.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

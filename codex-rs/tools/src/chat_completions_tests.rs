@@ -218,14 +218,169 @@ fn caps_chat_tools_at_the_provider_limit() {
     assert_eq!(result.tools.len(), MAX_CHAT_TOOLS);
     assert_eq!(
         result
-            .tool_call_info
+            .tools
             .iter()
-            .map(|info| info.name.clone())
+            .filter_map(|tool| tool["function"]["name"].as_str())
+            .map(|name| {
+                result
+                    .tool_call_info
+                    .iter()
+                    .find(|info| info.chat_name == name)
+                    .map(|info| info.name.clone())
+                    .expect("wire tool should have reverse metadata")
+            })
             .collect::<Vec<_>>(),
-        (0..MAX_CHAT_TOOLS)
+        (1..=MAX_CHAT_TOOLS)
             .map(|index| format!("tool_{index}"))
             .collect::<Vec<_>>()
     );
+    assert_eq!(result.tool_call_info.len(), MAX_CHAT_TOOLS + 1);
+    assert_eq!(
+        result.tool_call_info.first().map(|info| info.name.as_str()),
+        Some("tool_0")
+    );
+    assert_eq!(
+        result.tool_call_info.last().map(|info| info.name.as_str()),
+        Some("tool_128")
+    );
+}
+
+#[test]
+fn latest_duplicate_chat_tool_schema_wins() {
+    let result = create_tools_json_for_chat_completions(&[
+        function_tool("lookup".to_string(), "old schema".to_string()),
+        function_tool("stable".to_string(), "middle".to_string()),
+        function_tool("lookup".to_string(), "latest schema".to_string()),
+    ])
+    .expect("serialize duplicate Chat tools");
+
+    assert_eq!(result.tools.len(), 2);
+    assert_eq!(result.tools[0]["function"]["description"], "middle");
+    assert_eq!(result.tools[1]["function"]["description"], "latest schema");
+    assert_eq!(result.tool_call_info.len(), 2);
+    assert_eq!(result.tool_call_info[1].name, "lookup");
+}
+
+#[test]
+fn retained_plan_schema_is_not_overwritten_by_later_discovery() {
+    let retain = [chat_tool_name(
+        /*namespace*/ None,
+        "lookup",
+        ChatToolCallKind::Function,
+    )];
+    let result = create_tools_json_for_chat_completions_retaining(
+        &[
+            function_tool("lookup".to_string(), "plan schema".to_string()),
+            function_tool("lookup".to_string(), "discovered schema".to_string()),
+        ],
+        &retain,
+    )
+    .expect("serialize protected plan tool");
+
+    assert_eq!(result.tools.len(), 1);
+    assert_eq!(result.tools[0]["function"]["description"], "plan schema");
+}
+
+#[test]
+fn retaining_base_tools_prefers_them_over_newer_discoveries_when_capping() {
+    let mut tools = (0..120)
+        .map(|index| function_tool(format!("base_{index}"), String::new()))
+        .collect::<Vec<_>>();
+    tools.push(function_tool(
+        "base_0".to_string(),
+        "refreshed schema".to_string(),
+    ));
+    tools.extend(
+        (0..20).map(|index| function_tool(format!("discovered_{index}"), "discovered".to_string())),
+    );
+
+    let retain = (0..120)
+        .map(|index| {
+            chat_tool_name(
+                /*namespace*/ None,
+                &format!("base_{index}"),
+                ChatToolCallKind::Function,
+            )
+        })
+        .collect::<Vec<_>>();
+    let result = create_tools_json_for_chat_completions_retaining(&tools, &retain)
+        .expect("serialize retained Chat tools");
+
+    assert_eq!(result.tools.len(), MAX_CHAT_TOOLS);
+    let wire_names = result
+        .tools
+        .iter()
+        .filter_map(|tool| tool["function"]["name"].as_str())
+        .collect::<Vec<_>>();
+    for index in 0..120 {
+        let base_name = chat_tool_name(
+            /*namespace*/ None,
+            &format!("base_{index}"),
+            ChatToolCallKind::Function,
+        );
+        assert!(
+            wire_names.contains(&base_name.as_str()),
+            "missing retained base tool {index}"
+        );
+    }
+    let plan_base = result
+        .tools
+        .iter()
+        .find(|tool| {
+            tool["function"]["name"]
+                == chat_tool_name(
+                    /*namespace*/ None,
+                    "base_0",
+                    ChatToolCallKind::Function,
+                )
+        })
+        .expect("retained base tool should remain on the wire");
+    assert_eq!(plan_base["function"]["description"], "");
+    assert_eq!(
+        wire_names
+            .iter()
+            .filter(|name| name.contains("discovered_"))
+            .count(),
+        8
+    );
+    assert_eq!(result.tool_call_info.len(), 140);
+}
+
+#[test]
+fn retained_overflow_keeps_newest_base_tools() {
+    let tools = (0..=MAX_CHAT_TOOLS)
+        .map(|index| function_tool(format!("base_{index}"), "original".to_string()))
+        .collect::<Vec<_>>();
+    let retain = (0..=MAX_CHAT_TOOLS)
+        .map(|index| {
+            chat_tool_name(
+                /*namespace*/ None,
+                &format!("base_{index}"),
+                ChatToolCallKind::Function,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let result = create_tools_json_for_chat_completions_retaining(&tools, &retain)
+        .expect("serialize oversized retained Chat tools");
+
+    assert_eq!(result.tools.len(), MAX_CHAT_TOOLS);
+    assert!(result.tools.iter().any(|tool| {
+        tool["function"]["name"]
+            == chat_tool_name(
+                /*namespace*/ None,
+                &format!("base_{MAX_CHAT_TOOLS}"),
+                ChatToolCallKind::Function,
+            )
+    }));
+    assert!(result.tools.iter().all(|tool| {
+        tool["function"]["name"]
+            != chat_tool_name(
+                /*namespace*/ None,
+                "base_0",
+                ChatToolCallKind::Function,
+            )
+    }));
 }
 
 #[test]
@@ -234,8 +389,7 @@ fn preserves_uncapped_reverse_metadata_for_hidden_tools() {
         .map(|index| function_tool(format!("tool_{index}"), String::new()))
         .collect::<Vec<_>>();
 
-    let tool_call_info = create_tool_call_info_for_chat_completions(&tools)
-        .expect("build hidden Chat tool metadata");
+    let tool_call_info = create_tool_call_info_for_chat_completions(&tools);
 
     assert_eq!(tool_call_info.len(), MAX_CHAT_TOOLS + 1);
     assert_eq!(

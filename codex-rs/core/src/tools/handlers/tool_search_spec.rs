@@ -1,4 +1,5 @@
 use codex_tools::JsonSchema;
+use codex_tools::TOOL_SEARCH_MAX_LIMIT;
 use codex_tools::TOOL_SEARCH_TOOL_NAME;
 use codex_tools::ToolSearchSourceInfo;
 use codex_tools::ToolSpec;
@@ -16,7 +17,7 @@ pub(crate) fn create_tool_search_tool(
         (
             "limit".to_string(),
             JsonSchema::number(Some(format!(
-                "Maximum number of tools to return. Defaults to {default_limit}."
+                "Maximum number of tools to return. Defaults to {default_limit}, capped at {TOOL_SEARCH_MAX_LIMIT}."
             ))),
         ),
     ]);
@@ -98,7 +99,7 @@ mod tests {
                         (
                             "limit".to_string(),
                             JsonSchema::number(Some(
-                                    "Maximum number of tools to return. Defaults to 8."
+                                    "Maximum number of tools to return. Defaults to 8, capped at 64."
                                         .to_string(),
                                 ),),
                         ),

@@ -12,6 +12,7 @@ use bm25::SearchEngine;
 use bm25::SearchEngineBuilder;
 use codex_tools::LoadableToolSpec;
 use codex_tools::TOOL_SEARCH_DEFAULT_LIMIT;
+use codex_tools::TOOL_SEARCH_MAX_LIMIT;
 use codex_tools::TOOL_SEARCH_TOOL_NAME;
 use codex_tools::ToolName;
 use codex_tools::ToolSearchEntry;
@@ -134,13 +135,15 @@ impl ToolSearchHandler {
                 "query must not be empty".to_string(),
             ));
         }
-        let limit = args.limit.unwrap_or(TOOL_SEARCH_DEFAULT_LIMIT);
-
-        if limit == 0 {
-            return Err(FunctionCallError::RespondToModel(
-                "limit must be greater than zero".to_string(),
-            ));
-        }
+        let limit = match args.limit {
+            Some(0) => {
+                return Err(FunctionCallError::RespondToModel(
+                    "limit must be greater than zero".to_string(),
+                ));
+            }
+            Some(limit) => limit.min(TOOL_SEARCH_MAX_LIMIT),
+            None => TOOL_SEARCH_DEFAULT_LIMIT,
+        };
 
         if self.search_infos.is_empty() {
             return Ok(boxed_tool_output(ToolSearchOutput { tools: Vec::new() }));
