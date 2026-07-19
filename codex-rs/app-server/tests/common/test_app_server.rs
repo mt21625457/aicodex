@@ -15,7 +15,9 @@ use tokio::process::ChildStdout;
 
 use anyhow::Context;
 use anyhow::ensure;
+use codex_app_server_protocol::AppsInstalledParams;
 use codex_app_server_protocol::AppsListParams;
+use codex_app_server_protocol::AppsReadParams;
 use codex_app_server_protocol::CancelLoginAccountParams;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientNotification;
@@ -101,6 +103,7 @@ use codex_app_server_protocol::ThreadRealtimeStartParams;
 use codex_app_server_protocol::ThreadRealtimeStopParams;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadRollbackParams;
+use codex_app_server_protocol::ThreadSearchOccurrencesParams;
 use codex_app_server_protocol::ThreadSearchParams;
 use codex_app_server_protocol::ThreadSetNameParams;
 use codex_app_server_protocol::ThreadSettingsUpdateParams;
@@ -171,6 +174,12 @@ impl TestAppServer {
     }
 
     pub async fn wait_for_exit(&mut self) -> std::io::Result<ExitStatus> {
+        self.process.wait().await
+    }
+
+    /// Closes stdio and waits for app-server's graceful thread teardown to finish.
+    pub async fn shutdown_gracefully(&mut self) -> std::io::Result<ExitStatus> {
+        drop(self.stdin.take());
         self.process.wait().await
     }
 
@@ -611,6 +620,15 @@ impl TestAppServer {
         self.send_request("thread/search", params).await
     }
 
+    /// Send a `thread/searchOccurrences` JSON-RPC request.
+    pub async fn send_thread_search_occurrences_request(
+        &mut self,
+        params: ThreadSearchOccurrencesParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("thread/searchOccurrences", params).await
+    }
+
     /// Send a `thread/loaded/list` JSON-RPC request.
     pub async fn send_thread_loaded_list_request(
         &mut self,
@@ -773,6 +791,21 @@ impl TestAppServer {
     pub async fn send_apps_list_request(&mut self, params: AppsListParams) -> anyhow::Result<i64> {
         let params = Some(serde_json::to_value(params)?);
         self.send_request("app/list", params).await
+    }
+
+    /// Send an `app/installed` JSON-RPC request.
+    pub async fn send_apps_installed_request(
+        &mut self,
+        params: AppsInstalledParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("app/installed", params).await
+    }
+
+    /// Send an `app/read` JSON-RPC request.
+    pub async fn send_apps_read_request(&mut self, params: AppsReadParams) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("app/read", params).await
     }
 
     /// Send an `mcpServer/resource/read` JSON-RPC request.

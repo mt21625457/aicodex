@@ -83,6 +83,8 @@ mod models_cache_ttl;
 mod models_etag_responses;
 mod multi_agent_mode;
 mod multi_agent_resume;
+#[cfg(unix)]
+mod multi_exec_server_sandbox;
 mod network_approval;
 mod openai_file_mcp;
 mod otel;
@@ -96,6 +98,7 @@ mod prompt_caching;
 mod prompt_debug_tests;
 mod quota_exceeded;
 mod realtime_conversation;
+mod realtime_initial_items;
 mod remote_env;
 mod remote_models;
 mod request_compression;

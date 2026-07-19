@@ -55,6 +55,7 @@ use codex_config::types::NotificationMethod;
 use codex_config::types::Notifications;
 use codex_config::types::OtelConfigToml;
 use codex_config::types::OtelExporterKind;
+use codex_config::types::ResumeCwdMode;
 use codex_config::types::SandboxWorkspaceWrite;
 use codex_config::types::SessionPickerViewMode;
 use codex_config::types::SkillsConfig;
@@ -75,6 +76,7 @@ use codex_model_provider_info::OLLAMA_OSS_PROVIDER_ID;
 use codex_model_provider_info::WireApi;
 use codex_models_manager::bundled_models_response;
 use codex_network_proxy::NetworkMode;
+use codex_protocol::config_types::ModelProviderAuthInfo;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::models::ActivePermissionProfile;
@@ -845,6 +847,53 @@ region = "us-west-2"
 }
 
 #[tokio::test]
+async fn load_config_applies_amazon_bedrock_transport_overrides() {
+    let cfg = toml::from_str::<ConfigToml>(
+        r#"
+model_provider = "amazon-bedrock"
+
+[model_providers.amazon-bedrock]
+base_url = "https://bedrock.example.com/v1"
+http_headers = { "X-Custom-Header" = "value" }
+
+[model_providers.amazon-bedrock.auth]
+command = "print-token"
+"#,
+    )
+    .expect("Amazon Bedrock transport overrides should deserialize");
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").abs(),
+    )
+    .await
+    .expect("load config");
+
+    let mut expected_provider = built_in_model_providers(/*openai_base_url*/ None)
+        .remove("amazon-bedrock")
+        .expect("Amazon Bedrock provider should be built in");
+    expected_provider.base_url = Some("https://bedrock.example.com/v1".to_string());
+    expected_provider.auth = Some(ModelProviderAuthInfo {
+        command: "print-token".to_string(),
+        args: Vec::new(),
+        timeout_ms: std::num::NonZeroU64::new(5_000).expect("timeout should be non-zero"),
+        refresh_interval_ms: 300_000,
+        cwd: std::env::current_dir()
+            .expect("current directory should be available")
+            .try_into()
+            .expect("current directory should be absolute"),
+    });
+    expected_provider
+        .http_headers
+        .get_or_insert_default()
+        .insert("X-Custom-Header".to_string(), "value".to_string());
+
+    assert_eq!(config.model_provider_id, "amazon-bedrock");
+    assert_eq!(config.model_provider, expected_provider);
+}
+
+#[tokio::test]
 async fn load_config_rejects_unsupported_amazon_bedrock_overrides() {
     let cfg = toml::from_str::<ConfigToml>(
         r#"
@@ -852,13 +901,8 @@ model_provider = "amazon-bedrock"
 
 [model_providers.amazon-bedrock]
 name = "Custom Bedrock"
-base_url = "https://bedrock.example.com/v1"
 requires_openai_auth = true
 supports_websockets = true
-
-[model_providers.amazon-bedrock.aws]
-profile = "codex-bedrock"
-region = "us-west-2"
 "#,
     )
     .expect("Amazon Bedrock unsupported overrides should deserialize");
@@ -873,7 +917,7 @@ region = "us-west-2"
 
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     assert!(err.to_string().contains(
-        "model_providers.amazon-bedrock only supports changing `aws.profile` and `aws.region`; other non-default provider fields are not supported"
+        "model_providers.amazon-bedrock only supports changing `base_url`, `auth`, `http_headers`, `aws.profile`, and `aws.region`; other non-default provider fields are not supported"
     ));
 }
 
@@ -903,6 +947,7 @@ fn config_toml_deserializes_model_availability_nux() {
             pet: None,
             pet_anchor: TuiPetAnchor::Composer,
             session_picker_view: None,
+            resume_cwd: None,
             keymap: TuiKeymap::default(),
             model_availability_nux: ModelAvailabilityNuxConfig {
                 shown_count: HashMap::from([
@@ -3642,6 +3687,19 @@ session_picker_view = "dense"
 }
 
 #[test]
+fn tui_resume_cwd_deserializes_from_toml() {
+    let cfg = r#"
+[tui]
+resume_cwd = "current"
+"#;
+    let parsed = toml::from_str::<ConfigToml>(cfg).expect("TOML deserialization should succeed");
+    assert_eq!(
+        parsed.tui.as_ref().and_then(|t| t.resume_cwd),
+        Some(ResumeCwdMode::Current),
+    );
+}
+
+#[test]
 fn tui_pet_deserializes_from_toml() {
     let cfg = r#"
 [tui]
@@ -3742,6 +3800,7 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
             pet: None,
             pet_anchor: TuiPetAnchor::Composer,
             session_picker_view: None,
+            resume_cwd: None,
             keymap: TuiKeymap::default(),
             model_availability_nux: ModelAvailabilityNuxConfig::default(),
             terminal_resize_reflow_max_rows: None,
@@ -3922,6 +3981,35 @@ async fn runtime_config_resolves_session_picker_view_default_and_override() {
         cfg.tui_session_picker_view,
         SessionPickerViewMode::Comfortable
     );
+}
+
+#[tokio::test]
+async fn runtime_config_resolves_resume_cwd_default_and_override() {
+    let cfg = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").abs(),
+    )
+    .await
+    .expect("load default config");
+
+    assert_eq!(cfg.tui_resume_cwd, None);
+
+    let cfg = Config::load_from_base_config_with_overrides(
+        ConfigToml {
+            tui: Some(Tui {
+                resume_cwd: Some(ResumeCwdMode::Session),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").abs(),
+    )
+    .await
+    .expect("load root override config");
+
+    assert_eq!(cfg.tui_resume_cwd, Some(ResumeCwdMode::Session));
 }
 
 #[tokio::test]
@@ -4167,7 +4255,7 @@ exclude_slash_tmp = true
                         file_system_policy
                             .entries
                             .contains(&FileSystemSandboxEntry {
-                                path: FileSystemPath::GeneratedDefaultPath {
+                                path: FileSystemPath::Path {
                                     path: AbsolutePathBuf::resolve_path_against_base(
                                         subpath,
                                         cwd.path()

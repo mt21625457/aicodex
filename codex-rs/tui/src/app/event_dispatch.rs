@@ -317,6 +317,7 @@ impl App {
             AppEvent::ConsolidateAgentMessage {
                 source,
                 cwd,
+                inline_visualization_context,
                 scrollback_reflow,
                 deferred_history_cell,
             } => {
@@ -324,6 +325,7 @@ impl App {
                     tui,
                     source,
                     cwd,
+                    inline_visualization_context,
                     scrollback_reflow,
                     deferred_history_cell,
                 )?;
@@ -460,6 +462,14 @@ impl App {
                 log_id,
             } => {
                 self.lookup_message_history_entry(thread_id, offset, log_id)
+                    .await?;
+            }
+            AppEvent::LookupMessageHistoryBatch {
+                thread_id,
+                cursor,
+                log_id,
+            } => {
+                self.lookup_message_history_batch(thread_id, cursor, log_id)
                     .await?;
             }
             AppEvent::ApproveRecentAutoReviewDenial { thread_id, id } => {
@@ -975,17 +985,38 @@ impl App {
                     RateLimitRefreshOrigin::ResetPicker { request_id },
                 );
             }
+            AppEvent::OpenRateLimitResetConfirmation {
+                picker_request_id,
+                confirmation_gate,
+                credit_id,
+                reset_title,
+                reset_detail,
+                reset_description,
+            } => {
+                self.chat_widget.show_rate_limit_reset_confirmation(
+                    picker_request_id,
+                    confirmation_gate,
+                    credit_id,
+                    reset_title,
+                    reset_detail,
+                    reset_description,
+                );
+            }
             AppEvent::ConsumeRateLimitResetCredit {
                 idempotency_key,
                 credit_id,
             } => {
-                let request_id = self.chat_widget.show_rate_limit_reset_consuming_popup();
-                self.consume_rate_limit_reset_credit(
-                    app_server,
-                    request_id,
-                    idempotency_key,
-                    credit_id,
-                );
+                if let Some(request_id) = self
+                    .chat_widget
+                    .start_rate_limit_reset_consumption(&idempotency_key)
+                {
+                    self.consume_rate_limit_reset_credit(
+                        app_server,
+                        request_id,
+                        idempotency_key,
+                        credit_id,
+                    );
+                }
             }
             AppEvent::RateLimitResetCreditConsumed {
                 request_id,
@@ -2091,18 +2122,18 @@ impl App {
                 self.chat_widget.handle_manage_skills_closed();
             }
             AppEvent::FullScreenApprovalRequest(request) => match request {
-                ApprovalRequest::ApplyPatch { cwd, changes, .. } => {
+                ApprovalRequest::ApplyPatch(request) => {
                     let _ = tui.enter_alt_screen();
-                    let diff_summary = DiffSummary::new(changes, cwd);
+                    let diff_summary = DiffSummary::new(request.changes, request.cwd);
                     self.overlay = Some(Overlay::new_static_with_renderables(
                         vec![diff_summary.into()],
                         "P A T C H".to_string(),
                         self.keymap.pager.clone(),
                     ));
                 }
-                ApprovalRequest::Exec { command, .. } => {
+                ApprovalRequest::Exec(request) => {
                     let _ = tui.enter_alt_screen();
-                    let full_cmd = strip_bash_lc_and_escape(&command);
+                    let full_cmd = strip_bash_lc_and_escape(&request.command);
                     let full_cmd_lines = highlight_bash_to_lines(&full_cmd);
                     self.overlay = Some(Overlay::new_static_with_lines(
                         full_cmd_lines,
@@ -2110,27 +2141,22 @@ impl App {
                         self.keymap.pager.clone(),
                     ));
                 }
-                ApprovalRequest::Permissions {
-                    environment_id,
-                    permissions,
-                    reason,
-                    ..
-                } => {
+                ApprovalRequest::Permissions(request) => {
                     let _ = tui.enter_alt_screen();
                     let mut lines = Vec::new();
-                    if let Some(environment_id) = environment_id {
+                    if let Some(environment_id) = request.environment_id {
                         lines.push(Line::from(vec![
                             "Environment: ".into(),
                             environment_id.bold(),
                         ]));
                         lines.push(Line::from(""));
                     }
-                    if let Some(reason) = reason {
+                    if let Some(reason) = request.reason {
                         lines.push(Line::from(vec!["Reason: ".into(), reason.italic()]));
                         lines.push(Line::from(""));
                     }
                     if let Some(rule_line) =
-                        crate::bottom_pane::format_requested_permissions_rule(&permissions)
+                        crate::bottom_pane::format_requested_permissions_rule(&request.permissions)
                     {
                         lines.push(Line::from(vec![
                             "Permission rule: ".into(),
@@ -2143,16 +2169,12 @@ impl App {
                         self.keymap.pager.clone(),
                     ));
                 }
-                ApprovalRequest::McpElicitation {
-                    server_name,
-                    message,
-                    ..
-                } => {
+                ApprovalRequest::McpElicitation(request) => {
                     let _ = tui.enter_alt_screen();
                     let paragraph = Paragraph::new(vec![
-                        Line::from(vec!["Server: ".into(), server_name.bold()]),
+                        Line::from(vec!["Server: ".into(), request.server_name.bold()]),
                         Line::from(""),
-                        Line::from(message),
+                        Line::from(request.message),
                     ])
                     .wrap(Wrap { trim: false });
                     self.overlay = Some(Overlay::new_static_with_renderables(

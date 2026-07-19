@@ -707,6 +707,7 @@ pub(crate) struct CodexDynamicToolCallEventParams {
     pub(crate) output_content_item_count: Option<u64>,
     pub(crate) output_text_item_count: Option<u64>,
     pub(crate) output_image_item_count: Option<u64>,
+    pub(crate) output_audio_item_count: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -1254,6 +1255,7 @@ fn analytics_hook_event_name(event_name: HookEventName) -> &'static str {
         HookEventName::PreCompact => "PreCompact",
         HookEventName::PostCompact => "PostCompact",
         HookEventName::SessionStart => "SessionStart",
+        HookEventName::SessionEnd => "SessionEnd",
         HookEventName::UserPromptSubmit => "UserPromptSubmit",
         HookEventName::SubagentStart => "SubagentStart",
         HookEventName::SubagentStop => "SubagentStop",

@@ -37,7 +37,7 @@
       },
       "properties": {
         "default_subagent_model": {
-          "description": "Reserved default model for spawned subagents. Currently ignored.",
+          "description": "Default model for spawned subagents when the spawn call does not select one.",
           "type": "string"
         },
         "default_subagent_reasoning_effort": {
@@ -46,7 +46,7 @@
               "$ref": "#/definitions/ReasoningEffort"
             }
           ],
-          "description": "Reserved default reasoning effort for spawned subagents. Currently ignored."
+          "description": "Default reasoning effort for spawned subagents when the spawn call does not select one."
         },
         "enabled": {
           "description": "Whether multi-agent tools are enabled. Defaults to true. An enabled `features.multi_agent_v2` setting takes precedence.",
@@ -516,6 +516,9 @@
               "type": "boolean"
             },
             "exec_permission_approvals": {
+              "type": "boolean"
+            },
+            "executor_capability_discovery": {
               "type": "boolean"
             },
             "experimental_use_unified_exec_tool": {
@@ -1301,6 +1304,13 @@
           "type": "array"
         },
         "PreToolUse": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/MatcherGroup"
+          },
+          "type": "array"
+        },
+        "SessionEnd": {
           "default": [],
           "items": {
             "$ref": "#/definitions/MatcherGroup"
@@ -2744,6 +2754,25 @@
         }
       ]
     },
+    "ResumeCwdMode": {
+      "description": "Working directory to use when resuming or forking a session.",
+      "oneOf": [
+        {
+          "description": "Use the directory where Codex was launched.",
+          "enum": [
+            "current"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Use the latest working directory recorded in the selected session.",
+          "enum": [
+            "session"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "RolloutBudgetConfigToml": {
       "additionalProperties": false,
       "properties": {
@@ -3274,6 +3303,15 @@
           "default": false,
           "description": "Start the TUI in raw scrollback mode for copy-friendly transcript output. Defaults to `false`.",
           "type": "boolean"
+        },
+        "resume_cwd": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ResumeCwdMode"
+            }
+          ],
+          "default": null,
+          "description": "Working directory to use when resuming or forking a session. When unset, prompt if the current and session directories differ."
         },
         "session_picker_view": {
           "allOf": [
@@ -4910,6 +4948,9 @@
           "type": "boolean"
         },
         "exec_permission_approvals": {
+          "type": "boolean"
+        },
+        "executor_capability_discovery": {
           "type": "boolean"
         },
         "experimental_use_unified_exec_tool": {

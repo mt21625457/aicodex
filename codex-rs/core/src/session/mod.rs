@@ -17,18 +17,16 @@ use crate::agent::status::is_final;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
 use crate::attestation::AttestationProvider;
+use crate::audio_preparation::prepare_response_items as prepare_audio_response_items;
 use crate::build_available_skills;
 use crate::compact;
 use crate::config::ManagedFeatures;
 use crate::config::resolve_tool_suggest_config_from_layer_stack;
-use crate::context::ApprovalPromptContext;
 use crate::context::ApprovedCommandPrefixSaved;
 use crate::context::AvailableSkillsInstructions;
-use crate::context::CollaborationModeInstructions;
 use crate::context::ContextualUserFragment;
 use crate::context::MultiAgentModeInstructions;
 use crate::context::NetworkRuleSaved;
-use crate::context::PermissionsInstructions;
 use crate::context::PersonalitySpecInstructions;
 use crate::context::RecommendedPluginsInstructions;
 use crate::context::world_state::WorldState;
@@ -36,7 +34,7 @@ use crate::current_time::TimeProvider;
 use crate::default_skill_metadata_budget;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::exec_policy::ExecPolicyManager;
-use crate::image_preparation::prepare_response_items;
+use crate::image_preparation::prepare_response_items as prepare_image_response_items;
 use crate::parse_turn_item;
 use crate::realtime_conversation::RealtimeConversationManager;
 use crate::session::step_context::StepContext;
@@ -74,6 +72,7 @@ use codex_login::CodexAuth;
 use codex_login::auth_env_telemetry::collect_auth_env_telemetry;
 use codex_mcp::McpConnectionManager;
 use codex_mcp::McpResourceClient;
+use codex_mcp::McpRuntime;
 use codex_mcp::McpRuntimeContext;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_models_manager::manager::SharedModelsManager;
@@ -236,6 +235,7 @@ use self::session::SessionConfiguration;
 pub(crate) use self::session::SessionSettingsUpdate;
 #[cfg(test)]
 use self::turn::AssistantMessageStreamParsers;
+use self::turn::agent_message_text;
 #[cfg(test)]
 use self::turn::collect_explicit_app_ids_from_skill_items;
 use self::turn::realtime_text_for_event;
@@ -1360,10 +1360,11 @@ impl Session {
             .reconstruct_history_from_rollout(turn_context, rollout_items)
             .await;
         // Keep the recorded rollout unchanged. Prepare its reconstructed history before
-        // installing it, so legacy images are processed once for this resume or fork and
+        // installing it, so legacy media is processed once for this resume or fork and
         // will be processed again if the rollout is reconstructed in a future session.
-        // This meets image resizing requirements without modifying persisted rollouts.
-        prepare_response_items(&mut history);
+        // This meets media preparation requirements without modifying persisted rollouts.
+        prepare_image_response_items(&mut history);
+        prepare_audio_response_items(&mut history);
         {
             let mut state = self.state.lock().await;
             state.replace_history(history, reference_context_item);
@@ -1699,18 +1700,16 @@ impl Session {
     ) -> Vec<ResponseItem> {
         // TODO: Make context updates a pure diff of persisted previous/current TurnContextItem
         // state so replay/backtracking is deterministic. Runtime inputs that affect model-visible
-        // context (exec policy, feature gates, previous-turn bridge) should be persisted
+        // context (feature gates and the previous-turn bridge) should be persisted
         // state or explicit non-state replay events.
         let previous_turn_settings = {
             let state = self.state.lock().await;
             state.previous_turn_settings()
         };
-        let exec_policy = self.services.exec_policy.current();
         crate::context_manager::updates::build_settings_update_items(
             reference_context_item,
             previous_turn_settings.as_ref(),
             current_context,
-            exec_policy.as_ref(),
             self.features.enabled(Feature::Personality),
         )
     }
@@ -1885,12 +1884,44 @@ impl Session {
     }
 
     async fn maybe_mirror_event_text_to_realtime(&self, msg: &EventMsg) {
-        let Some((text, phase)) = realtime_text_for_event(msg) else {
-            return;
-        };
         if self.conversation.running_state().await.is_none() {
             return;
         }
+        match msg {
+            EventMsg::ItemStarted(event) => {
+                if let TurnItem::AgentMessage(item) = &event.item {
+                    self.conversation
+                        .register_handoff_stream_item(
+                            item.id.clone(),
+                            item.phase.clone(),
+                            agent_message_text(item),
+                        )
+                        .await;
+                }
+                return;
+            }
+            EventMsg::AgentMessageContentDelta(event) => {
+                if let Err(err) = self
+                    .conversation
+                    .stream_handoff_delta(&event.item_id, event.delta.clone())
+                    .await
+                {
+                    debug!("failed to stream event text to realtime conversation: {err}");
+                }
+                return;
+            }
+            EventMsg::ItemCompleted(event) => {
+                if let TurnItem::AgentMessage(item) = &event.item
+                    && self.conversation.finish_handoff_stream_item(&item.id).await
+                {
+                    return;
+                }
+            }
+            _ => {}
+        }
+        let Some((text, phase)) = realtime_text_for_event(msg) else {
+            return;
+        };
         if let Err(err) = self.conversation.handoff_out(text, phase).await {
             debug!("failed to mirror event text to realtime conversation: {err}");
         }
@@ -2430,8 +2461,7 @@ impl Session {
         let turn_environment = match args.environment_id.as_deref() {
             Some(environment_id) => turn_context
                 .environments
-                .turn_environments
-                .iter()
+                .turn_environments()
                 .find(|environment| environment.environment_id == environment_id),
             None => turn_context.environments.primary(),
         };
@@ -2734,7 +2764,8 @@ impl Session {
         items: &'a [ResponseItem],
     ) -> Cow<'a, [ResponseItem]> {
         let mut items = Cow::Borrowed(items);
-        prepare_response_items(items.to_mut());
+        prepare_image_response_items(items.to_mut());
+        prepare_audio_response_items(items.to_mut());
         // Most response items get their passthrough turn ID at the durable history boundary.
         for item in items.to_mut() {
             item.set_turn_id_if_missing(&turn_context.sub_id);
@@ -2850,37 +2881,37 @@ impl Session {
         self: &Arc<Self>,
         turn_context: Arc<TurnContext>,
     ) -> Arc<StepContext> {
-        let deferred_executor_enabled = turn_context
-            .config
-            .features
-            .enabled(Feature::DeferredExecutor);
-        // Keep the old turn-frozen environment view unless deferred executors are enabled.
-        let environments = if deferred_executor_enabled {
-            self.services.turn_environments.snapshot().await
-        } else {
-            turn_context.environments.clone()
-        };
-        if deferred_executor_enabled {
-            self.services
-                .agents_md_manager
-                .refresh(&turn_context.config, &environments)
-                .await;
-        }
+        // Keep selections fixed for the turn while allowing their startup work to finish.
+        let environments = turn_context.environments.refresh_readiness();
+        self.services
+            .agents_md_manager
+            .refresh(&turn_context.config, &environments)
+            .await;
         let loaded_agents_md = self.services.agents_md_manager.get_loaded().await;
         let selected_capability_roots = self
             .resolve_selected_capability_roots_for_step(&environments)
+            .await;
+        let ready_selected_capability_roots =
+            Self::ready_selected_capability_roots(&selected_capability_roots);
+        let executor_capability_discovery = self
+            .executor_capability_discovery_for_step(
+                &turn_context.config,
+                &ready_selected_capability_roots,
+            )
             .await;
         let mcp = self
             .mcp_runtime_for_step(
                 turn_context.as_ref(),
                 &environments,
                 &selected_capability_roots,
+                executor_capability_discovery.as_deref(),
             )
             .await;
         Arc::new(StepContext::new(
             turn_context,
             environments,
             selected_capability_roots,
+            executor_capability_discovery,
             mcp,
             loaded_agents_md,
         ))
@@ -3161,19 +3192,10 @@ impl Session {
         let mut developer_sections = Vec::<String>::with_capacity(8);
         let mut contextual_user_sections = Vec::<String>::with_capacity(2);
         let mut separate_developer_sections = Vec::<String>::new();
-        let (
-            reference_context_item,
-            previous_turn_settings,
-            collaboration_mode,
-            base_instructions,
-            session_source,
-            auto_compact_window_ids,
-        ) = {
+        let (previous_turn_settings, base_instructions, session_source, auto_compact_window_ids) = {
             let state = self.state.lock().await;
             (
-                state.reference_context_item(),
                 state.previous_turn_settings(),
-                state.session_configuration.collaboration_mode.clone(),
                 state.session_configuration.base_instructions.clone(),
                 state.session_configuration.session_source.clone(),
                 state.auto_compact_window_ids(),
@@ -3187,39 +3209,6 @@ impl Session {
         {
             developer_sections.push(model_switch_message);
         }
-        if turn_context.config.include_permissions_instructions {
-            developer_sections.push(
-                PermissionsInstructions::from_permission_profile(
-                    &turn_context.permission_profile,
-                    turn_context.approval_policy.value(),
-                    ApprovalPromptContext::new(
-                        turn_context.config.approvals_reviewer,
-                        turn_context
-                            .model_info
-                            .model_messages
-                            .as_ref()
-                            .and_then(|messages| messages.approvals.as_ref()),
-                        turn_context
-                            .model_info
-                            .model_messages
-                            .as_ref()
-                            .and_then(|messages| messages.permissions.as_ref()),
-                    ),
-                    self.services.exec_policy.current().as_ref(),
-                    #[allow(deprecated)]
-                    &turn_context.cwd,
-                    turn_context
-                        .config
-                        .features
-                        .enabled(Feature::ExecPermissionApprovals),
-                    turn_context
-                        .config
-                        .features
-                        .enabled(Feature::RequestPermissionsTool),
-                )
-                .render(),
-            );
-        }
         let separate_guardian_developer_message =
             crate::guardian::is_guardian_reviewer_source(&session_source);
         // Keep the guardian policy prompt out of the aggregated developer bundle so it
@@ -3229,20 +3218,6 @@ impl Session {
             && !developer_instructions.is_empty()
         {
             developer_sections.push(developer_instructions.to_string());
-        }
-        // Add developer instructions from collaboration_mode if they exist and are non-empty
-        if turn_context.config.include_collaboration_mode_instructions
-            && let Some(collab_instructions) =
-                CollaborationModeInstructions::from_collaboration_mode(&collaboration_mode)
-        {
-            developer_sections.push(collab_instructions.render());
-        }
-        if let Some(realtime_update) = crate::context_manager::updates::build_initial_realtime_item(
-            reference_context_item.as_ref(),
-            previous_turn_settings.as_ref(),
-            turn_context,
-        ) {
-            developer_sections.push(realtime_update);
         }
         if self.features.enabled(Feature::Personality)
             && let Some(personality) = turn_context.personality
@@ -3439,10 +3414,10 @@ impl Session {
         {
             items.push(usage_hint_message);
         }
-        if let Some(multi_agent_mode) = multi_agents::effective_multi_agent_mode(turn_context) {
-            items.push(ContextualUserFragment::into(
-                MultiAgentModeInstructions::new(multi_agent_mode),
-            ));
+        if let Some(multi_agent_mode) = multi_agents::effective_multi_agent_mode(turn_context)
+            && let Some(instructions) = MultiAgentModeInstructions::from_mode(multi_agent_mode)
+        {
+            items.push(ContextualUserFragment::into(instructions));
         }
         if let Some(contextual_user_message) =
             crate::context_manager::updates::build_contextual_user_message(contextual_user_sections)

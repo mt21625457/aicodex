@@ -8,6 +8,7 @@ use crate::config::test_config;
 use crate::context::ContextualUserFragment;
 use crate::context::TurnAborted;
 use crate::environment_selection::ThreadEnvironments;
+use crate::environment_selection::TurnEnvironmentState;
 use crate::function_tool::FunctionCallError;
 use crate::session::step_context::StepContext;
 use crate::shell::default_user_shell;
@@ -199,6 +200,7 @@ impl StepContext {
             Arc::clone(&turn),
             environments,
             Vec::new(),
+            /*executor_capability_discovery*/ None,
             crate::session::McpRuntimeSnapshot::new_uninitialized_for_test(&turn.config),
             /*loaded_agents_md*/ None,
         ))
@@ -5072,7 +5074,7 @@ async fn absolute_cwd_update_with_turn_environment_is_allowed() {
     let turn_cwd = turn_context.cwd.clone();
     assert_eq!(turn_cwd, absolute_cwd);
     assert_eq!(turn_context.config.cwd, absolute_cwd);
-    assert_eq!(turn_context.environments.turn_environments.len(), 1);
+    assert_eq!(turn_context.environments.turn_environments().count(), 1);
 }
 
 #[tokio::test]
@@ -5303,11 +5305,14 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         /*bundled_skills_enabled*/ true,
     ));
     let network_approval = Arc::new(NetworkApprovalService::default());
-    let mcp_runtime =
+    let mcp_runtime_snapshot =
         crate::session::McpRuntimeSnapshot::new_uninitialized_for_test(config.as_ref());
+    let mcp_runtime = Arc::new(codex_mcp::McpRuntime::new(
+        mcp_runtime_snapshot.manager_arc(),
+    ));
     let services = SessionServices {
-        mcp_connection_manager: Arc::new(arc_swap::ArcSwap::from(mcp_runtime.manager_arc())),
-        mcp_runtime: arc_swap::ArcSwapOption::from(Some(mcp_runtime)),
+        mcp_runtime,
+        mcp_runtime_snapshot: arc_swap::ArcSwapOption::from(Some(mcp_runtime_snapshot)),
         mcp_projection_lock: Mutex::new(()),
         mcp_startup_cancellation_token: Mutex::new(CancellationToken::new()),
         unified_exec_manager: UnifiedExecProcessManager::new(
@@ -6055,14 +6060,19 @@ async fn request_permissions_tool_resolves_relative_paths_against_selected_envir
             mcp_elicitations: true,
         }))
         .expect("test setup should allow updating approval policy");
-    let current_environment = turn_context_mut.environments.turn_environments[0].clone();
-    turn_context_mut.environments.turn_environments[0] = TurnEnvironment::new(
-        "remote".to_string(),
-        current_environment.environment,
-        PathUri::from_abs_path(&environment_cwd),
-        Vec::new(),
-        current_environment.shell,
-    );
+    let current_environment = turn_context_mut
+        .environments
+        .primary()
+        .expect("primary environment")
+        .clone();
+    turn_context_mut.environments.environments[0] =
+        TurnEnvironmentState::Ready(TurnEnvironment::new(
+            "remote".to_string(),
+            current_environment.environment,
+            PathUri::from_abs_path(&environment_cwd),
+            Vec::new(),
+            current_environment.shell,
+        ));
 
     let call_id = "call-1".to_string();
     let handler = RequestPermissionsHandler;
@@ -6581,16 +6591,25 @@ async fn turn_environments_set_primary_environment() {
         .expect("turn should start");
 
     let turn_environments = &turn_context.environments;
-    assert_eq!(turn_environments.turn_environments.len(), 1);
+    assert_eq!(turn_environments.turn_environments().count(), 1);
     let turn_environment = turn_context
         .environments
         .primary()
         .expect("primary environment should be set");
     assert!(std::sync::Arc::ptr_eq(
         &turn_environment.environment,
-        &turn_environments.turn_environments[0].environment
+        &turn_environments
+            .primary()
+            .expect("primary environment")
+            .environment
     ));
-    assert!(!turn_context.environments.turn_environments.is_empty());
+    assert!(
+        turn_context
+            .environments
+            .turn_environments()
+            .next()
+            .is_some()
+    );
     #[allow(deprecated)]
     let turn_cwd = turn_context.cwd.clone();
     assert_eq!(turn_cwd.as_path(), selected_cwd.as_path());
@@ -6639,14 +6658,17 @@ async fn default_turn_does_not_overlay_legacy_fallback_cwd_onto_stored_thread_en
     let turn_context = session.new_default_turn().await;
 
     let turn_environments = &turn_context.environments;
-    assert_eq!(turn_environments.turn_environments.len(), 1);
+    assert_eq!(turn_environments.turn_environments().count(), 1);
     let turn_environment = turn_context
         .environments
         .primary()
         .expect("primary environment should be set");
     assert!(std::sync::Arc::ptr_eq(
         &turn_environment.environment,
-        &turn_environments.turn_environments[0].environment
+        &turn_environments
+            .primary()
+            .expect("primary environment")
+            .environment
     ));
     #[allow(deprecated)]
     let turn_cwd = turn_context.cwd.clone();
@@ -6668,31 +6690,41 @@ async fn default_turn_honors_empty_stored_thread_environments() {
     let turn_context = session.new_default_turn().await;
 
     assert!(turn_context.environments.primary().is_none());
-    assert!(turn_context.environments.turn_environments.is_empty());
+    assert!(
+        turn_context
+            .environments
+            .turn_environments()
+            .next()
+            .is_none()
+    );
     #[allow(deprecated)]
     let turn_cwd = turn_context.cwd.clone();
     assert_eq!(turn_cwd, session_cwd);
     assert_eq!(turn_context.config.cwd, session_cwd);
-    assert_eq!(turn_context.environments.turn_environments.len(), 0);
+    assert_eq!(turn_context.environments.turn_environments().count(), 0);
 }
 
 #[tokio::test]
 async fn primary_environment_uses_first_turn_environment() {
     let (_session, mut turn_context) = make_session_and_context().await;
-    let first_environment = turn_context.environments.turn_environments[0].clone();
+    let first_environment = turn_context
+        .environments
+        .primary()
+        .expect("primary environment")
+        .clone();
     #[allow(deprecated)]
     let second_cwd = turn_context.cwd.join("second");
     let second_cwd_uri = codex_utils_path_uri::PathUri::from_abs_path(&second_cwd);
     turn_context
         .environments
-        .turn_environments
-        .push(TurnEnvironment::new(
+        .environments
+        .push(TurnEnvironmentState::Ready(TurnEnvironment::new(
             "second".to_string(),
             Arc::clone(&first_environment.environment),
             second_cwd_uri.clone(),
             Vec::new(),
             /*shell*/ None,
-        ));
+        )));
 
     assert_eq!(
         turn_context
@@ -6705,16 +6737,20 @@ async fn primary_environment_uses_first_turn_environment() {
     assert_eq!(
         turn_context
             .environments
-            .turn_environments
-            .iter()
+            .turn_environments()
             .find(|environment| environment.environment_id == "second")
             .expect("second environment")
             .cwd(),
         &second_cwd_uri
     );
-    assert_eq!(turn_context.environments.turn_environments.len(), 2);
+    assert_eq!(turn_context.environments.turn_environments().count(), 2);
     assert_eq!(
-        turn_context.environments.turn_environments[1].cwd(),
+        turn_context
+            .environments
+            .turn_environments()
+            .nth(1)
+            .expect("second environment")
+            .cwd(),
         &second_cwd_uri
     );
 }
@@ -6738,7 +6774,13 @@ async fn empty_turn_environments_clear_primary_environment() {
         .expect("turn should start");
 
     assert!(turn_context.environments.primary().is_none());
-    assert!(turn_context.environments.turn_environments.is_empty());
+    assert!(
+        turn_context
+            .environments
+            .turn_environments()
+            .next()
+            .is_none()
+    );
     #[allow(deprecated)]
     let turn_cwd = turn_context.cwd.clone();
     assert_eq!(turn_cwd, session.get_config().await.cwd);
@@ -7421,11 +7463,14 @@ where
         /*bundled_skills_enabled*/ true,
     ));
     let network_approval = Arc::new(NetworkApprovalService::default());
-    let mcp_runtime =
+    let mcp_runtime_snapshot =
         crate::session::McpRuntimeSnapshot::new_uninitialized_for_test(config.as_ref());
+    let mcp_runtime = Arc::new(codex_mcp::McpRuntime::new(
+        mcp_runtime_snapshot.manager_arc(),
+    ));
     let services = SessionServices {
-        mcp_connection_manager: Arc::new(arc_swap::ArcSwap::from(mcp_runtime.manager_arc())),
-        mcp_runtime: arc_swap::ArcSwapOption::from(Some(mcp_runtime)),
+        mcp_runtime,
+        mcp_runtime_snapshot: arc_swap::ArcSwapOption::from(Some(mcp_runtime_snapshot)),
         mcp_projection_lock: Mutex::new(()),
         mcp_startup_cancellation_token: Mutex::new(CancellationToken::new()),
         unified_exec_manager: UnifiedExecProcessManager::new(
@@ -7755,14 +7800,13 @@ async fn deferred_environment_roots_refresh_plugin_availability() {
         .primary()
         .expect("ready local environment");
     let environments = TurnEnvironmentSnapshot {
-        turn_environments: vec![TurnEnvironment::new(
+        environments: vec![TurnEnvironmentState::Ready(TurnEnvironment::new(
             "executor".to_string(),
             environment,
             local_environment.cwd().clone(),
             local_environment.workspace_roots().to_vec(),
             local_environment.shell.clone(),
-        )],
-        starting: Vec::new(),
+        ))],
     };
     let resolved_roots = session
         .resolve_selected_capability_roots_for_step(&environments)
@@ -7776,7 +7820,12 @@ async fn deferred_environment_roots_refresh_plugin_availability() {
     );
 
     let new_runtime = session
-        .mcp_runtime_for_step(&turn_context, &environments, &resolved_roots)
+        .mcp_runtime_for_step(
+            &turn_context,
+            &environments,
+            &resolved_roots,
+            /*executor_capability_discovery*/ None,
+        )
         .await;
 
     assert!(!old_runtime.plugins_available());
@@ -7835,8 +7884,10 @@ async fn conflicting_ready_environment_root_ids_keep_first_location() {
         ));
     }
     let environments = TurnEnvironmentSnapshot {
-        turn_environments,
-        starting: Vec::new(),
+        environments: turn_environments
+            .into_iter()
+            .map(TurnEnvironmentState::Ready)
+            .collect(),
     };
 
     let resolved_roots = session
@@ -8018,14 +8069,19 @@ async fn record_context_updates_emits_environment_item_for_cwd_changes() {
         )
         .await;
     let cwd = test_path_buf("/new-repo").abs();
-    let environment = current_context.environments.turn_environments[0].clone();
-    current_context.environments.turn_environments[0] = TurnEnvironment::new(
-        environment.environment_id,
-        environment.environment,
-        PathUri::from_abs_path(&cwd),
-        Vec::new(),
-        environment.shell,
-    );
+    let environment = current_context
+        .environments
+        .primary()
+        .expect("primary environment")
+        .clone();
+    current_context.environments.environments[0] =
+        TurnEnvironmentState::Ready(TurnEnvironment::new(
+            environment.environment_id,
+            environment.environment,
+            PathUri::from_abs_path(&cwd),
+            Vec::new(),
+            environment.shell,
+        ));
 
     let update_items =
         record_context_update_items(&session, previous_context, current_context).await;
@@ -8078,14 +8134,19 @@ async fn record_context_updates_omits_environment_item_when_disabled() {
     let mut config = (*current_context.config).clone();
     config.include_environment_context = false;
     current_context.config = Arc::new(config);
-    let environment = current_context.environments.turn_environments[0].clone();
-    current_context.environments.turn_environments[0] = TurnEnvironment::new(
-        environment.environment_id,
-        environment.environment,
-        PathUri::from_abs_path(&test_path_buf("/new-repo").abs()),
-        Vec::new(),
-        environment.shell,
-    );
+    let environment = current_context
+        .environments
+        .primary()
+        .expect("primary environment")
+        .clone();
+    current_context.environments.environments[0] =
+        TurnEnvironmentState::Ready(TurnEnvironment::new(
+            environment.environment_id,
+            environment.environment,
+            PathUri::from_abs_path(&test_path_buf("/new-repo").abs()),
+            Vec::new(),
+            environment.shell,
+        ));
 
     let update_items =
         record_context_update_items(&session, previous_context, current_context).await;
@@ -8119,7 +8180,7 @@ async fn record_context_update_items(
 }
 
 #[tokio::test]
-async fn build_settings_update_items_emits_realtime_start_when_session_becomes_live() {
+async fn record_context_updates_emits_realtime_start_when_session_becomes_live() {
     let (session, previous_context) = make_session_and_context().await;
     let previous_context = Arc::new(previous_context);
     let mut current_context = previous_context
@@ -8130,12 +8191,8 @@ async fn build_settings_update_items_emits_realtime_start_when_session_becomes_l
         .await;
     current_context.realtime_active = true;
 
-    let update_items = session
-        .build_settings_update_items(
-            Some(&previous_context.to_turn_context_item()),
-            &current_context,
-        )
-        .await;
+    let update_items =
+        record_context_update_items(&session, previous_context, current_context).await;
 
     let developer_texts = developer_input_texts(&update_items);
     assert!(
@@ -8147,7 +8204,7 @@ async fn build_settings_update_items_emits_realtime_start_when_session_becomes_l
 }
 
 #[tokio::test]
-async fn build_settings_update_items_emits_realtime_end_when_session_stops_being_live() {
+async fn record_context_updates_emits_realtime_end_when_session_stops_being_live() {
     let (session, mut previous_context) = make_session_and_context().await;
     previous_context.realtime_active = true;
     let mut current_context = previous_context
@@ -8158,12 +8215,8 @@ async fn build_settings_update_items_emits_realtime_end_when_session_stops_being
         .await;
     current_context.realtime_active = false;
 
-    let update_items = session
-        .build_settings_update_items(
-            Some(&previous_context.to_turn_context_item()),
-            &current_context,
-        )
-        .await;
+    let update_items =
+        record_context_update_items(&session, Arc::new(previous_context), current_context).await;
 
     let developer_texts = developer_input_texts(&update_items);
     assert!(
@@ -8175,41 +8228,7 @@ async fn build_settings_update_items_emits_realtime_end_when_session_stops_being
 }
 
 #[tokio::test]
-async fn build_settings_update_items_uses_previous_turn_settings_for_realtime_end() {
-    let (session, previous_context) = make_session_and_context().await;
-    let mut previous_context_item = previous_context.to_turn_context_item();
-    previous_context_item.realtime_active = None;
-    let previous_turn_settings = PreviousTurnSettings {
-        model: previous_context.model_info.slug.clone(),
-        comp_hash: None,
-        realtime_active: Some(true),
-    };
-    let mut current_context = previous_context
-        .with_model(
-            previous_context.model_info.slug.clone(),
-            &session.services.models_manager,
-        )
-        .await;
-    current_context.realtime_active = false;
-
-    session
-        .set_previous_turn_settings(Some(previous_turn_settings))
-        .await;
-    let update_items = session
-        .build_settings_update_items(Some(&previous_context_item), &current_context)
-        .await;
-
-    let developer_texts = developer_input_texts(&update_items);
-    assert!(
-        developer_texts
-            .iter()
-            .any(|text| text.contains("Reason: inactive")),
-        "expected a realtime end update from previous turn settings, got {developer_texts:?}"
-    );
-}
-
-#[tokio::test]
-async fn build_initial_context_uses_previous_realtime_state() {
+async fn build_initial_context_describes_active_realtime_state() {
     let (session, mut turn_context) = make_session_and_context().await;
     turn_context.realtime_active = true;
     let turn_context = Arc::new(turn_context);
@@ -8221,20 +8240,6 @@ async fn build_initial_context_uses_previous_realtime_state() {
             .iter()
             .any(|text| text.contains("<realtime_conversation>")),
         "expected initial context to describe active realtime state, got {developer_texts:?}"
-    );
-
-    let previous_context_item = turn_context.to_turn_context_item();
-    {
-        let mut state = session.state.lock().await;
-        state.set_reference_context_item(Some(previous_context_item));
-    }
-    let resumed_context = build_initial_context(&session, &turn_context).await;
-    let resumed_developer_texts = developer_input_texts(&resumed_context);
-    assert!(
-        !resumed_developer_texts
-            .iter()
-            .any(|text| text.contains("<realtime_conversation>")),
-        "did not expect a duplicate realtime update, got {resumed_developer_texts:?}"
     );
 }
 
@@ -8740,29 +8745,6 @@ async fn build_initial_context_emits_thread_start_skill_warning_on_repeated_buil
 }
 
 #[tokio::test]
-async fn build_initial_context_uses_previous_turn_settings_for_realtime_end() {
-    let (session, turn_context) = make_session_and_context().await;
-    let previous_turn_settings = PreviousTurnSettings {
-        model: turn_context.model_info.slug.clone(),
-        comp_hash: None,
-        realtime_active: Some(true),
-    };
-
-    session
-        .set_previous_turn_settings(Some(previous_turn_settings))
-        .await;
-    let turn_context = Arc::new(turn_context);
-    let initial_context = build_initial_context(&session, &turn_context).await;
-    let developer_texts = developer_input_texts(&initial_context);
-    assert!(
-        developer_texts
-            .iter()
-            .any(|text| text.contains("Reason: inactive")),
-        "expected initial context to describe an ended realtime session, got {developer_texts:?}"
-    );
-}
-
-#[tokio::test]
 async fn build_initial_context_restates_realtime_start_when_reference_context_is_missing() {
     let (session, mut turn_context) = make_session_and_context().await;
     turn_context.realtime_active = true;
@@ -8806,15 +8788,19 @@ fn file_system_policy_with_unreadable_glob(turn_context: &TurnContext) -> FileSy
 #[tokio::test]
 async fn turn_context_item_stores_local_cwd() {
     let (_session, mut turn_context) = make_session_and_context().await;
-    let environment = turn_context.environments.turn_environments[0].clone();
+    let environment = turn_context
+        .environments
+        .primary()
+        .expect("primary environment")
+        .clone();
     let cwd = PathUri::parse("file:///C:/windows").expect("Windows cwd URI");
-    turn_context.environments.turn_environments[0] = TurnEnvironment::new(
+    turn_context.environments.environments[0] = TurnEnvironmentState::Ready(TurnEnvironment::new(
         "remote".to_string(),
         environment.environment,
         cwd,
         Vec::new(),
         environment.shell,
-    );
+    ));
 
     #[allow(deprecated)]
     let local_cwd = turn_context.cwd.clone();
@@ -8927,12 +8913,22 @@ async fn record_context_updates_and_set_reference_context_item_persists_baseline
     let previous_context_item = turn_context.to_turn_context_item();
     let previous_context = Arc::new(turn_context);
     let world_state = build_world_state_from_turn_context(&session, &previous_context).await;
+    let retained_world_state = world_state
+        .render_full()
+        .into_iter()
+        .map(ContextualUserFragment::into_boxed_response_item)
+        .collect::<Vec<_>>();
+    session
+        .replace_history(
+            retained_world_state.clone(),
+            Some(previous_context_item.clone()),
+        )
+        .await;
     let mut turn_context = Arc::try_unwrap(previous_context)
         .unwrap_or_else(|_| panic!("previous turn context should have no remaining references"));
     turn_context.sub_id = format!("{}-next", turn_context.sub_id);
     {
         let mut state = session.state.lock().await;
-        state.set_reference_context_item(Some(previous_context_item.clone()));
         state
             .history
             .set_world_state_baseline(world_state.snapshot());
@@ -8952,7 +8948,7 @@ async fn record_context_updates_and_set_reference_context_item_persists_baseline
 
     assert_eq!(
         session.clone_history().await.raw_items().to_vec(),
-        Vec::new()
+        retained_world_state
     );
     assert_eq!(
         serde_json::to_value(session.reference_context_item().await)

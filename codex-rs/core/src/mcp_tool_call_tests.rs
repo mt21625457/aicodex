@@ -1,6 +1,7 @@
 use super::*;
 use crate::config::ConfigBuilder;
 use crate::config::ManagedFeatures;
+use crate::environment_selection::TurnEnvironmentState;
 use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context;
 use crate::session::tests::make_session_and_context_with_rx;
@@ -961,13 +962,18 @@ fn codex_apps_connectors_support_persistent_approval() {
 }
 
 #[test]
-fn sanitize_mcp_tool_result_for_model_rewrites_image_content() {
+fn sanitize_mcp_tool_result_for_model_rewrites_unsupported_media_content() {
     let result = Ok(CallToolResult {
         content: vec![
             serde_json::json!({
                 "type": "image",
                 "data": "Zm9v",
                 "mimeType": "image/png",
+            }),
+            serde_json::json!({
+                "type": "audio",
+                "data": "YmFy",
+                "mimeType": "audio/wav",
             }),
             serde_json::json!({
                 "type": "text",
@@ -979,39 +985,59 @@ fn sanitize_mcp_tool_result_for_model_rewrites_image_content() {
         meta: None,
     });
 
-    let got = sanitize_mcp_tool_result_for_model(/*supports_image_input*/ false, result)
+    let got = sanitize_mcp_tool_result_for_model(&[InputModality::Text], result)
         .expect("sanitized result");
 
     assert_eq!(
-        got.content,
-        vec![
-            serde_json::json!({
-                "type": "text",
-                "text": "<image content omitted because you do not support image input>",
-            }),
-            serde_json::json!({
-                "type": "text",
-                "text": "hello",
-            }),
-        ]
+        got,
+        CallToolResult {
+            content: vec![
+                serde_json::json!({
+                    "type": "text",
+                    "text": "<image content omitted because you do not support image input>",
+                }),
+                serde_json::json!({
+                    "type": "text",
+                    "text": "<audio content omitted because you do not support audio input>",
+                }),
+                serde_json::json!({
+                    "type": "text",
+                    "text": "hello",
+                }),
+            ],
+            structured_content: None,
+            is_error: Some(false),
+            meta: None,
+        }
     );
 }
 
 #[test]
-fn sanitize_mcp_tool_result_for_model_preserves_image_when_supported() {
+fn sanitize_mcp_tool_result_for_model_preserves_supported_media() {
     let original = CallToolResult {
-        content: vec![serde_json::json!({
-            "type": "image",
-            "data": "Zm9v",
-            "mimeType": "image/png",
-        })],
+        content: vec![
+            serde_json::json!({
+                "type": "image",
+                "data": "Zm9v",
+                "mimeType": "image/png",
+            }),
+            serde_json::json!({
+                "type": "audio",
+                "data": "YmFy",
+                "mimeType": "audio/wav",
+            }),
+        ],
         structured_content: Some(serde_json::json!({"x": 1})),
         is_error: Some(false),
         meta: Some(serde_json::json!({"k": "v"})),
     };
 
     let got = sanitize_mcp_tool_result_for_model(
-        /*supports_image_input*/ true,
+        &[
+            InputModality::Text,
+            InputModality::Image,
+            InputModality::Audio,
+        ],
         Ok(original.clone()),
     )
     .expect("unsanitized result");
@@ -1158,19 +1184,22 @@ async fn mcp_tool_call_request_meta_includes_turn_started_at_unix_ms() {
 async fn mcp_sandbox_cwd_uses_matching_server_environment_uri() -> anyhow::Result<()> {
     let (_, mut turn_context) = make_session_and_context().await;
     let secondary_cwd = PathUri::parse("file:///C:/remote/project")?;
-    let environment = turn_context.environments.turn_environments[0]
+    let environment = turn_context
+        .environments
+        .primary()
+        .expect("primary environment")
         .environment
         .clone();
     turn_context
         .environments
-        .turn_environments
-        .push(TurnEnvironment::new(
+        .environments
+        .push(TurnEnvironmentState::Ready(TurnEnvironment::new(
             "remote".to_string(),
             environment,
             secondary_cwd.clone(),
             Vec::new(),
             /*shell*/ None,
-        ));
+        )));
 
     let step_context = StepContext::for_test(Arc::new(turn_context));
     let sandbox_cwd = sandbox_cwd_for_mcp_server(&step_context, "remote");

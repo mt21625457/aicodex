@@ -612,13 +612,8 @@ async fn execute_mcp_tool_call(
         )
         .await
         .map_err(|e| format!("tool call error: {e:?}"))?;
-    let result = sanitize_mcp_tool_result_for_model(
-        turn_context
-            .model_info
-            .input_modalities
-            .contains(&InputModality::Image),
-        Ok(result),
-    )?;
+    let result =
+        sanitize_mcp_tool_result_for_model(&turn_context.model_info.input_modalities, Ok(result))?;
     Ok(maybe_request_codex_apps_auth_elicitation(
         sess,
         turn_context,
@@ -777,8 +772,7 @@ async fn augment_mcp_tool_request_meta_with_sandbox_state(
 fn sandbox_cwd_for_mcp_server(step_context: &StepContext, environment_id: &str) -> Option<PathUri> {
     if let Some(environment) = step_context
         .environments
-        .turn_environments
-        .iter()
+        .turn_environments()
         .find(|environment| environment.environment_id == environment_id)
     {
         return Some(environment.cwd().clone());
@@ -814,10 +808,12 @@ async fn maybe_mark_thread_memory_mode_polluted(
 }
 
 fn sanitize_mcp_tool_result_for_model(
-    supports_image_input: bool,
+    input_modalities: &[InputModality],
     result: Result<CallToolResult, String>,
 ) -> Result<CallToolResult, String> {
-    if supports_image_input {
+    let supports_image_input = input_modalities.contains(&InputModality::Image);
+    let supports_audio_input = input_modalities.contains(&InputModality::Audio);
+    if supports_image_input && supports_audio_input {
         return result;
     }
 
@@ -826,13 +822,19 @@ fn sanitize_mcp_tool_result_for_model(
             .content
             .iter()
             .map(|block| {
-                if let Some(content_type) = block.get("type").and_then(serde_json::Value::as_str)
-                    && content_type == "image"
-                {
-                    return serde_json::json!({
-                        "type": "text",
-                        "text": "<image content omitted because you do not support image input>",
-                    });
+                if let Some(content_type) = block.get("type").and_then(serde_json::Value::as_str) {
+                    if content_type == "image" && !supports_image_input {
+                        return serde_json::json!({
+                            "type": "text",
+                            "text": "<image content omitted because you do not support image input>",
+                        });
+                    }
+                    if content_type == "audio" && !supports_audio_input {
+                        return serde_json::json!({
+                            "type": "text",
+                            "text": "<audio content omitted because you do not support audio input>",
+                        });
+                    }
                 }
 
                 block.clone()
