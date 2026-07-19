@@ -22,6 +22,7 @@ use codex_core::CodexThread;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
+use codex_protocol::protocol::TokenUsageInfo;
 
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::OutgoingMessageSender;
@@ -44,6 +45,26 @@ pub(super) async fn send_thread_token_usage_update_to_connection(
     let Some(info) = conversation.token_usage_info().await else {
         return;
     };
+    send_thread_token_usage_info_update_to_connection(
+        outgoing,
+        connection_id,
+        thread_id,
+        thread,
+        info,
+        token_usage_turn_id,
+    )
+    .await;
+}
+
+/// Sends a token usage snapshot that was restored directly from persisted history.
+pub(super) async fn send_thread_token_usage_info_update_to_connection(
+    outgoing: &Arc<OutgoingMessageSender>,
+    connection_id: ConnectionId,
+    thread_id: ThreadId,
+    thread: &Thread,
+    info: TokenUsageInfo,
+    token_usage_turn_id: Option<String>,
+) {
     let notification = ThreadTokenUsageUpdatedNotification {
         thread_id: thread_id.to_string(),
         turn_id: token_usage_turn_id.unwrap_or_else(|| latest_token_usage_turn_id(thread)),
@@ -55,6 +76,16 @@ pub(super) async fn send_thread_token_usage_update_to_connection(
             ServerNotification::ThreadTokenUsageUpdated(notification),
         )
         .await;
+}
+
+/// Returns the latest persisted token usage snapshot, ignoring rate-limit-only records.
+pub(super) fn latest_token_usage_info_from_rollout_items(
+    rollout_items: &[RolloutItem],
+) -> Option<TokenUsageInfo> {
+    rollout_items.iter().rev().find_map(|item| match item {
+        RolloutItem::EventMsg(EventMsg::TokenCount(event)) => event.info.clone(),
+        _ => None,
+    })
 }
 
 /// Identifies the turn that was active when a `TokenCount` record appeared.
@@ -74,7 +105,10 @@ pub(super) fn latest_token_usage_turn_id_from_rollout_items(
     let mut token_usage_turn_owner = None;
 
     for item in rollout_items {
-        if matches!(item, RolloutItem::EventMsg(EventMsg::TokenCount(_))) {
+        if matches!(
+            item,
+            RolloutItem::EventMsg(EventMsg::TokenCount(event)) if event.info.is_some()
+        ) {
             token_usage_turn_owner =
                 builder
                     .active_turn_snapshot()
@@ -145,6 +179,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn replay_usage_ignores_newer_rate_limit_only_records() {
+        let mut rollout_items = token_usage_history();
+        let expected = TokenUsageInfo::empty(None);
+        rollout_items.push(RolloutItem::EventMsg(EventMsg::TokenCount(
+            TokenCountEvent {
+                info: None,
+                rate_limits: None,
+            },
+        )));
+
+        assert_eq!(
+            latest_token_usage_info_from_rollout_items(&rollout_items),
+            Some(expected)
+        );
+
+        let turns = build_turns_from_rollout_items(&rollout_items);
+        assert_eq!(
+            latest_token_usage_turn_id_from_rollout_items(&rollout_items, &turns),
+            Some(turns[0].id.clone())
+        );
+    }
+
     fn token_usage_history() -> Vec<RolloutItem> {
         vec![
             RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
@@ -161,7 +218,7 @@ mod tests {
                 memory_citation: None,
             })),
             RolloutItem::EventMsg(EventMsg::TokenCount(TokenCountEvent {
-                info: None,
+                info: Some(TokenUsageInfo::empty(None)),
                 rate_limits: None,
             })),
             RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {

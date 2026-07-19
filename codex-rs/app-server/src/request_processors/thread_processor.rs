@@ -7,6 +7,7 @@ use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 use codex_protocol::protocol::ThreadHistoryMode;
+use codex_protocol::protocol::TokenUsageInfo;
 
 const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
 const THREAD_LIST_MAX_LIMIT: usize = 100;
@@ -26,6 +27,19 @@ struct ThreadListFilters {
     search_term: Option<String>,
     use_state_db_only: bool,
     relation_filter: Option<StoreThreadRelationFilter>,
+}
+
+struct ThreadReadView {
+    thread: Thread,
+    token_usage_info: Option<TokenUsageInfo>,
+    token_usage_turn_id: Option<String>,
+}
+
+struct ThreadReadTokenUsageReplay {
+    thread_id: ThreadId,
+    thread: Thread,
+    info: TokenUsageInfo,
+    turn_id: Option<String>,
 }
 
 fn collect_resume_override_mismatches(
@@ -724,11 +738,24 @@ impl ThreadRequestProcessor {
 
     pub(crate) async fn thread_read(
         &self,
+        request_id: ConnectionRequestId,
         params: ThreadReadParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.thread_read_response_inner(params)
-            .await
-            .map(|response| Some(response.into()))
+        let (response, replay) = self.thread_read_response_inner(params).await?;
+        let connection_id = request_id.connection_id;
+        self.outgoing.send_response(request_id, response).await;
+        if let Some(replay) = replay {
+            send_thread_token_usage_info_update_to_connection(
+                &self.outgoing,
+                connection_id,
+                replay.thread_id,
+                &replay.thread,
+                replay.info,
+                replay.turn_id,
+            )
+            .await;
+        }
+        Ok(None)
     }
 
     pub(crate) async fn thread_turns_list(
@@ -2249,7 +2276,7 @@ impl ThreadRequestProcessor {
     async fn thread_read_response_inner(
         &self,
         params: ThreadReadParams,
-    ) -> Result<ThreadReadResponse, JSONRPCErrorError> {
+    ) -> Result<(ThreadReadResponse, Option<ThreadReadTokenUsageReplay>), JSONRPCErrorError> {
         let ThreadReadParams {
             thread_id,
             include_turns,
@@ -2260,11 +2287,24 @@ impl ThreadRequestProcessor {
         let thread_uuid = ThreadId::from_string(&thread_id)
             .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
 
-        let thread = self
+        let view = self
             .read_thread_view(thread_uuid, include_turns, items_view)
             .await
             .map_err(thread_read_view_error)?;
-        Ok(ThreadReadResponse { thread })
+        let replay = view
+            .token_usage_info
+            .map(|info| ThreadReadTokenUsageReplay {
+                thread_id: thread_uuid,
+                thread: view.thread.clone(),
+                info,
+                turn_id: view.token_usage_turn_id,
+            });
+        Ok((
+            ThreadReadResponse {
+                thread: view.thread,
+            },
+            replay,
+        ))
     }
 
     /// Builds the API view for `thread/read` from persisted metadata plus optional live state.
@@ -2273,9 +2313,9 @@ impl ThreadRequestProcessor {
         thread_id: ThreadId,
         include_turns: bool,
         items_view: TurnItemsView,
-    ) -> Result<Thread, ThreadReadViewError> {
+    ) -> Result<ThreadReadView, ThreadReadViewError> {
         let loaded_thread = self.thread_manager.get_thread(thread_id).await.ok();
-        let mut thread = if include_turns {
+        let (mut thread, rollout_items) = if include_turns {
             if let Some(loaded_thread) = loaded_thread.as_ref() {
                 // Loaded thread with turns: use persisted metadata when it exists,
                 // but reconstruct turns from the live ThreadStore history.
@@ -2283,7 +2323,8 @@ impl ThreadRequestProcessor {
                     .load_persisted_thread_for_read(
                         thread_id, /*include_turns*/ false, items_view,
                     )
-                    .await?;
+                    .await?
+                    .map(|(thread, _)| thread);
                 self.load_live_thread_view(
                     thread_id,
                     include_turns,
@@ -2346,7 +2387,27 @@ impl ThreadRequestProcessor {
             thread_status,
             has_live_in_progress_turn,
         );
-        Ok(thread)
+        let token_usage_info = if include_turns {
+            if let Some(loaded_thread) = loaded_thread.as_ref() {
+                loaded_thread.token_usage_info().await
+            } else {
+                rollout_items
+                    .as_deref()
+                    .and_then(latest_token_usage_info_from_rollout_items)
+            }
+        } else {
+            None
+        };
+        let token_usage_turn_id = token_usage_info.as_ref().and_then(|_| {
+            rollout_items.as_deref().and_then(|items| {
+                latest_token_usage_turn_id_from_rollout_items(items, thread.turns.as_slice())
+            })
+        });
+        Ok(ThreadReadView {
+            thread,
+            token_usage_info,
+            token_usage_turn_id,
+        })
     }
 
     async fn load_persisted_thread_for_read(
@@ -2354,7 +2415,7 @@ impl ThreadRequestProcessor {
         thread_id: ThreadId,
         include_turns: bool,
         items_view: TurnItemsView,
-    ) -> Result<Option<Thread>, ThreadReadViewError> {
+    ) -> Result<Option<(Thread, Option<Vec<RolloutItem>>)>, ThreadReadViewError> {
         if include_turns
             && self
                 .read_stored_thread_for_read(thread_id, /*include_history*/ false)
@@ -2373,10 +2434,15 @@ impl ThreadRequestProcessor {
         };
         let (mut thread, history) =
             thread_from_stored_thread_with_config(stored_thread, &self.config);
-        if include_turns && let Some(history) = history {
-            thread.turns = build_api_turns_for_items_view(&history.items, items_view);
+        let rollout_items = if include_turns {
+            history.map(|history| history.items)
+        } else {
+            None
+        };
+        if let Some(items) = rollout_items.as_deref() {
+            thread.turns = build_api_turns_for_items_view(items, items_view);
         }
-        Ok(Some(thread))
+        Ok(Some((thread, rollout_items)))
     }
 
     async fn read_stored_thread_for_read(
@@ -2422,7 +2488,7 @@ impl ThreadRequestProcessor {
         items_view: TurnItemsView,
         loaded_thread: &CodexThread,
         persisted_thread: Option<Thread>,
-    ) -> Result<Thread, ThreadReadViewError> {
+    ) -> Result<(Thread, Option<Vec<RolloutItem>>), ThreadReadViewError> {
         let config_snapshot = loaded_thread.config_snapshot().await;
         if include_turns && config_snapshot.ephemeral {
             return Err(ThreadReadViewError::InvalidRequest(
@@ -2450,15 +2516,16 @@ impl ThreadRequestProcessor {
         } else {
             fallback_thread
         };
-        self.apply_thread_read_store_fields(
-            thread_id,
-            &mut thread,
-            include_turns,
-            items_view,
-            loaded_thread,
-        )
-        .await?;
-        Ok(thread)
+        let rollout_items = self
+            .apply_thread_read_store_fields(
+                thread_id,
+                &mut thread,
+                include_turns,
+                items_view,
+                loaded_thread,
+            )
+            .await?;
+        Ok((thread, rollout_items))
     }
 
     async fn apply_thread_read_store_fields(
@@ -2468,7 +2535,7 @@ impl ThreadRequestProcessor {
         include_turns: bool,
         items_view: TurnItemsView,
         loaded_thread: &CodexThread,
-    ) -> Result<(), ThreadReadViewError> {
+    ) -> Result<Option<Vec<RolloutItem>>, ThreadReadViewError> {
         self.attach_thread_name(thread_id, thread).await;
 
         if include_turns {
@@ -2477,9 +2544,10 @@ impl ThreadRequestProcessor {
                 .await
                 .map_err(|err| thread_read_history_load_error(thread_id, err))?;
             thread.turns = build_api_turns_for_items_view(&history.items, items_view);
+            return Ok(Some(history.items));
         }
 
-        Ok(())
+        Ok(None)
     }
 
     async fn thread_turns_list_response_inner(

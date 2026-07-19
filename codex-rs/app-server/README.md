@@ -500,7 +500,7 @@ Later, after the idle unload timeout:
 
 ### Example: Read a thread
 
-Use `thread/read` to fetch a stored thread by id without resuming it. Pass `includeTurns` when you want thread history loaded into `thread.turns`. The returned thread includes `parentThreadId`, `agentNickname`, and `agentRole` for subagent threads when available.
+Use `thread/read` to fetch a stored thread by id without resuming it. Pass `includeTurns` when you want thread history loaded into `thread.turns`. When that history contains persisted token usage, the server emits `thread/tokenUsage/updated` to the requesting connection immediately after the response so clients can restore context occupancy without resuming or starting another turn. Metadata-only reads with `includeTurns: false` skip usage replay. The returned thread includes `parentThreadId`, `agentNickname`, and `agentRole` for subagent threads when available.
 
 Paginated threads support metadata-only reads; `includeTurns: true` is unsupported for them.
 
