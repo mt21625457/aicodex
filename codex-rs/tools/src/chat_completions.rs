@@ -9,6 +9,7 @@ use serde_json::json;
 use std::io;
 
 const MAX_CHAT_TOOL_NAME_LEN: usize = 64;
+const MAX_CHAT_TOOLS: usize = 128;
 const MAX_CHAT_TOOL_TOKENS: usize = 10_000;
 const MAX_CHAT_TOOLS_TOTAL_TOKENS: usize = 64_000;
 
@@ -33,11 +34,28 @@ pub struct ChatToolsJson {
     pub tool_call_info: Vec<ChatToolCallInfo>,
 }
 
-/// Serializes every Codex tool kind as a Chat Completions function tool.
+/// Serializes Codex tool kinds as Chat Completions function tools, capped at the provider limit.
 ///
 /// The side table preserves the original Codex kind and namespace so streamed
 /// function calls can be restored to the correct `ResponseItem` variant.
 pub fn create_tools_json_for_chat_completions(
+    tools: &[ToolSpec],
+) -> Result<ChatToolsJson, serde_json::Error> {
+    let mut output = create_uncapped_tools_json_for_chat_completions(tools)?;
+    output.tools.truncate(MAX_CHAT_TOOLS);
+    output.tool_call_info.truncate(MAX_CHAT_TOOLS);
+    validate_tool_budgets(&output.tools)?;
+    Ok(output)
+}
+
+/// Builds the complete reverse-mapping table for hidden and historical Chat tools.
+pub fn create_tool_call_info_for_chat_completions(
+    tools: &[ToolSpec],
+) -> Result<Vec<ChatToolCallInfo>, serde_json::Error> {
+    Ok(create_uncapped_tools_json_for_chat_completions(tools)?.tool_call_info)
+}
+
+fn create_uncapped_tools_json_for_chat_completions(
     tools: &[ToolSpec],
 ) -> Result<ChatToolsJson, serde_json::Error> {
     let mut chat_tools = Vec::new();
@@ -65,6 +83,7 @@ pub fn create_tools_json_for_chat_completions(
                                     name: &tool.name,
                                     description: &description,
                                     parameters: serde_json::to_value(&tool.parameters)?,
+                                    strict: tool.strict.then_some(true),
                                     kind: ChatToolCallKind::Function,
                                 },
                             );
@@ -84,6 +103,7 @@ pub fn create_tools_json_for_chat_completions(
                     name: tool.name(),
                     description,
                     parameters: serde_json::to_value(parameters)?,
+                    strict: None,
                     kind: ChatToolCallKind::ToolSearch,
                 },
             ),
@@ -95,6 +115,7 @@ pub fn create_tools_json_for_chat_completions(
                     name: tool.name(),
                     description: "Access the web using Codex's configured search backend. Results may be bounded snippets: cite returned URLs with markdown links and use an available fetch/read-page capability when full-page context is needed.",
                     parameters: web_search_function_schema_json(),
+                    strict: None,
                     kind: ChatToolCallKind::Function,
                 },
             ),
@@ -103,8 +124,6 @@ pub fn create_tools_json_for_chat_completions(
             }
         }
     }
-
-    validate_tool_budgets(&chat_tools)?;
 
     Ok(ChatToolsJson {
         tools: chat_tools,
@@ -151,6 +170,7 @@ fn push_function_tool(
             name: &tool.name,
             description: &tool.description,
             parameters: serde_json::to_value(&tool.parameters)?,
+            strict: tool.strict.then_some(true),
             kind: ChatToolCallKind::Function,
         },
     );
@@ -184,6 +204,7 @@ fn push_freeform_tool(
                 "required": ["input"],
                 "additionalProperties": false
             }),
+            strict: None,
             kind: ChatToolCallKind::Custom,
         },
     );
@@ -194,6 +215,7 @@ struct ChatToolDefinition<'a> {
     name: &'a str,
     description: &'a str,
     parameters: Value,
+    strict: Option<bool>,
     kind: ChatToolCallKind,
 }
 
@@ -203,14 +225,21 @@ fn push_tool(
     tool: ChatToolDefinition<'_>,
 ) {
     let chat_name = chat_tool_name(tool.namespace, tool.name, tool.kind);
-    chat_tools.push(json!({
-        "type": "function",
-        "function": {
-            "name": chat_name,
-            "description": tool.description,
-            "parameters": tool.parameters
-        }
-    }));
+    if tool_call_info
+        .iter()
+        .any(|info| info.chat_name == chat_name)
+    {
+        return;
+    }
+    let mut function = json!({
+        "name": chat_name,
+        "description": tool.description,
+        "parameters": tool.parameters
+    });
+    if let Some(strict) = tool.strict {
+        function["strict"] = json!(strict);
+    }
+    chat_tools.push(json!({"type": "function", "function": function}));
     tool_call_info.push(ChatToolCallInfo {
         chat_name,
         name: tool.name.to_string(),

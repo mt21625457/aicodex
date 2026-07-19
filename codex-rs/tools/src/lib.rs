@@ -26,6 +26,7 @@ pub use chat_completions::ChatToolCallInfo;
 pub use chat_completions::ChatToolCallKind;
 pub use chat_completions::ChatToolsJson;
 pub use chat_completions::chat_tool_name;
+pub use chat_completions::create_tool_call_info_for_chat_completions;
 pub use chat_completions::create_tools_json_for_chat_completions;
 pub use claude_native::CLAUDE_ADVISOR_20260301_TOOL_TYPE;
 pub use claude_native::CLAUDE_ADVISOR_TOOL_NAME;

@@ -22,13 +22,14 @@ pub struct FreeformToolFormat {
     pub definition: String,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResponsesApiTool {
     pub name: String,
     pub description: String,
     /// TODO: Validation. When strict is set to true, the JSON schema,
     /// `required` and `additional_properties` must be present. All fields in
     /// `properties` must be present in `required`.
+    #[serde(default)]
     pub strict: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub defer_loading: Option<bool>,
@@ -37,7 +38,7 @@ pub struct ResponsesApiTool {
     pub output_schema: Option<Value>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
 #[allow(clippy::large_enum_variant)]
 pub enum LoadableToolSpec {
@@ -48,7 +49,7 @@ pub enum LoadableToolSpec {
     Namespace(ResponsesApiNamespace),
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResponsesApiNamespace {
     pub name: String,
     pub description: String,
@@ -59,7 +60,7 @@ pub fn default_namespace_description(namespace_name: &str) -> String {
     format!("Tools in the {namespace_name} namespace.")
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
 pub enum ResponsesApiNamespaceTool {
     #[serde(rename = "function")]
