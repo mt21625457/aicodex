@@ -2,6 +2,7 @@ use codex_config::config_toml::ChatFileToolMode;
 use codex_core::config::Config;
 use codex_features::Feature;
 use codex_model_provider_info::WireApi;
+use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
@@ -9,6 +10,7 @@ use codex_protocol::items::TurnItem;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CodexErrorInfo;
+use codex_protocol::protocol::ContextTokenUsageSource;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::ItemStartedEvent;
@@ -82,22 +84,40 @@ async fn chat_wire_streams_text_on_chat_path_with_uniform_headers() -> anyhow::R
     })
     .await;
     assert_eq!(message, "hello from chat");
-    let usage = wait_for_event_match(&test.codex, |event| match event {
-        EventMsg::TokenCount(payload) => payload
-            .info
-            .as_ref()
-            .map(|info| info.last_token_usage.clone()),
+    let token_info = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::TokenCount(payload)
+            if payload.info.as_ref().is_some_and(|info| {
+                info.context_source == Some(ContextTokenUsageSource::ProviderUsage)
+            }) =>
+        {
+            payload.info.clone()
+        }
         _ => None,
     })
     .await;
     assert_eq!(
-        usage,
-        TokenUsage {
-            input_tokens: 8,
-            output_tokens: 3,
-            total_tokens: 11,
-            ..Default::default()
-        }
+        (
+            token_info.total_token_usage,
+            token_info.last_token_usage,
+            token_info.context_tokens,
+            token_info.context_source,
+        ),
+        (
+            TokenUsage {
+                input_tokens: 8,
+                output_tokens: 3,
+                total_tokens: 11,
+                ..Default::default()
+            },
+            TokenUsage {
+                input_tokens: 8,
+                output_tokens: 3,
+                total_tokens: 11,
+                ..Default::default()
+            },
+            Some(11),
+            Some(ContextTokenUsageSource::ProviderUsage),
+        )
     );
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
@@ -129,6 +149,238 @@ async fn chat_wire_streams_text_on_chat_path_with_uniform_headers() -> anyhow::R
     }));
     assert!(body.get("input").is_none());
     assert!(body.get("system").is_none());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_wire_estimates_context_when_final_usage_is_missing() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    mount_chat_sse_sequence(
+        &server,
+        vec![chat_sse(vec![json!({
+            "id": "chatcmpl_without_usage",
+            "choices": [{
+                "index": 0,
+                "delta": {"content": "hello without usage"},
+                "finish_reason": "stop"
+            }]
+        })])],
+    )
+    .await;
+    let test = test_codex()
+        .with_model("gpt-5.2")
+        .with_config(configure_chat_provider)
+        .build_with_auto_env(&server)
+        .await?;
+
+    submit_text_turn(&test, "say hello").await?;
+    let estimated_context_tokens = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::TokenCount(payload) => payload.info.as_ref().and_then(|info| {
+            (info.context_source == Some(ContextTokenUsageSource::LocalEstimate))
+                .then_some(info.context_tokens)
+                .flatten()
+        }),
+        _ => None,
+    })
+    .await;
+    assert!(estimated_context_tokens > 0);
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_wire_provider_usage_triggers_pre_turn_auto_compaction() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let responses = mount_chat_sse_sequence(
+        &server,
+        vec![
+            chat_sse(vec![
+                json!({
+                    "id": "chatcmpl_before_compact",
+                    "choices": [{
+                        "index": 0,
+                        "delta": {"content": "first answer"},
+                        "finish_reason": "stop"
+                    }]
+                }),
+                json!({
+                    "choices": [],
+                    "usage": {"prompt_tokens": 190, "completion_tokens": 20, "total_tokens": 210}
+                }),
+            ]),
+            chat_sse(vec![json!({
+                "id": "chatcmpl_compaction",
+                "choices": [{
+                    "index": 0,
+                    "delta": {"content": "compacted summary"},
+                    "finish_reason": "stop"
+                }]
+            })]),
+            chat_sse(vec![json!({
+                "id": "chatcmpl_after_compact",
+                "choices": [{
+                    "index": 0,
+                    "delta": {"content": "second answer"},
+                    "finish_reason": "stop"
+                }]
+            })]),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_model("gpt-5.2")
+        .with_config(|config| {
+            configure_chat_provider(config);
+            config.model_context_window = Some(1_000);
+            config.model_auto_compact_token_limit = Some(200);
+        })
+        .build_with_auto_env(&server)
+        .await?;
+
+    submit_text_turn(&test, "first turn before threshold").await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    submit_text_turn(&test, "second turn after threshold").await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(
+            event,
+            EventMsg::ItemCompleted(ItemCompletedEvent {
+                item: TurnItem::ContextCompaction(_),
+                ..
+            })
+        )
+    })
+    .await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 3);
+    let compaction_request = requests[1].body_json();
+    assert!(
+        !compaction_request["messages"]
+            .as_array()
+            .is_some_and(|messages| messages.iter().any(|message| {
+                message["role"] == "user" && message["content"] == "second turn after threshold"
+            }))
+    );
+    let post_compaction_request = requests[2].body_json();
+    assert!(
+        post_compaction_request["messages"]
+            .as_array()
+            .is_some_and(|messages| messages.iter().any(|message| {
+                message["role"] == "user" && message["content"] == "second turn after threshold"
+            }))
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_wire_missing_usage_preserves_body_scope_baseline_for_auto_compaction()
+-> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let responses = mount_chat_sse_sequence(
+        &server,
+        vec![
+            chat_sse(vec![json!({
+                "id": "chatcmpl_estimated_first",
+                "choices": [{
+                    "index": 0,
+                    "delta": {"content": "first estimated answer"},
+                    "finish_reason": "stop"
+                }]
+            })]),
+            chat_sse(vec![json!({
+                "id": "chatcmpl_estimated_second",
+                "choices": [{
+                    "index": 0,
+                    "delta": {"content": "second estimated answer with more context"},
+                    "finish_reason": "stop"
+                }]
+            })]),
+            chat_sse(vec![json!({
+                "id": "chatcmpl_estimated_compaction",
+                "choices": [{
+                    "index": 0,
+                    "delta": {"content": "estimated compacted summary"},
+                    "finish_reason": "stop"
+                }]
+            })]),
+            chat_sse(vec![json!({
+                "id": "chatcmpl_estimated_after_compact",
+                "choices": [{
+                    "index": 0,
+                    "delta": {"content": "third answer"},
+                    "finish_reason": "stop"
+                }]
+            })]),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_model("gpt-5.2")
+        .with_config(|config| {
+            configure_chat_provider(config);
+            config.model_context_window = Some(10_000);
+            config.model_auto_compact_token_limit = Some(1);
+            config.model_auto_compact_token_limit_scope =
+                AutoCompactTokenLimitScope::BodyAfterPrefix;
+        })
+        .build_with_auto_env(&server)
+        .await?;
+
+    for prompt in ["first estimated turn", "second estimated turn"] {
+        submit_text_turn(&test, prompt).await?;
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+    }
+
+    submit_text_turn(&test, "third turn after estimated growth").await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(
+            event,
+            EventMsg::ItemCompleted(ItemCompletedEvent {
+                item: TurnItem::ContextCompaction(_),
+                ..
+            })
+        )
+    })
+    .await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 4);
+    let compaction_request = requests[2].body_json();
+    assert!(
+        !compaction_request["messages"]
+            .as_array()
+            .is_some_and(|messages| messages.iter().any(|message| {
+                message["role"] == "user"
+                    && message["content"] == "third turn after estimated growth"
+            }))
+    );
+    let post_compaction_request = requests[3].body_json();
+    assert!(
+        post_compaction_request["messages"]
+            .as_array()
+            .is_some_and(|messages| messages.iter().any(|message| {
+                message["role"] == "user"
+                    && message["content"] == "third turn after estimated growth"
+            }))
+    );
     Ok(())
 }
 

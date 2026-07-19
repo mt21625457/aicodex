@@ -176,6 +176,9 @@ struct ChatUsage {
 
 impl ChatUsage {
     fn token_usage(&self) -> TokenUsage {
+        let total_tokens = self
+            .total_tokens
+            .max(self.prompt_tokens.saturating_add(self.completion_tokens));
         TokenUsage {
             input_tokens: self.prompt_tokens,
             cached_input_tokens: self
@@ -188,7 +191,7 @@ impl ChatUsage {
                 .completion_tokens_details
                 .as_ref()
                 .map_or(0, |details| details.reasoning_tokens),
-            total_tokens: self.total_tokens,
+            total_tokens,
         }
     }
 }

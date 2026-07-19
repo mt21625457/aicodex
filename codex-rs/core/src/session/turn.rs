@@ -1508,6 +1508,64 @@ async fn update_claude_token_usage_after_completion(
     .await;
 }
 
+async fn update_chat_token_usage_after_completion(
+    sess: &Session,
+    turn_context: &TurnContext,
+    streamed_token_usage: Option<&codex_protocol::protocol::TokenUsage>,
+) {
+    let provider_context_tokens = streamed_token_usage
+        .map(|usage| {
+            usage
+                .total_tokens
+                .max(usage.input_tokens.saturating_add(usage.output_tokens))
+        })
+        .filter(|tokens| *tokens > 0);
+    let uses_local_estimate = provider_context_tokens.is_none();
+    let (context_tokens, context_source) = if let Some(tokens) = provider_context_tokens {
+        (Some(tokens), Some(ContextTokenUsageSource::ProviderUsage))
+    } else {
+        let estimated_tokens = sess.get_estimated_context_token_count().await;
+        (
+            estimated_tokens,
+            estimated_tokens.map(|_| ContextTokenUsageSource::LocalEstimate),
+        )
+    };
+
+    let token_info = {
+        let mut state = sess.state.lock().await;
+        let mut info = state
+            .token_info()
+            .unwrap_or_else(|| TokenUsageInfo::empty(turn_context.model_context_window()));
+        if let Some(context_tokens) = context_tokens
+            && let Some(context_source) = context_source
+        {
+            info.context_tokens = Some(context_tokens.max(0));
+            info.context_source = Some(context_source);
+        }
+        if let Some(model_context_window) = turn_context.model_context_window() {
+            info.model_context_window = Some(model_context_window);
+        }
+        state.set_token_info(Some(info));
+        if uses_local_estimate
+            && matches!(
+                turn_context.config.model_auto_compact_token_limit_scope,
+                AutoCompactTokenLimitScope::BodyAfterPrefix
+            )
+            && let Some(context_tokens) = context_tokens
+            && state
+                .auto_compact_window_snapshot()
+                .prefill_input_tokens
+                .is_none()
+        {
+            state.set_auto_compact_window_estimated_prefill(context_tokens);
+        }
+        state.token_info()
+    };
+    sess.notify_token_usage_contributors(turn_context, token_info.as_ref())
+        .await;
+    sess.send_token_count_event(turn_context).await;
+}
+
 async fn update_responses_token_usage_context_estimate(sess: &Session, turn_context: &TurnContext) {
     let Some(estimated_context_tokens) = sess.get_estimated_context_token_count().await else {
         return;
@@ -2441,6 +2499,8 @@ async fn try_run_sampling_request(
     let mut plan_mode_state = plan_mode.then(|| PlanModeStreamState::new(&turn_context.sub_id));
     let mut completed_claude_token_usage: Option<codex_protocol::protocol::TokenUsage> = None;
     let mut completed_claude_response = false;
+    let mut completed_chat_token_usage: Option<codex_protocol::protocol::TokenUsage> = None;
+    let mut completed_chat_response = false;
     let defer_streamed_turn_items_for_contributors =
         !sess.services.extensions.turn_item_contributors().is_empty();
     let mut active_item_is_streaming_to_client = false;
@@ -2786,14 +2846,24 @@ async fn try_run_sampling_request(
                     }),
                 )
                 .await;
-                // Chat uses the same provider-usage accounting path as Responses.
-                let budget_result = if turn_context.provider.info().wire_api == WireApi::Claude {
-                    completed_claude_response = true;
-                    completed_claude_token_usage = token_usage;
-                    Ok(())
-                } else {
-                    sess.record_token_usage_info(&turn_context, token_usage.as_ref())
-                        .await
+                let budget_result = match turn_context.provider.info().wire_api {
+                    WireApi::Claude => {
+                        completed_claude_response = true;
+                        completed_claude_token_usage = token_usage;
+                        Ok(())
+                    }
+                    WireApi::Chat => {
+                        completed_chat_response = true;
+                        let budget_result = sess
+                            .record_token_usage_info(&turn_context, token_usage.as_ref())
+                            .await;
+                        completed_chat_token_usage = token_usage;
+                        budget_result
+                    }
+                    WireApi::Responses => {
+                        sess.record_token_usage_info(&turn_context, token_usage.as_ref())
+                            .await
+                    }
                 };
                 should_emit_token_count = true;
                 should_emit_turn_diff = true;
@@ -2989,12 +3059,18 @@ async fn try_run_sampling_request(
             completed_claude_token_usage.as_ref(),
         )
         .await;
+    } else if completed_chat_response {
+        update_chat_token_usage_after_completion(
+            sess.as_ref(),
+            turn_context.as_ref(),
+            completed_chat_token_usage.as_ref(),
+        )
+        .await;
     } else if should_emit_token_count {
         // A tool call such as request_user_input can intentionally pause the turn. Emit token
         // counts only after pending tools resolve so clients do not see progress events while the
         // turn is waiting on the user. This also needs to happen before returning cancellation so
         // token usage already recorded from the completed response is still persisted.
-        // Chat usage is already recorded but does not use Responses server-context estimation.
         if turn_context.provider.info().wire_api == WireApi::Responses {
             update_responses_token_usage_context_estimate(sess.as_ref(), turn_context.as_ref())
                 .await;

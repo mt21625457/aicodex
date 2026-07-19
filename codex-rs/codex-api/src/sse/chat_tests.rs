@@ -195,6 +195,44 @@ async fn accumulates_text_reasoning_usage_and_stop_reason() {
 }
 
 #[tokio::test]
+async fn derives_total_usage_when_compatible_provider_omits_it() {
+    let events = collect_events(
+        chat_sse(&[
+            json!({
+                "id": "chatcmpl_usage_without_total",
+                "choices": [{
+                    "index": 0,
+                    "delta": {"content": "hello"},
+                    "finish_reason": "stop"
+                }]
+            }),
+            json!({
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 4
+                }
+            }),
+        ]),
+        HashMap::new(),
+    )
+    .await;
+
+    assert_matches!(
+        events.last(),
+        Some(Ok(ResponseEvent::Completed {
+            token_usage: Some(TokenUsage {
+                input_tokens: 10,
+                output_tokens: 4,
+                total_tokens: 14,
+                ..
+            }),
+            ..
+        }))
+    );
+}
+
+#[tokio::test]
 async fn reasoning_aliases_and_null_fallback_emit_the_same_delta() {
     for field in ["reasoning_content", "reasoning", "thinking"] {
         let mut delta = serde_json::Map::new();
