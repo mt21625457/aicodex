@@ -620,6 +620,126 @@ fn serializes_and_bounds_tool_search_history() {
 }
 
 #[test]
+fn tool_search_history_uses_latest_valid_schema_and_ignores_malformed_legacy_tools() {
+    let lookup_name = chat_tool_name(
+        /*namespace*/ None,
+        "lookup",
+        ChatToolCallKind::Function,
+    );
+    let stable_name = chat_tool_name(
+        /*namespace*/ None,
+        "stable",
+        ChatToolCallKind::Function,
+    );
+    let tool_search_name = chat_tool_name(
+        /*namespace*/ None,
+        "tool_search",
+        ChatToolCallKind::ToolSearch,
+    );
+    let prompt = Prompt {
+        input: vec![
+            message(
+                "user",
+                vec![ContentItem::InputText {
+                    text: "find lookup".to_string(),
+                }],
+            ),
+            ResponseItem::ToolSearchOutput {
+                id: None,
+                call_id: None,
+                status: "completed".to_string(),
+                execution: "client".to_string(),
+                tools: vec![json!({
+                    "type": "function",
+                    "name": "lookup",
+                    "description": "old schema",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"old": {"type": "string"}}
+                    }
+                })],
+                internal_chat_message_metadata_passthrough: None,
+            },
+            ResponseItem::ToolSearchOutput {
+                id: None,
+                call_id: None,
+                status: "completed".to_string(),
+                execution: "client".to_string(),
+                tools: vec![
+                    json!({
+                        "type": "function",
+                        "name": "stable",
+                        "description": "stable schema",
+                        "parameters": {"type": "object", "properties": {}}
+                    }),
+                    json!({"type": "function", "name": "broken"}),
+                ],
+                internal_chat_message_metadata_passthrough: None,
+            },
+            ResponseItem::ToolSearchOutput {
+                id: None,
+                call_id: None,
+                status: "completed".to_string(),
+                execution: "client".to_string(),
+                tools: vec![json!({
+                    "type": "function",
+                    "name": "lookup",
+                    "description": "latest schema",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"current": {"type": "integer"}}
+                    }
+                })],
+                internal_chat_message_metadata_passthrough: None,
+            },
+        ],
+        tools: vec![ToolSpec::ToolSearch {
+            execution: "client".to_string(),
+            description: "Search available tools".to_string(),
+            parameters: JsonSchema::object(
+                BTreeMap::new(),
+                /*required*/ None,
+                /*additional_properties*/ None,
+            ),
+        }],
+        base_instructions: BaseInstructions {
+            text: String::new(),
+        },
+        ..Default::default()
+    };
+
+    let request = build_chat_completions_request(&prompt, &model_info(), None, None)
+        .expect("build Chat request from legacy tool-search history");
+    let lookup = request
+        .tools
+        .iter()
+        .find(|tool| tool["function"]["name"] == lookup_name)
+        .expect("latest discovered tool should be declared");
+    assert_eq!(
+        lookup["function"],
+        json!({
+            "name": lookup_name,
+            "description": "latest schema",
+            "parameters": {
+                "type": "object",
+                "properties": {"current": {"type": "integer"}}
+            }
+        })
+    );
+    assert!(request.tools.iter().all(|tool| {
+        tool["function"]["description"] != "old schema" && tool["function"]["name"] != "broken"
+    }));
+    assert_eq!(
+        request
+            .tools
+            .iter()
+            .filter_map(|tool| tool["function"]["name"].as_str())
+            .collect::<Vec<_>>(),
+        vec![tool_search_name, lookup_name, stable_name]
+    );
+}
+
+#[test]
 fn dedicated_guidance_uses_actual_hashed_wire_names() {
     let info = vec![
         ChatToolCallInfo {

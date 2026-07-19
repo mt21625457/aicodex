@@ -2,6 +2,7 @@ use codex_config::config_toml::ChatFileToolMode;
 use codex_core::config::Config;
 use codex_features::Feature;
 use codex_model_provider_info::WireApi;
+use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::items::TurnItem;
@@ -17,6 +18,11 @@ use codex_protocol::user_input::UserInput;
 use codex_tools::ChatToolCallKind;
 use codex_tools::chat_tool_name;
 use codex_utils_path_uri::PathUri;
+use core_test_support::apps_test_server::AppsTestServer;
+use core_test_support::apps_test_server::SEARCH_CALENDAR_CREATE_TOOL;
+use core_test_support::apps_test_server::SEARCH_CALENDAR_NAMESPACE;
+use core_test_support::apps_test_server::recorded_apps_tool_call_by_call_id;
+use core_test_support::apps_test_server::search_capable_apps_builder;
 use core_test_support::responses::mount_chat_sse_sequence;
 use core_test_support::responses::start_mock_server;
 use core_test_support::streaming_sse::StreamingSseChunk;
@@ -248,6 +254,209 @@ async fn chat_wire_tool_loop_posts_tool_result_and_completes() -> anyhow::Result
         tool_result["content"]
             .as_str()
             .is_some_and(|content| content.contains("chat-tool"))
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_wire_local_web_search_executes_and_returns_tool_result() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let web_search_name = chat_tool_name(
+        /*namespace*/ None,
+        "web_search",
+        ChatToolCallKind::Function,
+    );
+    let responses = mount_chat_sse_sequence(
+        &server,
+        vec![
+            chat_sse(vec![json!({
+                "id": "chatcmpl_web_search",
+                "choices": [{
+                    "index": 0,
+                    "delta": {"tool_calls": [{
+                        "index": 0,
+                        "id": "call_web_search",
+                        "function": {
+                            "name": web_search_name.clone(),
+                            "arguments": "{\"search_query\":[{\"q\":\"chat compatibility\"}]}"
+                        }
+                    }]},
+                    "finish_reason": "tool_calls"
+                }]
+            })]),
+            chat_sse(vec![json!({
+                "id": "chatcmpl_web_search_final",
+                "choices": [{
+                    "index": 0,
+                    "delta": {"content": "search complete"},
+                    "finish_reason": "stop"
+                }]
+            })]),
+        ],
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/alpha/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "output": "Search result with https://example.com/chat"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let test = test_codex()
+        .with_model("gpt-5.2")
+        .with_config(|config| {
+            configure_chat_provider(config);
+            let mut openai_provider =
+                codex_model_provider_info::ModelProviderInfo::create_openai_provider(
+                    config.model_provider.base_url.clone(),
+                );
+            openai_provider.requires_openai_auth = false;
+            openai_provider.supports_websockets = false;
+            config
+                .model_providers
+                .insert("openai".to_string(), openai_provider);
+            config
+                .web_search_mode
+                .set(WebSearchMode::Live)
+                .expect("web search mode should be configurable");
+        })
+        .build_with_auto_env(&server)
+        .await?;
+
+    test.submit_turn("search the web through Chat compatibility")
+        .await?;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 2);
+    let first = requests[0].body_json();
+    assert!(first["tools"].as_array().is_some_and(|tools| {
+        tools
+            .iter()
+            .any(|tool| tool["function"]["name"] == web_search_name)
+    }));
+    let second = requests[1].body_json();
+    let result = second["messages"]
+        .as_array()
+        .and_then(|messages| {
+            messages.iter().find(|message| {
+                message["role"] == "tool" && message["tool_call_id"] == "call_web_search"
+            })
+        })
+        .unwrap_or_else(|| panic!("missing Chat web-search tool result: {second}"));
+    assert!(
+        chat_message_text(result).contains("https://example.com/chat"),
+        "unexpected Chat web-search result: {result}"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_wire_tool_search_discovers_and_executes_mcp_tool() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let apps_server = AppsTestServer::mount_searchable(&server).await?;
+    let tool_search_name = chat_tool_name(
+        /*namespace*/ None,
+        "tool_search",
+        ChatToolCallKind::ToolSearch,
+    );
+    let calendar_name = chat_tool_name(
+        Some(SEARCH_CALENDAR_NAMESPACE),
+        SEARCH_CALENDAR_CREATE_TOOL,
+        ChatToolCallKind::Function,
+    );
+    let responses = mount_chat_sse_sequence(
+        &server,
+        vec![
+            chat_sse(vec![json!({
+                "id": "chatcmpl_tool_search",
+                "choices": [{
+                    "index": 0,
+                    "delta": {"tool_calls": [{
+                        "index": 0,
+                        "id": "search_apps",
+                        "function": {
+                            "name": tool_search_name.clone(),
+                            "arguments": "{\"query\":\"create calendar event\",\"limit\":8}"
+                        }
+                    }]},
+                    "finish_reason": "tool_calls"
+                }]
+            })]),
+            chat_sse(vec![json!({
+                "id": "chatcmpl_mcp_call",
+                "choices": [{
+                    "index": 0,
+                    "delta": {"tool_calls": [{
+                        "index": 0,
+                        "id": "call_calendar",
+                        "function": {
+                            "name": calendar_name.clone(),
+                            "arguments": "{\"title\":\"Compatibility review\",\"starts_at\":\"2026-07-19T09:00:00Z\"}"
+                        }
+                    }]},
+                    "finish_reason": "tool_calls"
+                }]
+            })]),
+            chat_sse(vec![json!({
+                "id": "chatcmpl_mcp_final",
+                "choices": [{
+                    "index": 0,
+                    "delta": {"content": "calendar updated"},
+                    "finish_reason": "stop"
+                }]
+            })]),
+        ],
+    )
+    .await;
+    let test = search_capable_apps_builder(apps_server.chatgpt_base_url)
+        .with_config(configure_chat_provider)
+        .build_with_auto_env(&server)
+        .await?;
+
+    test.submit_turn_with_approval_and_permission_profile(
+        "find and call the calendar MCP tool",
+        AskForApproval::Never,
+        PermissionProfile::Disabled,
+    )
+    .await?;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(
+        requests[0].body_json()["tools"]
+            .as_array()
+            .is_some_and(|tools| tools
+                .iter()
+                .any(|tool| tool["function"]["name"] == tool_search_name))
+    );
+    let discovered_request = requests[1].body_json();
+    assert!(
+        discovered_request["tools"].as_array().is_some_and(|tools| {
+            tools
+                .iter()
+                .any(|tool| tool["function"]["name"] == calendar_name)
+        }),
+        "discovered MCP tool missing from Chat request: {discovered_request}"
+    );
+    let final_request = requests[2].body_json();
+    let mcp_result = final_request["messages"]
+        .as_array()
+        .and_then(|messages| {
+            messages.iter().find(|message| {
+                message["role"] == "tool" && message["tool_call_id"] == "call_calendar"
+            })
+        })
+        .unwrap_or_else(|| panic!("missing Chat MCP tool result: {final_request}"));
+    assert!(
+        chat_message_text(mcp_result).contains("\"call_id\":\"call_calendar\"")
+            && chat_message_text(mcp_result).contains("\"contains_mcp_source\":true"),
+        "unexpected Chat MCP result: {mcp_result}"
+    );
+    let mcp_call = recorded_apps_tool_call_by_call_id(&server, "call_calendar").await;
+    assert_eq!(
+        mcp_call.pointer("/params/name"),
+        Some(&json!("calendar_create_event"))
     );
     Ok(())
 }
@@ -697,7 +906,7 @@ async fn chat_wire_idle_stream_reaches_the_turn() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn chat_wire_cumulative_context_limit_reaches_the_turn() -> anyhow::Result<()> {
     let server = start_mock_server().await;
-    let fragment = "x".repeat(6_000);
+    let fragment = "x".repeat(33_000);
     let responses = mount_chat_sse_sequence(
         &server,
         vec![chat_sse(vec![
@@ -904,6 +1113,17 @@ fn configure_chat_provider(config: &mut Config) {
     config.model_provider.supports_websockets = true;
     config.model_provider.stream_max_retries = Some(0);
     config.model_provider.wire_api = WireApi::Chat;
+}
+
+fn chat_message_text(message: &Value) -> String {
+    match &message["content"] {
+        Value::String(text) => text.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .collect(),
+        _ => String::new(),
+    }
 }
 
 fn configure_legacy_chat_provider(config: &mut Config) {

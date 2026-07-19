@@ -26,7 +26,10 @@ use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_tools::ChatToolCallInfo;
 use codex_tools::ChatToolCallKind;
+use codex_tools::LoadableToolSpec;
+use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::chat_tool_name;
+use codex_tools::create_tool_call_info_for_chat_completions;
 use codex_tools::create_tools_json_for_chat_completions;
 use codex_utils_string::approx_token_count;
 use codex_utils_string::truncate_middle_with_token_budget;
@@ -63,13 +66,113 @@ pub(crate) fn build_chat_completions_request_for_provider(
     service_tier: Option<String>,
     supports_developer_role: bool,
 ) -> Result<ChatCompletionsApiRequest> {
+    let formatted_input = prompt.get_formatted_input_for_request(false);
+    let mut visible_tool_specs = prompt.tools.clone();
+    let mut discovered_tool_specs: Vec<LoadableToolSpec> = Vec::new();
+    for item in &formatted_input {
+        let ResponseItem::ToolSearchOutput {
+            execution, tools, ..
+        } = item
+        else {
+            continue;
+        };
+        if execution != "client" {
+            continue;
+        }
+        for tool in tools {
+            let Some(tool_type) = tool.get("type").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            if !matches!(tool_type, "function" | "namespace") {
+                continue;
+            }
+            let discovered: LoadableToolSpec = match serde_json::from_value(tool.clone()) {
+                Ok(discovered) => discovered,
+                Err(err) => {
+                    tracing::debug!(
+                        tool_type,
+                        error = %err,
+                        "ignoring malformed historical Chat tool_search result"
+                    );
+                    continue;
+                }
+            };
+            match discovered {
+                LoadableToolSpec::Function(discovered_tool) => {
+                    if let Some(existing_tool) =
+                        discovered_tool_specs
+                            .iter_mut()
+                            .find_map(|spec| match spec {
+                                LoadableToolSpec::Function(existing_tool)
+                                    if existing_tool.name == discovered_tool.name =>
+                                {
+                                    Some(existing_tool)
+                                }
+                                LoadableToolSpec::Function(_) | LoadableToolSpec::Namespace(_) => {
+                                    None
+                                }
+                            })
+                    {
+                        *existing_tool = discovered_tool;
+                    } else {
+                        discovered_tool_specs.push(LoadableToolSpec::Function(discovered_tool));
+                    }
+                }
+                LoadableToolSpec::Namespace(mut discovered_namespace) => {
+                    if let Some(existing_namespace) =
+                        discovered_tool_specs
+                            .iter_mut()
+                            .find_map(|spec| match spec {
+                                LoadableToolSpec::Namespace(existing_namespace)
+                                    if existing_namespace.name == discovered_namespace.name =>
+                                {
+                                    Some(existing_namespace)
+                                }
+                                LoadableToolSpec::Function(_) | LoadableToolSpec::Namespace(_) => {
+                                    None
+                                }
+                            })
+                    {
+                        existing_namespace.description = discovered_namespace.description;
+                        for discovered_tool in discovered_namespace.tools.drain(..) {
+                            match discovered_tool {
+                                ResponsesApiNamespaceTool::Function(discovered_tool) => {
+                                    if let Some(existing_tool) = existing_namespace
+                                        .tools
+                                        .iter_mut()
+                                        .find_map(|tool| match tool {
+                                            ResponsesApiNamespaceTool::Function(existing_tool)
+                                                if existing_tool.name == discovered_tool.name =>
+                                            {
+                                                Some(existing_tool)
+                                            }
+                                            ResponsesApiNamespaceTool::Function(_) => None,
+                                        })
+                                    {
+                                        *existing_tool = discovered_tool;
+                                    } else {
+                                        existing_namespace.tools.push(
+                                            ResponsesApiNamespaceTool::Function(discovered_tool),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        discovered_tool_specs
+                            .push(LoadableToolSpec::Namespace(discovered_namespace));
+                    }
+                }
+            }
+        }
+    }
+    visible_tool_specs.extend(discovered_tool_specs.into_iter().map(Into::into));
     let codex_tools::ChatToolsJson {
         tools,
         tool_call_info: visible_tool_call_info,
-    } = create_tools_json_for_chat_completions(&prompt.tools)?;
+    } = create_tools_json_for_chat_completions(&visible_tool_specs)?;
     let mut tool_call_info = visible_tool_call_info.clone();
-    let hidden_tool_call_info =
-        create_tools_json_for_chat_completions(&prompt.hidden_tools)?.tool_call_info;
+    let hidden_tool_call_info = create_tool_call_info_for_chat_completions(&prompt.hidden_tools)?;
     for info in hidden_tool_call_info {
         if !tool_call_info
             .iter()
@@ -95,7 +198,7 @@ pub(crate) fn build_chat_completions_request_for_provider(
     }
     let mut pending_reasoning = String::new();
 
-    for item in prompt.get_formatted_input_for_request(false) {
+    for item in formatted_input {
         match item {
             ResponseItem::Message { role, content, .. } => {
                 let Some(role) = chat_role(&role, supports_developer_role) else {
