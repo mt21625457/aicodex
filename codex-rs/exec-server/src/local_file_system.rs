@@ -1,6 +1,5 @@
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
-use sha2::Digest;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -10,7 +9,6 @@ use std::time::UNIX_EPOCH;
 use tokio::io;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncSeekExt;
-use tokio::io::AsyncWriteExt;
 use tokio_util::io::ReaderStream;
 
 use crate::CopyOptions;
@@ -30,7 +28,6 @@ use crate::WalkOutcome;
 use crate::regular_file;
 use crate::sandboxed_file_system::SandboxedFileSystem;
 use codex_file_system::ConditionalWritePrecondition;
-use sha2::Sha256;
 
 const MAX_READ_FILE_BYTES: u64 = 512 * 1024 * 1024;
 
@@ -39,42 +36,6 @@ fn file_too_large_error() -> io::Error {
         io::ErrorKind::InvalidInput,
         format!("file is too large to read: limit is {MAX_READ_FILE_BYTES} bytes"),
     )
-}
-
-fn sibling_write_temp_path(path: &Path) -> io::Result<PathBuf> {
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty());
-    let file_name = path.file_name().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "conditional write path is missing a file name",
-        )
-    })?;
-    let temp_name = format!(
-        ".{}.codex-write-{}",
-        file_name.to_string_lossy(),
-        uuid::Uuid::new_v4()
-    );
-    Ok(match parent {
-        Some(parent) => parent.join(temp_name),
-        None => PathBuf::from(temp_name),
-    })
-}
-
-async fn write_exclusive_file(path: &Path, contents: &[u8]) -> io::Result<()> {
-    let mut file = tokio::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .await?;
-    write_and_flush(&mut file, contents).await
-}
-
-async fn write_and_flush(file: &mut tokio::fs::File, contents: &[u8]) -> io::Result<()> {
-    file.write_all(contents).await?;
-    file.flush().await?;
-    Ok(())
 }
 
 pub static LOCAL_FS: LazyLock<Arc<dyn ExecutorFileSystem>> =
@@ -708,54 +669,8 @@ impl DirectFileSystem {
     ) -> FileSystemResult<()> {
         reject_sandbox_context(sandbox)?;
         let path = path.to_abs_path()?;
-        match precondition {
-            ConditionalWritePrecondition::MustNotExist => {
-                let mut file = tokio::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(path.as_path())
-                    .await?;
-                if let Err(error) = write_and_flush(&mut file, &contents).await {
-                    drop(file);
-                    let _ = tokio::fs::remove_file(path.as_path()).await;
-                    return Err(error);
-                }
-            }
-            ConditionalWritePrecondition::MatchSha256(expected) => {
-                let current = tokio::fs::read(path.as_path()).await?;
-                if Sha256::digest(&current).as_slice() != expected {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "conditional write conflict: file changed since read",
-                    ));
-                }
-                let temp_path = sibling_write_temp_path(path.as_path())?;
-                if let Err(error) = write_exclusive_file(&temp_path, &contents).await {
-                    let _ = tokio::fs::remove_file(&temp_path).await;
-                    return Err(error);
-                }
-                // Re-check immediately before replacing the live file.
-                let current = match tokio::fs::read(path.as_path()).await {
-                    Ok(current) => current,
-                    Err(error) => {
-                        let _ = tokio::fs::remove_file(&temp_path).await;
-                        return Err(error);
-                    }
-                };
-                if Sha256::digest(&current).as_slice() != expected {
-                    let _ = tokio::fs::remove_file(&temp_path).await;
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "conditional write conflict: file changed since read",
-                    ));
-                }
-                if let Err(error) = tokio::fs::rename(&temp_path, path.as_path()).await {
-                    let _ = tokio::fs::remove_file(&temp_path).await;
-                    return Err(error);
-                }
-            }
-        }
-        Ok(())
+        crate::conditional_write::write_file_conditional(path.as_path(), &contents, precondition)
+            .await
     }
 
     async fn create_directory(

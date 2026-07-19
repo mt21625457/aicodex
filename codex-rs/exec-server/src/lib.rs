@@ -1,6 +1,7 @@
 mod client;
 mod client_api;
 mod client_transport;
+mod conditional_write;
 mod connection;
 mod environment;
 mod environment_provider;
