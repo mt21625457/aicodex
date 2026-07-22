@@ -20,6 +20,7 @@ use crate::attestation::AttestationProvider;
 use crate::audio_preparation::prepare_response_items as prepare_audio_response_items;
 use crate::build_available_skills;
 use crate::compact;
+use crate::compact::CompactedHistoryMetadata;
 use crate::config::ManagedFeatures;
 use crate::config::resolve_tool_suggest_config_from_layer_stack;
 use crate::context::ApprovedCommandPrefixSaved;
@@ -33,7 +34,9 @@ use crate::context::world_state::WorldState;
 use crate::current_time::TimeProvider;
 use crate::default_skill_metadata_budget;
 use crate::environment_selection::TurnEnvironmentSnapshot;
+use crate::exec_policy::BANNED_PREFIX_SUGGESTIONS;
 use crate::exec_policy::ExecPolicyManager;
+use crate::exec_policy::default_policy_path;
 use crate::image_preparation::prepare_response_items as prepare_image_response_items;
 use crate::parse_turn_item;
 use crate::realtime_conversation::RealtimeConversationManager;
@@ -57,6 +60,7 @@ use codex_connectors::connector_runtime_context_key;
 use codex_core_skills::injection::HostSkillsCatalogInWorldState;
 use codex_exec_server::Environment;
 use codex_exec_server::EnvironmentManager;
+use codex_execpolicy::prefix_rule_migration;
 use codex_extension_api::ExtensionDataInit;
 use codex_extension_api::LoadedUserInstructions;
 use codex_extension_api::PromptFragment;
@@ -549,6 +553,22 @@ impl Session {
         } else if let Some(exec_policy) = &inherited_exec_policy {
             Arc::clone(exec_policy)
         } else {
+            if !config
+                .config_layer_stack
+                .ignore_user_and_project_exec_policy_rules()
+            {
+                let codex_home = config.codex_home.clone();
+                let policy_path = default_policy_path(codex_home.as_path());
+                if let Err(err) = prefix_rule_migration(
+                    codex_home.as_path(),
+                    policy_path.as_path(),
+                    BANNED_PREFIX_SUGGESTIONS,
+                )
+                .await
+                {
+                    tracing::warn!(error = %err, "failed to run prefix rule migration");
+                }
+            }
             Arc::new(
                 ExecPolicyManager::load(&config.config_layer_stack)
                     .await
@@ -1198,8 +1218,8 @@ impl Session {
         &self,
         turn_context: &TurnContext,
     ) -> Option<i64> {
-        let state = self.state.lock().await;
-        state.history.estimate_token_count(turn_context)
+        let history = self.clone_history().await;
+        history.estimate_token_count(turn_context)
     }
 
     pub(crate) async fn get_base_instructions(&self) -> BaseInstructions {
@@ -1304,9 +1324,7 @@ impl Session {
             }
             InitialHistory::Forked(mut rollout_items) => {
                 let turn_context = self.new_default_turn().await;
-                if turn_context.item_ids_enabled() {
-                    Self::assign_missing_rollout_response_item_ids(&mut rollout_items);
-                }
+                Self::assign_missing_rollout_response_item_ids(&mut rollout_items);
                 self.apply_rollout_reconstruction(&turn_context, &rollout_items)
                     .await;
 
@@ -1317,9 +1335,16 @@ impl Session {
                     state.set_token_info(Some(info));
                 }
 
-                // Paginated subagents persist inherited model context while creating the live
-                // thread so the copied prefix is not observed as child-owned metadata.
-                if !rollout_items.is_empty() && !is_paginated_subagent {
+                let thread_settings_applied =
+                    RolloutItem::EventMsg(handlers::thread_settings_applied_event(self).await);
+                if is_paginated_subagent {
+                    // Paginated subagents persist inherited model context while creating the live
+                    // thread so the copied prefix is not observed as child-owned metadata.
+                    self.persist_rollout_items(&[thread_settings_applied]).await;
+                } else {
+                    // Keep the copied prefix and the child's effective settings in one append so a
+                    // cold resume cannot observe inherited settings as the child's latest value.
+                    rollout_items.push(thread_settings_applied);
                     self.persist_rollout_items(&rollout_items).await;
                 }
 
@@ -1682,9 +1707,17 @@ impl Session {
             let state = self.state.lock().await;
             let mut config = (*state.session_configuration.original_config_do_not_use).clone();
             for (config_toml_path, user_config) in reloaded_user_configs {
-                config.config_layer_stack = config
+                let config_layer_stack = match config
                     .config_layer_stack
-                    .with_user_config(&config_toml_path, user_config);
+                    .with_user_config(&config_toml_path, user_config)
+                {
+                    Ok(config_layer_stack) => config_layer_stack,
+                    Err(err) => {
+                        warn!("failed to validate user config while reloading layer: {err}");
+                        return;
+                    }
+                };
+                config.config_layer_stack = config_layer_stack;
             }
             config.tool_suggest =
                 resolve_tool_suggest_config_from_layer_stack(&config.config_layer_stack);
@@ -2352,7 +2385,9 @@ impl Session {
             let decision = tokio::select! {
                 biased;
                 _ = cancellation_token.cancelled() => return None,
-                decision = review_rx => decision.unwrap_or(ReviewDecision::Denied),
+                decision = review_rx => decision.unwrap_or_else(|_| {
+                    ReviewDecision::denied("automatic approval review could not complete")
+                }),
             };
             let response = match decision {
                 ReviewDecision::Approved | ReviewDecision::ApprovedExecpolicyAmendment { .. } => {
@@ -2381,13 +2416,13 @@ impl Session {
                         strict_auto_review: false,
                     },
                 },
-                ReviewDecision::Abort | ReviewDecision::Denied | ReviewDecision::TimedOut => {
-                    RequestPermissionsResponse {
-                        permissions: RequestPermissionProfile::default(),
-                        scope: PermissionGrantScope::Turn,
-                        strict_auto_review: false,
-                    }
-                }
+                ReviewDecision::Abort
+                | ReviewDecision::Denied { .. }
+                | ReviewDecision::TimedOut => RequestPermissionsResponse {
+                    permissions: RequestPermissionProfile::default(),
+                    scope: PermissionGrantScope::Turn,
+                    strict_auto_review: false,
+                },
             };
             let response = Self::normalize_request_permissions_response(
                 requested_permissions,
@@ -2770,11 +2805,7 @@ impl Session {
         for item in items.to_mut() {
             item.set_turn_id_if_missing(&turn_context.sub_id);
         }
-        if turn_context.item_ids_enabled() {
-            Self::assign_missing_response_item_ids(items)
-        } else {
-            items
-        }
+        Self::assign_missing_response_item_ids(items)
     }
 
     fn assign_missing_response_item_ids(items: Cow<'_, [ResponseItem]>) -> Cow<'_, [ResponseItem]> {
@@ -3020,20 +3051,22 @@ impl Session {
 
     pub(crate) async fn replace_compacted_history(
         &self,
-        turn_context: &TurnContext,
         items: Vec<ResponseItem>,
         reference_context_item: Option<TurnContextItem>,
         world_state_baseline: Option<Arc<WorldState>>,
-        compacted_item: CompactedItem,
+        metadata: CompactedHistoryMetadata,
     ) {
-        let items = if turn_context.item_ids_enabled() {
-            Self::assign_missing_response_item_ids(Cow::Owned(items)).into_owned()
-        } else {
-            items
-        };
+        let items = Self::assign_missing_response_item_ids(Cow::Owned(items)).into_owned();
         let compacted_item = CompactedItem {
+            message: metadata.message,
             replacement_history: Some(items.clone()),
-            ..compacted_item
+            window_number: Some(metadata.window_number),
+            first_window_id: Some(metadata.window_ids.first_window_id.to_string()),
+            previous_window_id: metadata
+                .window_ids
+                .previous_window_id
+                .map(|id| id.to_string()),
+            window_id: Some(metadata.window_ids.window_id.to_string()),
         };
         // Compaction starts a new history window, so its WorldState baseline must be full.
         let mut world_state_item = None;
@@ -3124,8 +3157,9 @@ impl Session {
 
     async fn build_turn_context_contribution_items(
         &self,
-        turn_context: &TurnContext,
+        step_context: &StepContext,
     ) -> Vec<ResponseItem> {
+        let turn_context = step_context.turn.as_ref();
         let mut developer_sections = Vec::new();
         let mut contextual_user_sections = Vec::new();
         let mut separate_developer_sections = Vec::new();
@@ -3139,6 +3173,7 @@ impl Session {
                     session_store: &self.services.session_extension_data,
                     thread_store: &self.services.thread_extension_data,
                     turn_store: turn_context.extension_data.as_ref(),
+                    step_store: &step_context.extension_data,
                     model_context_window: turn_context.model_context_window(),
                 })
                 .await
@@ -3173,21 +3208,29 @@ impl Session {
         items
     }
 
+    #[cfg(test)]
     pub(crate) async fn build_initial_context_with_world_state(
         &self,
         turn_context: &TurnContext,
         world_state: &WorldState,
     ) -> Vec<ResponseItem> {
         let mcp = self.services.latest_mcp_runtime();
-        self.build_initial_context_with_world_state_and_mcp(turn_context, world_state, &mcp)
-            .await
+        let step_store = codex_extension_api::ExtensionData::new(turn_context.sub_id.clone());
+        self.build_initial_context_with_world_state_and_mcp(
+            turn_context,
+            world_state,
+            &mcp,
+            &step_store,
+        )
+        .await
     }
 
-    async fn build_initial_context_with_world_state_and_mcp(
+    pub(crate) async fn build_initial_context_with_world_state_and_mcp(
         &self,
         turn_context: &TurnContext,
         world_state: &WorldState,
         mcp: &McpRuntimeSnapshot,
+        step_store: &codex_extension_api::ExtensionData,
     ) -> Vec<ResponseItem> {
         let mut developer_sections = Vec::<String>::with_capacity(8);
         let mut contextual_user_sections = Vec::<String>::with_capacity(2);
@@ -3302,6 +3345,7 @@ impl Session {
                 .contribute_thread_context(
                     &self.services.session_extension_data,
                     &self.services.thread_extension_data,
+                    step_store,
                 )
                 .await
             {
@@ -3321,6 +3365,7 @@ impl Session {
                     session_store: &self.services.session_extension_data,
                     thread_store: &self.services.thread_extension_data,
                     turn_store: turn_context.extension_data.as_ref(),
+                    step_store,
                     model_context_window: turn_context.model_context_window(),
                 })
                 .await
@@ -3481,30 +3526,32 @@ impl Session {
 
     pub(crate) async fn start_new_context_window(
         &self,
-        turn_context: &TurnContext,
+        step_context: &StepContext,
         world_state: Arc<WorldState>,
     ) -> u64 {
+        let turn_context = step_context.turn.as_ref();
         let window = {
             let mut state = self.state.lock().await;
             state.start_new_context_window()
         };
         let (window_number, window_ids) = window;
         let context_items = self
-            .build_initial_context_with_world_state(turn_context, world_state.as_ref())
+            .build_initial_context_with_world_state_and_mcp(
+                turn_context,
+                world_state.as_ref(),
+                step_context.mcp.as_ref(),
+                &step_context.extension_data,
+            )
             .await;
         let turn_context_item = turn_context.to_turn_context_item();
         self.replace_compacted_history(
-            turn_context,
             context_items,
             Some(turn_context_item),
             Some(world_state),
-            CompactedItem {
+            CompactedHistoryMetadata {
                 message: String::new(),
-                replacement_history: None,
-                window_number: Some(window_number),
-                first_window_id: Some(window_ids.first_window_id.to_string()),
-                previous_window_id: window_ids.previous_window_id.map(|id| id.to_string()),
-                window_id: Some(window_ids.window_id.to_string()),
+                window_number,
+                window_ids,
             },
         )
         .await;
@@ -3551,6 +3598,7 @@ impl Session {
                     turn_context,
                     world_state.as_ref(),
                     step_context.mcp.as_ref(),
+                    &step_context.extension_data,
                 )
                 .await;
             let snapshot = world_state.snapshot();
@@ -3583,7 +3631,7 @@ impl Session {
         };
         if !should_inject_full_context && turn_context_changed {
             context_items.extend(
-                self.build_turn_context_contribution_items(turn_context)
+                self.build_turn_context_contribution_items(step_context)
                     .await,
             );
         }

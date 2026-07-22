@@ -522,13 +522,7 @@ impl Session {
             session_configuration.thread_source.as_ref(),
             Some(ThreadSource::Subagent)
         );
-        if (config.features.enabled(Feature::ItemIds)
-            || matches!(
-                session_configuration.history_mode,
-                ThreadHistoryMode::Paginated
-            ))
-            && let InitialHistory::Forked(items) = &mut initial_history
-        {
+        if let InitialHistory::Forked(items) = &mut initial_history {
             Self::assign_missing_rollout_response_item_ids(items);
         }
         let multi_agent_version = multi_agent_version.map(OnceLock::from).unwrap_or_default();
@@ -1080,7 +1074,6 @@ impl Session {
                 session_telemetry,
                 models_manager: Arc::clone(&models_manager),
                 tool_approvals: Mutex::new(ApprovalStore::default()),
-                guardian_rejections: Mutex::new(HashMap::new()),
                 guardian_rejection_circuit_breaker: Mutex::new(Default::default()),
                 runtime_handle: tokio::runtime::Handle::current(),
                 skills_service,
@@ -1121,11 +1114,6 @@ impl Session {
                     config.features.enabled(Feature::EnableRequestCompression),
                     config.features.enabled(Feature::RuntimeMetrics),
                     Self::build_model_client_beta_features_header(config.as_ref()),
-                    /*item_ids_enabled*/ config.features.enabled(Feature::ItemIds)
-                        || matches!(
-                            session_configuration.history_mode,
-                            ThreadHistoryMode::Paginated
-                        ),
                     /*concurrent_reasoning_summaries_enabled*/ config
                         .features
                         .enabled(Feature::ConcurrentReasoningSummaries),
@@ -1138,9 +1126,10 @@ impl Session {
                         session_configuration.parent_thread_id,
                     ),
                 ),
-                code_mode_service: crate::tools::code_mode::CodeModeService::new(Arc::clone(
-                    &code_mode_session_provider,
-                )),
+                code_mode_service: crate::tools::code_mode::CodeModeService::new(
+                    Arc::clone(&code_mode_session_provider),
+                    &config.features,
+                ),
                 tool_search_handler_cache: Default::default(),
                 turn_environments: Arc::clone(&turn_environments),
             };
@@ -1219,7 +1208,7 @@ impl Session {
                 config.auth_keyring_backend_kind(),
                 &session_configuration.approval_policy,
                 INITIAL_SUBMIT_ID.to_owned(),
-                tx_event.clone(),
+                Some(tx_event.clone()),
                 mcp_startup_cancellation_token,
                 session_configuration.permission_profile(),
                 mcp_runtime_context.clone(),
