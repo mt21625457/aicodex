@@ -240,9 +240,14 @@ async fn shell_command_handler_defaults_to_non_login_when_disallowed() {
 async fn shell_command_handler_emits_file_change_for_generated_file() {
     let workspace = tempfile::tempdir().expect("create workspace");
     let (session, mut turn, rx) = make_session_and_context_with_rx().await;
-    Arc::get_mut(&mut turn)
-        .expect("unique turn context")
-        .permission_profile = PermissionProfile::Disabled;
+    {
+        let turn = Arc::get_mut(&mut turn).expect("unique turn context");
+        turn.permission_profile = PermissionProfile::Disabled;
+        Arc::make_mut(&mut turn.config)
+            .permissions
+            .set_permission_profile(PermissionProfile::Disabled)
+            .expect("test permission profile should be allowed");
+    }
     let handler = ShellCommandHandler::from(codex_tools::ShellCommandBackendConfig::Classic);
     let payload = ToolPayload::Function {
         arguments: json!({

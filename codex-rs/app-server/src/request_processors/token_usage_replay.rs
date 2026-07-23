@@ -38,18 +38,16 @@ pub(super) async fn send_thread_token_usage_update_to_connection(
     outgoing: &Arc<OutgoingMessageSender>,
     connection_id: ConnectionId,
     thread_id: ThreadId,
-    thread: &Thread,
     conversation: &CodexThread,
-    token_usage_turn_id: Option<String>,
+    token_usage_turn_id: String,
 ) {
     let Some(info) = conversation.token_usage_info().await else {
         return;
     };
-    send_thread_token_usage_info_update_to_connection(
+    send_thread_token_usage_update(
         outgoing,
         connection_id,
         thread_id,
-        thread,
         info,
         token_usage_turn_id,
     )
@@ -65,9 +63,28 @@ pub(super) async fn send_thread_token_usage_info_update_to_connection(
     info: TokenUsageInfo,
     token_usage_turn_id: Option<String>,
 ) {
+    let token_usage_turn_id =
+        token_usage_turn_id.unwrap_or_else(|| latest_token_usage_turn_id(thread));
+    send_thread_token_usage_update(
+        outgoing,
+        connection_id,
+        thread_id,
+        info,
+        token_usage_turn_id,
+    )
+    .await;
+}
+
+async fn send_thread_token_usage_update(
+    outgoing: &Arc<OutgoingMessageSender>,
+    connection_id: ConnectionId,
+    thread_id: ThreadId,
+    info: TokenUsageInfo,
+    token_usage_turn_id: String,
+) {
     let notification = ThreadTokenUsageUpdatedNotification {
         thread_id: thread_id.to_string(),
-        turn_id: token_usage_turn_id.unwrap_or_else(|| latest_token_usage_turn_id(thread)),
+        turn_id: token_usage_turn_id,
         token_usage: ThreadTokenUsage::from(info),
     };
     outgoing
@@ -88,7 +105,15 @@ pub(super) fn latest_token_usage_info_from_rollout_items(
     })
 }
 
-/// Identifies the turn that was active when a `TokenCount` record appeared.
+pub(super) fn restored_token_usage_turn_id(
+    rollout_items: &[RolloutItem],
+    thread: &Thread,
+) -> String {
+    latest_token_usage_turn_id_from_rollout_items(rollout_items, thread.turns.as_slice())
+        .unwrap_or_else(|| latest_token_usage_turn_id(thread))
+}
+
+/// Identifies the turn that was active when the latest `TokenCount` record appeared.
 ///
 /// The id is preferred when it still appears in the rebuilt thread. The position is a
 /// fallback for histories whose implicit turn ids are regenerated during reconstruction.
@@ -199,6 +224,18 @@ mod tests {
         assert_eq!(
             latest_token_usage_turn_id_from_rollout_items(&rollout_items, &turns),
             Some(turns[0].id.clone())
+        );
+    }
+
+    #[test]
+    fn replay_attribution_uses_latest_token_count_and_ignores_tail_turn() {
+        let mut rollout_items = token_usage_history();
+        rollout_items.extend(token_usage_history());
+        let turns = build_turns_from_rollout_items(&rollout_items);
+
+        assert_eq!(
+            latest_token_usage_turn_id_from_rollout_items(&rollout_items, turns.as_slice()),
+            Some(turns[2].id.clone())
         );
     }
 

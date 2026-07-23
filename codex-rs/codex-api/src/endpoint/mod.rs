@@ -32,6 +32,7 @@ pub use moonshot_search::MoonshotSearchResult;
 pub use moonshot_search::build_moonshot_search_http_client;
 pub use realtime_call::RealtimeCallClient;
 pub use realtime_call::RealtimeCallResponse;
+pub use realtime_websocket::RealtimeContextAppendChannel;
 pub use realtime_websocket::RealtimeEventParser;
 pub use realtime_websocket::RealtimeOutputModality;
 pub use realtime_websocket::RealtimeSessionConfig;

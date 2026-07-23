@@ -215,6 +215,7 @@ fn sample_thread_with_metadata(
         cwd: test_path_buf("/tmp").abs(),
         cli_version: "0.0.0".to_string(),
         source,
+        can_accept_direct_input: None,
         thread_source,
         agent_nickname: None,
         agent_role: None,
@@ -3804,6 +3805,7 @@ async fn reducer_ingests_external_agent_config_import_completed_fact() {
                 ExternalAgentConfigImportCompletedInput {
                     import_id: "import-1".to_string(),
                     source: "app_server".to_string(),
+                    provider_id: "test-provider-42".to_string(),
                     item_type: "PLUGINS".to_string(),
                     success_count: 2,
                     failed_count: 1,
@@ -3821,6 +3823,7 @@ async fn reducer_ingests_external_agent_config_import_completed_fact() {
             "event_params": {
                 "import_id": "import-1",
                 "source": "app_server",
+                "provider_id": "test-provider-42",
                 "type": "PLUGINS",
                 "success_count": 2,
                 "failed_count": 1,
@@ -3838,6 +3841,7 @@ fn external_agent_config_import_failure_event_serializes_expected_shape() {
             event_params: CodexOnboardingExternalAgentImportFailureMetadata {
                 import_id: "import-1".to_string(),
                 source: "app_server".to_string(),
+                provider_id: "test-provider-42".to_string(),
                 item_type: "PLUGINS".to_string(),
                 failure_stage: "plugin_import".to_string(),
                 error_type: "plugin_import".to_string(),
@@ -3856,6 +3860,7 @@ fn external_agent_config_import_failure_event_serializes_expected_shape() {
             "event_params": {
                 "import_id": "import-1",
                 "source": "app_server",
+                "provider_id": "test-provider-42",
                 "type": "PLUGINS",
                 "failure_stage": "plugin_import",
                 "error_type": "plugin_import",
@@ -3877,6 +3882,7 @@ async fn reducer_ingests_external_agent_config_import_failure_fact() {
                 ExternalAgentConfigImportFailureInput {
                     import_id: "import-1".to_string(),
                     source: "app_server".to_string(),
+                    provider_id: "test-provider-42".to_string(),
                     item_type: "PLUGINS".to_string(),
                     failure_stage: "plugin_import".to_string(),
                     error_type: "plugin_import".to_string(),
@@ -3895,6 +3901,7 @@ async fn reducer_ingests_external_agent_config_import_failure_fact() {
             "event_params": {
                 "import_id": "import-1",
                 "source": "app_server",
+                "provider_id": "test-provider-42",
                 "type": "PLUGINS",
                 "failure_stage": "plugin_import",
                 "error_type": "plugin_import",

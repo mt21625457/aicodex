@@ -67,7 +67,6 @@ impl ToolOrchestrator {
             &tool_ctx.session,
             &tool_ctx.turn.sub_id,
             managed_network_active,
-            attempt.sandbox,
             tool.network_approval_spec(req, tool_ctx),
         )
         .await
@@ -153,7 +152,10 @@ impl ToolOrchestrator {
         let mut already_approved = false;
 
         let workspace_roots = tool.workspace_roots(req);
-        let permission_profile = turn_ctx.permission_profile();
+        // Materialize the canonical profile against this tool's environment.
+        // The turn-level profile is already materialized for the primary
+        // environment and cannot safely be reused by multi-environment calls.
+        let permission_profile = turn_ctx.config.permissions.permission_profile();
         let materialized_workspace_roots = workspace_roots
             .iter()
             .filter_map(|workspace_root| workspace_root.to_abs_path().ok())
@@ -265,7 +267,7 @@ impl ToolOrchestrator {
             sandbox: initial_sandbox,
             sandbox_requested,
             permissions: &permissions,
-            exec_server_permissions: &permission_profile,
+            exec_server_permissions: permission_profile,
             enforce_managed_network: managed_network_active,
             manager: &self.sandbox,
             sandbox_cwd: &sandbox_policy_cwd,
@@ -447,7 +449,7 @@ impl ToolOrchestrator {
                     sandbox: retry_sandbox,
                     sandbox_requested: retry_sandbox_requested,
                     permissions: &permissions,
-                    exec_server_permissions: &permission_profile,
+                    exec_server_permissions: permission_profile,
                     enforce_managed_network: managed_network_active,
                     manager: &self.sandbox,
                     sandbox_cwd: &sandbox_policy_cwd,

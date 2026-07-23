@@ -106,6 +106,7 @@ pub use crate::endpoint::MoonshotSearchResponse;
 pub use crate::endpoint::MoonshotSearchResult;
 pub use crate::endpoint::RealtimeCallClient;
 pub use crate::endpoint::RealtimeCallResponse;
+pub use crate::endpoint::RealtimeContextAppendChannel;
 pub use crate::endpoint::RealtimeEventParser;
 pub use crate::endpoint::RealtimeOutputModality;
 pub use crate::endpoint::RealtimeSessionConfig;

@@ -1134,6 +1134,7 @@ async fn installed_tools_with_start(
                 session_source: &session_source,
                 persistent_thread_state_available,
                 environments: &[],
+                mcp_resource_client: None,
                 session_store: &session_store,
                 thread_store: &thread_store,
             })
@@ -1187,6 +1188,7 @@ impl GoalExtensionHarness {
                     session_source: &session_source,
                     persistent_thread_state_available: true,
                     environments: &[],
+                    mcp_resource_client: None,
                     session_store: &session_store,
                     thread_store: &thread_store,
                 })

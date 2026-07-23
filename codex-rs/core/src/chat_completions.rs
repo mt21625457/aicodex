@@ -43,6 +43,7 @@ const MAX_CHAT_REQUEST_ITEM_TOKENS: usize = 10_000;
 const MAX_CHAT_REQUEST_TOTAL_TOKENS: usize = 250_000;
 const MAX_CHAT_MESSAGE_TOOL_CALLS: usize = 64;
 const UNSUPPORTED_IMAGE_PLACEHOLDER: &str = "[unsupported image reference omitted]";
+const UNSUPPORTED_AUDIO_PLACEHOLDER: &str = "[audio content omitted: unsupported by Chat API]";
 
 #[cfg(test)]
 pub(crate) fn build_chat_completions_request(
@@ -569,6 +570,9 @@ fn chat_content(content: Vec<ContentItem>) -> ChatMessageContent {
                     | ContentItem::OutputText { text }
                     | ContentItem::OutputTextWithCitations { text, .. } => Some(text),
                     ContentItem::InputImage { .. } => None,
+                    ContentItem::InputAudio { .. } => {
+                        Some(UNSUPPORTED_AUDIO_PLACEHOLDER.to_string())
+                    }
                 })
                 .collect(),
         );
@@ -595,6 +599,9 @@ fn chat_content(content: Vec<ContentItem>) -> ChatMessageContent {
                 }
                 ContentItem::InputImage { .. } => ChatContentPart::Text {
                     text: UNSUPPORTED_IMAGE_PLACEHOLDER.to_string(),
+                },
+                ContentItem::InputAudio { .. } => ChatContentPart::Text {
+                    text: UNSUPPORTED_AUDIO_PLACEHOLDER.to_string(),
                 },
             })
             .collect(),
@@ -623,6 +630,9 @@ fn tool_result_message(call_id: String, output: FunctionCallOutputPayload) -> Ch
                     }
                     FunctionCallOutputContentItem::InputImage { .. } => ChatContentPart::Text {
                         text: UNSUPPORTED_IMAGE_PLACEHOLDER.to_string(),
+                    },
+                    FunctionCallOutputContentItem::InputAudio { .. } => ChatContentPart::Text {
+                        text: UNSUPPORTED_AUDIO_PLACEHOLDER.to_string(),
                     },
                     FunctionCallOutputContentItem::EncryptedContent { .. } => {
                         ChatContentPart::Text {

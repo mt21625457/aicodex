@@ -2025,7 +2025,7 @@ async fn claude_wire_native_bash_uses_existing_approval_denial_flow() -> anyhow:
         .submit(Op::ExecApproval {
             id: approval.effective_approval_id(),
             turn_id: None,
-            decision: ReviewDecision::Denied,
+            decision: ReviewDecision::denied("denied by test"),
         })
         .await?;
 
@@ -2109,7 +2109,7 @@ async fn claude_wire_exec_command_uses_existing_approval_flow() -> anyhow::Resul
         .submit(Op::ExecApproval {
             id: approval.effective_approval_id(),
             turn_id: None,
-            decision: ReviewDecision::Denied,
+            decision: ReviewDecision::denied("denied by test"),
         })
         .await?;
 

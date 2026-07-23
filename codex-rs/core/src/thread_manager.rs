@@ -10,6 +10,7 @@ use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::environment_selection::default_thread_environment_selections;
 use crate::mcp::McpManager;
 use crate::rollout::truncation;
+use crate::session::GitEnrichmentPolicy;
 use crate::session::INITIAL_SUBMIT_ID;
 use crate::session::SessionIo;
 use crate::session::SessionSpawnArgs;
@@ -204,7 +205,13 @@ pub struct StartThreadOptions {
 
 fn originator_from_service_name(service_name: Option<&str>) -> Option<String> {
     let service_name = service_name?.trim();
-    for originator in ["codex_work_desktop", "codex_work_web", "codex_work_mobile"] {
+    for originator in [
+        "codex_work_desktop",
+        "codex_work_web",
+        "codex_work_mobile",
+        "codex_work_cca",
+        "chatgpt_cca",
+    ] {
         if service_name.eq_ignore_ascii_case(originator) {
             return Some(originator.to_string());
         }
@@ -1679,6 +1686,7 @@ impl ThreadManagerState {
             attestation_provider: self.attestation_provider.clone(),
             external_time_provider: self.external_time_provider.clone(),
             inherited_multi_agent_version: multi_agent_version,
+            git_enrichment_policy: GitEnrichmentPolicy::Fresh,
         }))
         .await?;
         let new_thread = self

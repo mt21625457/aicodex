@@ -1,5 +1,5 @@
 use codex_core_skills::SkillLoadOutcome;
-use codex_core_skills::SkillMetadata;
+use codex_skills::SkillMetadata;
 
 use crate::catalog::SkillAuthority;
 use crate::catalog::SkillCatalog;
@@ -116,6 +116,7 @@ fn catalog_entry_from_skill(skill: &SkillMetadata, enabled: bool) -> SkillCatalo
     )
     .with_short_description(skill.short_description.clone())
     .with_display_path(display_path)
+    .with_prompt_scope(skill.scope)
     .with_dependencies(skill.dependencies.clone());
 
     if !enabled {
@@ -127,3 +128,7 @@ fn catalog_entry_from_skill(skill: &SkillMetadata, enabled: bool) -> SkillCatalo
 
     entry
 }
+
+#[cfg(test)]
+#[path = "host_tests.rs"]
+mod tests;

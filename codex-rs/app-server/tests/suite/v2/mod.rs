@@ -1,6 +1,8 @@
 mod account;
 mod analytics;
+mod app_installed;
 mod app_list;
+mod app_read;
 mod attestation;
 mod auto_env;
 mod client_metadata;
@@ -63,6 +65,8 @@ mod safety_check_downgrade;
 #[cfg(not(target_os = "windows"))]
 mod selected_capability_stack;
 mod selected_environment;
+#[cfg(not(target_os = "windows"))]
+mod session_end;
 mod skills_list;
 mod sleep;
 mod thread_archive;

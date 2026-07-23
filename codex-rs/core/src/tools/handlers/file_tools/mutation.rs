@@ -154,7 +154,7 @@ fn mutation_artifacts(
         }
     };
     let delta = AppliedPatchDelta::from_change(AppliedPatchChange {
-        path: path.to_path_buf(),
+        path: path.clone(),
         change: tracked_change,
     });
     (HashMap::from([(path.to_path_buf(), change)]), patch, delta)

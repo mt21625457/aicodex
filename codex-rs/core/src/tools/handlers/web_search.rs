@@ -23,7 +23,8 @@ use codex_api::SearchRequest;
 use codex_api::SearchResponse;
 use codex_api::SearchSettings;
 use codex_features::Feature;
-use codex_login::default_client::build_reqwest_client;
+use codex_http_client::ClientRouteClass;
+use codex_login::default_client::create_client_for_route;
 use codex_model_provider::create_model_provider;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
@@ -112,8 +113,19 @@ impl WebSearchHandler {
                 "web_search failed to initialize OpenAI search auth: {err}"
             ))
         })?;
+        let request_url = api_provider.url_for_path("alpha/search");
+        let http_client = create_client_for_route(
+            &turn.config.http_client_factory(),
+            &request_url,
+            ClientRouteClass::Api,
+        )
+        .map_err(|err| {
+            FunctionCallError::RespondToModel(format!(
+                "web_search failed to initialize HTTP transport: {err}"
+            ))
+        })?;
         let client = SearchClient::new(
-            ReqwestTransport::new(build_reqwest_client()),
+            ReqwestTransport::from_http_client(http_client),
             api_provider,
             auth,
         );
