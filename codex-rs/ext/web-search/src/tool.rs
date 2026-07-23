@@ -20,7 +20,8 @@ use codex_extension_api::parse_tool_input_schema_without_compaction;
 use codex_extension_items::ExtensionItem;
 use codex_extension_items::web_search::WebSearchAction;
 use codex_extension_items::web_search::WebSearchItem;
-use codex_login::default_client::build_reqwest_client;
+use codex_login::default_client::add_originator_header;
+use codex_login::default_client::create_client;
 use codex_model_provider::SharedModelProvider;
 use codex_protocol::models::WebSearchAction as CoreWebSearchAction;
 use codex_protocol::protocol::EventMsg;
@@ -47,6 +48,7 @@ pub(crate) const WEB_NAMESPACE: &str = "web";
 pub(crate) const RUN_TOOL_NAME: &str = "run";
 const WEB_RUN_DESCRIPTION: &str = include_str!("../web_run_description.md");
 const OPENAI_SEARCH_FALLBACK_MODEL: &str = "gpt-5.2-codex";
+const RESULTS_PAYLOAD_BYTES_METRIC: &str = "codex.web_search.results.payload_bytes";
 
 pub(crate) struct WebSearchTool {
     pub(crate) session_id: String,
@@ -55,6 +57,7 @@ pub(crate) struct WebSearchTool {
     pub(crate) moonshot_search: MoonshotSearchConfig,
     pub(crate) moonshot_feature_enabled: bool,
     pub(crate) settings: SearchSettings,
+    pub(crate) originator: Option<String>,
 }
 
 impl ToolExecutor<ToolCall> for WebSearchTool {
@@ -120,7 +123,7 @@ impl WebSearchTool {
             .await
             .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
         let client = SearchClient::new(
-            ReqwestTransport::new(build_reqwest_client()),
+            ReqwestTransport::from_http_client(create_client()),
             provider,
             auth,
         );
@@ -139,12 +142,10 @@ impl WebSearchTool {
                 u64::try_from(call.truncation_policy.token_budget()).unwrap_or(u64::MAX),
             ),
         };
-        let mut extra_headers = HeaderMap::new();
-        if let Some(turn_metadata) = call.codex_turn_metadata.as_deref()
-            && let Ok(header_value) = HeaderValue::from_str(turn_metadata)
-        {
-            extra_headers.insert(X_CODEX_TURN_METADATA_HEADER, header_value);
-        }
+        let extra_headers = search_request_headers(
+            self.originator.as_deref(),
+            call.codex_turn_metadata.as_deref(),
+        );
         call.turn_item_emitter
             .emit_started(extension_turn_item(
                 WebSearchItem {
@@ -158,7 +159,19 @@ impl WebSearchTool {
                 }),
             ))
             .await;
-        let response = client.search(&request, extra_headers).await;
+        let response = client
+            .search(&request, extra_headers)
+            .await
+            .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
+        let output = response.output;
+        let results = response.results;
+        if let Some(results) = results.as_ref()
+            && let Some(metrics) = codex_otel::global()
+            && let Ok(payload) = serde_json::to_vec(results)
+        {
+            let payload_bytes = i64::try_from(payload.len()).unwrap_or(i64::MAX);
+            let _ = metrics.histogram(RESULTS_PAYLOAD_BYTES_METRIC, payload_bytes, &[]);
+        }
         let legacy_action = match &command_action {
             WebSearchAction::Search { query, queries } => CoreWebSearchAction::Search {
                 query: query.clone(),
@@ -172,10 +185,6 @@ impl WebSearchTool {
             WebSearchAction::Other => CoreWebSearchAction::Other,
         };
         let query = web_search_action_detail(&legacy_action);
-        let results = response
-            .as_ref()
-            .ok()
-            .and_then(|response| response.results.clone());
         call.turn_item_emitter
             .emit_completed(extension_turn_item(
                 WebSearchItem {
@@ -193,10 +202,7 @@ impl WebSearchTool {
             ))
             .await;
 
-        match response {
-            Ok(response) => Ok(Box::new(SearchOutput::new(response.output))),
-            Err(err) => Err(FunctionCallError::Fatal(err.to_string())),
-        }
+        Ok(Box::new(SearchOutput::new(output)))
     }
 
     async fn handle_moonshot_call(
@@ -329,6 +335,20 @@ fn query_action_from_strings(queries: &[String]) -> WebSearchAction {
     }
 }
 
+fn search_request_headers(originator: Option<&str>, turn_metadata: Option<&str>) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    if let Some(turn_metadata) = turn_metadata
+        && let Ok(header_value) = HeaderValue::from_str(turn_metadata)
+    {
+        headers.insert(X_CODEX_TURN_METADATA_HEADER, header_value);
+    }
+
+    if let Some(originator) = originator {
+        add_originator_header(&mut headers, originator);
+    }
+    headers
+}
+
 fn parse_commands(call: &ToolCall) -> Result<SearchCommands, FunctionCallError> {
     let arguments = call.function_arguments()?;
     if arguments.trim().is_empty() {
@@ -424,6 +444,25 @@ mod tests {
     use super::OPENAI_SEARCH_FALLBACK_MODEL;
     use super::WebSearchTool;
     use super::command_action;
+    use super::search_request_headers;
+    use codex_core::X_CODEX_TURN_METADATA_HEADER;
+
+    #[test]
+    fn search_request_headers_forward_thread_originator_and_turn_metadata() {
+        let headers = search_request_headers(Some("chatgpt_cca"), Some("turn-metadata"));
+        assert_eq!(
+            headers
+                .get("originator")
+                .and_then(|value| value.to_str().ok()),
+            Some("chatgpt_cca")
+        );
+        assert_eq!(
+            headers
+                .get(X_CODEX_TURN_METADATA_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            Some("turn-metadata")
+        );
+    }
 
     #[derive(Default)]
     struct RecordingEmitter {
@@ -462,6 +501,7 @@ mod tests {
             },
             moonshot_feature_enabled: true,
             settings: Default::default(),
+            originator: None,
         }
     }
 

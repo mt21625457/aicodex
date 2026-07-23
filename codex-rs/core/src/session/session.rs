@@ -44,6 +44,7 @@ pub(crate) struct Session {
     pub(crate) input_queue: InputQueue,
     pub(crate) guardian_review_session: GuardianReviewSessionManager,
     pub(crate) services: SessionServices,
+    pub(super) git_enrichment_policy: GitEnrichmentPolicy,
     pub(super) next_internal_sub_id: AtomicU64,
 }
 
@@ -526,6 +527,7 @@ impl Session {
         attestation_provider: Option<Arc<dyn AttestationProvider>>,
         external_time_provider: Option<Arc<dyn TimeProvider>>,
         multi_agent_version: Option<MultiAgentVersion>,
+        git_enrichment_policy: GitEnrichmentPolicy,
     ) -> anyhow::Result<Arc<Self>> {
         if session_configuration.provider.wire_api == WireApi::Chat
             && !matches!(config.chat_file_tool_mode, ChatFileToolMode::Legacy)
@@ -556,13 +558,7 @@ impl Session {
             session_configuration.thread_source.as_ref(),
             Some(ThreadSource::Subagent)
         );
-        if (config.features.enabled(Feature::ItemIds)
-            || matches!(
-                session_configuration.history_mode,
-                ThreadHistoryMode::Paginated
-            ))
-            && let InitialHistory::Forked(items) = &mut initial_history
-        {
+        if let InitialHistory::Forked(items) = &mut initial_history {
             Self::assign_missing_rollout_response_item_ids(items);
         }
         let multi_agent_version = multi_agent_version.map(OnceLock::from).unwrap_or_default();
@@ -617,6 +613,9 @@ impl Session {
                     roots
                 }
             };
+        thread_extension_init.insert(codex_extension_api::ThreadOriginator(
+            session_configuration.originator.clone(),
+        ));
         let mcp_thread_init = thread_extension_init.clone();
         let thread_extension_data = codex_extension_api::ExtensionData::new_with_init(
             thread_id.to_string(),
@@ -748,6 +747,7 @@ impl Session {
                     thread_extension_data_for_mcp,
                     &mcp_originator,
                     /*ready_selected_capability_roots*/ &[],
+                    /*executor_capability_discovery*/ None,
                 )
                 .await;
             let mcp_config = &mcp_projection.config;
@@ -1066,41 +1066,33 @@ impl Session {
                     config.analytics_enabled,
                 )
             });
-            // Keep one stable manager handle for the session so extension resource clients
-            // automatically observe the manager installed at startup and on later refreshes.
-            let mcp_connection_manager = Arc::new(arc_swap::ArcSwap::from_pointee(
-                McpConnectionManager::new_uninitialized_with_permission_profile(
+            let mcp_runtime = Arc::new(McpRuntime::new(Arc::new(
+                McpConnectionSet::new_uninitialized_with_permission_profile(
                     &config.permissions.approval_policy,
                     config.permissions.permission_profile(),
                     config.prefix_mcp_tool_names(),
                 ),
-            ));
+            )));
             let session_extension_data =
                 codex_extension_api::ExtensionData::new(session_id.to_string());
-            session_extension_data.insert(McpResourceClient::new(Arc::clone(
-                &mcp_connection_manager,
-            )));
+            let mcp_resource_client = Arc::new(McpResourceClient::new(Arc::clone(&mcp_runtime)));
             for contributor in extensions.thread_lifecycle_contributors() {
                 contributor.on_thread_start(codex_extension_api::ThreadStartInput {
                     config: config.as_ref(),
                     session_source: &session_configuration.session_source,
                     persistent_thread_state_available: state_db_ctx.is_some(),
                     environments: session_configuration.environment_selections(),
+                    mcp_resource_client: Some(Arc::clone(&mcp_resource_client)),
                     session_store: &session_extension_data,
                     thread_store: &thread_extension_data,
                 }).await;
             }
 
             let services = SessionServices {
-                // Initialize the MCP connection manager with an uninitialized
-                // instance. It will be replaced with one created via
-                // McpConnectionManager::new() once all its constructor args are
-                // available. This also ensures `SessionConfigured` is emitted
-                // before any MCP-related events. It is reasonable to consider
-                // changing this to use Option or OnceCell, though the current
-                // setup is straightforward enough and performs well.
-                mcp_connection_manager,
-                mcp_runtime: arc_swap::ArcSwapOption::empty(),
+                // Start with an empty connection set. The initialized set is
+                // published after SessionConfigured so MCP events follow it.
+                mcp_runtime,
+                mcp_runtime_snapshot: arc_swap::ArcSwapOption::empty(),
                 mcp_projection_lock: Mutex::new(()),
                 mcp_startup_cancellation_token: Mutex::new(CancellationToken::new()),
                 unified_exec_manager: UnifiedExecProcessManager::new(
@@ -1119,7 +1111,6 @@ impl Session {
                 session_telemetry,
                 models_manager: Arc::clone(&models_manager),
                 tool_approvals: Mutex::new(ApprovalStore::default()),
-                guardian_rejections: Mutex::new(HashMap::new()),
                 guardian_rejection_circuit_breaker: Mutex::new(Default::default()),
                 runtime_handle: tokio::runtime::Handle::current(),
                 skills_service,
@@ -1160,11 +1151,6 @@ impl Session {
                     config.features.enabled(Feature::EnableRequestCompression),
                     config.features.enabled(Feature::RuntimeMetrics),
                     Self::build_model_client_beta_features_header(config.as_ref()),
-                    /*item_ids_enabled*/ config.features.enabled(Feature::ItemIds)
-                        || matches!(
-                            session_configuration.history_mode,
-                            ThreadHistoryMode::Paginated
-                        ),
                     /*concurrent_reasoning_summaries_enabled*/ config
                         .features
                         .enabled(Feature::ConcurrentReasoningSummaries),
@@ -1177,9 +1163,10 @@ impl Session {
                         session_configuration.parent_thread_id,
                     ),
                 ),
-                code_mode_service: crate::tools::code_mode::CodeModeService::new(Arc::clone(
-                    &code_mode_session_provider,
-                )),
+                code_mode_service: crate::tools::code_mode::CodeModeService::new(
+                    Arc::clone(&code_mode_session_provider),
+                    &config.features,
+                ),
                 tool_search_handler_cache: Default::default(),
                 turn_environments: Arc::clone(&turn_environments),
             };
@@ -1198,6 +1185,7 @@ impl Session {
                 input_queue: InputQueue::new(),
                 guardian_review_session: GuardianReviewSessionManager::default(),
                 services,
+                git_enrichment_policy,
                 next_internal_sub_id: AtomicU64::new(0),
             });
             if let Some(network_policy_decider_session) = network_policy_decider_session {
@@ -1252,13 +1240,13 @@ impl Session {
             let codex_apps_auth_manager =
                 codex_mcp::host_owned_codex_apps_enabled(&mcp_projection.config, auth)
                     .then(|| Arc::clone(&sess.services.auth_manager));
-            let mcp_connection_manager = McpConnectionManager::new(
+            let mcp_connection_manager = McpConnectionSet::new(
                 &mcp_servers,
                 config.mcp_oauth_credentials_store_mode,
                 config.auth_keyring_backend_kind(),
                 &session_configuration.approval_policy,
                 INITIAL_SUBMIT_ID.to_owned(),
-                tx_event.clone(),
+                Some(tx_event.clone()),
                 mcp_startup_cancellation_token,
                 session_configuration.permission_profile(),
                 mcp_runtime_context.clone(),
@@ -1287,7 +1275,7 @@ impl Session {
             ))
             .await;
             sess.services
-                .install_mcp_connection_manager(
+                .install_mcp_runtime(
                     Arc::new(mcp_projection.config),
                     mcp_projection.plugins_available,
                     mcp_runtime_context,

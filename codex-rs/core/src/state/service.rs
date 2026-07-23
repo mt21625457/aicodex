@@ -1,7 +1,5 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::time::Duration;
 
 use crate::SkillsService;
 use crate::agent::AgentControl;
@@ -14,7 +12,6 @@ use crate::current_time::TimeProvider;
 use crate::elicitation::ElicitationService;
 use crate::environment_selection::ThreadEnvironments;
 use crate::exec_policy::ExecPolicyManager;
-use crate::guardian::GuardianRejection;
 use crate::guardian::GuardianRejectionCircuitBreaker;
 use crate::mcp::McpManager;
 use crate::session::McpRuntimeSnapshot;
@@ -34,7 +31,8 @@ use codex_extension_api::ExtensionRegistry;
 use codex_hooks::Hooks;
 use codex_login::AuthManager;
 use codex_mcp::McpConfig;
-use codex_mcp::McpConnectionManager;
+use codex_mcp::McpConnectionSet;
+use codex_mcp::McpRuntime;
 use codex_mcp::McpRuntimeContext;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_otel::SessionTelemetry;
@@ -46,18 +44,13 @@ use codex_thread_store::ThreadStore;
 use std::path::PathBuf;
 use tokio::runtime::Handle;
 use tokio::sync::Mutex;
-use tokio::time::sleep;
-use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
-use tracing::warn;
-
-const MCP_MANAGER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) struct SessionServices {
-    /// Mirror of the latest manager for extension resource clients that predate runtime snapshots.
-    pub(crate) mcp_connection_manager: Arc<ArcSwap<McpConnectionManager>>,
-    /// The latest atomically published MCP config and manager pair.
-    pub(crate) mcp_runtime: ArcSwapOption<McpRuntimeSnapshot>,
+    /// The single owner of live MCP connections for this thread.
+    pub(crate) mcp_runtime: Arc<McpRuntime>,
+    /// The latest atomically published MCP config and connection snapshot.
+    pub(crate) mcp_runtime_snapshot: ArcSwapOption<McpRuntimeSnapshot>,
     /// Serializes environment-driven runtime rebuilds.
     pub(crate) mcp_projection_lock: Mutex<()>,
     pub(crate) mcp_startup_cancellation_token: Mutex<CancellationToken>,
@@ -77,7 +70,6 @@ pub(crate) struct SessionServices {
     pub(crate) models_manager: SharedModelsManager,
     pub(crate) session_telemetry: SessionTelemetry,
     pub(crate) tool_approvals: Mutex<ApprovalStore>,
-    pub(crate) guardian_rejections: Mutex<HashMap<String, GuardianRejection>>,
     pub(crate) guardian_rejection_circuit_breaker: Mutex<GuardianRejectionCircuitBreaker>,
     pub(crate) runtime_handle: Handle,
     pub(crate) skills_service: Arc<SkillsService>,
@@ -110,102 +102,50 @@ pub(crate) struct SessionServices {
 }
 
 impl SessionServices {
-    /// Installs the manager before validating required servers so startup-time elicitation can
-    /// resolve through the session's manager while validation waits.
-    pub(crate) async fn install_mcp_connection_manager(
+    /// Publishes the initial connections before validating required servers so startup-time
+    /// elicitation can resolve through the thread runtime while validation waits.
+    pub(crate) async fn install_mcp_runtime(
         &self,
         config: Arc<McpConfig>,
         plugins_available: bool,
         runtime_context: McpRuntimeContext,
         ready_selected_capability_roots: Vec<SelectedCapabilityRoot>,
-        manager: McpConnectionManager,
+        connections: McpConnectionSet,
     ) -> Result<()> {
-        let runtime = self
-            .publish_mcp_runtime(
-                config,
-                plugins_available,
-                runtime_context,
-                ready_selected_capability_roots,
-                manager,
-            )
-            .await;
-        let validation = runtime.manager().validate_required_servers().await;
-        if validation.is_err() {
-            shutdown_replaced_mcp_connection_manager(
-                runtime.manager_arc(),
-                "required_server_validation",
-            )
-            .await;
-        }
-        validation
+        let runtime = self.publish_mcp_runtime(
+            config,
+            plugins_available,
+            runtime_context,
+            ready_selected_capability_roots,
+            connections,
+        );
+        runtime.manager().validate_required_servers().await
     }
 
-    pub(crate) async fn publish_mcp_runtime(
+    pub(crate) fn publish_mcp_runtime(
         &self,
         config: Arc<McpConfig>,
         plugins_available: bool,
         runtime_context: McpRuntimeContext,
         ready_selected_capability_roots: Vec<SelectedCapabilityRoot>,
-        manager: McpConnectionManager,
+        connections: McpConnectionSet,
     ) -> Arc<McpRuntimeSnapshot> {
-        let manager = Arc::new(manager);
-        // Publish the manager for legacy resource clients first. Once the paired snapshot is
-        // visible, every model-scoped consumer observes this exact manager.
-        let previous_manager = self.mcp_connection_manager.swap(Arc::clone(&manager));
+        let connections = self.mcp_runtime.replace(connections);
         let runtime = Arc::new(McpRuntimeSnapshot::new(
             config,
             plugins_available,
-            manager,
+            connections,
             runtime_context,
             ready_selected_capability_roots,
         ));
-        self.mcp_runtime.store(Some(Arc::clone(&runtime)));
-        tokio::spawn(shutdown_replaced_mcp_connection_manager_when_unused(
-            previous_manager,
-            "publish_mcp_runtime",
-        ));
+        self.mcp_runtime_snapshot.store(Some(Arc::clone(&runtime)));
         runtime
     }
 
     pub(crate) fn latest_mcp_runtime(&self) -> Arc<McpRuntimeSnapshot> {
-        let Some(runtime) = self.mcp_runtime.load_full() else {
+        let Some(runtime) = self.mcp_runtime_snapshot.load_full() else {
             unreachable!("MCP runtime must be installed before handling requests");
         };
         runtime
     }
-}
-
-async fn shutdown_replaced_mcp_connection_manager(
-    manager: Arc<McpConnectionManager>,
-    reason: &'static str,
-) {
-    if !manager.has_servers() {
-        return;
-    }
-
-    if timeout(MCP_MANAGER_SHUTDOWN_TIMEOUT, manager.shutdown())
-        .await
-        .is_err()
-    {
-        warn!(
-            reason,
-            timeout_seconds = MCP_MANAGER_SHUTDOWN_TIMEOUT.as_secs(),
-            "timed out shutting down replaced MCP connection manager"
-        );
-    }
-}
-
-async fn shutdown_replaced_mcp_connection_manager_when_unused(
-    manager: Arc<McpConnectionManager>,
-    reason: &'static str,
-) {
-    if !manager.has_servers() {
-        return;
-    }
-
-    while Arc::strong_count(&manager) > 1 {
-        sleep(Duration::from_millis(50)).await;
-    }
-
-    shutdown_replaced_mcp_connection_manager(manager, reason).await;
 }

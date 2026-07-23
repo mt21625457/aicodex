@@ -1,5 +1,7 @@
-use codex_core_skills::model::SkillDependencies;
+use codex_protocol::protocol::SkillScope;
+use codex_skills::SkillDependencies;
 use codex_utils_path_uri::PathUri;
+use std::sync::Arc;
 
 /// Source authority that owns a skill package and must be used to read it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -83,6 +85,23 @@ impl SkillResourceId {
             environment_path: Some(EnvironmentSkillResource {
                 environment_id: environment_id.into(),
                 path,
+                contents: None,
+            }),
+        }
+    }
+
+    pub fn environment_with_contents(
+        id: impl Into<String>,
+        environment_id: impl Into<String>,
+        path: PathUri,
+        contents: String,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            environment_path: Some(EnvironmentSkillResource {
+                environment_id: environment_id.into(),
+                path,
+                contents: Some(contents.into()),
             }),
         }
     }
@@ -96,12 +115,19 @@ impl SkillResourceId {
             .as_ref()
             .map(|resource| (resource.environment_id.as_str(), &resource.path))
     }
+
+    pub(crate) fn environment_contents(&self) -> Option<&str> {
+        self.environment_path
+            .as_ref()
+            .and_then(|resource| resource.contents.as_deref())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct EnvironmentSkillResource {
     environment_id: String,
     path: PathUri,
+    contents: Option<Arc<str>>,
 }
 
 /// Metadata shown in the always-visible skills catalog.
@@ -114,6 +140,7 @@ pub struct SkillCatalogEntry {
     pub short_description: Option<String>,
     pub main_prompt: SkillResourceId,
     pub display_path: Option<String>,
+    prompt_scope: Option<SkillScope>,
     pub dependencies: Option<SkillDependencies>,
     pub enabled: bool,
     pub prompt_visible: bool,
@@ -135,6 +162,7 @@ impl SkillCatalogEntry {
             short_description: None,
             main_prompt,
             display_path: None,
+            prompt_scope: None,
             dependencies: None,
             enabled: true,
             prompt_visible: true,
@@ -148,6 +176,11 @@ impl SkillCatalogEntry {
 
     pub fn with_display_path(mut self, display_path: impl Into<String>) -> Self {
         self.display_path = Some(display_path.into());
+        self
+    }
+
+    pub(crate) fn with_prompt_scope(mut self, prompt_scope: SkillScope) -> Self {
+        self.prompt_scope = Some(prompt_scope);
         self
     }
 
@@ -170,6 +203,10 @@ impl SkillCatalogEntry {
         self.display_path
             .as_deref()
             .unwrap_or_else(|| self.main_prompt.as_str())
+    }
+
+    pub(crate) fn prompt_scope(&self) -> Option<SkillScope> {
+        self.prompt_scope
     }
 }
 

@@ -16,7 +16,9 @@ mod directory_cache;
 pub mod filter;
 pub mod merge;
 pub mod metadata;
+mod metadata_store;
 mod plugin_config;
+mod runtime_projection;
 mod snapshot;
 
 pub use app_info::AppBranding;
@@ -39,12 +41,21 @@ pub use connector_runtime::ConnectorRuntimeSnapshot;
 pub use connector_runtime::connector_runtime_cache_path;
 pub use connector_runtime::connector_runtime_context_key;
 pub use directory_cache::ConnectorDirectoryCacheContext;
+pub use metadata_store::ConnectorMetadata;
+pub use metadata_store::ConnectorMetadataStore;
+pub use metadata_store::ConnectorToolSummary;
 pub use plugin_config::parse_plugin_app_config;
 pub use plugin_config::parse_plugin_app_config_value;
+pub use runtime_projection::ConnectorRuntimeTool;
+pub use runtime_projection::InstalledConnectorRuntime;
+pub use runtime_projection::connector_tool_is_synthetic;
+pub use runtime_projection::installed_connector_runtime;
 pub use snapshot::ConnectorSnapshot;
 pub use snapshot::PluginConnectorSource;
 
 pub const CONNECTORS_CACHE_TTL: Duration = Duration::from_secs(3600);
+/// TTL for app/read metadata; it starts aligned with the connector directory cache.
+pub const CONNECTOR_METADATA_CACHE_TTL: Duration = CONNECTORS_CACHE_TTL;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectorDirectoryCacheKey {

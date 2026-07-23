@@ -94,7 +94,7 @@ impl From<CoreReviewDecision> for CommandExecutionApprovalDecision {
                 network_policy_amendment: network_policy_amendment.into(),
             },
             CoreReviewDecision::Abort => Self::Cancel,
-            CoreReviewDecision::Denied => Self::Decline,
+            CoreReviewDecision::Denied { .. } => Self::Decline,
             CoreReviewDecision::TimedOut => Self::Decline,
         }
     }
@@ -1655,6 +1655,8 @@ pub enum DynamicToolCallOutputContentItem {
     InputText { text: String },
     #[serde(rename_all = "camelCase")]
     InputImage { image_url: String },
+    #[serde(rename_all = "camelCase")]
+    InputAudio { audio_url: String },
 }
 
 impl From<codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem>
@@ -1668,6 +1670,9 @@ impl From<codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem>
             codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputImage {
                 image_url,
             } => Self::InputImage { image_url },
+            codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputAudio {
+                audio_url,
+            } => Self::InputAudio { audio_url },
         }
     }
 }
@@ -1680,6 +1685,9 @@ impl From<DynamicToolCallOutputContentItem>
             DynamicToolCallOutputContentItem::InputText { text } => Self::InputText { text },
             DynamicToolCallOutputContentItem::InputImage { image_url } => {
                 Self::InputImage { image_url }
+            }
+            DynamicToolCallOutputContentItem::InputAudio { audio_url } => {
+                Self::InputAudio { audio_url }
             }
         }
     }

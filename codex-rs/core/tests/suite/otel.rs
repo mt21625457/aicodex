@@ -16,7 +16,6 @@ use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_custom_tool_call;
 use core_test_support::responses::ev_function_call;
-use core_test_support::responses::ev_local_shell_call;
 use core_test_support::responses::ev_message_item_added;
 use core_test_support::responses::ev_output_text_delta;
 use core_test_support::responses::ev_reasoning_item;
@@ -1187,174 +1186,6 @@ async fn handle_response_item_records_tool_result_for_shell_command_call() {
     });
 }
 
-#[tokio::test]
-#[traced_test]
-async fn handle_response_item_records_tool_result_for_local_shell_missing_ids() {
-    let server = start_mock_server().await;
-
-    mount_sse_once(
-        &server,
-        sse(vec![
-            serde_json::json!({
-                "type": "response.output_item.done",
-                "item": {
-                    "type": "local_shell_call",
-                    "status": "completed",
-                    "action": {
-                        "type": "exec",
-                        "command": vec!["/bin/echo", "hello"],
-                    }
-                }
-            }),
-            ev_completed("done"),
-        ]),
-    )
-    .await;
-
-    mount_sse_once(
-        &server,
-        sse(vec![
-            ev_assistant_message("msg-1", "local shell done"),
-            ev_completed("done"),
-        ]),
-    )
-    .await;
-
-    let TestCodex { codex, .. } = test_codex()
-        .with_config(move |config| {
-            config
-                .features
-                .disable(Feature::GhostCommit)
-                .expect("test config should allow feature update");
-        })
-        .build(&server)
-        .await
-        .unwrap();
-
-    codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: "hello".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
-        .await
-        .unwrap();
-
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
-
-    logs_assert(|lines: &[&str]| {
-        let line = lines
-            .iter()
-            .find(|line| {
-                line.contains("codex.tool_result")
-                    && line.contains("codex_otel.log_only:")
-                    && line.contains("event.name=\"codex.tool_result\"")
-                    && line.contains("tool_name=local_shell")
-                    && line.contains("output=LocalShellCall without call_id or id")
-            })
-            .ok_or_else(|| "missing codex.tool_result event".to_string())?;
-
-        if !line.contains("success=false") {
-            return Err("missing success field".to_string());
-        }
-        assert_empty_mcp_tool_fields(line)?;
-
-        Ok(())
-    });
-}
-
-#[cfg(target_os = "macos")]
-#[tokio::test]
-#[traced_test]
-async fn handle_response_item_records_tool_result_for_local_shell_call() {
-    let server = start_mock_server().await;
-
-    mount_sse_once(
-        &server,
-        sse(vec![
-            ev_local_shell_call(
-                "otel-local-shell-call",
-                "completed",
-                vec!["/bin/echo", "shell"],
-            ),
-            ev_completed("done"),
-        ]),
-    )
-    .await;
-
-    mount_sse_once(
-        &server,
-        sse(vec![
-            ev_assistant_message("msg-1", "local shell done"),
-            ev_completed("done"),
-        ]),
-    )
-    .await;
-
-    let TestCodex { codex, .. } = test_codex()
-        .with_config(move |config| {
-            config
-                .features
-                .disable(Feature::GhostCommit)
-                .expect("test config should allow feature update");
-            config.permissions.approval_policy = Constrained::allow_any(AskForApproval::Never);
-        })
-        .build(&server)
-        .await
-        .unwrap();
-
-    codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: "hello".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
-        .await
-        .unwrap();
-
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
-
-    logs_assert(|lines: &[&str]| {
-        let line = find_tool_result_log_line(lines, "otel-local-shell-call")?;
-
-        if !line.contains("tool_name=shell_command") {
-            return Err("missing tool_name field".to_string());
-        }
-        assert_json_log_field(
-            line,
-            "arguments",
-            serde_json::json!({
-                "command": "/bin/echo shell",
-                "sandbox_permissions": "use_default",
-                "timeout_ms": null,
-                "workdir": null,
-            }),
-        )?;
-        let output_idx = line
-            .find("output=")
-            .ok_or_else(|| "missing output field".to_string())?;
-        if line[output_idx + "output=".len()..].is_empty() {
-            return Err("empty output field".to_string());
-        }
-        if !line.contains("success=false") {
-            return Err("missing success field".to_string());
-        }
-        assert_empty_mcp_tool_fields(line)?;
-
-        Ok(())
-    });
-}
-
 fn tool_decision_assertion<'a>(
     call_id: &'a str,
     expected_decision: &'a str,
@@ -1774,7 +1605,7 @@ async fn handle_shell_command_user_denies_records_tool_decision() {
         .submit(Op::ExecApproval {
             id: approval.effective_approval_id(),
             turn_id: None,
-            decision: ReviewDecision::Denied,
+            decision: ReviewDecision::denied("rejected by user"),
         })
         .await
         .unwrap();
@@ -1915,7 +1746,7 @@ async fn handle_sandbox_error_user_denies_records_tool_decision() {
         .submit(Op::ExecApproval {
             id: approval.effective_approval_id(),
             turn_id: None,
-            decision: ReviewDecision::Denied,
+            decision: ReviewDecision::denied("rejected by user"),
         })
         .await
         .unwrap();

@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use codex_core_skills::HostSkillsSnapshot;
-use codex_core_skills::default_skill_metadata_budget;
 use codex_core_skills::injection::HostSkillsCatalogInWorldState;
 use codex_core_skills::injection::InjectedHostSkillPrompts;
 use codex_exec_server::LOCAL_ENVIRONMENT_ID;
@@ -25,7 +24,6 @@ use codex_extension_api::TurnInputContext;
 use codex_extension_api::TurnInputContributor;
 use codex_extension_api::WorldStateContributionInput;
 use codex_extension_api::WorldStateSectionContribution;
-use codex_mcp::McpResourceClient;
 use codex_otel::MetricsClient;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::Event;
@@ -43,13 +41,16 @@ use crate::provider::SkillListQuery;
 use crate::provider::SkillReadRequest;
 use crate::render::MAX_SKILL_NAME_BYTES;
 use crate::render::MAX_SKILL_PATH_BYTES;
+use crate::render::SkillCatalogRenderPolicy;
 use crate::render::available_skills_fragment;
+use crate::render::capped_skill_metadata_budget;
 use crate::render::truncate_main_prompt_contents;
 use crate::render::truncate_utf8_to_bytes;
 use crate::selection::collect_explicit_skill_mentions;
 use crate::shadow_selection_experiment::ShadowSelectionExperiment;
 use crate::sources::SkillProviders;
 use crate::state::ExecutorSkillsStepState;
+use crate::state::SkillsSessionState;
 use crate::state::SkillsThreadState;
 use crate::state::SkillsTurnState;
 use crate::tools::skill_tools;
@@ -69,6 +70,9 @@ where
 {
     fn on_thread_start<'a>(&'a self, input: ThreadStartInput<'a, C>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
+            input.session_store.insert(SkillsSessionState {
+                mcp_resources: input.mcp_resource_client.clone(),
+            });
             let orchestrator_skills_available = !input
                 .environments
                 .iter()
@@ -131,7 +135,10 @@ where
                         include_host_skills: false,
                         include_bundled_skills: config.bundled_skills_enabled,
                         include_orchestrator_skills: thread_state.orchestrator_skills_enabled(),
-                        mcp_resources: session_store.get::<McpResourceClient>(),
+                        mcp_resources: session_store
+                            .get::<SkillsSessionState>()
+                            .and_then(|state| state.mcp_resources.clone()),
+                        executor_capability_discovery: None,
                     },
                     &thread_state,
                 )
@@ -142,10 +149,15 @@ where
             let include_usage = thread_store
                 .get::<ModelInfo>()
                 .is_some_and(|model_info| model_info.include_skills_usage_instructions);
-            available_skills_fragment(&catalog, include_usage)
-                .map(|fragment| PromptFragment::developer_capability(fragment.render()))
-                .into_iter()
-                .collect()
+            available_skills_fragment(
+                &catalog,
+                include_usage,
+                SkillCatalogRenderPolicy::ExtensionCompatible,
+                capped_skill_metadata_budget(/*context_window*/ None),
+            )
+            .map(|fragment| PromptFragment::developer_capability(fragment.render()))
+            .into_iter()
+            .collect()
         })
     }
 
@@ -168,7 +180,11 @@ where
                         include_host_skills: false,
                         include_bundled_skills: config.bundled_skills_enabled,
                         include_orchestrator_skills: false,
-                        mcp_resources: input.session_store.get::<McpResourceClient>(),
+                        mcp_resources: input
+                            .session_store
+                            .get::<SkillsSessionState>()
+                            .and_then(|state| state.mcp_resources.clone()),
+                        executor_capability_discovery: input.executor_capability_discovery.cloned(),
                     },
                 )
                 .await;
@@ -179,10 +195,15 @@ where
             let include_usage = model_info
                 .as_deref()
                 .is_some_and(|model_info| model_info.include_skills_usage_instructions);
+            let context_window = model_info
+                .as_deref()
+                .and_then(ModelInfo::resolved_context_window);
+            let metadata_budget = capped_skill_metadata_budget(context_window);
             let mut sections = vec![executor_skills_world_state_section(
                 &catalog,
                 config.include_instructions,
                 include_usage,
+                metadata_budget,
             )];
             if let Some(host_snapshot) = input.turn_store.get::<HostSkillsSnapshot>()
                 && self.providers.has_host_provider()
@@ -192,11 +213,7 @@ where
                     &host_snapshot,
                     config.include_instructions,
                     include_usage,
-                    default_skill_metadata_budget(
-                        model_info
-                            .as_deref()
-                            .and_then(|model_info| model_info.context_window),
-                    ),
+                    metadata_budget,
                 ));
             }
             sections
@@ -224,7 +241,9 @@ where
 
         skill_tools(
             self.providers.clone(),
-            session_store.get::<McpResourceClient>(),
+            session_store
+                .get::<SkillsSessionState>()
+                .and_then(|state| state.mcp_resources.clone()),
             thread_state,
             Arc::clone(&self.shadow_selection),
         )
@@ -274,6 +293,9 @@ where
             };
 
             let config = thread_state.config();
+            let mcp_resources = session_store
+                .get::<SkillsSessionState>()
+                .and_then(|state| state.mcp_resources.clone());
             let host_snapshot = turn_store.get::<HostSkillsSnapshot>();
             let host_catalog_in_world_state =
                 turn_store.get::<HostSkillsCatalogInWorldState>().is_some();
@@ -284,7 +306,8 @@ where
                 include_host_skills: !host_catalog_in_world_state,
                 include_bundled_skills: config.bundled_skills_enabled,
                 include_orchestrator_skills: thread_state.orchestrator_skills_enabled(),
-                mcp_resources: session_store.get::<McpResourceClient>(),
+                mcp_resources,
+                executor_capability_discovery: None,
             };
             let host_query = query.clone();
             let mut catalog = turn_store
@@ -320,10 +343,20 @@ where
                     entry.authority.kind != SkillSourceKind::Executor
                         && entry.authority.kind != SkillSourceKind::Orchestrator
                 });
-                let include_usage = thread_store
-                    .get::<ModelInfo>()
+                let model_info = thread_store.get::<ModelInfo>();
+                let include_usage = model_info
+                    .as_deref()
                     .is_some_and(|model_info| model_info.include_skills_usage_instructions);
-                if let Some(fragment) = available_skills_fragment(&turn_catalog, include_usage) {
+                let context_window = model_info
+                    .as_deref()
+                    .and_then(ModelInfo::resolved_context_window);
+                let metadata_budget = capped_skill_metadata_budget(context_window);
+                if let Some(fragment) = available_skills_fragment(
+                    &turn_catalog,
+                    include_usage,
+                    SkillCatalogRenderPolicy::ExtensionCompatible,
+                    metadata_budget,
+                ) {
                     fragments.push(Box::new(fragment));
                 }
             }
@@ -444,7 +477,9 @@ impl<C> SkillsExtension<C> {
                     package: entry.id.clone(),
                     resource: entry.main_prompt.clone(),
                     host_snapshot,
-                    mcp_resources: session_store.get::<McpResourceClient>(),
+                    mcp_resources: session_store
+                        .get::<SkillsSessionState>()
+                        .and_then(|state| state.mcp_resources.clone()),
                 },
             )
             .await

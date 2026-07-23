@@ -8,6 +8,7 @@ use codex_protocol::models::SandboxEnforcement;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSandboxEntry;
+use codex_protocol::permissions::FileSystemSandboxEntryMissingPathBehavior;
 use codex_protocol::permissions::FileSystemSandboxKind;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::FileSystemSpecialPath;
@@ -135,10 +136,8 @@ pub struct WalkOutcome {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ExecFileSystemPath {
     Path { path: PathUri },
-    GeneratedDefaultPath { path: PathUri },
     GlobPattern { pattern: String },
     Special { value: FileSystemSpecialPath },
-    GeneratedDefaultSpecial { value: FileSystemSpecialPath },
 }
 
 impl From<FileSystemPath> for ExecFileSystemPath {
@@ -147,14 +146,8 @@ impl From<FileSystemPath> for ExecFileSystemPath {
             FileSystemPath::Path { path } => Self::Path {
                 path: PathUri::from_abs_path(&path),
             },
-            FileSystemPath::GeneratedDefaultPath { path } => Self::GeneratedDefaultPath {
-                path: PathUri::from_abs_path(&path),
-            },
             FileSystemPath::GlobPattern { pattern } => Self::GlobPattern { pattern },
             FileSystemPath::Special { value } => Self::Special { value },
-            FileSystemPath::GeneratedDefaultSpecial { value } => {
-                Self::GeneratedDefaultSpecial { value }
-            }
         }
     }
 }
@@ -167,14 +160,8 @@ impl TryFrom<ExecFileSystemPath> for FileSystemPath {
             ExecFileSystemPath::Path { path } => Self::Path {
                 path: path.to_abs_path()?,
             },
-            ExecFileSystemPath::GeneratedDefaultPath { path } => Self::GeneratedDefaultPath {
-                path: path.to_abs_path()?,
-            },
             ExecFileSystemPath::GlobPattern { pattern } => Self::GlobPattern { pattern },
             ExecFileSystemPath::Special { value } => Self::Special { value },
-            ExecFileSystemPath::GeneratedDefaultSpecial { value } => {
-                Self::GeneratedDefaultSpecial { value }
-            }
         })
     }
 }
@@ -183,6 +170,8 @@ impl TryFrom<ExecFileSystemPath> for FileSystemPath {
 pub struct ExecFileSystemSandboxEntry {
     pub path: ExecFileSystemPath,
     pub access: FileSystemAccessMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing_path_behavior: Option<FileSystemSandboxEntryMissingPathBehavior>,
 }
 
 impl From<FileSystemSandboxEntry> for ExecFileSystemSandboxEntry {
@@ -190,6 +179,7 @@ impl From<FileSystemSandboxEntry> for ExecFileSystemSandboxEntry {
         Self {
             path: value.path.into(),
             access: value.access,
+            missing_path_behavior: value.missing_path_behavior,
         }
     }
 }
@@ -201,6 +191,7 @@ impl TryFrom<ExecFileSystemSandboxEntry> for FileSystemSandboxEntry {
         Ok(Self {
             path: value.path.try_into()?,
             access: value.access,
+            missing_path_behavior: value.missing_path_behavior,
         })
     }
 }
@@ -373,14 +364,8 @@ impl FileSystemSandboxContext {
                 ExecFileSystemPath::GlobPattern { pattern } => !Path::new(pattern).is_absolute(),
                 ExecFileSystemPath::Special {
                     value: FileSystemSpecialPath::ProjectRoots { .. },
-                }
-                | ExecFileSystemPath::GeneratedDefaultSpecial {
-                    value: FileSystemSpecialPath::ProjectRoots { .. },
                 } => true,
-                ExecFileSystemPath::Path { .. }
-                | ExecFileSystemPath::GeneratedDefaultPath { .. }
-                | ExecFileSystemPath::Special { .. }
-                | ExecFileSystemPath::GeneratedDefaultSpecial { .. } => false,
+                ExecFileSystemPath::Path { .. } | ExecFileSystemPath::Special { .. } => false,
             }),
             ExecPermissionProfile::Managed {
                 file_system: ExecManagedFileSystemPermissions::Unrestricted,

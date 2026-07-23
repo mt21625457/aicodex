@@ -687,7 +687,7 @@ fn dedicated_guidance_is_bounded_stable_single_copy_and_legacy_safe() {
                 text: "edit safely".to_string(),
             }],
         )],
-        tools: tools.clone(),
+        tools: tools,
         chat_file_tool_mode: ChatFileToolMode::Dedicated,
         dedicated_file_tools_enabled: true,
         ..Default::default()

@@ -55,6 +55,7 @@ const CLAUDE_THINKING_MEDIUM_BUDGET_TOKENS: u32 = 2_048;
 const CLAUDE_THINKING_HIGH_BUDGET_TOKENS: u32 = 4_096;
 const CLAUDE_THINKING_XHIGH_BUDGET_TOKENS: u32 = 6_144;
 const CLAUDE_MAX_MEDIA_PER_REQUEST: usize = 100;
+const UNSUPPORTED_AUDIO_PLACEHOLDER: &str = "[audio content omitted: unsupported by Claude API]";
 const NON_TEXT_ERROR_TOOL_RESULT_PLACEHOLDER: &str = "[Non-text tool error content omitted]";
 const PRUNED_TOOL_RESULT_MEDIA_PLACEHOLDER: &str =
     "[Media content omitted to stay within Claude request limits]";
@@ -1758,6 +1759,7 @@ fn content_text(content: &[ContentItem]) -> String {
                 "[image: data-url]".to_string()
             }
             ContentItem::InputImage { image_url, .. } => format!("[image: {image_url}]"),
+            ContentItem::InputAudio { .. } => UNSUPPORTED_AUDIO_PLACEHOLDER.to_string(),
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -1775,6 +1777,7 @@ fn content_blocks(content: &[ContentItem]) -> Vec<ClaudeContentBlock> {
                 Some(text_block(text))
             }
             ContentItem::InputImage { image_url, .. } => Some(image_content_block(image_url)),
+            ContentItem::InputAudio { .. } => Some(text_block(UNSUPPORTED_AUDIO_PLACEHOLDER)),
             ContentItem::InputText { .. }
             | ContentItem::OutputText { .. }
             | ContentItem::OutputTextWithCitations { .. } => None,
@@ -1889,6 +1892,9 @@ fn function_output_content_blocks(
             }
             FunctionCallOutputContentItem::InputImage { image_url, .. } => {
                 Some(image_content_block(image_url))
+            }
+            FunctionCallOutputContentItem::InputAudio { .. } => {
+                Some(text_block(UNSUPPORTED_AUDIO_PLACEHOLDER))
             }
             FunctionCallOutputContentItem::InputText { .. } => None,
             FunctionCallOutputContentItem::EncryptedContent { .. } => None,

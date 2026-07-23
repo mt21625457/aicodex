@@ -14,6 +14,7 @@ use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionFuture;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::ThreadLifecycleContributor;
+use codex_extension_api::ThreadOriginator;
 use codex_extension_api::ThreadStartInput;
 use codex_extension_api::ToolContributor;
 use codex_features::Feature;
@@ -157,6 +158,9 @@ impl ToolContributor for WebSearchExtension {
             moonshot_search: config.moonshot_search.clone(),
             moonshot_feature_enabled: config.moonshot_feature_enabled,
             settings: config.settings.clone(),
+            originator: thread_store
+                .get::<ThreadOriginator>()
+                .map(|originator| originator.0.clone()),
         })]
     }
 }

@@ -87,6 +87,10 @@ fn log_retry(
     match request {
         ResponsesStreamRequest::Sampling => {
             warn!(
+                turn_id = %turn_context.sub_id,
+                retries,
+                max_retries,
+                sampling_error = %err,
                 "stream disconnected - retrying sampling request ({retries}/{max_retries} in {delay:?})...",
             );
         }
@@ -101,3 +105,7 @@ fn log_retry(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "responses_retry_tests.rs"]
+mod tests;

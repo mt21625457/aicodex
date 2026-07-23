@@ -1,4 +1,5 @@
 use super::*;
+use crate::environment_selection::TurnEnvironmentState;
 use crate::mcp_tool_call::MCP_TOOL_APPROVAL_DECLINE_SYNTHETIC;
 use crate::mcp_tool_call::MCP_TOOL_APPROVAL_QUESTION_ID_PREFIX;
 use async_channel::bounded;
@@ -33,8 +34,20 @@ use pretty_assertions::assert_eq;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio::time::timeout;
+
+#[tokio::test]
+async fn dropped_approval_review_fails_closed() {
+    let (tx, rx) = oneshot::channel();
+    drop(tx);
+
+    assert_eq!(
+        receive_approval_review(rx).await,
+        ReviewDecision::denied("automatic approval review could not complete")
+    );
+}
 
 #[tokio::test]
 async fn forward_events_filters_private_events_before_blocked_send_is_cancelled() {
@@ -197,6 +210,7 @@ async fn run_codex_thread_interactive_respects_pre_cancelled_spawn() {
             cancel_token,
             SubAgentSource::Review,
             /*initial_history*/ None,
+            crate::session::GitEnrichmentPolicy::Fresh,
         ),
     )
     .await
@@ -211,7 +225,11 @@ async fn handle_request_permissions_uses_tool_call_id_for_round_trip() {
         crate::session::tests::make_session_and_context_with_rx().await;
     *parent_session.active_turn.lock().await = Some(crate::state::ActiveTurn::default());
     let parent_ctx_mut = Arc::get_mut(&mut parent_ctx).expect("single turn context ref");
-    parent_ctx_mut.environments.turn_environments[0].environment_id = "remote".to_string();
+    let TurnEnvironmentState::Ready(environment) = &mut parent_ctx_mut.environments.environments[0]
+    else {
+        panic!("expected ready primary environment");
+    };
+    environment.environment_id = "remote".to_string();
 
     let (tx_sub, rx_sub) = bounded(SUBMISSION_CHANNEL_CAPACITY);
     let (_tx_events, rx_events_child) = bounded(SUBMISSION_CHANNEL_CAPACITY);

@@ -31,6 +31,7 @@ use codex_utils_path_uri::PathUri;
 use core_test_support::PathBufExt;
 use core_test_support::PathExt;
 use core_test_support::responses::mount_models_once;
+use core_test_support::responses::strip_response_item_ids_from_json;
 use pretty_assertions::assert_eq;
 use std::time::Duration;
 use tempfile::tempdir;
@@ -134,6 +135,24 @@ fn effective_originator_prefers_thread_scoped_sources_before_env_originator() {
             Some("persisted_originator"),
             Some("inherited_originator"),
             "codex_work_mobile",
+        ),
+        (
+            Some("codex_work_cca"),
+            Some("persisted_originator"),
+            Some("inherited_originator"),
+            "codex_work_cca",
+        ),
+        (
+            Some("chatgpt_cca"),
+            Some("persisted_originator"),
+            Some("inherited_originator"),
+            "chatgpt_cca",
+        ),
+        (
+            Some("chatgpt_cca_extra"),
+            Some("persisted_originator"),
+            Some("inherited_originator"),
+            "persisted_originator",
         ),
         (
             None,
@@ -669,6 +688,7 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
             &first_session.services.thread_extension_data,
             &first_originator,
             /*ready_selected_capability_roots*/ &[],
+            /*executor_capability_discovery*/ None,
         )
         .await;
     let second_session = &second_thread.thread.session;
@@ -682,6 +702,7 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
             &second_session.services.thread_extension_data,
             &second_originator,
             /*ready_selected_capability_roots*/ &[],
+            /*executor_capability_discovery*/ None,
         )
         .await;
 
@@ -894,13 +915,21 @@ async fn resume_and_fork_do_not_restore_thread_environments_from_rollout() {
         .new_turn_with_sub_id("resume-turn".to_string(), SessionSettingsUpdate::default())
         .await
         .expect("build resumed turn context");
-    assert_eq!(resumed_turn.environments.turn_environments.len(), 1);
+    assert_eq!(resumed_turn.environments.turn_environments().count(), 1);
     assert_eq!(
-        resumed_turn.environments.turn_environments[0].cwd(),
+        resumed_turn
+            .environments
+            .primary()
+            .expect("primary environment")
+            .cwd(),
         &PathUri::from_abs_path(&default_cwd)
     );
     assert_ne!(
-        resumed_turn.environments.turn_environments[0].cwd(),
+        resumed_turn
+            .environments
+            .primary()
+            .expect("primary environment")
+            .cwd(),
         &PathUri::from_abs_path(&selected_cwd)
     );
 
@@ -920,13 +949,21 @@ async fn resume_and_fork_do_not_restore_thread_environments_from_rollout() {
         .new_turn_with_sub_id("fork-turn".to_string(), SessionSettingsUpdate::default())
         .await
         .expect("build forked turn context");
-    assert_eq!(forked_turn.environments.turn_environments.len(), 1);
+    assert_eq!(forked_turn.environments.turn_environments().count(), 1);
     assert_eq!(
-        forked_turn.environments.turn_environments[0].cwd(),
+        forked_turn
+            .environments
+            .primary()
+            .expect("primary environment")
+            .cwd(),
         &PathUri::from_abs_path(&default_cwd)
     );
     assert_ne!(
-        forked_turn.environments.turn_environments[0].cwd(),
+        forked_turn
+            .environments
+            .primary()
+            .expect("primary environment")
+            .cwd(),
         &PathUri::from_abs_path(&selected_cwd)
     );
 }
@@ -1746,8 +1783,9 @@ async fn interrupted_fork_snapshot_does_not_synthesize_turn_id_for_legacy_histor
         rollout_items
             .iter()
             .filter(|item| {
-                serde_json::to_value(item).expect("serialize rollout item")
-                    == interrupted_marker_json
+                strip_response_item_ids_from_json(
+                    serde_json::to_value(item).expect("serialize rollout item"),
+                ) == interrupted_marker_json
             })
             .count(),
         1,
@@ -1950,8 +1988,9 @@ async fn interrupted_fork_snapshot_uses_persisted_mid_turn_history_without_live_
         forked_rollout_items
             .iter()
             .filter(|item| {
-                serde_json::to_value(item).expect("serialize forked rollout item")
-                    == interrupted_marker_json
+                strip_response_item_ids_from_json(
+                    serde_json::to_value(item).expect("serialize forked rollout item"),
+                ) == interrupted_marker_json
             })
             .count(),
         1,
@@ -1985,8 +2024,9 @@ async fn interrupted_fork_snapshot_uses_persisted_mid_turn_history_without_live_
         reforked_rollout_items
             .iter()
             .filter(|item| {
-                serde_json::to_value(item).expect("serialize re-forked rollout item")
-                    == interrupted_marker_json
+                strip_response_item_ids_from_json(
+                    serde_json::to_value(item).expect("serialize re-forked rollout item"),
+                ) == interrupted_marker_json
             })
             .count(),
         1,

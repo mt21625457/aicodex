@@ -77,6 +77,51 @@ async fn write_and_flush(file: &mut tokio::fs::File, contents: &[u8]) -> io::Res
     Ok(())
 }
 
+async fn write_linked_file_if_unchanged(
+    path: &Path,
+    contents: &[u8],
+    expected: [u8; 32],
+) -> io::Result<()> {
+    // Replacing the directory entry would detach a symbolic or hard link. Open
+    // the existing inode instead, accepting the non-atomic write that preserving
+    // link identity necessarily requires.
+    let mut file = tokio::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .await?;
+    let mut current = Vec::new();
+    file.read_to_end(&mut current).await?;
+    if Sha256::digest(&current).as_slice() != expected {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "conditional write conflict: file changed since read",
+        ));
+    }
+    file.set_len(0).await?;
+    file.seek(std::io::SeekFrom::Start(0)).await?;
+    write_and_flush(&mut file, contents).await
+}
+
+#[cfg(unix)]
+fn metadata_has_multiple_links(metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    metadata.nlink() > 1
+}
+
+#[cfg(windows)]
+fn metadata_has_multiple_links(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    metadata.number_of_links().is_some_and(|links| links > 1)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn metadata_has_multiple_links(_metadata: &std::fs::Metadata) -> bool {
+    false
+}
+
 pub static LOCAL_FS: LazyLock<Arc<dyn ExecutorFileSystem>> =
     LazyLock::new(|| -> Arc<dyn ExecutorFileSystem> { Arc::new(LocalFileSystem::unsandboxed()) });
 
@@ -728,6 +773,11 @@ impl DirectFileSystem {
                         io::ErrorKind::InvalidData,
                         "conditional write conflict: file changed since read",
                     ));
+                }
+                let metadata = tokio::fs::symlink_metadata(path.as_path()).await?;
+                if metadata.file_type().is_symlink() || metadata_has_multiple_links(&metadata) {
+                    return write_linked_file_if_unchanged(path.as_path(), &contents, expected)
+                        .await;
                 }
                 let temp_path = sibling_write_temp_path(path.as_path())?;
                 if let Err(error) = write_exclusive_file(&temp_path, &contents).await {
