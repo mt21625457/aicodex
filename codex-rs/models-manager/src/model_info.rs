@@ -11,6 +11,7 @@ use codex_protocol::openai_models::TruncationMode;
 use codex_protocol::openai_models::TruncationPolicyConfig;
 use codex_protocol::openai_models::WebSearchToolType;
 use codex_protocol::openai_models::default_input_modalities;
+use codex_protocol::protocol::MultiAgentVersion;
 
 use crate::config::ModelsManagerConfig;
 use codex_utils_output_truncation::approx_bytes_for_tokens;
@@ -27,6 +28,9 @@ const DEEPSEEK_FALLBACK_CONTEXT_WINDOW: i64 = 1_000_000;
 const PERSONALITY_SECTION_HEADER: &str = "# Personality";
 
 pub fn with_config_overrides(mut model: ModelInfo, config: &ModelsManagerConfig) -> ModelInfo {
+    if model.multi_agent_version.is_none() && is_grok_model_slug(&model.slug) {
+        model.multi_agent_version = Some(MultiAgentVersion::V2);
+    }
     if let Some(context_window) = config.model_context_window {
         model.context_window = Some(
             model
@@ -171,8 +175,20 @@ pub fn model_info_from_slug(slug: &str) -> ModelInfo {
         use_responses_lite: false,
         auto_review_model_override: None,
         tool_mode: None,
-        multi_agent_version: None,
+        multi_agent_version: is_grok_model_slug(slug).then_some(MultiAgentVersion::V2),
     }
+}
+
+/// Returns whether a model slug identifies a Grok model routed through xAI Responses.
+pub fn is_grok_model_slug(model: &str) -> bool {
+    let normalized = model
+        .trim()
+        .rsplit([':', '/'])
+        .next()
+        .unwrap_or(model)
+        .trim()
+        .to_ascii_lowercase();
+    normalized.starts_with("grok-") || normalized.starts_with("grok_")
 }
 
 fn fallback_context_window_for_slug(slug: &str) -> i64 {

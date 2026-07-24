@@ -61,6 +61,7 @@ use crate::tools::router::ToolRouterParams;
 use codex_features::Feature;
 use codex_login::AuthManager;
 use codex_model_provider_info::is_kimi_model_slug;
+use codex_models_manager::model_info::is_grok_model_slug;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolNamespaceTool;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
@@ -788,14 +789,25 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mu
     let turn_context = context.step_context.turn.as_ref();
     if collab_tools_enabled(turn_context) {
         if multi_agent_v2_enabled(turn_context) {
-            let exposure = if turn_context.config.multi_agent_v2.non_code_mode_only {
+            let base_exposure = if turn_context.config.multi_agent_v2.non_code_mode_only {
                 ToolExposure::DirectModelOnly
             } else {
                 ToolExposure::Direct
             };
-            let tool_namespace = namespace_tools_enabled(turn_context)
+            let is_grok = is_grok_model_slug(&turn_context.model_info.slug);
+            let configured_tool_namespace = namespace_tools_enabled(turn_context)
                 .then_some(turn_context.config.multi_agent_v2.tool_namespace.as_deref())
                 .flatten();
+            let exposure = if is_grok {
+                configured_tool_namespace.map_or(base_exposure, |namespace| {
+                    grok_collaboration_exposure(turn_context, base_exposure, namespace)
+                })
+            } else {
+                base_exposure
+            };
+            // xAI Responses accepts top-level function tools but not OpenAI namespace tools.
+            // Keep the V2 handlers plain for Grok so the gateway does not have to discard them.
+            let tool_namespace = (!is_grok).then_some(configured_tool_namespace).flatten();
             let agent_type_description =
                 agent_type_description(turn_context, context.default_agent_type_description);
             let hide_spawn_agent_metadata =
@@ -870,6 +882,35 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mu
     }
 }
 
+fn grok_collaboration_exposure(
+    turn_context: &TurnContext,
+    exposure: ToolExposure,
+    logical_namespace: &str,
+) -> ToolExposure {
+    let code_mode_excluded = matches!(
+        effective_tool_mode(turn_context),
+        ToolMode::CodeMode | ToolMode::CodeModeOnly
+    ) && turn_context
+        .config
+        .code_mode
+        .excluded_tool_namespaces
+        .iter()
+        .any(|namespace| namespace == logical_namespace);
+    let direct_model_only = turn_context
+        .config
+        .code_mode
+        .direct_only_tool_namespaces
+        .iter()
+        .any(|namespace| namespace == logical_namespace);
+    if matches!(exposure, ToolExposure::Direct | ToolExposure::Deferred)
+        && (code_mode_excluded || direct_model_only)
+    {
+        ToolExposure::DirectModelOnly
+    } else {
+        exposure
+    }
+}
+
 #[instrument(level = "trace", skip_all, fields(dynamic_tool_count = context.dynamic_tools.len()))]
 fn add_dynamic_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut PlannedTools) {
     for spec in context.dynamic_tools {
@@ -882,7 +923,7 @@ fn add_dynamic_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut Plan
                     );
                     continue;
                 };
-                planned_tools.add(handler);
+                add_dynamic_handler(planned_tools, handler);
             }
             DynamicToolSpec::Namespace(namespace) => {
                 for tool in &namespace.tools {
@@ -896,10 +937,23 @@ fn add_dynamic_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut Plan
                         );
                         continue;
                     };
-                    planned_tools.add(handler);
+                    add_dynamic_handler(planned_tools, handler);
                 }
             }
         }
+    }
+}
+
+fn add_dynamic_handler(planned_tools: &mut PlannedTools, handler: DynamicToolHandler) {
+    let tool_name = handler.tool_name();
+    if planned_tools
+        .runtimes()
+        .iter()
+        .any(|runtime| runtime.tool_name() == tool_name)
+    {
+        warn!("Skipping dynamic tool `{tool_name}`: tool already registered");
+    } else {
+        planned_tools.add(handler);
     }
 }
 

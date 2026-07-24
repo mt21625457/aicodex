@@ -160,6 +160,7 @@ fn grok_models_disable_responses_websocket_even_when_provider_supports_it() {
     assert!(client.responses_websocket_enabled());
     assert!(!client.responses_websocket_enabled_for_model("grok-4.5"));
     assert!(!client.responses_websocket_enabled_for_model("aicodex_gateway_responses:grok-4"));
+    assert!(!client.responses_websocket_enabled_for_model("xai/grok-4"));
     assert!(client.responses_websocket_enabled_for_model("gpt-5.5"));
 }
 

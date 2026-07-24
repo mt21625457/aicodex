@@ -9,6 +9,7 @@ use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use codex_models_manager::manager::RefreshStrategy;
+use codex_models_manager::model_info::is_grok_model_slug;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
@@ -36,6 +37,7 @@ pub(crate) fn model_supports_multi_agent_backend(
 ) -> bool {
     multi_agent_version != MultiAgentVersion::V2
         || model.multi_agent_version == Some(multi_agent_version)
+        || (model.multi_agent_version.is_none() && is_grok_model_slug(&model.model))
 }
 
 pub(crate) fn function_arguments(payload: ToolPayload) -> Result<String, FunctionCallError> {

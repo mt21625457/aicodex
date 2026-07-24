@@ -1683,6 +1683,96 @@ async fn multi_agent_v2_can_use_configured_tool_namespace() {
 }
 
 #[tokio::test]
+async fn grok_exposes_multi_agent_v2_as_top_level_functions() {
+    for slug in ["grok-4.5", "aicodex_gateway_responses:grok-4", "xai/grok-4"] {
+        let plan = probe(|turn| {
+            turn.model_info.slug = slug.to_string();
+            set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+        })
+        .await;
+
+        plan.assert_visible_lacks(&[MULTI_AGENT_V2_NAMESPACE]);
+        for tool_name in [
+            "spawn_agent",
+            "send_message",
+            "followup_task",
+            "wait_agent",
+            "interrupt_agent",
+            "list_agents",
+        ] {
+            plan.assert_visible_contains(&[tool_name]);
+            assert!(
+                plan.registered_names
+                    .contains(&ToolName::plain(tool_name).to_string()),
+                "expected plain {tool_name} runtime for {slug}"
+            );
+            assert!(
+                !plan.registered_names.contains(
+                    &ToolName::namespaced(MULTI_AGENT_V2_NAMESPACE, tool_name).to_string()
+                ),
+                "expected no namespaced {tool_name} runtime for {slug}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn grok_collaboration_tools_win_plain_name_conflicts_without_panicking() {
+    let plan = probe_with(
+        |turn| {
+            turn.model_info.slug = "grok-4.5".to_string();
+            set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+        },
+        ToolPlanInputs {
+            dynamic_tools: vec![dynamic_tool(
+                /*namespace*/ None,
+                "spawn_agent",
+                /*defer_loading*/ false,
+            )],
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+
+    let ToolSpec::Function(spawn_agent) = plan.visible_spec("spawn_agent") else {
+        panic!("expected plain collaboration spawn_agent");
+    };
+    assert!(!spawn_agent.description.contains("spawn_agent dynamic tool"));
+    plan.assert_registered_contains(&["spawn_agent"]);
+}
+
+#[tokio::test]
+async fn grok_plain_collaboration_tools_preserve_code_mode_namespace_exclusions() {
+    let plan = probe(|turn| {
+        turn.model_info.slug = "grok-4.5".to_string();
+        set_features(
+            turn,
+            &[
+                Feature::CodeMode,
+                Feature::CodeModeOnly,
+                Feature::MultiAgentV2,
+            ],
+        );
+        update_config(turn, |config| {
+            config.multi_agent_v2.non_code_mode_only = false;
+            config.code_mode.excluded_tool_namespaces = vec![MULTI_AGENT_V2_NAMESPACE.to_string()];
+        });
+    })
+    .await;
+
+    plan.assert_visible_contains(&[
+        codex_code_mode::PUBLIC_TOOL_NAME,
+        codex_code_mode::WAIT_TOOL_NAME,
+        "spawn_agent",
+    ]);
+    assert_eq!(plan.exposure("spawn_agent"), ToolExposure::DirectModelOnly);
+    let ToolSpec::Freeform(exec) = plan.visible_spec(codex_code_mode::PUBLIC_TOOL_NAME) else {
+        panic!("expected code mode exec tool");
+    };
+    assert!(!exec.description.contains("spawn_agent(args:"));
+}
+
+#[tokio::test]
 async fn multi_agent_v2_namespace_is_supported_by_bedrock_provider() {
     let plan = probe(|turn| {
         set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);

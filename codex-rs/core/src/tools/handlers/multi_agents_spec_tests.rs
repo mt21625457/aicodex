@@ -506,3 +506,23 @@ fn spawn_agent_schema_caps_dynamic_model_visible_text() {
         "agent_type description exceeded token cap"
     );
 }
+
+#[test]
+fn grok_without_catalog_version_is_available_as_v2_model_override() {
+    let mut grok = model_preset("grok", /*show_in_picker*/ true);
+    grok.model = "xai/grok-4.5".to_string();
+    grok.multi_agent_version = None;
+
+    let ToolSpec::Function(ResponsesApiTool { description, .. }) =
+        create_spawn_agent_tool_v2(SpawnAgentToolOptions {
+            available_models: vec![grok],
+            expose_spawn_agent_model_overrides: true,
+            multi_agent_version: MultiAgentVersion::V2,
+            ..SpawnAgentToolOptions::default()
+        })
+    else {
+        panic!("spawn_agent should be a function tool");
+    };
+
+    assert!(description.contains("`xai/grok-4.5`"));
+}

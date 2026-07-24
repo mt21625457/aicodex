@@ -294,3 +294,33 @@ fn unknown_k3_models_advertise_low_high_max_reasoning_levels() {
         );
     }
 }
+
+#[test]
+fn grok_models_use_multi_agent_v2_metadata() {
+    use codex_protocol::protocol::MultiAgentVersion;
+
+    for slug in [
+        "grok-4.5",
+        "GROK_4",
+        "aicodex_gateway_responses:grok-4",
+        "xai/grok-4",
+    ] {
+        let model = model_info_from_slug(slug);
+
+        assert_eq!(model.multi_agent_version, Some(MultiAgentVersion::V2));
+    }
+}
+
+#[test]
+fn grok_remote_metadata_without_multi_agent_version_is_upgraded() {
+    let model = model_info_from_slug("grok-4.5");
+    let mut remote_model = model.clone();
+    remote_model.used_fallback_model_metadata = false;
+    remote_model.multi_agent_version = None;
+
+    let updated = with_config_overrides(remote_model, &ModelsManagerConfig::default());
+
+    let mut expected = model;
+    expected.used_fallback_model_metadata = false;
+    assert_eq!(updated, expected);
+}

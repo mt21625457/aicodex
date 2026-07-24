@@ -76,6 +76,7 @@ use codex_login::RefreshTokenError;
 use codex_login::UnauthorizedRecovery;
 use codex_login::default_client::add_originator_header;
 use codex_login::default_client::create_client_for_route;
+use codex_models_manager::model_info::is_grok_model_slug;
 use codex_otel::SessionTelemetry;
 use codex_otel::current_span_w3c_trace_context;
 use codex_protocol::auth::AuthMode;
@@ -179,14 +180,7 @@ pub(crate) const WEBSOCKET_CONNECT_TIMEOUT: Duration =
 /// Grok Responses is HTTP-only. Shared Gateway providers may still advertise WebSockets for
 /// OpenAI models, so transport selection must also consult the active model slug.
 fn responses_websocket_allowed_for_model(model: &str) -> bool {
-    let model = model
-        .trim()
-        .rsplit(':')
-        .next()
-        .unwrap_or(model)
-        .trim()
-        .to_ascii_lowercase();
-    !(model.starts_with("grok-") || model.starts_with("grok_"))
+    !is_grok_model_slug(model)
 }
 
 pub(crate) struct CompactConversationRequestSettings {
