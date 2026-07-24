@@ -1,13 +1,16 @@
 use anyhow::Result;
 use codex_core::config::AgentRoleConfig;
 use codex_features::Feature;
+use codex_protocol::ThreadId;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AgentStatus;
+use codex_protocol::protocol::MultiAgentVersion;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_function_call_with_namespace;
 use core_test_support::responses::ev_response_created;
+use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::mount_sse_once_match;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
@@ -15,7 +18,9 @@ use core_test_support::test_codex::test_codex;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
+use std::sync::Arc;
 use std::time::Duration;
+use tempfile::TempDir;
 use tokio::time::Instant;
 use tokio::time::sleep;
 
@@ -93,6 +98,88 @@ fn configure_multi_agent_v2_with_role(
             nickname_candidates: None,
         },
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn legacy_grok_resume_exposes_v1_collaboration_as_top_level_functions() -> Result<()> {
+    let server = start_mock_server().await;
+    let response_mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-legacy-grok"),
+            ev_completed("resp-legacy-grok"),
+        ]),
+    )
+    .await;
+
+    let home = Arc::new(TempDir::new()?);
+    let thread_id = ThreadId::new();
+    let rollout_path = home.path().join("legacy-grok-rollout.jsonl");
+    std::fs::write(
+        &rollout_path,
+        format!(
+            "{}\n",
+            json!({
+                "timestamp": "2024-01-01T00:00:00.000Z",
+                "type": "session_meta",
+                "payload": {
+                    "session_id": thread_id,
+                    "id": thread_id,
+                    "timestamp": "2024-01-01T00:00:00Z",
+                    "cwd": home.path(),
+                    "originator": "test_originator",
+                    "cli_version": "test_version",
+                    "model_provider": "openai"
+                }
+            })
+        ),
+    )?;
+
+    let mut builder = test_codex().with_model("grok-4.5").with_config(|config| {
+        config
+            .features
+            .enable(Feature::Collab)
+            .expect("test config should allow feature update");
+        config
+            .features
+            .disable(Feature::MultiAgentV2)
+            .expect("test config should allow feature update");
+    });
+    let resumed = builder.resume(&server, home, rollout_path).await?;
+
+    assert_eq!(
+        resumed.codex.multi_agent_version(),
+        Some(MultiAgentVersion::V1)
+    );
+    resumed
+        .submit_turn("continue the legacy Grok thread")
+        .await?;
+
+    let request = response_mock.single_request();
+    let request_body = request.body_json();
+    let tools = request_body["tools"]
+        .as_array()
+        .expect("request should include tools");
+    for tool_name in [
+        "spawn_agent",
+        "send_input",
+        "resume_agent",
+        "wait_agent",
+        "close_agent",
+    ] {
+        assert!(
+            tools.iter().any(|tool| {
+                tool["type"] == "function" && tool["name"].as_str() == Some(tool_name)
+            }),
+            "expected top-level V1 function {tool_name}, got {tools:?}"
+        );
+    }
+    assert!(
+        !tools.iter().any(|tool| tool["type"] == "namespace"),
+        "Grok must not receive namespace tools: {tools:?}"
+    );
+
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

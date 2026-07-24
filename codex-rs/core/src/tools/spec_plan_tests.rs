@@ -1717,6 +1717,40 @@ async fn grok_exposes_multi_agent_v2_as_top_level_functions() {
 }
 
 #[tokio::test]
+async fn grok_exposes_legacy_multi_agent_v1_as_top_level_functions() {
+    for slug in ["grok-4.5", "xai/grok-4"] {
+        let plan = probe(|turn| {
+            turn.model_info.slug = slug.to_string();
+            set_feature(turn, Feature::Collab, /*enabled*/ true);
+            set_feature(turn, Feature::MultiAgentV2, /*enabled*/ false);
+        })
+        .await;
+
+        plan.assert_visible_lacks(&[MULTI_AGENT_V1_NAMESPACE]);
+        for tool_name in [
+            "spawn_agent",
+            "send_input",
+            "resume_agent",
+            "wait_agent",
+            "close_agent",
+        ] {
+            plan.assert_visible_contains(&[tool_name]);
+            assert!(
+                plan.registered_names
+                    .contains(&ToolName::plain(tool_name).to_string()),
+                "expected plain {tool_name} runtime for {slug}"
+            );
+            assert!(
+                !plan.registered_names.contains(
+                    &ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, tool_name).to_string()
+                ),
+                "expected no namespaced {tool_name} runtime for {slug}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn grok_collaboration_tools_win_plain_name_conflicts_without_panicking() {
     let plan = probe_with(
         |turn| {

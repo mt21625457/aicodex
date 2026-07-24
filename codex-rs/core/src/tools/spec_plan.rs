@@ -856,13 +856,30 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mu
         } else {
             let agent_type_description =
                 agent_type_description(turn_context, context.default_agent_type_description);
-            let exposure = if search_tool_enabled(turn_context) {
+            let base_exposure = if search_tool_enabled(turn_context) {
                 ToolExposure::Deferred
             } else {
                 ToolExposure::Direct
             };
-            planned_tools.add_with_exposure(
-                SpawnAgentHandler::new(SpawnAgentToolOptions {
+            let exposure = if is_grok_model_slug(&turn_context.model_info.slug) {
+                grok_collaboration_exposure(
+                    turn_context,
+                    base_exposure,
+                    crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE,
+                )
+            } else {
+                base_exposure
+            };
+            let prepare_handler = |handler: Arc<dyn CoreToolRuntime>| {
+                let handler = if is_grok_model_slug(&turn_context.model_info.slug) {
+                    Arc::new(PlainFunctionOverride { handler }) as Arc<dyn CoreToolRuntime>
+                } else {
+                    handler
+                };
+                override_tool_exposure(handler, exposure)
+            };
+            planned_tools.add_arc(prepare_handler(Arc::new(SpawnAgentHandler::new(
+                SpawnAgentToolOptions {
                     available_models: turn_context.available_models.clone(),
                     agent_type_description,
                     expose_agent_type: !turn_context.config.agent_roles.is_empty(),
@@ -870,14 +887,14 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mu
                     expose_spawn_agent_model_overrides: true,
                     multi_agent_version: turn_context.multi_agent_version,
                     usage_hint_text: turn_context.config.multi_agent_v2.usage_hint_text.clone(),
-                }),
-                exposure,
-            );
-            planned_tools.add_with_exposure(SendInputHandler, exposure);
-            planned_tools.add_with_exposure(ResumeAgentHandler, exposure);
-            planned_tools
-                .add_with_exposure(WaitAgentHandler::new(context.wait_agent_timeouts), exposure);
-            planned_tools.add_with_exposure(CloseAgentHandler, exposure);
+                },
+            ))));
+            planned_tools.add_arc(prepare_handler(Arc::new(SendInputHandler)));
+            planned_tools.add_arc(prepare_handler(Arc::new(ResumeAgentHandler)));
+            planned_tools.add_arc(prepare_handler(Arc::new(WaitAgentHandler::new(
+                context.wait_agent_timeouts,
+            ))));
+            planned_tools.add_arc(prepare_handler(Arc::new(CloseAgentHandler)));
         }
     }
 }
@@ -1125,6 +1142,55 @@ impl ToolExecutor<ToolInvocation> for MultiAgentV2NamespaceOverride {
 }
 
 impl CoreToolRuntime for MultiAgentV2NamespaceOverride {
+    fn matches_kind(&self, payload: &crate::tools::context::ToolPayload) -> bool {
+        self.handler.matches_kind(payload)
+    }
+
+    fn create_diff_consumer(
+        &self,
+    ) -> Option<Box<dyn crate::tools::registry::ToolArgumentDiffConsumer>> {
+        self.handler.create_diff_consumer()
+    }
+}
+
+struct PlainFunctionOverride {
+    handler: Arc<dyn CoreToolRuntime>,
+}
+
+impl ToolExecutor<ToolInvocation> for PlainFunctionOverride {
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain(self.handler.tool_name().name)
+    }
+
+    fn spec(&self) -> ToolSpec {
+        match self.handler.spec() {
+            ToolSpec::Namespace(mut namespace) if namespace.tools.len() == 1 => {
+                let ResponsesApiNamespaceTool::Function(tool) = namespace.tools.remove(0);
+                ToolSpec::Function(tool)
+            }
+            spec => spec,
+        }
+    }
+
+    fn exposure(&self) -> ToolExposure {
+        self.handler.exposure()
+    }
+
+    fn supports_parallel_tool_calls(&self) -> bool {
+        self.handler.supports_parallel_tool_calls()
+    }
+
+    fn search_info(&self) -> Option<ToolSearchInfo> {
+        let info = self.handler.search_info()?;
+        ToolSearchInfo::from_spec(info.entry.search_text, self.spec(), info.source_info)
+    }
+
+    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+        self.handler.handle(invocation)
+    }
+}
+
+impl CoreToolRuntime for PlainFunctionOverride {
     fn matches_kind(&self, payload: &crate::tools::context::ToolPayload) -> bool {
         self.handler.matches_kind(payload)
     }
