@@ -7,6 +7,8 @@ use codex_tools::ResponsesApiNamespace;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ResponsesApiTool;
 use codex_tools::ToolSpec;
+use codex_utils_output_truncation::TruncationPolicy;
+use codex_utils_output_truncation::truncate_text;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -21,6 +23,9 @@ const SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION: &str =
 const SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION: &str =
     "Service tier override for the new agent. Omit unless explicitly requested.";
 const MAX_REASONING_EFFORT_CHARS_IN_SPAWN_AGENT_DESCRIPTION: usize = 64;
+const MAX_AGENT_TYPE_DESCRIPTION_TOKENS: usize = 1_000;
+const MAX_SPAWN_AGENT_TOOL_DESCRIPTION_TOKENS: usize = 6_000;
+const TRUNCATION_MARKER_TOKEN_RESERVE: usize = 128;
 
 #[derive(Debug, Clone)]
 pub struct SpawnAgentToolOptions {
@@ -85,12 +90,12 @@ pub fn create_spawn_agent_tool_v1(options: SpawnAgentToolOptions) -> ToolSpec {
         description: MULTI_AGENT_V1_NAMESPACE_DESCRIPTION.to_string(),
         tools: vec![ResponsesApiNamespaceTool::Function(ResponsesApiTool {
             name: "spawn_agent".to_string(),
-            description: spawn_agent_tool_description(
+            description: truncate_spawn_agent_tool_description(spawn_agent_tool_description(
                 available_models_description.as_deref(),
                 inherited_model_guidance,
                 return_value_description,
                 options.usage_hint_text,
-            ),
+            )),
             strict: false,
             defer_loading: None,
             parameters: JsonSchema::object(properties, /*required*/ None, Some(false.into())),
@@ -127,11 +132,11 @@ pub fn create_spawn_agent_tool_v2(options: SpawnAgentToolOptions) -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: "spawn_agent".to_string(),
-        description: spawn_agent_tool_description_v2(
+        description: truncate_spawn_agent_tool_description(spawn_agent_tool_description_v2(
             available_models_description.as_deref(),
             inherited_model_guidance,
             options.usage_hint_text,
-        ),
+        )),
         strict: false,
         defer_loading: None,
         parameters: JsonSchema::object(
@@ -584,6 +589,12 @@ fn create_collab_input_items_schema() -> JsonSchema {
 }
 
 fn spawn_agent_common_properties_v1(agent_type_description: &str) -> BTreeMap<String, JsonSchema> {
+    let agent_type_description = truncate_text(
+        agent_type_description,
+        TruncationPolicy::Tokens(
+            MAX_AGENT_TYPE_DESCRIPTION_TOKENS - TRUNCATION_MARKER_TOKEN_RESERVE,
+        ),
+    );
     BTreeMap::from([
         (
             "message".to_string(),
@@ -629,6 +640,12 @@ fn spawn_agent_common_properties_v1(agent_type_description: &str) -> BTreeMap<St
 }
 
 fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<String, JsonSchema> {
+    let agent_type_description = truncate_text(
+        agent_type_description,
+        TruncationPolicy::Tokens(
+            MAX_AGENT_TYPE_DESCRIPTION_TOKENS - TRUNCATION_MARKER_TOKEN_RESERVE,
+        ),
+    );
     BTreeMap::from([
         (
             "message".to_string(),
@@ -677,6 +694,15 @@ fn hide_spawn_agent_metadata_options(properties: &mut BTreeMap<String, JsonSchem
     properties.remove("model");
     properties.remove("reasoning_effort");
     properties.remove("service_tier");
+}
+
+fn truncate_spawn_agent_tool_description(description: String) -> String {
+    truncate_text(
+        &description,
+        TruncationPolicy::Tokens(
+            MAX_SPAWN_AGENT_TOOL_DESCRIPTION_TOKENS - TRUNCATION_MARKER_TOKEN_RESERVE,
+        ),
+    )
 }
 
 fn spawn_agent_tool_description(

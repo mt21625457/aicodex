@@ -5,6 +5,7 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_tools::JsonSchemaPrimitiveType;
 use codex_tools::JsonSchemaType;
+use codex_utils_output_truncation::approx_token_count;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 
@@ -471,5 +472,37 @@ fn list_agents_tool_status_schema_includes_interrupted() {
             "shutdown",
             "not_found"
         ])
+    );
+}
+
+#[test]
+fn spawn_agent_schema_caps_dynamic_model_visible_text() {
+    let ToolSpec::Function(ResponsesApiTool {
+        description,
+        parameters,
+        ..
+    }) = create_spawn_agent_tool_v2(SpawnAgentToolOptions {
+        agent_type_description: "large role ".repeat(20_000),
+        usage_hint_text: Some("large usage hint ".repeat(20_000)),
+        expose_agent_type: true,
+        ..SpawnAgentToolOptions::default()
+    })
+    else {
+        panic!("spawn_agent should be a function tool");
+    };
+
+    assert!(
+        approx_token_count(&description) <= MAX_SPAWN_AGENT_TOOL_DESCRIPTION_TOKENS,
+        "description exceeded token cap"
+    );
+    let agent_type_description = parameters
+        .properties
+        .as_ref()
+        .and_then(|properties| properties.get("agent_type"))
+        .and_then(|schema| schema.description.as_deref())
+        .expect("agent_type should have a description");
+    assert!(
+        approx_token_count(agent_type_description) <= MAX_AGENT_TYPE_DESCRIPTION_TOKENS + 100,
+        "agent_type description exceeded token cap"
     );
 }
