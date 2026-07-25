@@ -8797,6 +8797,37 @@ async fn build_initial_context_adds_multi_agent_v2_subagent_usage_hint_as_develo
 }
 
 #[tokio::test]
+async fn build_initial_context_orders_multi_agent_mode_after_other_agent_policy() {
+    let (session, mut turn_context) = make_session_and_context().await;
+    let config = Arc::make_mut(&mut turn_context.config);
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    config.include_collaboration_mode_instructions = true;
+    config.multi_agent_v2.root_agent_usage_hint_text = Some("usage policy".to_string());
+    turn_context.multi_agent_version = MultiAgentVersion::V2;
+    turn_context.collaboration_mode_developer_instructions =
+        Some("collaboration policy".to_string());
+    let turn_context = Arc::new(turn_context);
+
+    let initial_context = build_initial_context(&session, &turn_context).await;
+    let developer_texts = developer_input_texts(&initial_context);
+    let collaboration_mode_index = developer_texts
+        .iter()
+        .position(|text| text.contains("<collaboration_mode>"))
+        .expect("collaboration mode should render");
+    let usage_hint_index = developer_texts
+        .iter()
+        .position(|text| *text == "usage policy")
+        .expect("usage hint should render");
+    let multi_agent_mode_index = developer_texts
+        .iter()
+        .position(|text| text.contains("<multi_agent_mode>"))
+        .expect("multi-agent mode should render");
+
+    assert!(collaboration_mode_index < usage_hint_index);
+    assert!(usage_hint_index < multi_agent_mode_index);
+}
+
+#[tokio::test]
 async fn build_initial_context_omits_multi_agent_v2_usage_hints_when_feature_disabled() {
     let (session, turn_context) =
         make_multi_agent_v2_usage_hint_test_session(/*enable_multi_agent_v2*/ false).await;

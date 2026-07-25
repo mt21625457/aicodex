@@ -26,7 +26,6 @@ use crate::config::resolve_tool_suggest_config_from_layer_stack;
 use crate::context::ApprovedCommandPrefixSaved;
 use crate::context::AvailableSkillsInstructions;
 use crate::context::ContextualUserFragment;
-use crate::context::MultiAgentModeInstructions;
 use crate::context::NetworkRuleSaved;
 use crate::context::PersonalitySpecInstructions;
 use crate::context::RecommendedPluginsInstructions;
@@ -120,6 +119,8 @@ use codex_protocol::protocol::HasLegacyEvent;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::ItemStartedEvent;
+use codex_protocol::protocol::MULTI_AGENT_MODE_CLOSE_TAG;
+use codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::RawResponseItemEvent;
 use codex_protocol::protocol::RolloutItem;
@@ -3524,10 +3525,19 @@ impl Session {
                     .push(crate::context::ContextWindowGuidance::new(guidance_message).render());
             }
         }
+        let mut deferred_multi_agent_mode_sections = Vec::new();
         for fragment in world_state.render_full() {
-            match fragment.role() {
-                "developer" => developer_sections.push(fragment.render()),
-                "user" => contextual_user_sections.push(fragment.render()),
+            let role = fragment.role();
+            let text = fragment.render();
+            match role {
+                "developer"
+                    if text.starts_with(MULTI_AGENT_MODE_OPEN_TAG)
+                        && text.ends_with(MULTI_AGENT_MODE_CLOSE_TAG) =>
+                {
+                    deferred_multi_agent_mode_sections.push(text);
+                }
+                "developer" => developer_sections.push(text),
+                "user" => contextual_user_sections.push(text),
                 _ => {}
             }
         }
@@ -3553,10 +3563,12 @@ impl Session {
                 crate::context::MultiAgentUsageHint::new(usage_hint_text),
             ));
         }
-        if let Some(multi_agent_mode) = multi_agents::effective_multi_agent_mode(turn_context)
-            && let Some(instructions) = MultiAgentModeInstructions::from_mode(multi_agent_mode)
-        {
-            items.push(ContextualUserFragment::into(instructions));
+        for section in deferred_multi_agent_mode_sections {
+            if let Some(developer_message) =
+                crate::context_manager::updates::build_developer_update_item(vec![section])
+            {
+                items.push(developer_message);
+            }
         }
         if let Some(contextual_user_message) =
             crate::context_manager::updates::build_contextual_user_message(contextual_user_sections)

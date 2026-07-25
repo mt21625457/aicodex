@@ -2,21 +2,17 @@ use super::ContextualUserFragment;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::protocol::MULTI_AGENT_MODE_CLOSE_TAG;
 use codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG;
-use codex_utils_output_truncation::TruncationPolicy;
-use codex_utils_output_truncation::truncate_text;
 
 const EXPLICIT_REQUEST_ONLY_MULTI_AGENT_MODE_TEXT: &str = "Any earlier instruction enabling proactive multi-agent delegation no longer applies. Do not spawn sub-agents unless the user or applicable AGENTS.md/skill instructions explicitly ask for sub-agents, delegation, or parallel agent work.";
 const PROACTIVE_MULTI_AGENT_MODE_TEXT: &str = "Proactive multi-agent delegation is active. Any earlier instruction requiring an explicit user request before spawning sub-agents no longer applies. Use sub-agents when parallel work would materially improve speed or quality. This mode remains active until a later multi-agent mode developer message changes it.";
-const MAX_MULTI_AGENT_MODE_HINT_TOKENS: usize = 8_000;
-const TRUNCATION_MARKER_TOKEN_RESERVE: usize = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct MultiAgentModeInstructions {
+pub(super) struct MultiAgentModeInstructions {
     multi_agent_mode: MultiAgentMode,
 }
 
 impl MultiAgentModeInstructions {
-    pub(crate) fn from_mode(multi_agent_mode: MultiAgentMode) -> Option<Self> {
+    pub(super) fn from_mode(multi_agent_mode: MultiAgentMode) -> Option<Self> {
         if matches!(
             &multi_agent_mode,
             MultiAgentMode::Custom(hint_text) if hint_text.is_empty()
@@ -43,12 +39,7 @@ impl ContextualUserFragment for MultiAgentModeInstructions {
 
     fn body(&self) -> String {
         match &self.multi_agent_mode {
-            MultiAgentMode::Custom(hint_text) => truncate_text(
-                hint_text,
-                TruncationPolicy::Tokens(
-                    MAX_MULTI_AGENT_MODE_HINT_TOKENS - TRUNCATION_MARKER_TOKEN_RESERVE,
-                ),
-            ),
+            MultiAgentMode::Custom(hint_text) => hint_text.clone(),
             MultiAgentMode::ExplicitRequestOnly => {
                 EXPLICIT_REQUEST_ONLY_MULTI_AGENT_MODE_TEXT.to_string()
             }
@@ -56,7 +47,3 @@ impl ContextualUserFragment for MultiAgentModeInstructions {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "multi_agent_mode_instructions_tests.rs"]
-mod tests;

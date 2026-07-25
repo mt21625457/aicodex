@@ -5,10 +5,12 @@ use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::MULTI_AGENT_MODE_CLOSE_TAG;
 use codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
+use codex_utils_output_truncation::approx_token_count;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_once;
@@ -25,6 +27,8 @@ use serde_json::json;
 const NO_SPAWN_TEXT: &str = "Any earlier instruction enabling proactive multi-agent delegation no longer applies. Do not spawn sub-agents unless the user or applicable AGENTS.md/skill instructions explicitly ask for sub-agents, delegation, or parallel agent work.";
 const PROACTIVE_TEXT: &str = "Proactive multi-agent delegation is active.";
 const CUSTOM_MODE_HINT_TEXT: &str = "Use the configured delegation policy.";
+const UPDATED_CUSTOM_MODE_HINT_TEXT: &str = "Use the updated delegation policy.";
+const MULTI_AGENT_MODE_MAX_TOKENS: usize = 400;
 
 fn add_ultra_reasoning(model_info: &mut ModelInfo) {
     model_info
@@ -188,6 +192,122 @@ async fn configured_mode_hint_uses_custom_mode_across_reasoning_efforts() -> Res
             json!({"custom": CUSTOM_MODE_HINT_TEXT}),
         ]
     );
+    let initial_world_state_mode = rollout_values
+        .iter()
+        .find(|value| {
+            value.get("type").and_then(Value::as_str) == Some("world_state")
+                && value.pointer("/payload/full").and_then(Value::as_bool) == Some(true)
+        })
+        .and_then(|value| value.pointer("/payload/state/multi_agent_mode"));
+    assert_eq!(
+        initial_world_state_mode,
+        Some(&json!({"mode": {"custom": CUSTOM_MODE_HINT_TEXT}}))
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oversized_custom_mode_is_bounded_once_in_model_input() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let response = mount_sse_once(
+        &server,
+        sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
+    )
+    .await;
+    let test = test_codex()
+        .with_config(|config| {
+            configure_multi_agent_v2(config);
+            config.multi_agent_v2.multi_agent_mode_hint_text =
+                Some("custom delegation policy ".repeat(2_000));
+        })
+        .build(&server)
+        .await?;
+
+    submit_turn(&test.codex, "hello", /*effort*/ None).await?;
+
+    let input = response.single_request().input();
+    let texts = developer_texts(&input);
+    let mode_bodies = texts
+        .into_iter()
+        .filter_map(|text| {
+            text.strip_prefix(MULTI_AGENT_MODE_OPEN_TAG)
+                .and_then(|text| text.strip_suffix(MULTI_AGENT_MODE_CLOSE_TAG))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(mode_bodies.len(), 1);
+    assert!(approx_token_count(mode_bodies[0]) <= MULTI_AGENT_MODE_MAX_TOKENS);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn changing_custom_mode_after_cold_resume_persists_world_state_patch() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let responses = mount_sse_sequence(
+        &server,
+        (1..=2)
+            .map(|index| {
+                sse(vec![
+                    ev_response_created(&format!("resp-{index}")),
+                    ev_completed(&format!("resp-{index}")),
+                ])
+            })
+            .collect(),
+    )
+    .await;
+    let initial = test_codex()
+        .with_config(configure_custom_mode_hint)
+        .build(&server)
+        .await?;
+    let home = initial.home.clone();
+    let rollout_path = initial
+        .session_configured
+        .rollout_path
+        .clone()
+        .expect("rollout path");
+
+    submit_turn(&initial.codex, "before resume", /*effort*/ None).await?;
+    drop(initial);
+
+    let mut resume_builder = test_codex().with_config(|config| {
+        configure_multi_agent_v2(config);
+        config.multi_agent_v2.multi_agent_mode_hint_text =
+            Some(UPDATED_CUSTOM_MODE_HINT_TEXT.to_string());
+    });
+    let resumed = resume_builder
+        .resume(&server, home, rollout_path.clone())
+        .await?;
+    submit_turn(&resumed.codex, "after resume", /*effort*/ None).await?;
+
+    let requests = responses.requests();
+    let resumed_input = requests[1].input();
+    let resumed_texts = developer_texts(&resumed_input);
+    assert_eq!(
+        (
+            count_containing(&resumed_texts, CUSTOM_MODE_HINT_TEXT),
+            count_containing(&resumed_texts, UPDATED_CUSTOM_MODE_HINT_TEXT),
+        ),
+        (1, 1)
+    );
+    let rollout_values = std::fs::read_to_string(rollout_path)?
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<serde_json::Result<Vec<_>>>()?;
+    let mode_patch = rollout_values.iter().rev().find(|value| {
+        value.get("type").and_then(Value::as_str) == Some("world_state")
+            && value.pointer("/payload/full").and_then(Value::as_bool) == Some(false)
+            && value.pointer("/payload/state/multi_agent_mode/mode")
+                == Some(&json!({"custom": UPDATED_CUSTOM_MODE_HINT_TEXT}))
+    });
+    assert!(
+        mode_patch.is_some(),
+        "updated mode world-state patch missing"
+    );
 
     Ok(())
 }
@@ -227,7 +347,7 @@ async fn empty_configured_mode_hint_emits_no_mode_message() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn changing_configured_mode_hint_to_empty_emits_no_update() -> Result<()> {
+async fn changing_configured_mode_hint_to_empty_emits_explicit_reset() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -274,8 +394,9 @@ async fn changing_configured_mode_hint_to_empty_emits_no_update() -> Result<()> 
             count_containing(&first_texts, MULTI_AGENT_MODE_OPEN_TAG),
             count_containing(&resumed_texts, MULTI_AGENT_MODE_OPEN_TAG),
             count_containing(&resumed_texts, CUSTOM_MODE_HINT_TEXT),
+            count_containing(&resumed_texts, NO_SPAWN_TEXT),
         ),
-        (1, 1, 1)
+        (1, 2, 1, 1)
     );
 
     Ok(())
