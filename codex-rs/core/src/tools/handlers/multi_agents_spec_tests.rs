@@ -477,34 +477,48 @@ fn list_agents_tool_status_schema_includes_interrupted() {
 
 #[test]
 fn spawn_agent_schema_caps_dynamic_model_visible_text() {
-    let ToolSpec::Function(ResponsesApiTool {
-        description,
-        parameters,
-        ..
-    }) = create_spawn_agent_tool_v2(SpawnAgentToolOptions {
+    let options = SpawnAgentToolOptions {
         agent_type_description: "large role ".repeat(20_000),
         usage_hint_text: Some("large usage hint ".repeat(20_000)),
         expose_agent_type: true,
         ..SpawnAgentToolOptions::default()
-    })
-    else {
-        panic!("spawn_agent should be a function tool");
     };
+    let specs = [
+        create_spawn_agent_tool_v1(options.clone()),
+        create_spawn_agent_tool_v2(options),
+    ];
 
-    assert!(
-        approx_token_count(&description) <= MAX_SPAWN_AGENT_TOOL_DESCRIPTION_TOKENS,
-        "description exceeded token cap"
-    );
-    let agent_type_description = parameters
-        .properties
-        .as_ref()
-        .and_then(|properties| properties.get("agent_type"))
-        .and_then(|schema| schema.description.as_deref())
-        .expect("agent_type should have a description");
-    assert!(
-        approx_token_count(agent_type_description) <= MAX_AGENT_TYPE_DESCRIPTION_TOKENS + 100,
-        "agent_type description exceeded token cap"
-    );
+    for spec in specs {
+        let ResponsesApiTool {
+            description,
+            parameters,
+            ..
+        } = match spec {
+            ToolSpec::Function(tool) => tool,
+            ToolSpec::Namespace(ResponsesApiNamespace { tools, .. }) => {
+                let [ResponsesApiNamespaceTool::Function(tool)] = tools.as_slice() else {
+                    panic!("spawn_agent namespace should contain one function tool");
+                };
+                tool.clone()
+            }
+            _ => panic!("spawn_agent should be a function tool"),
+        };
+
+        assert!(
+            approx_token_count(&description) <= MAX_SPAWN_AGENT_TOOL_DESCRIPTION_TOKENS,
+            "description exceeded token cap"
+        );
+        let agent_type_description = parameters
+            .properties
+            .as_ref()
+            .and_then(|properties| properties.get("agent_type"))
+            .and_then(|schema| schema.description.as_deref())
+            .expect("agent_type should have a description");
+        assert!(
+            approx_token_count(agent_type_description) <= MAX_AGENT_TYPE_DESCRIPTION_TOKENS,
+            "agent_type description exceeded token cap"
+        );
+    }
 }
 
 #[test]

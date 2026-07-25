@@ -1,9 +1,6 @@
 use super::ContextualUserFragment;
-use codex_utils_output_truncation::TruncationPolicy;
-use codex_utils_output_truncation::truncate_text;
-
-const MAX_MULTI_AGENT_USAGE_HINT_TOKENS: usize = 8_000;
-const TRUNCATION_MARKER_TOKEN_RESERVE: usize = 128;
+use crate::config::MULTI_AGENT_USAGE_HINT_MAX_TOKENS;
+use crate::config::truncate_text_to_token_budget;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MultiAgentUsageHint {
@@ -13,12 +10,7 @@ pub(crate) struct MultiAgentUsageHint {
 impl MultiAgentUsageHint {
     pub(crate) fn new(text: &str) -> Self {
         Self {
-            text: truncate_text(
-                text,
-                TruncationPolicy::Tokens(
-                    MAX_MULTI_AGENT_USAGE_HINT_TOKENS - TRUNCATION_MARKER_TOKEN_RESERVE,
-                ),
-            ),
+            text: truncate_text_to_token_budget(text, MULTI_AGENT_USAGE_HINT_MAX_TOKENS),
         }
     }
 }

@@ -16,6 +16,7 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::user_input::UserInput;
+use codex_utils_output_truncation::approx_token_count;
 use core_test_support::hooks::trust_discovered_hooks;
 use core_test_support::responses::ResponsesRequest;
 use core_test_support::responses::ev_assistant_message;
@@ -1287,14 +1288,14 @@ async fn spawned_multi_agent_v2_child_inherits_parent_developer_context() -> Res
         "message": CHILD_PROMPT,
         "task_name": "worker",
     }))?;
-    mount_sse_once_match(
+    let parent_request_log = mount_sse_once_match(
         &server,
         |req: &wiremock::Request| body_contains(req, TURN_1_PROMPT),
         sse(vec![
             ev_response_created("resp-turn1-1"),
             ev_function_call_with_namespace(
                 SPAWN_CALL_ID,
-                MULTI_AGENT_V1_NAMESPACE,
+                MULTI_AGENT_V2_NAMESPACE,
                 "spawn_agent",
                 &spawn_args,
             ),
@@ -1326,7 +1327,9 @@ async fn spawned_multi_agent_v2_child_inherits_parent_developer_context() -> Res
     )
     .await;
 
-    let mut builder = test_codex().with_config(|config| {
+    let oversized_root_hint = "Oversized root usage hint. ".repeat(2_000);
+    let oversized_subagent_hint = "Oversized subagent usage hint. ".repeat(2_000);
+    let mut builder = test_codex().with_config(move |config| {
         config
             .features
             .enable(Feature::Collab)
@@ -1336,6 +1339,8 @@ async fn spawned_multi_agent_v2_child_inherits_parent_developer_context() -> Res
             .enable(Feature::MultiAgentV2)
             .expect("test config should allow feature update");
         config.developer_instructions = Some("Parent developer instructions.".to_string());
+        config.multi_agent_v2.root_agent_usage_hint_text = Some(oversized_root_hint);
+        config.multi_agent_v2.subagent_usage_hint_text = Some(oversized_subagent_hint);
     });
     let test = builder.build(&server).await?;
 
@@ -1347,6 +1352,31 @@ async fn spawned_multi_agent_v2_child_inherits_parent_developer_context() -> Res
         .expect("child request log should capture at least one request");
     assert!(child_request.body_contains_text("Parent developer instructions."));
     assert!(child_request.body_contains_text(CHILD_PROMPT));
+    let parent_requests = wait_for_requests(&parent_request_log).await?;
+    let parent_request = parent_requests
+        .last()
+        .expect("parent request log should capture the spawning request");
+    let root_hints = parent_request
+        .message_input_texts("developer")
+        .into_iter()
+        .filter(|text| text.starts_with("Oversized root usage hint."))
+        .collect::<Vec<_>>();
+    let child_root_hints = child_request
+        .message_input_texts("developer")
+        .into_iter()
+        .filter(|text| text.starts_with("Oversized root usage hint."))
+        .count();
+    let child_hints = child_request
+        .message_input_texts("developer")
+        .into_iter()
+        .filter(|text| text.starts_with("Oversized subagent usage hint."))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        (root_hints.len(), child_root_hints, child_hints.len()),
+        (1, 0, 1)
+    );
+    assert!(approx_token_count(&root_hints[0]) <= 1_000);
+    assert!(approx_token_count(&child_hints[0]) <= 1_000);
 
     Ok(())
 }

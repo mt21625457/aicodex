@@ -10767,6 +10767,55 @@ max_concurrent_threads_per_session = 17
 }
 
 #[test]
+fn multi_agent_v2_usage_hints_are_canonicalized_to_strict_token_budget() {
+    let oversized_usage_hint = "tool usage hint ".repeat(2_000);
+    let oversized_root_hint = "root usage hint ".repeat(2_000);
+    let oversized_subagent_hint = "subagent usage hint ".repeat(2_000);
+    let config_toml = toml::from_str(&format!(
+        r#"[features.multi_agent_v2]
+usage_hint_text = "{oversized_usage_hint}"
+root_agent_usage_hint_text = "{oversized_root_hint}"
+subagent_usage_hint_text = "{oversized_subagent_hint}"
+expose_spawn_agent_model_overrides = true
+"#,
+    ))
+    .expect("multi-agent v2 config should parse");
+
+    let config = resolve_multi_agent_v2_config(&config_toml);
+    let hints = [
+        config.usage_hint_text,
+        config.root_agent_usage_hint_text,
+        config.subagent_usage_hint_text,
+    ];
+    assert!(hints.iter().all(|hint| {
+        hint.as_ref().is_some_and(|hint| {
+            codex_utils_output_truncation::approx_token_count(hint)
+                <= MULTI_AGENT_USAGE_HINT_MAX_TOKENS
+        })
+    }));
+}
+
+#[test]
+fn multi_agent_v2_custom_mode_is_canonicalized_to_strict_token_budget() {
+    let oversized_mode_hint = "custom mode hint ".repeat(2_000);
+    let config_toml = toml::from_str(&format!(
+        r#"[features.multi_agent_v2]
+multi_agent_mode_hint_text = "{oversized_mode_hint}"
+"#,
+    ))
+    .expect("multi-agent v2 config should parse");
+
+    let config = resolve_multi_agent_v2_config(&config_toml);
+    let mode_hint = config
+        .multi_agent_mode_hint_text
+        .expect("custom mode hint should resolve");
+    assert!(
+        codex_utils_output_truncation::approx_token_count(&mode_hint)
+            <= MULTI_AGENT_MODE_MAX_TOKENS
+    );
+}
+
+#[test]
 fn multi_agent_v2_model_override_exposure_preserves_configured_usage_hints() {
     let config_toml = toml::from_str(
         r#"[features.multi_agent_v2]

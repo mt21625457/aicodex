@@ -1,5 +1,6 @@
 use super::multi_agents_common::MAX_SPAWN_AGENT_MODEL_OVERRIDES;
 use super::multi_agents_common::model_supports_multi_agent_backend;
+use crate::config::truncate_text_to_token_budget;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_tools::JsonSchema;
@@ -7,8 +8,6 @@ use codex_tools::ResponsesApiNamespace;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ResponsesApiTool;
 use codex_tools::ToolSpec;
-use codex_utils_output_truncation::TruncationPolicy;
-use codex_utils_output_truncation::truncate_text;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -25,7 +24,6 @@ const SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION: &str =
 const MAX_REASONING_EFFORT_CHARS_IN_SPAWN_AGENT_DESCRIPTION: usize = 64;
 const MAX_AGENT_TYPE_DESCRIPTION_TOKENS: usize = 1_000;
 const MAX_SPAWN_AGENT_TOOL_DESCRIPTION_TOKENS: usize = 6_000;
-const TRUNCATION_MARKER_TOKEN_RESERVE: usize = 128;
 
 #[derive(Debug, Clone)]
 pub struct SpawnAgentToolOptions {
@@ -589,11 +587,9 @@ fn create_collab_input_items_schema() -> JsonSchema {
 }
 
 fn spawn_agent_common_properties_v1(agent_type_description: &str) -> BTreeMap<String, JsonSchema> {
-    let agent_type_description = truncate_text(
+    let agent_type_description = bounded_agent_type_description(
+        SPAWN_AGENT_TYPE_OVERRIDE_DESCRIPTION_V1,
         agent_type_description,
-        TruncationPolicy::Tokens(
-            MAX_AGENT_TYPE_DESCRIPTION_TOKENS - TRUNCATION_MARKER_TOKEN_RESERVE,
-        ),
     );
     BTreeMap::from([
         (
@@ -606,9 +602,7 @@ fn spawn_agent_common_properties_v1(agent_type_description: &str) -> BTreeMap<St
         ("items".to_string(), create_collab_input_items_schema()),
         (
             "agent_type".to_string(),
-            JsonSchema::string(Some(format!(
-                "{SPAWN_AGENT_TYPE_OVERRIDE_DESCRIPTION_V1}\n{agent_type_description}"
-            ))),
+            JsonSchema::string(Some(agent_type_description)),
         ),
         (
             "fork_context".to_string(),
@@ -640,11 +634,9 @@ fn spawn_agent_common_properties_v1(agent_type_description: &str) -> BTreeMap<St
 }
 
 fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<String, JsonSchema> {
-    let agent_type_description = truncate_text(
+    let agent_type_description = bounded_agent_type_description(
+        "Agent type override for the new agent. Omit unless explicitly asked. Set `fork_turns` to `none` or a positive integer when an explicit override is needed.",
         agent_type_description,
-        TruncationPolicy::Tokens(
-            MAX_AGENT_TYPE_DESCRIPTION_TOKENS - TRUNCATION_MARKER_TOKEN_RESERVE,
-        ),
     );
     BTreeMap::from([
         (
@@ -656,9 +648,7 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
         ),
         (
             "agent_type".to_string(),
-            JsonSchema::string(Some(format!(
-                "Agent type override for the new agent. Omit unless explicitly asked. Set `fork_turns` to `none` or a positive integer when an explicit override is needed.\n{agent_type_description}"
-            ))),
+            JsonSchema::string(Some(agent_type_description)),
         ),
         (
             "fork_turns".to_string(),
@@ -689,6 +679,13 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
     ])
 }
 
+fn bounded_agent_type_description(prefix: &str, agent_type_description: &str) -> String {
+    truncate_text_to_token_budget(
+        &format!("{prefix}\n{agent_type_description}"),
+        MAX_AGENT_TYPE_DESCRIPTION_TOKENS,
+    )
+}
+
 fn hide_spawn_agent_metadata_options(properties: &mut BTreeMap<String, JsonSchema>) {
     properties.remove("agent_type");
     properties.remove("model");
@@ -697,12 +694,7 @@ fn hide_spawn_agent_metadata_options(properties: &mut BTreeMap<String, JsonSchem
 }
 
 fn truncate_spawn_agent_tool_description(description: String) -> String {
-    truncate_text(
-        &description,
-        TruncationPolicy::Tokens(
-            MAX_SPAWN_AGENT_TOOL_DESCRIPTION_TOKENS - TRUNCATION_MARKER_TOKEN_RESERVE,
-        ),
-    )
+    truncate_text_to_token_budget(&description, MAX_SPAWN_AGENT_TOOL_DESCRIPTION_TOKENS)
 }
 
 fn spawn_agent_tool_description(

@@ -118,6 +118,9 @@ use codex_protocol::protocol::SandboxPolicy;
 pub use codex_thread_store::ExtraConfig;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::AbsolutePathBufGuard;
+use codex_utils_output_truncation::TruncationPolicy;
+use codex_utils_output_truncation::approx_token_count;
+use codex_utils_output_truncation::truncate_text;
 use codex_utils_path_uri::PathUri;
 use rmcp::model::ElicitationCapability;
 use rmcp::model::FormElicitationCapability;
@@ -253,6 +256,9 @@ Payload:
 You may also see them addressed as to=/root/..., which indicates your identity is /root/...
 "#;
 const DEFAULT_MULTI_AGENT_V2_MODEL_OVERRIDE_USAGE_HINT_TEXT: &str = "Full-history forks (`fork_turns` omitted or `\"all\"`) inherit the parent model and reasoning effort and do not accept overrides. Only set `model` or `reasoning_effort` when explicitly requested by the user, applicable `AGENTS.md` instructions, or skill instructions; when doing so, set `fork_turns` to `\"none\"` or a positive integer string.";
+const LEGACY_MULTI_AGENT_USAGE_HINT_TRUNCATION_TOKENS: usize = 8_000 - 128;
+pub(crate) const MULTI_AGENT_MODE_MAX_TOKENS: usize = 400;
+pub(crate) const MULTI_AGENT_USAGE_HINT_MAX_TOKENS: usize = 1_000;
 const DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE: &str = "collaboration";
 const DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT: &str = r#"Note that collaboration tools cannot be called from inside `functions.exec`. Call `spawn_agent`, `send_message`, `followup_task`, `wait_agent`, `interrupt_agent`, and `list_agents` only as direct tool calls using the exact recipient shown in each tool definition, since they are intentionally absent from the `functions.exec` `tools.*` namespace. Available tools in `functions.exec` are explicitly described with a `tools` namespace in the developer message.
 
@@ -1446,6 +1452,49 @@ impl ConfigBuilder {
 }
 
 impl Config {
+    pub(crate) fn multi_agent_v2_usage_hint_filter_candidates(&self) -> Vec<String> {
+        let mut source_texts = [
+            self.multi_agent_v2.root_agent_usage_hint_text.clone(),
+            self.multi_agent_v2.subagent_usage_hint_text.clone(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+
+        if let Ok(config_toml) = self
+            .config_layer_stack
+            .effective_config()
+            .try_into::<ConfigToml>()
+            && let Some(config) = multi_agent_v2_toml_config(config_toml.features.as_ref())
+        {
+            source_texts.extend(
+                [
+                    config.root_agent_usage_hint_text.clone(),
+                    config.subagent_usage_hint_text.clone(),
+                ]
+                .into_iter()
+                .flatten()
+                .filter(|text| !text.is_empty()),
+            );
+        }
+
+        let mut candidates = Vec::new();
+        for text in source_texts {
+            candidates.push(text.clone());
+            candidates.push(truncate_text_to_token_budget(
+                &text,
+                MULTI_AGENT_USAGE_HINT_MAX_TOKENS,
+            ));
+            candidates.push(truncate_text(
+                &text,
+                TruncationPolicy::Tokens(LEGACY_MULTI_AGENT_USAGE_HINT_TRUNCATION_TOKENS),
+            ));
+        }
+        candidates.sort_unstable();
+        candidates.dedup();
+        candidates
+    }
+
     pub(crate) fn multi_agent_version_override(&self) -> Option<MultiAgentVersion> {
         if self.features.enabled(Feature::MultiAgentV2) {
             Some(MultiAgentVersion::V2)
@@ -2575,7 +2624,8 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
     let usage_hint_text = base
         .and_then(|config| config.usage_hint_text.as_ref())
         .cloned()
-        .or(default.usage_hint_text);
+        .or(default.usage_hint_text)
+        .map(|text| truncate_text_to_token_budget(&text, MULTI_AGENT_USAGE_HINT_MAX_TOKENS));
     let hide_spawn_agent_metadata = base
         .and_then(|config| config.hide_spawn_agent_metadata)
         .unwrap_or(default.hide_spawn_agent_metadata);
@@ -2597,15 +2647,18 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
     let root_agent_usage_hint_text = resolve_optional_prompt_text(
         base.map(|config| &config.root_agent_usage_hint_text),
         default_root_agent_usage_hint_text,
-    );
+    )
+    .map(|text| truncate_text_to_token_budget(&text, MULTI_AGENT_USAGE_HINT_MAX_TOKENS));
     let subagent_usage_hint_text = resolve_optional_prompt_text(
         base.map(|config| &config.subagent_usage_hint_text),
         default_subagent_usage_hint_text,
-    );
+    )
+    .map(|text| truncate_text_to_token_budget(&text, MULTI_AGENT_USAGE_HINT_MAX_TOKENS));
     let multi_agent_mode_hint_text = base
         .and_then(|config| config.multi_agent_mode_hint_text.as_ref())
         .cloned()
-        .or(default.multi_agent_mode_hint_text);
+        .or(default.multi_agent_mode_hint_text)
+        .map(|text| truncate_text_to_token_budget(&text, MULTI_AGENT_MODE_MAX_TOKENS));
     let tool_namespace = base
         .and_then(|config| config.tool_namespace.as_ref())
         .cloned()
@@ -2848,6 +2901,30 @@ fn append_usage_hint_text(usage_hint_text: Option<&str>, additional_text: &str) 
     match usage_hint_text {
         Some(usage_hint_text) => format!("{usage_hint_text}\n\n{additional_text}"),
         None => additional_text.to_string(),
+    }
+}
+
+pub(crate) fn truncate_text_to_token_budget(text: &str, budget_tokens: usize) -> String {
+    let mut truncation_budget = budget_tokens;
+    loop {
+        let candidate = truncate_text(text, TruncationPolicy::Tokens(truncation_budget));
+        let candidate_tokens = approx_token_count(&candidate);
+        if candidate_tokens <= budget_tokens {
+            break candidate;
+        }
+
+        // The shared truncator adds its marker after choosing preserved content, so
+        // tighten the content budget until the complete rendered string fits the cap.
+        let excess_tokens = candidate_tokens.saturating_sub(budget_tokens);
+        let next_budget = truncation_budget.saturating_sub(excess_tokens.max(1));
+        if next_budget == 0 {
+            let candidate = truncate_text(text, TruncationPolicy::Tokens(0));
+            if approx_token_count(&candidate) <= budget_tokens {
+                break candidate;
+            }
+            break String::new();
+        }
+        truncation_budget = next_budget;
     }
 }
 

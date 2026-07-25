@@ -55,6 +55,8 @@ use codex_thread_store::InMemoryThreadStore;
 use codex_thread_store::LocalThreadStore;
 use codex_thread_store::LocalThreadStoreConfig;
 use codex_thread_store::ThreadStore;
+use codex_utils_output_truncation::TruncationPolicy;
+use codex_utils_output_truncation::truncate_text;
 use codex_utils_path_uri::PathUri;
 use core_test_support::responses::strip_response_item_ids;
 use pretty_assertions::assert_eq;
@@ -273,6 +275,10 @@ fn history_contains_text(history_items: &[ResponseItem], needle: &str) -> bool {
             ContentItem::InputImage { .. } | ContentItem::InputAudio { .. } => false,
         })
     })
+}
+
+fn legacy_multi_agent_usage_hint(text: &str) -> String {
+    truncate_text(text, TruncationPolicy::Tokens(8_000 - 128))
 }
 
 fn history_contains_assistant_inter_agent_communication(
@@ -1432,8 +1438,9 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history() {
     let harness = AgentControlHarness::new().await;
     let mut parent_config = harness.config.clone();
     let _ = parent_config.features.enable(Feature::MultiAgentV2);
-    parent_config.multi_agent_v2.root_agent_usage_hint_text =
-        Some("Parent root guidance.".to_string());
+    let oversized_parent_hint = "Parent root guidance. ".repeat(2_000);
+    let legacy_parent_hint = legacy_multi_agent_usage_hint(&oversized_parent_hint);
+    parent_config.multi_agent_v2.root_agent_usage_hint_text = Some(oversized_parent_hint);
     parent_config.multi_agent_v2.subagent_usage_hint_text =
         Some("Parent subagent guidance.".to_string());
     let mut child_config = harness.config.clone();
@@ -1465,7 +1472,7 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history() {
             id: None,
             role: "developer".to_string(),
             content: vec![ContentItem::InputText {
-                text: "Parent root guidance.".to_string(),
+                text: legacy_parent_hint.clone(),
             }],
             phase: None,
             internal_chat_message_metadata_passthrough: None,
@@ -1526,7 +1533,7 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history() {
         "forked child history should retain compacted non-hint content"
     );
     assert!(
-        !history_contains_text(history.raw_items(), "Parent root guidance."),
+        !history_contains_text(history.raw_items(), &legacy_parent_hint),
         "forked child history should strip stale parent hints from compacted replacement history"
     );
     assert!(
@@ -1883,8 +1890,9 @@ async fn spawn_agent_fork_last_n_turns_strips_parent_usage_hints() {
     let harness = AgentControlHarness::new().await;
     let mut parent_config = harness.config.clone();
     let _ = parent_config.features.enable(Feature::MultiAgentV2);
-    parent_config.multi_agent_v2.root_agent_usage_hint_text =
-        Some("Parent root guidance.".to_string());
+    let oversized_parent_hint = "Parent root guidance. ".repeat(2_000);
+    let legacy_parent_hint = legacy_multi_agent_usage_hint(&oversized_parent_hint);
+    parent_config.multi_agent_v2.root_agent_usage_hint_text = Some(oversized_parent_hint);
     let mut child_config = harness.config.clone();
     let _ = child_config.features.enable(Feature::MultiAgentV2);
     child_config.multi_agent_v2.subagent_usage_hint_text =
@@ -1910,7 +1918,7 @@ async fn spawn_agent_fork_last_n_turns_strips_parent_usage_hints() {
                     id: None,
                     role: "developer".to_string(),
                     content: vec![ContentItem::InputText {
-                        text: "Parent root guidance.".to_string(),
+                        text: legacy_parent_hint.clone(),
                     }],
                     phase: None,
                     internal_chat_message_metadata_passthrough: None,
@@ -1959,9 +1967,126 @@ async fn spawn_agent_fork_last_n_turns_strips_parent_usage_hints() {
         "bounded fork should retain the requested recent parent turn"
     );
     assert!(
-        !history_contains_text(history.raw_items(), "Parent root guidance."),
+        !history_contains_text(history.raw_items(), &legacy_parent_hint),
         "bounded fork should strip stale parent root hints before the child rebuilds startup context"
     );
+
+    let _ = harness
+        .control
+        .shutdown_live_agent(child_thread_id)
+        .await
+        .expect("child shutdown should submit");
+    let _ = parent_thread
+        .submit(Op::Shutdown {})
+        .await
+        .expect("parent shutdown should submit");
+}
+
+#[tokio::test]
+async fn spawn_agent_fork_strips_canonicalized_oversized_parent_usage_hint() {
+    let oversized_root_hint = "oversized root guidance ".repeat(2_000);
+    let oversized_subagent_hint = "oversized child guidance ".repeat(2_000);
+    let legacy_root_hint = legacy_multi_agent_usage_hint(&oversized_root_hint);
+    let (home, mut config) = test_config_with_cli_overrides(vec![
+        (
+            "features.multi_agent_v2.root_agent_usage_hint_text".to_string(),
+            TomlValue::String(oversized_root_hint),
+        ),
+        (
+            "features.multi_agent_v2.subagent_usage_hint_text".to_string(),
+            TomlValue::String(oversized_subagent_hint),
+        ),
+    ])
+    .await;
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    let root_hint = config
+        .multi_agent_v2
+        .root_agent_usage_hint_text
+        .clone()
+        .expect("root hint should resolve");
+    let subagent_hint = config
+        .multi_agent_v2
+        .subagent_usage_hint_text
+        .clone()
+        .expect("subagent hint should resolve");
+    assert!(
+        codex_utils_output_truncation::approx_token_count(&root_hint)
+            <= crate::config::MULTI_AGENT_USAGE_HINT_MAX_TOKENS
+    );
+    assert!(
+        codex_utils_output_truncation::approx_token_count(&subagent_hint)
+            <= crate::config::MULTI_AGENT_USAGE_HINT_MAX_TOKENS
+    );
+
+    let harness = AgentControlHarness::new_with_config(home, config.clone()).await;
+    let new_thread = harness
+        .manager
+        .start_thread(config.clone())
+        .await
+        .expect("start parent thread");
+    let parent_thread_id = new_thread.thread_id;
+    let parent_thread = new_thread.thread;
+    let turn_context = parent_thread.session.new_default_turn().await;
+    let parent_spawn_call_id = "spawn-call-canonicalized-usage-hint";
+    parent_thread
+        .session
+        .record_conversation_items(
+            turn_context.as_ref(),
+            &[
+                ResponseItem::Message {
+                    id: None,
+                    role: "developer".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: legacy_root_hint.clone(),
+                    }],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough: None,
+                },
+                spawn_agent_call(parent_spawn_call_id),
+            ],
+        )
+        .await;
+    parent_thread.session.ensure_rollout_materialized().await;
+    parent_thread
+        .session
+        .flush_rollout()
+        .await
+        .expect("parent rollout should flush");
+
+    let child_thread_id = harness
+        .control
+        .spawn_agent_with_metadata(
+            config,
+            text_input("child task"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions {
+                fork_parent_spawn_call_id: Some(parent_spawn_call_id.to_string()),
+                fork_mode: Some(SpawnAgentForkMode::FullHistory),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("forked spawn should succeed")
+        .thread_id;
+
+    let child_thread = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should be registered");
+    let history = child_thread.session.clone_history().await;
+    assert!(!history_contains_text(
+        history.raw_items(),
+        &legacy_root_hint
+    ));
+    assert!(!history_contains_text(history.raw_items(), &root_hint));
+    assert!(history_contains_text(history.raw_items(), &subagent_hint));
 
     let _ = harness
         .control
