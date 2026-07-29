@@ -1,14 +1,17 @@
 use super::*;
 
+use crate::responses_metadata::CODE_MODE_TOOL_NAMES_KEY;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::responses_metadata::CompactionTurnMetadata;
 use crate::responses_metadata::INSTALLATION_ID_KEY;
+use crate::responses_metadata::PARENT_TURN_ID_KEY;
 use crate::responses_metadata::WINDOW_ID_KEY;
 use crate::sandbox_tags::permission_profile_sandbox_tag;
 use codex_analytics::CompactionImplementation;
 use codex_analytics::CompactionPhase;
 use codex_analytics::CompactionReason;
 use codex_analytics::CompactionTrigger;
+use codex_protocol::ToolName;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::SessionSource;
@@ -543,6 +546,10 @@ fn turn_metadata_state_ignores_client_reserved_metadata_before_start() {
     );
     state.set_responsesapi_client_metadata(HashMap::from([
         (
+            CODE_MODE_TOOL_NAMES_KEY.to_string(),
+            "client-supplied".to_string(),
+        ),
+        (
             "turn_started_at_unix_ms".to_string(),
             "client-supplied".to_string(),
         ),
@@ -554,15 +561,18 @@ fn turn_metadata_state_ignores_client_reserved_metadata_before_start() {
             "parent_thread_id".to_string(),
             "client-supplied".to_string(),
         ),
+        ("parent_turn_id".to_string(), "client-supplied".to_string()),
         ("subagent_kind".to_string(), "client-supplied".to_string()),
     ]));
 
     let header = test_turn_metadata_header(&state);
     let json: Value = serde_json::from_str(&header).expect("json");
 
+    assert!(json.get(CODE_MODE_TOOL_NAMES_KEY).is_none());
     assert!(json.get("turn_started_at_unix_ms").is_none());
     assert!(json.get("forked_from_thread_id").is_none());
     assert!(json.get("parent_thread_id").is_none());
+    assert!(json.get("parent_turn_id").is_none());
     assert!(json.get("subagent_kind").is_none());
 }
 
@@ -595,6 +605,7 @@ fn turn_metadata_state_merges_client_metadata_without_replacing_reserved_fields(
         WindowsSandboxLevel::Disabled,
         /*enforce_managed_network*/ false,
     );
+    state.set_parent_turn_id("parent-turn-a".to_string());
     state.set_responsesapi_client_metadata(HashMap::from([
         ("fiber_run_id".to_string(), "fiber-123".to_string()),
         ("origin".to_string(), "東京".to_string()),
@@ -627,7 +638,12 @@ fn turn_metadata_state_merges_client_metadata_without_replacing_reserved_fields(
             "parent_thread_id".to_string(),
             "client-supplied".to_string(),
         ),
+        ("parent_turn_id".to_string(), "client-supplied".to_string()),
         ("subagent_kind".to_string(), "client-supplied".to_string()),
+        (
+            CODE_MODE_TOOL_NAMES_KEY.to_string(),
+            "client-supplied".to_string(),
+        ),
         ("turn_id".to_string(), "client-supplied".to_string()),
         (WINDOW_ID_KEY.to_string(), "client-supplied".to_string()),
         ("thread_source".to_string(), "client-supplied".to_string()),
@@ -638,6 +654,13 @@ fn turn_metadata_state_merges_client_metadata_without_replacing_reserved_fields(
         ),
     ]));
     state.set_turn_started_at_unix_ms(/*turn_started_at_unix_ms*/ 1_700_000_000_123);
+    state.set_code_mode_tool_names(BTreeMap::from([
+        ("exec_command".to_string(), ToolName::plain("exec_command")),
+        (
+            "mcp__calendar__lookup".to_string(),
+            ToolName::namespaced("mcp__calendar", "lookup"),
+        ),
+    ]));
 
     let header = test_turn_metadata_header(&state);
     assert!(header.is_ascii());
@@ -651,6 +674,19 @@ fn turn_metadata_state_merges_client_metadata_without_replacing_reserved_fields(
     assert_eq!(json["reasoning_effort"].as_str(), Some("client-supplied"));
     assert_eq!(json["session_id"].as_str(), Some("session-a"));
     assert_eq!(json["thread_id"].as_str(), Some("thread-a"));
+    assert_eq!(
+        json[CODE_MODE_TOOL_NAMES_KEY],
+        serde_json::json!({
+            "exec_command": {
+                "name": "exec_command",
+                "namespace": null,
+            },
+            "mcp__calendar__lookup": {
+                "name": "lookup",
+                "namespace": "mcp__calendar",
+            },
+        })
+    );
     assert!(json.get(INSTALLATION_ID_KEY).is_none());
     assert!(json.get("x-codex-installation-id").is_none());
     assert!(json.get("x-codex-parent-thread-id").is_none());
@@ -663,6 +699,7 @@ fn turn_metadata_state_merges_client_metadata_without_replacing_reserved_fields(
         json["parent_thread_id"].as_str(),
         Some("55555555-5555-4555-8555-555555555555")
     );
+    assert_eq!(json["parent_turn_id"].as_str(), Some("parent-turn-a"));
     assert_eq!(json["subagent_kind"].as_str(), Some("thread_spawn"));
     assert_eq!(json["thread_source"].as_str(), Some("automation"));
     assert_eq!(json["turn_id"].as_str(), Some("turn-a"));
@@ -695,6 +732,8 @@ fn turn_metadata_state_merges_client_metadata_without_replacing_reserved_fields(
         .expect("turn metadata should be present");
     assert_eq!(meta["model"].as_str(), Some("gpt-5.4"));
     assert_eq!(meta["reasoning_effort"].as_str(), Some("high"));
+    assert!(meta.get(CODE_MODE_TOOL_NAMES_KEY).is_none());
+    assert!(meta.get(PARENT_TURN_ID_KEY).is_none());
     assert!(meta.get(WINDOW_ID_KEY).is_none());
     assert_eq!(state.workspace_kind().as_deref(), Some("projectless"));
 }

@@ -64,6 +64,7 @@ use http::HeaderMap;
 use http::HeaderValue;
 use http::header::AUTHORIZATION;
 use serde_json::json;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -138,6 +139,7 @@ struct RealtimeHandoffState {
     codex_responses_as_items: bool,
     codex_response_item_prefix: Option<String>,
     codex_response_handoff_mode: CodexResponseHandoffMode,
+    codex_response_handoff_channel_prefixes: Arc<BTreeMap<String, Vec<String>>>,
     session_kind: RealtimeSessionKind,
     event_parser: RealtimeEventParser,
 }
@@ -430,28 +432,6 @@ struct RealtimeInputChannels {
 }
 
 impl RealtimeHandoffState {
-    fn new(
-        output_tx: Sender<RealtimeOutbound>,
-        client_managed_handoffs: bool,
-        codex_responses_as_items: bool,
-        codex_response_item_prefix: Option<String>,
-        codex_response_handoff_mode: CodexResponseHandoffMode,
-        session_kind: RealtimeSessionKind,
-        event_parser: RealtimeEventParser,
-    ) -> Self {
-        Self {
-            output_tx,
-            last_output: Arc::new(Mutex::new(None)),
-            stream: Arc::new(Mutex::new(RealtimeHandoffStreamState::default())),
-            client_managed_handoffs,
-            codex_responses_as_items,
-            codex_response_item_prefix,
-            codex_response_handoff_mode,
-            session_kind,
-            event_parser,
-        }
-    }
-
     fn streams_handoff_append(&self) -> bool {
         self.event_parser == RealtimeEventParser::FramelessBidi
             && !self.client_managed_handoffs
@@ -478,12 +458,14 @@ struct ConversationState {
 
 struct RealtimeStart {
     api_provider: ApiProvider,
+    realtime_sideband_base_url: Option<String>,
     extra_headers: Option<HeaderMap>,
     client_managed_handoffs: bool,
     flush_transcript_tail_on_session_end: bool,
     codex_responses_as_items: bool,
     codex_response_item_prefix: Option<String>,
     codex_response_handoff_mode: CodexResponseHandoffMode,
+    codex_response_handoff_channel_prefixes: Option<BTreeMap<String, Vec<String>>>,
     realtime_call_api_provider: Option<ApiProvider>,
     session_config: RealtimeSessionConfig,
     model_client: ModelClient,
@@ -537,12 +519,14 @@ impl RealtimeConversationManager {
     async fn start_inner(&self, start: RealtimeStart) -> CodexResult<RealtimeStartOutput> {
         let RealtimeStart {
             api_provider,
+            realtime_sideband_base_url,
             extra_headers,
             client_managed_handoffs,
             flush_transcript_tail_on_session_end,
             codex_responses_as_items,
             codex_response_item_prefix,
             codex_response_handoff_mode,
+            codex_response_handoff_channel_prefixes,
             realtime_call_api_provider,
             session_config,
             model_client,
@@ -566,15 +550,20 @@ impl RealtimeConversationManager {
 
         let realtime_active = Arc::new(AtomicBool::new(true));
         let stop_token = CancellationToken::new();
-        let handoff = RealtimeHandoffState::new(
-            handoff_output_tx,
+        let handoff = RealtimeHandoffState {
+            output_tx: handoff_output_tx,
+            last_output: Arc::new(Mutex::new(None)),
+            stream: Arc::new(Mutex::new(RealtimeHandoffStreamState::default())),
             client_managed_handoffs,
             codex_responses_as_items,
             codex_response_item_prefix,
             codex_response_handoff_mode,
+            codex_response_handoff_channel_prefixes: Arc::new(
+                codex_response_handoff_channel_prefixes.unwrap_or_default(),
+            ),
             session_kind,
             event_parser,
-        );
+        };
         let input_channels = RealtimeInputChannels {
             text_rx,
             handoff_output_rx,
@@ -582,6 +571,10 @@ impl RealtimeConversationManager {
         };
 
         let client = RealtimeWebsocketClient::new(api_provider);
+        let client = match realtime_sideband_base_url {
+            Some(base_url) => client.with_webrtc_sideband_base_url(base_url),
+            None => client,
+        };
         let (task, sdp) = if let Some(sdp) = sdp {
             let call = model_client
                 .create_realtime_call_with_headers(
@@ -755,7 +748,10 @@ impl RealtimeConversationManager {
             return Ok(());
         }
         let phase = if handoff.routes_handoff_by_bem() {
-            match bem_message_phase(&output_text) {
+            match bem_message_phase(
+                &output_text,
+                &handoff.codex_response_handoff_channel_prefixes,
+            ) {
                 Some(phase) => Some(phase),
                 None => {
                     warn!("BEM output did not contain a recognized channel header");
@@ -855,9 +851,11 @@ impl RealtimeConversationManager {
                 } else {
                     phase
                 },
-                bem_channel_parser: handoff
-                    .routes_handoff_by_bem()
-                    .then(BemChannelParser::default),
+                bem_channel_parser: handoff.routes_handoff_by_bem().then(|| {
+                    BemChannelParser::new(Arc::clone(
+                        &handoff.codex_response_handoff_channel_prefixes,
+                    ))
+                }),
                 prefix_final_message: handoff.event_parser == RealtimeEventParser::V1,
                 sent_bytes: 0,
                 buffered_text: String::new(),
@@ -1098,12 +1096,14 @@ pub(crate) async fn handle_start(
 
 struct PreparedRealtimeConversationStart {
     api_provider: ApiProvider,
+    realtime_sideband_base_url: Option<String>,
     extra_headers: Option<HeaderMap>,
     client_managed_handoffs: bool,
     flush_transcript_tail_on_session_end: bool,
     codex_responses_as_items: bool,
     codex_response_item_prefix: Option<String>,
     codex_response_handoff_mode: CodexResponseHandoffMode,
+    codex_response_handoff_channel_prefixes: Option<BTreeMap<String, Vec<String>>>,
     realtime_call_api_provider: Option<ApiProvider>,
     requested_realtime_session_id: Option<String>,
     version: RealtimeWsVersion,
@@ -1134,7 +1134,8 @@ async fn prepare_realtime_start(
         .clone()
         .unwrap_or(ConversationStartTransport::Websocket);
     let mut api_provider = provider.to_api_provider(Some(AuthMode::ApiKey))?;
-    if let Some(realtime_ws_base_url) = &config.experimental_realtime_ws_base_url {
+    let realtime_sideband_base_url = config.experimental_realtime_ws_base_url.clone();
+    if let Some(realtime_ws_base_url) = &realtime_sideband_base_url {
         api_provider.base_url = realtime_ws_base_url.clone();
     }
     let realtime_call_api_provider =
@@ -1189,12 +1190,14 @@ async fn prepare_realtime_start(
     ));
     Ok(PreparedRealtimeConversationStart {
         api_provider,
+        realtime_sideband_base_url,
         extra_headers: Some(extra_headers),
         client_managed_handoffs: params.client_managed_handoffs,
         flush_transcript_tail_on_session_end: params.flush_transcript_tail_on_session_end,
         codex_responses_as_items: params.codex_responses_as_items,
         codex_response_item_prefix: params.codex_response_item_prefix,
         codex_response_handoff_mode: params.codex_response_handoff_mode,
+        codex_response_handoff_channel_prefixes: params.codex_response_handoff_channel_prefixes,
         realtime_call_api_provider,
         requested_realtime_session_id,
         version,
@@ -1387,12 +1390,14 @@ async fn handle_start_inner(
 ) -> CodexResult<()> {
     let PreparedRealtimeConversationStart {
         api_provider,
+        realtime_sideband_base_url,
         extra_headers,
         client_managed_handoffs,
         flush_transcript_tail_on_session_end,
         codex_responses_as_items,
         codex_response_item_prefix,
         codex_response_handoff_mode,
+        codex_response_handoff_channel_prefixes,
         realtime_call_api_provider,
         requested_realtime_session_id,
         version,
@@ -1406,12 +1411,14 @@ async fn handle_start_inner(
     };
     let start = RealtimeStart {
         api_provider,
+        realtime_sideband_base_url,
         extra_headers,
         client_managed_handoffs,
         flush_transcript_tail_on_session_end,
         codex_responses_as_items,
         codex_response_item_prefix,
         codex_response_handoff_mode,
+        codex_response_handoff_channel_prefixes,
         realtime_call_api_provider,
         session_config,
         model_client: sess.services.model_client.clone(),

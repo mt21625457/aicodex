@@ -239,10 +239,6 @@ macro_rules! client_request_definitions {
                 }
             }
 
-            pub fn method(&self) -> String {
-                self.method_name().to_string()
-            }
-
             pub fn serialization_scope(&self) -> Option<ClientRequestSerializationScope> {
                 match self {
                     $(
@@ -636,6 +632,11 @@ client_request_definitions! {
         inspect_params: true,
         serialization: None,
         response: v2::ThreadListResponse,
+    },
+    ThreadSectionList => "threadSection/list" {
+        params: v2::ThreadSectionListParams,
+        serialization: None,
+        response: v2::ThreadSectionListResponse,
     },
     #[experimental("thread/search")]
     ThreadSearch => "thread/search" {
@@ -1158,6 +1159,11 @@ client_request_definitions! {
         params: v2::ExternalAgentConfigImportParams,
         serialization: global("config"),
         response: v2::ExternalAgentConfigImportResponse,
+    },
+    ExternalAgentConfigImportHistoryRecord => "externalAgentConfig/import/recordHistory" {
+        params: v2::ExternalAgentConfigImportHistoryRecordParams,
+        serialization: global("config"),
+        response: v2::ExternalAgentConfigImportHistoryRecordResponse,
     },
     ExternalAgentConfigImportHistoriesRead => "externalAgentConfig/import/readHistories" {
         params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
@@ -2671,7 +2677,6 @@ mod tests {
             params: None,
         };
         assert_eq!(request.id(), &RequestId::Integer(1));
-        assert_eq!(request.method(), "account/rateLimits/read");
         assert_eq!(
             json!({
                 "method": "account/rateLimits/read",
@@ -2689,7 +2694,6 @@ mod tests {
             params: None,
         };
         assert_eq!(request.id(), &RequestId::Integer(1));
-        assert_eq!(request.method(), "account/usage/read");
         assert_eq!(
             json!({
                 "method": "account/usage/read",
@@ -2707,7 +2711,6 @@ mod tests {
             params: None,
         };
         assert_eq!(request.id(), &RequestId::Integer(1));
-        assert_eq!(request.method(), "account/workspaceMessages/read");
         assert_eq!(
             json!({
                 "method": "account/workspaceMessages/read",
@@ -2732,6 +2735,7 @@ mod tests {
                     parent_thread_id: None,
                     preview: "first prompt".to_string(),
                     ephemeral: true,
+                    section: None,
                     history_mode: Default::default(),
                     model_provider: "openai".to_string(),
                     created_at: 1,
@@ -2784,6 +2788,7 @@ mod tests {
                         "parentThreadId": null,
                         "preview": "first prompt",
                         "ephemeral": true,
+                        "section": null,
                         "historyMode": "legacy",
                         "modelProvider": "openai",
                         "createdAt": 1,
@@ -3489,6 +3494,14 @@ mod tests {
                 codex_responses_as_items: None,
                 codex_response_item_prefix: None,
                 codex_response_handoff_mode: Some(CodexResponseHandoffMode::BemTags),
+                codex_response_handoff_channel_prefixes: Some(std::collections::BTreeMap::from([
+                    ("analysis".to_string(), vec!["[THINKING]".to_string()]),
+                    (
+                        "commentary".to_string(),
+                        vec!["[PROGRESS]".to_string(), "[UPDATE]".to_string()],
+                    ),
+                    ("final".to_string(), vec!["[DONE]".to_string()]),
+                ])),
                 thread_id: "thr_123".to_string(),
                 model: Some("realtime-treatment-model".to_string()),
                 output_modality: RealtimeOutputModality::Audio,
@@ -3521,6 +3534,11 @@ mod tests {
                     "codexResponsesAsItems": null,
                     "codexResponseItemPrefix": null,
                     "codexResponseHandoffMode": "bemTags",
+                    "codexResponseHandoffChannelPrefixes": {
+                        "analysis": ["[THINKING]"],
+                        "commentary": ["[PROGRESS]", "[UPDATE]"],
+                        "final": ["[DONE]"]
+                    },
                     "model": "realtime-treatment-model",
                     "outputModality": "audio",
                     "includeStartupContext": false,
@@ -3556,6 +3574,7 @@ mod tests {
                 codex_responses_as_items: None,
                 codex_response_item_prefix: None,
                 codex_response_handoff_mode: None,
+                codex_response_handoff_channel_prefixes: None,
                 thread_id: "thr_123".to_string(),
                 model: None,
                 output_modality: RealtimeOutputModality::Audio,
@@ -3579,6 +3598,7 @@ mod tests {
                     "codexResponsesAsItems": null,
                     "codexResponseItemPrefix": null,
                     "codexResponseHandoffMode": null,
+                    "codexResponseHandoffChannelPrefixes": null,
                     "model": null,
                     "outputModality": "audio",
                     "includeStartupContext": null,
@@ -3600,6 +3620,7 @@ mod tests {
                 codex_responses_as_items: None,
                 codex_response_item_prefix: None,
                 codex_response_handoff_mode: None,
+                codex_response_handoff_channel_prefixes: None,
                 thread_id: "thr_123".to_string(),
                 model: None,
                 output_modality: RealtimeOutputModality::Audio,
@@ -3623,6 +3644,7 @@ mod tests {
                     "codexResponsesAsItems": null,
                     "codexResponseItemPrefix": null,
                     "codexResponseHandoffMode": null,
+                    "codexResponseHandoffChannelPrefixes": null,
                     "model": null,
                     "outputModality": "audio",
                     "includeStartupContext": null,
@@ -3844,6 +3866,7 @@ mod tests {
                 codex_responses_as_items: None,
                 codex_response_item_prefix: None,
                 codex_response_handoff_mode: None,
+                codex_response_handoff_channel_prefixes: None,
                 thread_id: "thr_123".to_string(),
                 model: None,
                 output_modality: RealtimeOutputModality::Audio,
