@@ -14,6 +14,9 @@ use codex_file_watcher::WatchRegistration;
 use codex_protocol::ThreadId;
 #[cfg(test)]
 use codex_protocol::config_types::MultiAgentMode;
+use codex_protocol::items::AgentMessageContent as CoreAgentMessageContent;
+use codex_protocol::items::TurnItem as CoreTurnItem;
+use codex_protocol::models::MessagePhase;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RolloutItem;
 use codex_rollout::state_db::StateDbHandle;
@@ -59,6 +62,10 @@ pub(crate) enum ThreadListenerCommand {
         turn_id: Option<String>,
         goal: ThreadGoal,
     },
+    // EmitWarning is used to order extension warnings with other thread notifications.
+    EmitWarning {
+        message: String,
+    },
     // EmitThreadGoalCleared is used to order app-server goal clears with running-thread resume responses.
     EmitThreadGoalCleared,
     // EmitThreadGoalSnapshot is used to read and emit the latest goal state in the listener order.
@@ -79,6 +86,7 @@ pub(crate) struct TurnSummary {
     pub(crate) started_at: Option<i64>,
     pub(crate) command_execution_started: HashSet<String>,
     pub(crate) last_error: Option<TurnError>,
+    pub(crate) last_agent_message: Option<ThreadItem>,
 }
 
 #[derive(Default)]
@@ -175,6 +183,16 @@ impl ThreadState {
         if let EventMsg::TurnStarted(payload) = event {
             self.turn_summary.started_at = payload.started_at;
         }
+        if let EventMsg::ItemCompleted(payload) = event
+            && let CoreTurnItem::AgentMessage(item) = &payload.item
+            && matches!(item.phase, Some(MessagePhase::FinalAnswer) | None)
+            && item.content.iter().any(|content| {
+                matches!(content, CoreAgentMessageContent::Text { text } if !text.trim().is_empty())
+            })
+        {
+            self.turn_summary.last_agent_message =
+                Some(ThreadItem::from(CoreTurnItem::AgentMessage(item.clone())));
+        }
         self.current_turn_history.handle_event(event);
         self.remember_transcript_metadata_for_turn(event_turn_id);
         if let Some(turn_id) = transcript_metadata_turn_id(event)
@@ -182,11 +200,11 @@ impl ThreadState {
         {
             self.remember_transcript_metadata_for_turn(turn_id);
         }
-        if matches!(event, EventMsg::TurnAborted(_) | EventMsg::TurnComplete(_))
-            && !self.current_turn_history.has_active_turn()
-        {
+        if matches!(event, EventMsg::TurnAborted(_) | EventMsg::TurnComplete(_)) {
             self.last_terminal_turn_id = Some(event_turn_id.to_string());
-            self.current_turn_history.reset();
+            if !self.current_turn_history.has_active_turn() {
+                self.current_turn_history.reset();
+            }
         }
     }
 
@@ -354,6 +372,8 @@ mod tests {
 
         let mut item = ThreadItem::CommandExecution {
             id: "cmd-1".to_string(),
+            plugin_id: None,
+            script_path: None,
             command: "printf hi".to_string(),
             cwd: LegacyAppPathString::from_abs_path(
                 &AbsolutePathBuf::from_absolute_path("/tmp").expect("absolute path"),
@@ -385,6 +405,8 @@ mod tests {
     ) -> CommandExecutionItem {
         CommandExecutionItem {
             id: id.to_string(),
+            plugin_id: None,
+            script_path: None,
             process_id: None,
             command: vec!["printf".to_string(), "hi".to_string()],
             cwd: PathUri::from_abs_path(

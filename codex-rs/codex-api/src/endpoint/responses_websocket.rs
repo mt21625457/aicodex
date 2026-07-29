@@ -939,7 +939,10 @@ fn websocket_request_trace_summary<'a>(
             model: request.model,
             request_bytes,
             input_count: request.input.len(),
-            tools_count: request.tools.map_or(0, <[Value]>::len),
+            tools_count: request.tools.map_or(0, |tools| {
+                serde_json::from_str::<Vec<&serde_json::value::RawValue>>(tools.get())
+                    .map_or(0, |tools| tools.len())
+            }),
             include_count: request.include.len(),
             has_previous_response_id: request.previous_response_id.is_some(),
             store: request.store,
@@ -958,7 +961,10 @@ mod tests {
     use codex_protocol::models::ResponseItem;
     use pretty_assertions::assert_eq;
     use serde_json::json;
+    use serde_json::value::RawValue;
+    use serde_json::value::to_raw_value;
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     #[test]
     fn direct_serialization_preserves_websocket_request_payload() {
@@ -974,11 +980,17 @@ mod tests {
                 phase: None,
                 internal_chat_message_metadata_passthrough: None,
             }],
-            tools: Some(vec![json!({
-                "type": "function",
-                "name": "lookup",
-                "parameters": {"type": "object"}
-            })]),
+            tools: Some(
+                Arc::<RawValue>::from(
+                    to_raw_value(&vec![json!({
+                        "type": "function",
+                        "name": "lookup",
+                        "parameters": {"type": "object"}
+                    })])
+                    .expect("serialize tools"),
+                )
+                .into(),
+            ),
             tool_choice: "auto".to_string(),
             parallel_tool_calls: true,
             reasoning: None,
@@ -1035,12 +1047,18 @@ mod tests {
                 phase: None,
                 internal_chat_message_metadata_passthrough: None,
             }],
-            tools: Some(vec![json!({
-                "type": "function",
-                "name": "lookup",
-                "description": secret_tool_description,
-                "parameters": {"type": "object"}
-            })]),
+            tools: Some(
+                Arc::<RawValue>::from(
+                    to_raw_value(&vec![json!({
+                        "type": "function",
+                        "name": "lookup",
+                        "description": secret_tool_description,
+                        "parameters": {"type": "object"}
+                    })])
+                    .expect("serialize tools"),
+                )
+                .into(),
+            ),
             tool_choice: "auto".to_string(),
             parallel_tool_calls: true,
             reasoning: None,

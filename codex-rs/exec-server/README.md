@@ -405,6 +405,13 @@ Callers must pass `ExecServerRuntimePaths` to `run_main()`. The top-level
 state. `RemoteEnvironmentConfig::new(...)` also takes the auth provider that
 remote registration should use; the CLI builds that provider from AICodex auth
 state before starting remote mode.
+Callers must pass `ExecServerRuntimePaths` and an explicitly configured
+`HttpClientFactory` to `run_main()`. The top-level `codex exec-server` command
+builds these paths from the `codex` arg0 dispatch state and resolves its HTTP
+client factory from the effective Codex configuration.
+`RemoteEnvironmentConfig::new(...)` also takes the auth provider and HTTP client
+factory that remote registration mode should use; the CLI builds the auth
+provider from Codex auth state before starting remote mode.
 
 ## Example session
 

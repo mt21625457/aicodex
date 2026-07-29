@@ -18,6 +18,7 @@ mod feature_configs;
 mod legacy;
 pub use feature_configs::ClaudeFileToolMode;
 pub use feature_configs::CodeModeConfigToml;
+pub use feature_configs::CodeModeHostConfigToml;
 pub use feature_configs::CurrentTimeReminderConfigToml;
 pub use feature_configs::CurrentTimeReminderDeliveryMode;
 pub use feature_configs::CurrentTimeSource;
@@ -27,6 +28,7 @@ pub use feature_configs::NetworkProxyConfigToml;
 pub use feature_configs::NetworkProxyDomainPermissionToml;
 pub use feature_configs::NetworkProxyModeToml;
 pub use feature_configs::NetworkProxyUnixSocketPermissionToml;
+pub use feature_configs::NonPrefixedMcpToolNamesConfigToml;
 use feature_configs::RemovedAppsMcpPathOverrideConfigToml;
 pub use feature_configs::RolloutBudgetConfigToml;
 pub use feature_configs::TokenBudgetConfigToml;
@@ -174,10 +176,14 @@ pub enum Feature {
     ToolSearch,
     /// Removed compatibility flag. MCP tools are always deferred when tool_search is available.
     ToolSearchAlwaysDeferMcpTools,
+    /// Describe deferred tool namespaces in the model-visible world state.
+    DeferredToolWorldState,
     /// Expose MCP model-visible namespaces without the legacy `mcp__` prefix.
     NonPrefixedMcpToolNames,
     /// Enable discoverable tool suggestions for apps.
     ToolSuggest,
+    /// Include recommended plugins in model-visible context.
+    RecommendedPlugins,
     /// Enable plugins.
     Plugins,
     /// Discover selected-root plugin and skill manifests through one high-level exec-server RPC.
@@ -188,6 +194,10 @@ pub enum Feature {
     ///
     /// Requirements-only gate: this should be set from requirements, not user config.
     InAppBrowser,
+    /// Allow desktop apps to perform in-app updates.
+    ///
+    /// Requirements-only gate: this should be set from requirements, not user config.
+    InAppUpdates,
     /// Allow Browser Use agent integration in desktop apps.
     ///
     /// Requirements-only gate: this should be set from requirements, not user config.
@@ -230,6 +240,8 @@ pub enum Feature {
     DefaultModeRequestUserInput,
     /// Enable automatic review for approval prompts.
     GuardianApproval,
+    /// Enable Guardian V2 automatic approval reviews.
+    GuardianV2,
     /// Enable persisted thread goals and automatic goal continuation.
     Goals,
     /// Add current context-window metadata to model-visible context.
@@ -653,6 +665,10 @@ pub struct FeaturesToml {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code_mode: Option<FeatureToml<CodeModeConfigToml>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_mode_host: Option<FeatureToml<CodeModeHostConfigToml>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub non_prefixed_mcp_tool_names: Option<FeatureToml<NonPrefixedMcpToolNamesConfigToml>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multi_agent_v2: Option<FeatureToml<MultiAgentV2ConfigToml>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_budget: Option<FeatureToml<TokenBudgetConfigToml>>,
@@ -691,6 +707,16 @@ impl FeaturesToml {
         if let Some(enabled) = self.code_mode.as_ref().and_then(FeatureToml::enabled) {
             entries.insert(Feature::CodeMode.key().to_string(), enabled);
         }
+        if let Some(enabled) = self.code_mode_host.as_ref().and_then(FeatureToml::enabled) {
+            entries.insert(Feature::CodeModeHost.key().to_string(), enabled);
+        }
+        if let Some(enabled) = self
+            .non_prefixed_mcp_tool_names
+            .as_ref()
+            .and_then(FeatureToml::enabled)
+        {
+            entries.insert(Feature::NonPrefixedMcpToolNames.key().to_string(), enabled);
+        }
         if let Some(enabled) = self.multi_agent_v2.as_ref().and_then(FeatureToml::enabled) {
             entries.insert(Feature::MultiAgentV2.key().to_string(), enabled);
         }
@@ -724,6 +750,8 @@ impl FeaturesToml {
         self.clear_removed_compatibility_entries();
         let Self {
             code_mode,
+            code_mode_host,
+            non_prefixed_mcp_tool_names,
             multi_agent_v2,
             token_budget,
             rollout_budget,
@@ -740,6 +768,10 @@ impl FeaturesToml {
             let enabled = features.enabled(spec.id);
             if spec.id == Feature::CodeMode {
                 materialize_resolved_feature_enabled(code_mode, enabled);
+            } else if spec.id == Feature::CodeModeHost {
+                materialize_resolved_feature_enabled(code_mode_host, enabled);
+            } else if spec.id == Feature::NonPrefixedMcpToolNames {
+                materialize_resolved_feature_enabled(non_prefixed_mcp_tool_names, enabled);
             } else if spec.id == Feature::MultiAgentV2 {
                 materialize_resolved_feature_enabled(multi_agent_v2, enabled);
             } else if spec.id == Feature::TokenBudget {
@@ -1138,6 +1170,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: true,
     },
     FeatureSpec {
+        id: Feature::DeferredToolWorldState,
+        key: "deferred_tool_world_state",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::NonPrefixedMcpToolNames,
         key: "non_prefixed_mcp_tool_names",
         stage: Stage::UnderDevelopment,
@@ -1154,6 +1192,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "tool_suggest",
         stage: Stage::Stable,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::RecommendedPlugins,
+        key: "recommended_plugins",
+        stage: Stage::Stable,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::Plugins,
@@ -1176,6 +1220,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::InAppBrowser,
         key: "in_app_browser",
+        stage: Stage::Stable,
+        default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::InAppUpdates,
+        key: "in_app_updates",
         stage: Stage::Stable,
         default_enabled: true,
     },
@@ -1292,6 +1342,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "guardian_approval",
         stage: Stage::Stable,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::GuardianV2,
+        key: "guardianv2",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::Goals,

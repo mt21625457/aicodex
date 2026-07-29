@@ -64,6 +64,8 @@ A full patch can combine several operations:
 *** End Patch
 
 Remember: include an Add/Delete/Update header, prefix new lines with `+`, and use relative file paths."#;
+use serde_json::value::RawValue;
+use std::sync::Arc;
 
 /// When serialized as JSON, this produces a valid "Tool" in the OpenAI
 /// Responses API.
@@ -861,6 +863,13 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash
+}
+
+/// Returns raw JSON that can be embedded directly in a Responses API request.
+pub fn create_tools_raw_json_for_responses_api(
+    tools: &[ToolSpec],
+) -> Result<Arc<RawValue>, serde_json::Error> {
+    serde_json::value::to_raw_value(tools).map(Arc::from)
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]

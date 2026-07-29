@@ -447,6 +447,7 @@ impl ChatStreamState {
                 name: info.name,
                 namespace: info.namespace,
                 arguments,
+                encrypted_function_args: None,
                 call_id,
                 internal_chat_message_metadata_passthrough: None,
             },

@@ -42,7 +42,7 @@ pub(super) async fn list_threads(
     let state_db = store.state_db().await;
     let rollout_config = RolloutConfig {
         codex_home: store.config.codex_home.clone(),
-        sqlite_home: store.config.sqlite_home.clone(),
+        sqlite: store.config.sqlite.clone(),
         cwd: store.config.codex_home.clone(),
         model_provider_id: store.config.default_model_provider_id.clone(),
         generate_memories: false,
@@ -99,18 +99,20 @@ pub(super) async fn list_rollout_threads(
     sort_key: codex_rollout::ThreadSortKey,
     sort_direction: codex_rollout::SortDirection,
 ) -> ThreadStoreResult<codex_rollout::ThreadsPage> {
-    if let Some(relation_filter) = params.relation_filter {
-        let relation_filter = match relation_filter {
-            ThreadRelationFilter::DirectChildrenOf(parent_thread_id) => {
-                codex_state::ThreadRelationFilter::DirectChildrenOf(parent_thread_id)
-            }
-            ThreadRelationFilter::DescendantsOf(ancestor_thread_id) => {
-                codex_state::ThreadRelationFilter::DescendantsOf(ancestor_thread_id)
-            }
-        };
+    if params.relation_filter.is_some() || params.section.is_some() {
+        let relation_filter = params
+            .relation_filter
+            .map(|relation_filter| match relation_filter {
+                ThreadRelationFilter::DirectChildrenOf(parent_thread_id) => {
+                    codex_state::ThreadRelationFilter::DirectChildrenOf(parent_thread_id)
+                }
+                ThreadRelationFilter::DescendantsOf(ancestor_thread_id) => {
+                    codex_state::ThreadRelationFilter::DescendantsOf(ancestor_thread_id)
+                }
+            });
         let page = codex_rollout::state_db::list_threads_db(
             state_db.as_deref(),
-            config.codex_home.as_path(),
+            &config.sqlite,
             params.page_size,
             cursor,
             sort_key,
@@ -118,13 +120,14 @@ pub(super) async fn list_rollout_threads(
             params.allowed_sources.as_slice(),
             params.model_providers.as_deref(),
             params.cwd_filters.as_deref(),
-            Some(relation_filter),
+            relation_filter,
             params.archived,
+            params.section.as_ref().map(Option::as_deref),
             params.search_term.as_deref(),
         )
         .await
         .ok_or_else(|| ThreadStoreError::Internal {
-            message: "state DB unavailable for relationship-filtered thread listing".to_string(),
+            message: "state DB unavailable for filtered thread listing".to_string(),
         })?;
         return Ok(page.into());
     }
@@ -201,6 +204,7 @@ mod tests {
     use codex_protocol::ThreadId;
     use codex_protocol::protocol::SessionSource;
     use codex_protocol::protocol::ThreadHistoryMode;
+    use codex_utils_absolute_path::test_support::PathExt;
     use pretty_assertions::assert_eq;
     use std::fs;
     use tempfile::TempDir;
@@ -238,6 +242,7 @@ mod tests {
                 allowed_sources: Vec::new(),
                 model_providers: None,
                 cwd_filters: None,
+                section: None,
                 archived: false,
                 search_term: None,
                 relation_filter: None,
@@ -260,7 +265,7 @@ mod tests {
         fs::write(&rollout_path, "").expect("placeholder rollout file");
 
         let runtime = codex_state::StateRuntime::init(
-            home.path().to_path_buf(),
+            codex_state::SqliteConfig::new_for_testing(home.path().abs()),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -298,6 +303,7 @@ mod tests {
                 allowed_sources: Vec::new(),
                 model_providers: None,
                 cwd_filters: None,
+                section: None,
                 archived: false,
                 search_term: Some("needle".to_string()),
                 relation_filter: None,
@@ -328,7 +334,7 @@ mod tests {
         fs::write(&rollout_path, "").expect("placeholder rollout file");
 
         let runtime = codex_state::StateRuntime::init(
-            home.path().to_path_buf(),
+            config.sqlite.clone(),
             config.default_model_provider_id.clone(),
         )
         .await
@@ -370,6 +376,7 @@ mod tests {
                 allowed_sources: Vec::new(),
                 model_providers: None,
                 cwd_filters: None,
+                section: None,
                 archived: false,
                 search_term: Some("canonical".to_string()),
                 relation_filter: None,
@@ -406,6 +413,7 @@ mod tests {
                 allowed_sources: Vec::new(),
                 model_providers: None,
                 cwd_filters: None,
+                section: None,
                 archived: false,
                 search_term: None,
                 relation_filter: None,
@@ -422,6 +430,7 @@ mod tests {
                 allowed_sources: Vec::new(),
                 model_providers: None,
                 cwd_filters: None,
+                section: None,
                 archived: true,
                 search_term: None,
                 relation_filter: None,
@@ -474,6 +483,7 @@ mod tests {
                 allowed_sources: vec![SessionSource::Cli],
                 model_providers: Some(vec!["test-provider".to_string()]),
                 cwd_filters: None,
+                section: None,
                 archived: false,
                 search_term: None,
                 relation_filter: None,
@@ -511,6 +521,7 @@ mod tests {
                 allowed_sources: Vec::new(),
                 model_providers: None,
                 cwd_filters: None,
+                section: None,
                 archived: false,
                 search_term: None,
                 relation_filter: None,

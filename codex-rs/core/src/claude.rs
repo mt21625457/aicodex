@@ -2590,7 +2590,7 @@ mod tests {
                     namespace: None,
                     arguments: "{\"id\":1}".to_string(),
                     call_id: "call_1".to_string(),
-
+                    encrypted_function_args: None,
                     internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
@@ -2642,7 +2642,7 @@ mod tests {
                     namespace: None,
                     arguments: "{\"id\":1}".to_string(),
                     call_id: "call_1".to_string(),
-
+                    encrypted_function_args: None,
                     internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
@@ -2711,7 +2711,7 @@ mod tests {
                     namespace: None,
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
-
+                    encrypted_function_args: None,
                     internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
@@ -2767,7 +2767,7 @@ mod tests {
                     namespace: None,
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
-
+                    encrypted_function_args: None,
                     internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
@@ -2830,7 +2830,7 @@ mod tests {
                     namespace: None,
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
-
+                    encrypted_function_args: None,
                     internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
@@ -3026,7 +3026,7 @@ mod tests {
                     namespace: None,
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
-
+                    encrypted_function_args: None,
                     internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
@@ -3306,7 +3306,10 @@ mod tests {
         )
         .expect_err("zero max_output_tokens must be rejected before sending a provider request");
 
-        assert!(matches!(error, CodexErr::InvalidRequest(_)));
+        assert!(matches!(
+            error.details(),
+            codex_protocol::error::CodexErrorDetails::InvalidRequest(_)
+        ));
         assert_eq!(
             error.to_string(),
             format!(
@@ -3591,6 +3594,7 @@ mod tests {
                     namespace: None,
                     arguments: "{\"query\":\"alpha\"}".to_string(),
                     call_id: "call_1".to_string(),
+                    encrypted_function_args: None,
                     internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCall {
@@ -3599,6 +3603,7 @@ mod tests {
                     namespace: None,
                     arguments: "{\"query\":\"beta\"}".to_string(),
                     call_id: "call_2".to_string(),
+                    encrypted_function_args: None,
                     internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
@@ -3779,7 +3784,7 @@ mod tests {
                     namespace: None,
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
-
+                    encrypted_function_args: None,
                     internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
@@ -4124,7 +4129,7 @@ mod tests {
                     namespace: None,
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
-
+                    encrypted_function_args: None,
                     internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::Message {
@@ -4195,7 +4200,7 @@ mod tests {
                     namespace: None,
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
-
+                    encrypted_function_args: None,
                     internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCall {
@@ -4204,7 +4209,7 @@ mod tests {
                     namespace: None,
                     arguments: "{}".to_string(),
                     call_id: "call_2".to_string(),
-
+                    encrypted_function_args: None,
                     internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
@@ -4280,7 +4285,7 @@ mod tests {
                 namespace: None,
                 arguments: "{}".to_string(),
                 call_id: "call_1".to_string(),
-
+                encrypted_function_args: None,
                 internal_chat_message_metadata_passthrough: None,
             }],
             base_instructions: BaseInstructions {
@@ -4329,7 +4334,7 @@ mod tests {
                     namespace: None,
                     arguments: "{\"id\":1}".to_string(),
                     call_id: "call_1".to_string(),
-
+                    encrypted_function_args: None,
                     internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCall {
@@ -4338,7 +4343,7 @@ mod tests {
                     namespace: None,
                     arguments: "{\"id\":2}".to_string(),
                     call_id: "call_1".to_string(),
-
+                    encrypted_function_args: None,
                     internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
@@ -4515,7 +4520,7 @@ mod tests {
                     namespace: None,
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
-
+                    encrypted_function_args: None,
                     internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
@@ -4641,7 +4646,7 @@ mod tests {
                     namespace: None,
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
-
+                    encrypted_function_args: None,
                     internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
@@ -4759,7 +4764,7 @@ mod tests {
                     namespace: None,
                     arguments: "{}".to_string(),
                     call_id: "call_1".to_string(),
-
+                    encrypted_function_args: None,
                     internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {

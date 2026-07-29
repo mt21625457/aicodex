@@ -199,6 +199,7 @@ fn merges_assistant_text_and_tool_calls_into_one_message() {
                 namespace: None,
                 arguments: "{\"key\":\"a\"}".to_string(),
                 call_id: "call_1".to_string(),
+                encrypted_function_args: None,
                 internal_chat_message_metadata_passthrough: None,
             },
             ResponseItem::FunctionCallOutput {
@@ -268,6 +269,7 @@ fn serializes_complete_tool_history_request() {
                 namespace: None,
                 arguments: "{\"key\":\"a\"}".to_string(),
                 call_id: "call_1".to_string(),
+                encrypted_function_args: None,
                 internal_chat_message_metadata_passthrough: None,
             },
             ResponseItem::FunctionCallOutput {
@@ -498,6 +500,7 @@ fn rejects_oversized_request_items_from_existing_history() {
                 namespace: None,
                 arguments: "x".repeat(25_000),
                 call_id: "call_1".to_string(),
+                encrypted_function_args: None,
                 internal_chat_message_metadata_passthrough: None,
             },
             ResponseItem::FunctionCall {
@@ -506,6 +509,7 @@ fn rejects_oversized_request_items_from_existing_history() {
                 namespace: None,
                 arguments: "y".repeat(25_000),
                 call_id: "call_2".to_string(),
+                encrypted_function_args: None,
                 internal_chat_message_metadata_passthrough: None,
             },
         ],
