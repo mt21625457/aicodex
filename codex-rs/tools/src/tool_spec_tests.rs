@@ -24,6 +24,7 @@ use crate::ResponsesApiTool;
 use crate::claude_tool_name;
 use crate::create_tools_json_for_claude_messages;
 use crate::create_tools_json_for_responses_api;
+use crate::create_tools_raw_json_for_responses_api;
 use crate::dynamic_tool_to_responses_api_tool;
 use codex_protocol::config_types::WebSearchContextSize;
 use codex_protocol::config_types::WebSearchFilters as ConfigWebSearchFilters;
@@ -159,6 +160,29 @@ fn create_tools_json_for_responses_api_includes_top_level_name() {
                 },
             },
         })]
+    );
+}
+
+#[test]
+fn raw_tool_json_matches_value_encoding() {
+    let specs = vec![ToolSpec::Function(ResponsesApiTool {
+        name: "demo".to_string(),
+        description: "A demo tool".to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::object(
+            BTreeMap::new(),
+            /*required*/ None,
+            /*additional_properties*/ None,
+        ),
+        output_schema: None,
+    })];
+    let expected = create_tools_json_for_responses_api(&specs).expect("serialize tools");
+    let raw = create_tools_raw_json_for_responses_api(&specs).expect("serialize raw tools");
+
+    assert_eq!(
+        serde_json::from_str::<Vec<serde_json::Value>>(raw.get()).expect("parse raw tools"),
+        expected,
     );
 }
 

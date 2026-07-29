@@ -30,12 +30,10 @@ use codex_app_server_protocol::ReviewStartResponse;
 use codex_app_server_protocol::ReviewTarget as ApiReviewTarget;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
+use codex_app_server_protocol::SortDirection;
 use codex_app_server_protocol::Thread as AppServerThread;
-use codex_app_server_protocol::ThreadItem as AppServerThreadItem;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadListResponse;
-use codex_app_server_protocol::ThreadReadParams;
-use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadSortKey;
@@ -43,10 +41,13 @@ use codex_app_server_protocol::ThreadSource;
 use codex_app_server_protocol::ThreadSourceKind;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
+use codex_app_server_protocol::ThreadTurnsListParams;
+use codex_app_server_protocol::ThreadTurnsListResponse;
 use codex_app_server_protocol::ThreadUnsubscribeParams;
 use codex_app_server_protocol::ThreadUnsubscribeResponse;
 use codex_app_server_protocol::TurnInterruptParams;
 use codex_app_server_protocol::TurnInterruptResponse;
+use codex_app_server_protocol::TurnItemsView;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnStartedNotification;
@@ -550,10 +551,15 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     )?;
     let state_db = codex_core::init_state_db(&config).await;
     let environment_manager = if run_loader_overrides.ignore_user_config {
-        EnvironmentManager::from_env(Some(local_runtime_paths)).await?
-    } else {
-        EnvironmentManager::from_codex_home(config.codex_home.clone(), Some(local_runtime_paths))
+        EnvironmentManager::from_env(Some(local_runtime_paths), config.http_client_factory())
             .await?
+    } else {
+        EnvironmentManager::from_codex_home(
+            config.codex_home.clone(),
+            Some(local_runtime_paths),
+            config.http_client_factory(),
+        )
+        .await?
     };
     let in_process_start_args = InProcessClientStartArgs {
         arg0_paths,
@@ -993,9 +999,10 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
 
         match server_event {
             InProcessServerEvent::ServerRequest(request) => {
-                handle_server_request(&client, request, &mut error_seen).await;
+                handle_server_request(&client, *request, &mut error_seen).await;
             }
-            InProcessServerEvent::ServerNotification(mut notification) => {
+            InProcessServerEvent::ServerNotification(notification) => {
+                let mut notification = *notification;
                 if let ServerNotification::Error(payload) = &notification {
                     if payload.thread_id == primary_thread_id_for_requests
                         && payload.turn_id == task_id
@@ -1111,6 +1118,7 @@ fn thread_resume_params_from_config(
         sandbox: sandbox.flatten(),
         permissions,
         config: thread_config_overrides_from_config(config),
+        exclude_turns: true,
         ..ThreadResumeParams::default()
     }
 }
@@ -1352,9 +1360,9 @@ async fn maybe_backfill_turn_completed_items(
     notification: &mut ServerNotification,
 ) {
     // In-process delivery may drop non-terminal item notifications under backpressure while still
-    // guaranteeing `turn/completed`. Because app-server currently emits that completion with an
-    // empty `turn.items`, exec does one last `thread/read` here so human/json output can recover
-    // the final message and reconcile any still-running items before shutdown.
+    // guaranteeing `turn/completed`. Fetch the latest full turn so human/json output can recover
+    // the final message and reconcile any still-running items before shutdown. Avoid `thread/read`
+    // here because it also replays restored token usage for clients requesting turn history.
     if !should_backfill_turn_completed_items(thread_ephemeral, notification) {
         return;
     }
@@ -1363,28 +1371,37 @@ async fn maybe_backfill_turn_completed_items(
         return;
     };
 
-    let response = send_request_with_response::<ThreadReadResponse>(
+    let response = send_request_with_response::<ThreadTurnsListResponse>(
         client,
-        ClientRequest::ThreadRead {
+        ClientRequest::ThreadTurnsList {
             request_id: request_ids.next(),
-            params: ThreadReadParams {
+            params: ThreadTurnsListParams {
                 thread_id: payload.thread_id.clone(),
-                include_turns: true,
-                items_view: None,
+                cursor: None,
+                limit: Some(1),
+                sort_direction: Some(SortDirection::Desc),
+                items_view: Some(TurnItemsView::Full),
             },
         },
-        "thread/read",
+        "thread/turns/list",
     )
     .await;
 
     match response {
         Ok(response) => {
-            if let Some(items) = turn_items_for_thread(&response.thread, &payload.turn.id) {
-                payload.turn.items = items;
+            if let Some(turn) = response
+                .data
+                .into_iter()
+                .find(|turn| turn.id == payload.turn.id)
+            {
+                payload.turn.items = turn.items;
+                payload.turn.items_view = turn.items_view;
             }
         }
         Err(err) => {
-            warn!("thread/read failed while backfilling turn items for turn completion: {err}");
+            warn!(
+                "thread/turns/list failed while backfilling turn items for turn completion: {err}"
+            );
         }
     }
 }
@@ -1399,18 +1416,7 @@ fn should_backfill_turn_completed_items(
         return false;
     };
 
-    !thread_ephemeral && payload.turn.items.is_empty()
-}
-
-fn turn_items_for_thread(
-    thread: &AppServerThread,
-    turn_id: &str,
-) -> Option<Vec<AppServerThreadItem>> {
-    thread
-        .turns
-        .iter()
-        .find(|turn| turn.id == turn_id)
-        .map(|turn| turn.items.clone())
+    !thread_ephemeral && payload.turn.items_view != TurnItemsView::Full
 }
 
 fn all_thread_source_kinds() -> Vec<ThreadSourceKind> {
@@ -1481,6 +1487,7 @@ async fn resolve_resume_thread_id(
                         model_providers: model_providers.clone(),
                         source_kinds: Some(all_thread_source_kinds()),
                         archived: Some(false),
+                        section_id: None,
                         parent_thread_id: None,
                         ancestor_thread_id: None,
                         cwd: None,
@@ -1548,6 +1555,7 @@ async fn resolve_resume_thread_id(
                     model_providers: model_providers.clone(),
                     source_kinds: Some(all_thread_source_kinds()),
                     archived: Some(false),
+                    section_id: None,
                     parent_thread_id: None,
                     ancestor_thread_id: None,
                     cwd: None,

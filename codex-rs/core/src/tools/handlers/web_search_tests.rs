@@ -238,7 +238,10 @@ async fn kimi_handler_calls_moonshot_and_returns_bounded_external_context() {
     turn.provider = create_model_provider(provider, /*auth_manager*/ None);
     let session = Arc::new(session);
     let turn = Arc::new(turn);
-    let step_context = session.capture_step_context(Arc::clone(&turn)).await;
+    let step_context = session
+        .capture_step_context(Arc::clone(&turn), &CancellationToken::new())
+        .await
+        .expect("capture step context");
     let output = handler
         .handle(ToolInvocation {
             session,
@@ -340,7 +343,10 @@ async fn invocation_for_arguments(arguments: &str) -> ToolInvocation {
     let (session, turn) = make_session_and_context().await;
     let session = Arc::new(session);
     let turn = Arc::new(turn);
-    let step_context = session.capture_step_context(Arc::clone(&turn)).await;
+    let step_context = session
+        .capture_step_context(Arc::clone(&turn), &CancellationToken::new())
+        .await
+        .expect("capture step context");
     ToolInvocation {
         session,
         turn,

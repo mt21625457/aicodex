@@ -40,6 +40,8 @@ async fn streaming_output_harness() -> anyhow::Result<StreamingOutputHarness> {
         terminator: None,
         writer_handle: None,
         resizer: None,
+        #[cfg(windows)]
+        tty: false,
     });
     let process = Arc::new(
         UnifiedExecProcess::from_spawned(spawned, SandboxType::None, Box::new(NoopSpawnLifecycle))
@@ -160,6 +162,7 @@ async fn exit_watcher_waits_for_late_network_denial_before_classifying_end() -> 
         vec!["proof".to_string()],
         cwd,
         /*process_id*/ 123,
+        /*plugin_attribution*/ None,
         transcript,
         Instant::now(),
         Some(network_denial_monitor),

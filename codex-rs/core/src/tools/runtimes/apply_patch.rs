@@ -132,6 +132,7 @@ fn file_system_sandbox_context_for_attempt(
         workspace_roots: attempt.workspace_roots.to_vec(),
         windows_sandbox_level: attempt.windows_sandbox_level,
         windows_sandbox_private_desktop: attempt.windows_sandbox_private_desktop,
+        windows_sandbox_proxy_settings_mode: None,
         use_legacy_landlock: attempt.use_legacy_landlock,
     })
 }

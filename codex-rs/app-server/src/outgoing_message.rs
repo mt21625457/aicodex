@@ -857,7 +857,7 @@ mod tests {
                     credits: None,
                     individual_limit: None,
                     spend_control_reached: None,
-                    plan_type: Some(PlanType::Plus),
+                    plan_type: Some(PlanType::SelfServeBusinessProLite),
                     rate_limit_reached_type: None,
                 },
             });
@@ -878,7 +878,7 @@ mod tests {
                         "credits": null,
                         "individualLimit": null,
                         "spendControlReached": null,
-                        "planType": "plus",
+                        "planType": "self_serve_business_prolite",
                         "rateLimitReachedType": null
                     }
                 },
@@ -892,16 +892,16 @@ mod tests {
     #[test]
     fn verify_account_updated_notification_serialization() {
         let notification = ServerNotification::AccountUpdated(AccountUpdatedNotification {
-            auth_mode: Some(AuthMode::ApiKey),
-            plan_type: None,
+            auth_mode: Some(AuthMode::Chatgpt),
+            plan_type: Some(PlanType::SelfServeBusinessProLite),
         });
 
         assert_eq!(
             json!({
                 "method": "account/updated",
                 "params": {
-                    "authMode": "apikey",
-                    "planType": null
+                    "authMode": "chatgpt",
+                    "planType": "self_serve_business_prolite"
                 },
             }),
             serde_json::to_value(notification)

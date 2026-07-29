@@ -1125,6 +1125,7 @@ impl ClaudeStreamState {
                 name: info.name,
                 namespace: info.namespace,
                 arguments: stringify_tool_input(&input),
+                encrypted_function_args: None,
                 call_id,
                 internal_chat_message_metadata_passthrough: None,
             },

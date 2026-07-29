@@ -168,3 +168,4 @@ pub use tool_spec::claude_tool_name;
 pub use tool_spec::create_tools_json_for_claude_messages;
 pub use tool_spec::create_tools_json_for_claude_messages_with_options;
 pub use tool_spec::create_tools_json_for_responses_api;
+pub use tool_spec::create_tools_raw_json_for_responses_api;

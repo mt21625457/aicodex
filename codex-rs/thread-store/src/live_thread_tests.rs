@@ -106,6 +106,7 @@ fn create_thread_params(thread_id: ThreadId) -> CreateThreadParams {
         selected_capability_roots: Vec::new(),
         multi_agent_version: None,
         history_mode: ThreadHistoryMode::Legacy,
+        history_base: None,
         subagent_history_start_ordinal: None,
         initial_window_id: "window-1".to_string(),
         metadata: ThreadPersistenceMetadata {
@@ -119,6 +120,8 @@ fn create_thread_params(thread_id: ThreadId) -> CreateThreadParams {
 fn exec_command_end_item() -> RolloutItem {
     RolloutItem::EventMsg(EventMsg::ExecCommandEnd(ExecCommandEndEvent {
         call_id: "call-1".to_string(),
+        plugin_id: None,
+        script_path: None,
         process_id: None,
         turn_id: "turn-1".to_string(),
         completed_at_ms: 1,

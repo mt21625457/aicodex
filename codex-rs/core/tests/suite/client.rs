@@ -4,6 +4,7 @@ use codex_core::ModelClient;
 use codex_core::NewThread;
 use codex_core::Prompt;
 use codex_core::ResponseEvent;
+use codex_core::StartThreadOptions;
 use codex_core::ThreadManager;
 use codex_core::resolve_installation_id;
 use codex_core::thread_store_from_config;
@@ -254,9 +255,18 @@ async fn openai_stateless_responses_requests_preserve_item_turn_metadata_across_
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn non_openai_responses_requests_include_item_ids_without_passthrough_metadata() {
     let server = MockServer::start().await;
-    let response_mock = mount_sse_once(
+    let mut private_function_call = ev_function_call("private-call", "unsupported_tool", "{}");
+    private_function_call["item"]["encrypted_function_args"] = json!(["message"]);
+    let response_mock = mount_sse_sequence(
         &server,
-        sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
+        vec![
+            sse(vec![
+                ev_response_created("resp1"),
+                private_function_call,
+                ev_completed("resp1"),
+            ]),
+            sse(vec![ev_response_created("resp2"), ev_completed("resp2")]),
+        ],
     )
     .await;
     let mut provider =
@@ -289,7 +299,11 @@ async fn non_openai_responses_requests_include_item_ids_without_passthrough_meta
         .unwrap();
     wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
 
-    let body = response_mock.single_request().body_json();
+    let body = response_mock
+        .requests()
+        .pop()
+        .expect("follow-up request")
+        .body_json();
     let input = body["input"]
         .as_array()
         .expect("request should include input items");
@@ -299,6 +313,10 @@ async fn non_openai_responses_requests_include_item_ids_without_passthrough_meta
             item.get("internal_chat_message_metadata_passthrough")
                 .is_none(),
             "input item should omit internal chat message metadata passthrough: {item}"
+        );
+        assert!(
+            item.get("encrypted_function_args").is_none(),
+            "input item should omit private encrypted function metadata: {item}"
         );
         assert!(
             item.get("id").and_then(serde_json::Value::as_str).is_some(),
@@ -508,6 +526,7 @@ async fn synthetic_call_output_id_is_stable_across_resumes() -> anyhow::Result<(
                 namespace: None,
                 arguments: "{}".to_string(),
                 call_id: function_call_id.to_string(),
+                encrypted_function_args: None,
                 internal_chat_message_metadata_passthrough: None,
             }),
         },
@@ -1169,6 +1188,7 @@ async fn resume_replays_image_tool_outputs_with_detail() {
                 namespace: None,
                 arguments: "{\"path\":\"/tmp/example.png\"}".to_string(),
                 call_id: function_call_id.to_string(),
+                encrypted_function_args: None,
                 internal_chat_message_metadata_passthrough: None,
             }),
         },
@@ -1474,8 +1494,8 @@ async fn provider_auth_command_surfaces_claude_401_when_recovery_exhausted() {
             .expect_err("auth should fail after recovery is exhausted");
 
     assert!(matches!(
-        error,
-        CodexErr::UnexpectedStatus(err)
+        error.details(),
+        codex_protocol::error::CodexErrorDetails::UnexpectedStatus(err)
             if err.status == http::StatusCode::UNAUTHORIZED
                 && err.body.contains("authentication_error")
     ));
@@ -1585,6 +1605,7 @@ async fn try_provider_auth_request_for_wire_api(
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
+        supports_standalone_web_search: false,
     };
 
     try_request_with_provider(provider).await
@@ -1670,7 +1691,6 @@ async fn try_request_with_provider(
     }
     Err(CodexErr::Stream(
         "stream ended before completion".to_string(),
-        /*delay*/ None,
     ))
 }
 
@@ -1888,7 +1908,7 @@ async fn prefers_apikey_when_config_prefers_apikey_even_with_chatgpt_tokens() {
         /*external_time_provider*/ None,
     );
     let NewThread { thread: codex, .. } = thread_manager
-        .start_thread(config.clone())
+        .start_thread(StartThreadOptions::new(config.clone()))
         .await
         .expect("create new conversation");
 
@@ -2389,6 +2409,11 @@ async fn skills_append_to_developer_message() {
     assert!(
         developer_text.contains("demo: build charts"),
         "expected skill summary: {developer_messages:?}"
+    );
+    assert!(
+        developer_text.find("demo: build charts")
+            < developer_text.find("<permissions instructions>"),
+        "host skills should precede permissions: {developer_messages:?}"
     );
     let expected_path = normalize_path(skill_dir.join("SKILL.md")).unwrap();
     let expected_path_str = expected_path.to_string_lossy().replace('\\', "/");
@@ -3333,6 +3358,7 @@ async fn azure_responses_request_includes_store_and_prefixed_item_ids() {
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
+        supports_standalone_web_search: false,
     };
 
     let codex_home = TempDir::new().unwrap();
@@ -3416,6 +3442,7 @@ async fn azure_responses_request_includes_store_and_prefixed_item_ids() {
         namespace: None,
         arguments: "{}".into(),
         call_id: "function-call-id".into(),
+        encrypted_function_args: None,
         internal_chat_message_metadata_passthrough: None,
     });
     prompt.input.push(ResponseItem::FunctionCallOutput {
@@ -3991,6 +4018,7 @@ async fn azure_overrides_assign_properties_used_for_responses_url() {
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
+        supports_standalone_web_search: false,
     };
 
     // Init session
@@ -4081,6 +4109,7 @@ async fn env_var_overrides_loaded_auth() {
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
+        supports_standalone_web_search: false,
     };
 
     // Init session

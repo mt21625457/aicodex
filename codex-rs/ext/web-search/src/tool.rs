@@ -112,13 +112,16 @@ impl WebSearchTool {
 
         let commands = parse_commands(&call)?;
         let command_action = command_action(&commands);
-        let provider = self
-            .openai_provider
+        let search_provider = if self.primary_provider.info().supports_standalone_web_search {
+            &self.primary_provider
+        } else {
+            &self.openai_provider
+        };
+        let provider = search_provider
             .api_provider()
             .await
             .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
-        let auth = self
-            .openai_provider
+        let auth = search_provider
             .api_auth()
             .await
             .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
@@ -129,7 +132,9 @@ impl WebSearchTool {
         );
         let request = SearchRequest {
             id: self.session_id.clone(),
-            model: if self.primary_provider.info().is_openai() {
+            model: if self.primary_provider.info().is_openai()
+                || self.primary_provider.info().supports_standalone_web_search
+            {
                 call.model.clone()
             } else {
                 OPENAI_SEARCH_FALLBACK_MODEL.to_string()

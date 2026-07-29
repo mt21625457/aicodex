@@ -364,6 +364,7 @@ async fn keeps_multiple_tool_call_arguments_separate_and_restores_namespaces() {
                 namespace: Some("app".to_string()),
                 arguments: "{\"a\":1}".to_string(),
                 call_id: "call_a".to_string(),
+                encrypted_function_args: None,
                 internal_chat_message_metadata_passthrough: None,
             },
             ResponseItem::FunctionCall {
@@ -372,6 +373,7 @@ async fn keeps_multiple_tool_call_arguments_separate_and_restores_namespaces() {
                 namespace: None,
                 arguments: "{\"b\":2}".to_string(),
                 call_id: "call_b".to_string(),
+                encrypted_function_args: None,
                 internal_chat_message_metadata_passthrough: None,
             },
         ]
@@ -439,6 +441,7 @@ async fn separates_indexless_tool_calls_when_follow_up_omits_ids() {
                 namespace: None,
                 arguments: "{\"a\":1}".to_string(),
                 call_id: "call_a".to_string(),
+                encrypted_function_args: None,
                 internal_chat_message_metadata_passthrough: None,
             },
             ResponseItem::FunctionCall {
@@ -447,6 +450,7 @@ async fn separates_indexless_tool_calls_when_follow_up_omits_ids() {
                 namespace: None,
                 arguments: "{\"b\":2}".to_string(),
                 call_id: "call_b".to_string(),
+                encrypted_function_args: None,
                 internal_chat_message_metadata_passthrough: None,
             },
         ]
@@ -492,6 +496,7 @@ async fn separates_indexless_tool_call_from_an_occupied_dense_index() {
                 namespace: None,
                 arguments: "{}".to_string(),
                 call_id: "call_explicit".to_string(),
+                encrypted_function_args: None,
                 internal_chat_message_metadata_passthrough: None,
             },
             ResponseItem::FunctionCall {
@@ -500,6 +505,7 @@ async fn separates_indexless_tool_call_from_an_occupied_dense_index() {
                 namespace: None,
                 arguments: "{}".to_string(),
                 call_id: "call_indexless".to_string(),
+                encrypted_function_args: None,
                 internal_chat_message_metadata_passthrough: None,
             },
         ]

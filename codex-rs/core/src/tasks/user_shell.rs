@@ -8,6 +8,7 @@ use codex_network_proxy::PROXY_ACTIVE_ENV_KEY;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use tokio_util::sync::CancellationToken;
 use tracing::error;
+use tracing::warn;
 use uuid::Uuid;
 
 use crate::exec::ExecCapturePolicy;
@@ -56,6 +57,21 @@ async fn emit_user_shell_item_completed_extended(
     item: TurnItem,
 ) {
     record_turn_ttfm_metric(turn_context, &item).await;
+    let completed_at_ms = now_unix_timestamp_ms();
+    let item_id = item.id();
+    let started_at_ms = turn_context
+        .turn_timing_state
+        .take_item_started(&item_id)
+        .await
+        .unwrap_or_else(|| {
+            warn!(
+                thread_id = %session.thread_id,
+                turn_id = %turn_context.sub_id,
+                item_id = %item_id,
+                "user shell item completed without a recorded start timestamp"
+            );
+            completed_at_ms
+        });
     session
         .send_event_with_persistence_mode(
             turn_context,
@@ -63,7 +79,8 @@ async fn emit_user_shell_item_completed_extended(
                 thread_id: session.thread_id,
                 turn_id: turn_context.sub_id.clone(),
                 item,
-                completed_at_ms: now_unix_timestamp_ms(),
+                started_at_ms: Some(started_at_ms),
+                completed_at_ms,
             }),
             EventPersistenceMode::Extended,
         )
@@ -208,6 +225,8 @@ pub(crate) async fn execute_user_shell_command(
             turn_context.as_ref(),
             &TurnItem::CommandExecution(CommandExecutionItem {
                 id: call_id.clone(),
+                plugin_id: None,
+                script_path: None,
                 process_id: None,
                 command: display_command.clone(),
                 cwd: cwd.clone().into(),
@@ -292,6 +311,8 @@ pub(crate) async fn execute_user_shell_command(
                 turn_context.as_ref(),
                 TurnItem::CommandExecution(CommandExecutionItem {
                     id: call_id,
+                    plugin_id: None,
+                    script_path: None,
                     process_id: None,
                     command: display_command.clone(),
                     cwd: cwd.clone().into(),
@@ -315,6 +336,8 @@ pub(crate) async fn execute_user_shell_command(
                 turn_context.as_ref(),
                 TurnItem::CommandExecution(CommandExecutionItem {
                     id: call_id.clone(),
+                    plugin_id: None,
+                    script_path: None,
                     process_id: None,
                     command: display_command.clone(),
                     cwd: cwd.clone().into(),
@@ -358,6 +381,8 @@ pub(crate) async fn execute_user_shell_command(
                 turn_context.as_ref(),
                 TurnItem::CommandExecution(CommandExecutionItem {
                     id: call_id,
+                    plugin_id: None,
+                    script_path: None,
                     process_id: None,
                     command: display_command,
                     cwd: cwd.into(),

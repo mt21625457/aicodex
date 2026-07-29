@@ -154,6 +154,9 @@ pub struct ModelProviderInfo {
     /// Whether this provider supports the Responses API WebSocket transport.
     #[serde(default)]
     pub supports_websockets: bool,
+    /// Whether this provider supports the standalone web-search endpoint.
+    #[serde(default)]
+    pub supports_standalone_web_search: bool,
 }
 
 /// AWS SigV4 auth configuration for a model provider.
@@ -379,6 +382,7 @@ impl ModelProviderInfo {
             websocket_connect_timeout_ms: None,
             requires_openai_auth: true,
             supports_websockets: true,
+            supports_standalone_web_search: true,
         }
     }
 
@@ -413,6 +417,7 @@ impl ModelProviderInfo {
             websocket_connect_timeout_ms: None,
             requires_openai_auth: false,
             supports_websockets: false,
+            supports_standalone_web_search: false,
         }
     }
 
@@ -571,6 +576,7 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
+        supports_standalone_web_search: false,
     }
 }
 
