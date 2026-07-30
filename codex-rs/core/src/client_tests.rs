@@ -9,7 +9,7 @@ use super::X_CODEX_PARENT_THREAD_ID_HEADER;
 use super::X_CODEX_TURN_METADATA_HEADER;
 use super::X_CODEX_WINDOW_ID_HEADER;
 use super::X_OPENAI_SUBAGENT_HEADER;
-use super::apply_responses_http_model_defaults;
+use super::responses_stream_idle_timeout_for_model;
 use super::strip_reasoning_content_for_responses_input;
 use crate::AttestationContext;
 use crate::AttestationProvider;
@@ -166,47 +166,19 @@ fn grok_models_disable_responses_websocket_even_when_provider_supports_it() {
 }
 
 #[test]
-fn grok_http_responses_uses_five_minute_idle_default() {
-    let provider_info = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
-    for model in ["grok-4.5", "aicodex_gateway_responses:grok-4", "xai/grok-4"] {
-        let mut provider = provider_info
-            .to_api_provider(/*auth_mode*/ None)
-            .expect("provider should be valid");
-
-        apply_responses_http_model_defaults(&mut provider, &provider_info, model);
-
-        assert_eq!(
-            provider.stream_idle_timeout,
-            Duration::from_secs(300),
-            "model {model} should use the Grok idle default"
-        );
-    }
-}
-
-#[test]
-fn grok_http_responses_preserves_explicit_idle_timeout() {
-    let mut provider_info = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
-    provider_info.stream_idle_timeout_ms = Some(600_000);
-    let mut provider = provider_info
-        .to_api_provider(/*auth_mode*/ None)
-        .expect("provider should be valid");
-
-    apply_responses_http_model_defaults(&mut provider, &provider_info, "grok-4.5");
-
-    assert_eq!(provider.stream_idle_timeout, Duration::from_secs(600));
-}
-
-#[test]
-fn non_grok_http_responses_preserves_provider_idle_default() {
-    let provider_info = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
-    let mut provider = provider_info
-        .to_api_provider(/*auth_mode*/ None)
-        .expect("provider should be valid");
-    let expected = provider.stream_idle_timeout;
-
-    apply_responses_http_model_defaults(&mut provider, &provider_info, "gpt-5.5");
-
-    assert_eq!(provider.stream_idle_timeout, expected);
+fn grok_models_cap_responses_stream_idle_timeout() {
+    assert_eq!(
+        responses_stream_idle_timeout_for_model("grok-4.5", Duration::from_secs(3_600)),
+        Duration::from_secs(120)
+    );
+    assert_eq!(
+        responses_stream_idle_timeout_for_model("xai/grok-4", Duration::from_secs(30)),
+        Duration::from_secs(30)
+    );
+    assert_eq!(
+        responses_stream_idle_timeout_for_model("gpt-5.5", Duration::from_secs(3_600)),
+        Duration::from_secs(3_600)
+    );
 }
 
 #[tokio::test]

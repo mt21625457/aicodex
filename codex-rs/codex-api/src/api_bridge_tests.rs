@@ -52,6 +52,38 @@ fn map_api_error_maps_provider_document_errors_to_invalid_request() {
 }
 
 #[test]
+fn map_api_error_makes_http_image_errors_non_retryable() {
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::BAD_REQUEST,
+        url: Some("http://example.com/v1/responses".to_string()),
+        headers: None,
+        body: Some("The supplied image is not a valid image".to_string()),
+    }));
+
+    assert!(matches!(
+        err.details(),
+        CodexErrorDetails::InvalidImageRequest()
+    ));
+    assert!(!err.is_retryable());
+}
+
+#[test]
+fn map_api_error_makes_payload_too_large_non_retryable() {
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::PAYLOAD_TOO_LARGE,
+        url: Some("http://example.com/v1/responses".to_string()),
+        headers: None,
+        body: Some("request body too large".to_string()),
+    }));
+
+    assert!(matches!(
+        err.details(),
+        CodexErrorDetails::InvalidRequest(_)
+    ));
+    assert!(!err.is_retryable());
+}
+
+#[test]
 fn map_api_error_preserves_provider_stream_failure_class() {
     let err = map_api_error(ApiError::StreamFailure {
         kind: ProviderStreamErrorKind::ClosedBeforeMessageStart,

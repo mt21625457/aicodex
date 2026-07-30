@@ -99,10 +99,6 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                             .map(str::to_string)
                             .unwrap_or_else(|| CYBER_POLICY_FALLBACK_MESSAGE.to_string());
                         CodexErr::new(CodexErrorDetails::CyberPolicy { message })
-                    } else if body_text
-                        .contains("The image data you provided does not represent a valid image")
-                    {
-                        CodexErr::InvalidImageRequest()
                     } else {
                         CodexErr::InvalidRequest(body_text)
                     }

@@ -420,6 +420,14 @@ pub fn process_responses_event(
                     } else if is_cyber_policy_error(&error) {
                         let message = cyber_policy_message(error.message);
                         response_error = ApiError::CyberPolicy { message };
+                    } else if let Some(kind) = ProviderMediaErrorKind::classify(
+                        /*status*/ None,
+                        error.message.as_deref().unwrap_or_default(),
+                    ) {
+                        response_error = ApiError::ProviderMedia {
+                            kind,
+                            message: error.message.unwrap_or_default(),
+                        };
                     } else if matches!(error.code.as_deref(), Some("invalid_prompt" | "bio_policy"))
                     {
                         let message = error
@@ -431,7 +439,7 @@ pub fn process_responses_event(
                     } else {
                         let delay = try_parse_retry_after(&error);
                         let message = error.message.unwrap_or_default();
-                        response_error = provider_error_or_retryable(message, delay);
+                        response_error = ApiError::Retryable { message, delay };
                     }
                 }
                 return Err(ResponsesEventError::Api(response_error));
@@ -1387,6 +1395,23 @@ mod tests {
         assert_eq!(events.len(), 1);
 
         assert_matches!(events[0], Err(ApiError::ContextWindowExceeded));
+    }
+
+    #[tokio::test]
+    async fn image_error_is_fatal() {
+        let raw_error = r#"{"type":"response.failed","sequence_number":3,"response":{"id":"resp_invalid_image","status":"failed","error":{"code":"invalid_request_error","message":"The supplied image is not a valid image"}}}"#;
+        let sse1 = format!("event: response.failed\ndata: {raw_error}\n\n");
+
+        let events = collect_events(&[sse1.as_bytes()]).await;
+
+        assert_eq!(events.len(), 1);
+        assert_matches!(
+            &events[0],
+            Err(ApiError::ProviderMedia {
+                kind: ProviderMediaErrorKind::InvalidImage,
+                message,
+            }) if message == "The supplied image is not a valid image"
+        );
     }
 
     #[tokio::test]

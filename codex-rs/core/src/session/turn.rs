@@ -85,6 +85,7 @@ use codex_file_system::find_nearest_ancestor_with_markers;
 use codex_login::CodexAuth;
 use codex_mcp::ToolInfo;
 use codex_model_provider_info::WireApi;
+use codex_models_manager::model_info::is_grok_model_slug;
 use codex_protocol::ResponseItemId;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::ModeKind;
@@ -138,7 +139,21 @@ use tracing::trace_span;
 use tracing::warn;
 
 const MAX_CLAUDE_PAUSE_TURN_CONTINUATIONS: usize = 3;
+const MAX_GROK_MODEL_FOLLOW_UPS_PER_TURN: usize = 64;
+const GROK_RESPONSES_STREAM_MAX_RETRIES: u64 = 1;
 const MAX_PRE_SAMPLING_ADMISSION_COMPACTIONS_PER_TURN: usize = 3;
+
+fn sampling_stream_max_retries_for_model(model: &str, configured: u64) -> u64 {
+    if is_grok_model_slug(model) {
+        configured.min(GROK_RESPONSES_STREAM_MAX_RETRIES)
+    } else {
+        configured
+    }
+}
+
+fn grok_follow_up_limit_exceeded(model: &str, completed_follow_ups: usize) -> bool {
+    is_grok_model_slug(model) && completed_follow_ups > MAX_GROK_MODEL_FOLLOW_UPS_PER_TURN
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum EmptyInputTurnPolicy {
@@ -300,6 +315,7 @@ pub(crate) async fn run_turn(
     let mut can_drain_pending_input = input.is_empty();
     let mut pending_input_deferred_for_model_follow_up = false;
     let mut claude_pause_turn_continuations = 0usize;
+    let mut grok_model_follow_ups = 0usize;
     let mut pre_sampling_admission_compactions = 0usize;
     let mut context_window_recovery_attempted = false;
     let mut skip_pre_sampling_admission_once = initial_pre_sampling_compacted;
@@ -472,6 +488,25 @@ pub(crate) async fn run_turn(
                 .instrument(trace_span!("run_turn.collect_post_sampling_state"))
                 .await;
                 let needs_follow_up = model_needs_follow_up || has_pending_input;
+                if model_needs_follow_up {
+                    grok_model_follow_ups = grok_model_follow_ups.saturating_add(1);
+                    if grok_follow_up_limit_exceeded(
+                        turn_context.model_info.slug.as_str(),
+                        grok_model_follow_ups,
+                    ) {
+                        sess.send_event(
+                            &turn_context,
+                            EventMsg::Error(ErrorEvent {
+                                message: format!(
+                                    "Grok requested more than {MAX_GROK_MODEL_FOLLOW_UPS_PER_TURN} model follow-ups in one turn; stopping the turn to prevent an unbounded tool loop."
+                                ),
+                                codex_error_info: None,
+                            }),
+                        )
+                        .await;
+                        return Ok(None);
+                    }
+                }
                 if post_compaction_model_follow_up_active {
                     post_compaction_model_follow_up_active = model_needs_follow_up;
                 }
@@ -1825,7 +1860,10 @@ async fn run_sampling_request(
         Arc::clone(&router),
         Arc::clone(&turn_diff_tracker),
     );
-    let max_retries = turn_context.provider.info().stream_max_retries();
+    let max_retries = sampling_stream_max_retries_for_model(
+        turn_context.model_info.slug.as_str(),
+        turn_context.provider.info().stream_max_retries(),
+    );
     let mut retries = 0;
     let mut initial_input = Some(input);
     let mut original_input = None;

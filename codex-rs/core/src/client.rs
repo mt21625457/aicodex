@@ -170,11 +170,11 @@ const CLAUDE_MESSAGES_ENDPOINT: &str = "/messages";
 const CHAT_COMPLETIONS_ENDPOINT: &str = "/chat/completions";
 const CLAUDE_COUNT_TOKENS_ENDPOINT: &str = "/messages/count_tokens";
 const RESPONSES_COMPACT_ENDPOINT: &str = "/responses/compact";
-const GROK_DEFAULT_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 // `/responses/compact` is unary, so the timeout covers the full response rather than one idle
 // period between stream events.
 const COMPACT_REQUEST_TIMEOUT_IDLE_MULTIPLIER: u32 = 4;
 const MEMORIES_SUMMARIZE_ENDPOINT: &str = "/memories/trace_summarize";
+const GROK_RESPONSES_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 #[cfg(test)]
 pub(crate) const WEBSOCKET_CONNECT_TIMEOUT: Duration =
     Duration::from_millis(DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS);
@@ -185,13 +185,11 @@ fn responses_websocket_allowed_for_model(model: &str) -> bool {
     !is_grok_model_slug(model)
 }
 
-fn apply_responses_http_model_defaults(
-    provider: &mut ApiProvider,
-    provider_info: &ModelProviderInfo,
-    model: &str,
-) {
-    if is_grok_model_slug(model) && provider_info.stream_idle_timeout_ms.is_none() {
-        provider.stream_idle_timeout = GROK_DEFAULT_STREAM_IDLE_TIMEOUT;
+fn responses_stream_idle_timeout_for_model(model: &str, configured: Duration) -> Duration {
+    if is_grok_model_slug(model) {
+        configured.min(GROK_RESPONSES_STREAM_IDLE_TIMEOUT)
+    } else {
+        configured
     }
 }
 
@@ -1561,10 +1559,9 @@ impl ModelClientSession {
         let mut pending_retry = PendingUnauthorizedRetry::default();
         loop {
             let mut client_setup = self.client.current_client_setup().await?;
-            apply_responses_http_model_defaults(
-                &mut client_setup.api_provider,
-                self.client.state.provider.info(),
+            client_setup.api_provider.stream_idle_timeout = responses_stream_idle_timeout_for_model(
                 model_info.slug.as_str(),
+                client_setup.api_provider.stream_idle_timeout,
             );
             let transport = self
                 .client
