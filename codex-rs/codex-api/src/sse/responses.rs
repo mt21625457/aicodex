@@ -3,6 +3,8 @@ use crate::common::ResponseStream;
 use crate::common::SafetyBuffering;
 use crate::common::SafetyBufferingTreatment;
 use crate::error::ApiError;
+use crate::error::ProviderMediaErrorKind;
+use crate::error::ProviderStreamErrorKind;
 use crate::rate_limits::parse_all_rate_limits;
 use crate::safety_buffering::treatment_from_headers;
 use crate::sse::progress::ProgressDeadline;
@@ -215,26 +217,18 @@ impl ResponsesStreamEvent {
         let kind = self.kind.as_str();
         matches!(
             kind,
-            "response.created"
-                | "response.output_item.added"
-                | "response.output_item.done"
-                | "response.reasoning_summary_text.done"
-                | "response.reasoning_summary_part.added"
-                | "response.failed"
-                | "response.incomplete"
-                | "response.completed"
-                | "response.metadata"
-                | "codex.rate_limits"
-        ) || matches!(
-            kind,
             "response.output_text.delta"
                 | "response.custom_tool_call_input.delta"
                 | "response.function_call_arguments.delta"
                 | "response.reasoning_summary_text.delta"
                 | "response.reasoning_text.delta"
         ) && self.delta.as_ref().is_some_and(|delta| !delta.is_empty())
-            || self.safety_buffering.is_some()
-            || self.metadata.is_some()
+            || matches!(
+                kind,
+                "response.output_text.done"
+                    | "response.reasoning_summary_text.done"
+                    | "response.reasoning_text.done"
+            ) && self.text.as_ref().is_some_and(|text| !text.is_empty())
     }
 
     pub(crate) fn model_verifications(&self) -> Option<Vec<ModelVerification>> {
@@ -437,7 +431,7 @@ pub fn process_responses_event(
                     } else {
                         let delay = try_parse_retry_after(&error);
                         let message = error.message.unwrap_or_default();
-                        response_error = ApiError::Retryable { message, delay };
+                        response_error = provider_error_or_retryable(message, delay);
                     }
                 }
                 return Err(ResponsesEventError::Api(response_error));
@@ -525,8 +519,8 @@ async fn process_sse_with_treatment(
     safety_buffering_treatment: SafetyBufferingTreatment,
 ) {
     let mut stream = stream.eventsource();
-    let mut response_error: Option<ApiError> = None;
     let mut last_server_model: Option<String> = None;
+    let mut saw_message_start = false;
     let mut progress = ProgressDeadline::new(idle_timeout);
 
     loop {
@@ -539,19 +533,34 @@ async fn process_sse_with_treatment(
             Ok(Some(Ok(sse))) => sse,
             Ok(Some(Err(e))) => {
                 debug!("SSE Error: {e:#}");
-                let _ = tx_event.send(Err(ApiError::Stream(e.to_string()))).await;
+                let _ = tx_event
+                    .send(Err(provider_stream_error(
+                        ProviderStreamErrorKind::TransportError,
+                        e.to_string(),
+                    )))
+                    .await;
                 return;
             }
             Ok(None) => {
-                let error = response_error.unwrap_or(ApiError::Stream(
-                    "stream closed before response.completed".into(),
-                ));
-                let _ = tx_event.send(Err(error)).await;
+                let kind = if saw_message_start {
+                    ProviderStreamErrorKind::ClosedAfterMessageStartBeforeStop
+                } else {
+                    ProviderStreamErrorKind::ClosedBeforeMessageStart
+                };
+                let _ = tx_event
+                    .send(Err(provider_stream_error(
+                        kind,
+                        "stream closed before response.completed",
+                    )))
+                    .await;
                 return;
             }
             Err(_) => {
                 let _ = tx_event
-                    .send(Err(ApiError::Stream("idle timeout waiting for SSE".into())))
+                    .send(Err(provider_stream_error(
+                        ProviderStreamErrorKind::IdleTimeout,
+                        "idle timeout waiting for meaningful Responses SSE content",
+                    )))
                     .await;
                 return;
             }
@@ -559,11 +568,26 @@ async fn process_sse_with_treatment(
 
         trace!("SSE event: {}", &sse.data);
 
-        let event: ResponsesStreamEvent = match serde_json::from_str(&sse.data) {
+        let data = sse.data.trim();
+        if data.is_empty() || matches!(data, "ping" | "keepalive") {
+            continue;
+        }
+        if let Some(error) = provider_stream_error_from_data(data) {
+            let _ = tx_event.send(Err(error)).await;
+            return;
+        }
+
+        let event: ResponsesStreamEvent = match serde_json::from_str(data) {
             Ok(event) => event,
             Err(e) => {
-                debug!("Failed to parse SSE event: {e}, data: {}", &sse.data);
-                continue;
+                debug!("Failed to parse SSE event: {e}, data: {data}");
+                let _ = tx_event
+                    .send(Err(provider_stream_error(
+                        ProviderStreamErrorKind::ParseError,
+                        format!("failed to parse Responses SSE event: {e}"),
+                    )))
+                    .await;
+                return;
             }
         };
         if event.is_meaningful() {
@@ -613,6 +637,7 @@ async fn process_sse_with_treatment(
         match process_responses_event(event) {
             Ok(Some(event)) => {
                 let is_completed = matches!(event, ResponseEvent::Completed { .. });
+                saw_message_start |= !matches!(event, ResponseEvent::Created);
                 if tx_event.send(Ok(event)).await.is_err() {
                     return;
                 }
@@ -622,9 +647,71 @@ async fn process_sse_with_treatment(
             }
             Ok(None) => {}
             Err(error) => {
-                response_error = Some(error.into_api_error());
+                let _ = tx_event.send(Err(error.into_api_error())).await;
+                return;
             }
         };
+    }
+}
+
+fn provider_error_or_retryable(message: String, delay: Option<Duration>) -> ApiError {
+    if let Some(kind) = ProviderMediaErrorKind::classify(/*status*/ None, &message) {
+        ApiError::ProviderMedia { kind, message }
+    } else {
+        ApiError::Retryable { message, delay }
+    }
+}
+
+/// Parses provider error frames before the typed Responses event parser.
+///
+/// Grok gateways use both the OpenAI envelope (`error` object) and a flat proxy envelope
+/// (`code` plus string `error`) in addition to the typed `response.error` event. Keeping this
+/// compatibility parser ahead of `ResponsesStreamEvent` preserves the provider error category
+/// instead of misreporting a known error frame as malformed SSE.
+fn provider_stream_error_from_data(data: &str) -> Option<ApiError> {
+    let value = serde_json::from_str::<Value>(data).ok()?;
+    let event_type = value.get("type").and_then(Value::as_str);
+    if matches!(event_type, Some("response.failed")) {
+        return None;
+    }
+    if event_type.is_some_and(|kind| !matches!(kind, "error" | "response.error")) {
+        return None;
+    }
+
+    let (code, message) = match value.get("error") {
+        Some(Value::Object(error)) => (
+            error
+                .get("type")
+                .or_else(|| error.get("code"))
+                .and_then(Value::as_str),
+            error.get("message").and_then(Value::as_str)?,
+        ),
+        Some(Value::String(message)) => {
+            (value.get("code").and_then(Value::as_str), message.as_str())
+        }
+        _ if event_type == Some("response.error") => (
+            value.get("code").and_then(Value::as_str),
+            value.get("message").and_then(Value::as_str)?,
+        ),
+        _ => return None,
+    };
+    let message = code
+        .filter(|code| !code.is_empty())
+        .map_or_else(|| message.to_string(), |code| format!("{code}: {message}"));
+    Some(provider_error_or_retryable(message, /*delay*/ None))
+}
+
+fn provider_stream_error(kind: ProviderStreamErrorKind, message: impl Into<String>) -> ApiError {
+    let message = message.into();
+    match kind {
+        ProviderStreamErrorKind::IdleTimeout => ApiError::StreamIdleTimeout { message },
+        ProviderStreamErrorKind::ParseError => ApiError::MalformedResponse {
+            message: format!("{kind}: {message}"),
+        },
+        ProviderStreamErrorKind::ClosedBeforeMessageStart
+        | ProviderStreamErrorKind::ClosedAfterMessageStartBeforeStop
+        | ProviderStreamErrorKind::ProviderError
+        | ProviderStreamErrorKind::TransportError => ApiError::StreamFailure { kind, message },
     }
 }
 
@@ -912,12 +999,13 @@ mod tests {
 
         assert_matches!(events[0], Ok(ResponseEvent::OutputItemDone(_)));
 
-        match &events[1] {
-            Err(ApiError::Stream(msg)) => {
-                assert_eq!(msg, "stream closed before response.completed")
-            }
-            other => panic!("unexpected second event: {other:?}"),
-        }
+        assert_matches!(
+            &events[1],
+            Err(ApiError::StreamFailure {
+                kind: ProviderStreamErrorKind::ClosedAfterMessageStartBeforeStop,
+                message,
+            }) if message == "stream closed before response.completed"
+        );
     }
 
     #[tokio::test]
@@ -1055,8 +1143,8 @@ mod tests {
 
         assert_matches!(
             rx.recv().await,
-            Some(Err(ApiError::Stream(message)))
-                if message == "idle timeout waiting for SSE"
+            Some(Err(ApiError::StreamIdleTimeout { message }))
+                if message == "idle timeout waiting for meaningful Responses SSE content"
         );
     }
 
@@ -1074,7 +1162,7 @@ mod tests {
             ),
         ];
         let stream = stream::iter(chunks).then(|chunk| async move {
-            tokio::time::sleep(Duration::from_millis(40)).await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
             Ok(chunk)
         });
         let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent, ApiError>>(8);
@@ -1109,8 +1197,19 @@ mod tests {
             "delta": "{\"path\":"
         }))
         .expect("function arguments delta parses");
+        let created = serde_json::from_value::<ResponsesStreamEvent>(json!({
+            "type": "response.created"
+        }))
+        .expect("response.created parses");
+        let metadata = serde_json::from_value::<ResponsesStreamEvent>(json!({
+            "type": "response.metadata",
+            "metadata": {"status": "thinking"}
+        }))
+        .expect("response.metadata parses");
 
         assert!(!empty_text.is_meaningful());
+        assert!(!created.is_meaningful());
+        assert!(!metadata.is_meaningful());
         assert!(function_arguments.is_meaningful());
     }
 
@@ -1134,6 +1233,147 @@ mod tests {
             }
             other => panic!("unexpected second event: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn grok_response_failed_image_error_is_provider_media_error() {
+        let raw_error = json!({
+            "type": "response.failed",
+            "response": {
+                "id": "resp-image-failed",
+                "status": "failed",
+                "error": {
+                    "code": "invalid_image",
+                    "message": "Could not process image"
+                }
+            }
+        })
+        .to_string();
+        let sse = format!("event: response.failed\ndata: {raw_error}\n\n");
+
+        let events = collect_events(&[sse.as_bytes()]).await;
+
+        assert_matches!(
+            events.as_slice(),
+            [Err(ApiError::ProviderMedia {
+                kind: ProviderMediaErrorKind::InvalidImage,
+                message,
+            })] if message == "Could not process image"
+        );
+    }
+
+    #[tokio::test]
+    async fn grok_response_failed_image_error_does_not_wait_for_stream_end() {
+        let raw_error = json!({
+            "type": "response.failed",
+            "response": {
+                "id": "resp-image-failed-open-stream",
+                "status": "failed",
+                "error": {
+                    "code": "invalid_image",
+                    "message": "Could not process image"
+                }
+            }
+        })
+        .to_string();
+        let sse = format!("event: response.failed\ndata: {raw_error}\n\n");
+        let stream = stream::once(async move { Ok(Bytes::from(sse)) }).chain(stream::pending());
+        let (tx, mut rx) = mpsc::channel::<Result<ResponseEvent, ApiError>>(8);
+        tokio::spawn(process_sse(
+            Box::pin(stream),
+            tx,
+            Duration::from_secs(300),
+            /*telemetry*/ None,
+        ));
+
+        let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("response.failed should be emitted before the SSE stream closes");
+
+        assert_matches!(
+            event,
+            Some(Err(ApiError::ProviderMedia {
+                kind: ProviderMediaErrorKind::InvalidImage,
+                message,
+            })) if message == "Could not process image"
+        );
+    }
+
+    #[tokio::test]
+    async fn grok_response_error_image_error_is_provider_media_error() {
+        let raw_error = json!({
+            "type": "response.error",
+            "code": "invalid_image",
+            "message": "Could not process image"
+        })
+        .to_string();
+        let sse = format!("event: response.error\ndata: {raw_error}\n\n");
+
+        let events = collect_events(&[sse.as_bytes()]).await;
+
+        assert_matches!(
+            events.as_slice(),
+            [Err(ApiError::ProviderMedia {
+                kind: ProviderMediaErrorKind::InvalidImage,
+                message,
+            })] if message == "invalid_image: Could not process image"
+        );
+    }
+
+    #[tokio::test]
+    async fn grok_openai_error_envelope_is_provider_media_error() {
+        let raw_error = json!({
+            "type": "error",
+            "error": {
+                "type": "invalid_image",
+                "message": "Could not process image"
+            }
+        })
+        .to_string();
+        let sse = format!("event: error\ndata: {raw_error}\n\n");
+
+        let events = collect_events(&[sse.as_bytes()]).await;
+
+        assert_matches!(
+            events.as_slice(),
+            [Err(ApiError::ProviderMedia {
+                kind: ProviderMediaErrorKind::InvalidImage,
+                message,
+            })] if message == "invalid_image: Could not process image"
+        );
+    }
+
+    #[tokio::test]
+    async fn grok_flat_proxy_error_envelope_is_provider_media_error() {
+        let raw_error = json!({
+            "code": "invalid_image",
+            "error": "Could not process image"
+        })
+        .to_string();
+        let sse = format!("data: {raw_error}\n\n");
+
+        let events = collect_events(&[sse.as_bytes()]).await;
+
+        assert_matches!(
+            events.as_slice(),
+            [Err(ApiError::ProviderMedia {
+                kind: ProviderMediaErrorKind::InvalidImage,
+                message,
+            })] if message == "invalid_image: Could not process image"
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_responses_event_is_typed_parse_failure() {
+        let sse = "event: response.output_text.delta\ndata: not-json\n\n";
+
+        let events = collect_events(&[sse.as_bytes()]).await;
+
+        assert_matches!(
+            events.as_slice(),
+            [Err(ApiError::MalformedResponse { message })]
+                if message.starts_with("parse_error: failed to parse Responses SSE event:")
+        );
     }
 
     #[tokio::test]

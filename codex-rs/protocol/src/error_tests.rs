@@ -70,6 +70,14 @@ fn retryability_preserves_error_details_distinctions() {
     }
 }
 
+#[test]
+fn disabling_retry_preserves_error_details() {
+    let err = CodexErr::Stream("provider idle timeout".to_string()).without_retry();
+
+    assert!(matches!(err.details(), CodexErrorDetails::Stream(_)));
+    assert!(!err.is_retryable());
+}
+
 fn rate_limit_snapshot() -> RateLimitSnapshot {
     let primary_reset_at = Utc
         .with_ymd_and_hms(2024, 1, 1, 1, 0, 0)

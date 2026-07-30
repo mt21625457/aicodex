@@ -27,17 +27,12 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
         ApiError::StreamFailure { kind, message } => {
             CodexErr::Stream(provider_stream_error_message(kind, &message))
         }
-        ApiError::ProviderMedia { kind, message } => match kind {
-            ProviderMediaErrorKind::InvalidImage
-            | ProviderMediaErrorKind::ImageTooLarge
-            | ProviderMediaErrorKind::ImageDimensionsTooLarge => CodexErr::InvalidImageRequest(),
-            ProviderMediaErrorKind::RequestTooLarge
-            | ProviderMediaErrorKind::DocumentTooLarge
-            | ProviderMediaErrorKind::InvalidDocument
-            | ProviderMediaErrorKind::PasswordProtectedDocument => {
-                CodexErr::InvalidRequest(message)
-            }
-        },
+        ApiError::StreamIdleTimeout { message } => CodexErr::Stream(provider_stream_error_message(
+            ProviderStreamErrorKind::IdleTimeout,
+            &message,
+        ))
+        .without_retry(),
+        ApiError::ProviderMedia { kind, message } => map_provider_media_error(kind, message),
         ApiError::Retryable { message, delay } => {
             let error = CodexErr::Stream(message);
             match delay {
@@ -72,6 +67,11 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                 body,
             } => {
                 let body_text = body.unwrap_or_default();
+                let retry_disabled = headers.as_ref().is_some_and(server_disables_retry);
+
+                if let Some(kind) = ProviderMediaErrorKind::classify(Some(status), &body_text) {
+                    return map_provider_media_error(kind, body_text);
+                }
 
                 if status == http::StatusCode::SERVICE_UNAVAILABLE
                     && let Ok(value) = serde_json::from_str::<serde_json::Value>(&body_text)
@@ -86,7 +86,7 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                     return CodexErr::ServerOverloaded;
                 }
 
-                if status == http::StatusCode::BAD_REQUEST {
+                let error = if status == http::StatusCode::BAD_REQUEST {
                     if let Ok(parsed) = serde_json::from_str::<Value>(&body_text)
                         && let Some(error) = parsed.get("error")
                         && error.get("code").and_then(Value::as_str)
@@ -158,6 +158,12 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                         ),
                         identity_error_code: extract_x_error_json_code(headers.as_ref()),
                     })
+                };
+
+                if retry_disabled {
+                    error.without_retry()
+                } else {
+                    error
                 }
             }
             TransportError::RetryLimit => CodexErr::RetryLimit(RetryLimitReachedError {
@@ -168,6 +174,25 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
             TransportError::Network(msg) | TransportError::Build(msg) => CodexErr::Stream(msg),
         },
         ApiError::RateLimit(msg) => CodexErr::Stream(msg),
+    }
+}
+
+fn server_disables_retry(headers: &HeaderMap) -> bool {
+    headers
+        .get("x-should-retry")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("false"))
+}
+
+fn map_provider_media_error(kind: ProviderMediaErrorKind, message: String) -> CodexErr {
+    match kind {
+        ProviderMediaErrorKind::InvalidImage
+        | ProviderMediaErrorKind::ImageTooLarge
+        | ProviderMediaErrorKind::ImageDimensionsTooLarge => CodexErr::InvalidImageRequest(),
+        ProviderMediaErrorKind::RequestTooLarge
+        | ProviderMediaErrorKind::DocumentTooLarge
+        | ProviderMediaErrorKind::InvalidDocument
+        | ProviderMediaErrorKind::PasswordProtectedDocument => CodexErr::InvalidRequest(message),
     }
 }
 

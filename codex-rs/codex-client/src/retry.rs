@@ -25,7 +25,26 @@ impl RetryOn {
             return false;
         }
         match err {
-            TransportError::Http { status, .. } => {
+            TransportError::Http {
+                status,
+                headers,
+                body,
+                ..
+            } => {
+                if headers.as_ref().is_some_and(|headers| {
+                    headers
+                        .get("x-should-retry")
+                        .and_then(|value| value.to_str().ok())
+                        .is_some_and(|value| value.trim().eq_ignore_ascii_case("false"))
+                }) {
+                    return false;
+                }
+                if body.as_ref().is_some_and(|body| {
+                    body.to_ascii_lowercase()
+                        .contains("could not process image")
+                }) {
+                    return false;
+                }
                 (self.retry_429 && status.as_u16() == 429)
                     || (self.retry_5xx && status.is_server_error())
             }

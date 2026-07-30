@@ -69,6 +69,7 @@ pub enum SandboxErr {
 pub struct CodexErr {
     details: CodexErrorDetails,
     retry_delay: Option<Duration>,
+    retry_disabled: bool,
 }
 
 /// The semantic category and diagnostic payload for a [`CodexErr`].
@@ -215,6 +216,7 @@ impl From<CodexErrorDetails> for CodexErr {
         Self {
             details,
             retry_delay: None,
+            retry_disabled: false,
         }
     }
 }
@@ -279,6 +281,7 @@ macro_rules! codex_err_unit_constructors {
             pub const $variant: Self = Self {
                 details: CodexErrorDetails::$variant,
                 retry_delay: None,
+                retry_disabled: false,
             };
         )*
     };
@@ -360,6 +363,9 @@ impl CodexErr {
     }
 
     pub fn is_retryable(&self) -> bool {
+        if self.retry_disabled {
+            return false;
+        }
         match self.details() {
             CodexErrorDetails::TurnAborted
             | CodexErrorDetails::SessionBudgetExceeded
@@ -406,6 +412,12 @@ impl CodexErr {
 
     pub fn with_retry_delay(mut self, retry_delay: Duration) -> Self {
         self.retry_delay = Some(retry_delay);
+        self
+    }
+
+    /// Disables retries without discarding the semantic error category.
+    pub fn without_retry(mut self) -> Self {
+        self.retry_disabled = true;
         self
     }
 

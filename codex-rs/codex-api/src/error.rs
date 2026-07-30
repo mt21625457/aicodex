@@ -51,6 +51,13 @@ impl ProviderMediaErrorKind {
         if status == Some(StatusCode::PAYLOAD_TOO_LARGE) {
             return Some(Self::RequestTooLarge);
         }
+        if matches!(
+            status,
+            Some(StatusCode::BAD_REQUEST | StatusCode::INTERNAL_SERVER_ERROR) | None
+        ) && lower.contains("could not process image")
+        {
+            return Some(Self::InvalidImage);
+        }
         if !matches!(status, Some(StatusCode::BAD_REQUEST) | None) {
             return None;
         }
@@ -112,6 +119,8 @@ pub enum ApiError {
         kind: ProviderStreamErrorKind,
         message: String,
     },
+    #[error("provider stream idle timeout: {message}")]
+    StreamIdleTimeout { message: String },
     #[error("provider media error ({kind}): {message}")]
     ProviderMedia {
         kind: ProviderMediaErrorKind,

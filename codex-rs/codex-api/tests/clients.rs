@@ -2,6 +2,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -359,29 +361,49 @@ data: {"id":"resp-1","output":[{"type":"message","role":"assistant","content":[{
 struct HttpErrorTransport {
     status: StatusCode,
     body: &'static str,
+    headers: Option<HeaderMap>,
+    attempts: Arc<AtomicUsize>,
 }
 
 impl HttpErrorTransport {
     fn new(status: StatusCode, body: &'static str) -> Self {
-        Self { status, body }
+        Self {
+            status,
+            body,
+            headers: None,
+            attempts: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    fn with_header(mut self, name: &'static str, value: &'static str) -> Self {
+        let mut headers = HeaderMap::new();
+        headers.insert(name, HeaderValue::from_static(value));
+        self.headers = Some(headers);
+        self
+    }
+
+    fn attempts(&self) -> usize {
+        self.attempts.load(Ordering::SeqCst)
     }
 }
 
 impl HttpTransport for HttpErrorTransport {
     async fn execute(&self, req: Request) -> Result<Response, TransportError> {
+        self.attempts.fetch_add(1, Ordering::SeqCst);
         Err(TransportError::Http {
             status: self.status,
             url: Some(req.url),
-            headers: None,
+            headers: self.headers.clone(),
             body: Some(self.body.to_string()),
         })
     }
 
     async fn stream(&self, req: Request) -> Result<StreamResponse, TransportError> {
+        self.attempts.fetch_add(1, Ordering::SeqCst);
         Err(TransportError::Http {
             status: self.status,
             url: Some(req.url),
-            headers: None,
+            headers: self.headers.clone(),
             body: Some(self.body.to_string()),
         })
     }
@@ -922,6 +944,66 @@ async fn streaming_client_retries_on_transport_error() -> Result<()> {
         Some(&HeaderValue::from_static("zstd"))
     );
     assert_eq!(requests[0].2, codex_client::RequestCompression::None);
+    Ok(())
+}
+
+#[tokio::test]
+async fn streaming_client_honors_server_do_not_retry_header() -> Result<()> {
+    let transport = HttpErrorTransport::new(StatusCode::INTERNAL_SERVER_ERROR, "fatal")
+        .with_header("x-should-retry", "false");
+    let mut provider = provider("grok");
+    provider.retry.max_attempts = 3;
+    provider.retry.retry_5xx = true;
+    let client = ResponsesClient::new(transport.clone(), provider, Arc::new(NoAuth));
+
+    let result = client
+        .stream(
+            serde_json::json!({ "model": "grok-4.5" }),
+            HeaderMap::new(),
+            Compression::None,
+            /*turn_state*/ None,
+        )
+        .await;
+
+    assert!(matches!(
+        result,
+        Err(ApiError::Transport(TransportError::Http {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            ..
+        }))
+    ));
+    assert_eq!(transport.attempts(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn streaming_client_does_not_retry_image_processing_http_error() -> Result<()> {
+    let transport = HttpErrorTransport::new(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        r#"{"error":{"message":"Could not process image"}}"#,
+    );
+    let mut provider = provider("grok");
+    provider.retry.max_attempts = 3;
+    provider.retry.retry_5xx = true;
+    let client = ResponsesClient::new(transport.clone(), provider, Arc::new(NoAuth));
+
+    let result = client
+        .stream(
+            serde_json::json!({ "model": "grok-4.5" }),
+            HeaderMap::new(),
+            Compression::None,
+            /*turn_state*/ None,
+        )
+        .await;
+
+    assert!(matches!(
+        result,
+        Err(ApiError::Transport(TransportError::Http {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            ..
+        }))
+    ));
+    assert_eq!(transport.attempts(), 1);
     Ok(())
 }
 

@@ -69,6 +69,77 @@ fn map_api_error_preserves_provider_stream_failure_class() {
 }
 
 #[test]
+fn map_api_error_makes_provider_idle_timeout_non_retryable() {
+    let err = map_api_error(ApiError::StreamIdleTimeout {
+        message: "idle timeout waiting for meaningful content".to_string(),
+    });
+
+    assert!(matches!(err.details(), CodexErrorDetails::Stream(_)));
+    assert!(!err.is_retryable());
+}
+
+#[test]
+fn map_api_error_keeps_existing_stream_failure_retryability() {
+    let err = map_api_error(ApiError::StreamFailure {
+        kind: ProviderStreamErrorKind::IdleTimeout,
+        message: "provider-specific retryable idle timeout".to_string(),
+    });
+
+    assert!(matches!(err.details(), CodexErrorDetails::Stream(_)));
+    assert!(err.is_retryable());
+}
+
+#[test]
+fn map_api_error_maps_http_413_to_non_retryable_request_error() {
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::PAYLOAD_TOO_LARGE,
+        url: Some("http://example.com/v1/responses".to_string()),
+        headers: None,
+        body: Some("request entity too large".to_string()),
+    }));
+
+    assert!(matches!(
+        err.details(),
+        CodexErrorDetails::InvalidRequest(_)
+    ));
+    assert!(!err.is_retryable());
+}
+
+#[test]
+fn map_api_error_maps_grok_image_500_to_non_retryable_image_error() {
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::INTERNAL_SERVER_ERROR,
+        url: Some("http://example.com/v1/responses".to_string()),
+        headers: None,
+        body: Some(r#"{"error":{"message":"Could not process image"}}"#.to_string()),
+    }));
+
+    assert!(matches!(
+        err.details(),
+        CodexErrorDetails::InvalidImageRequest()
+    ));
+    assert!(!err.is_retryable());
+}
+
+#[test]
+fn map_api_error_preserves_server_do_not_retry_header() {
+    let mut headers = HeaderMap::new();
+    headers.insert("x-should-retry", http::HeaderValue::from_static("false"));
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::INTERNAL_SERVER_ERROR,
+        url: Some("http://example.com/v1/responses".to_string()),
+        headers: Some(headers),
+        body: Some("fatal".to_string()),
+    }));
+
+    assert!(matches!(
+        err.details(),
+        CodexErrorDetails::InternalServerError
+    ));
+    assert!(!err.is_retryable());
+}
+
+#[test]
 fn map_api_error_makes_malformed_provider_responses_non_retryable() {
     let err = map_api_error(ApiError::MalformedResponse {
         message: "incomplete tool input".to_string(),
