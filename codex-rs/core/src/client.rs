@@ -174,6 +174,7 @@ const RESPONSES_COMPACT_ENDPOINT: &str = "/responses/compact";
 // period between stream events.
 const COMPACT_REQUEST_TIMEOUT_IDLE_MULTIPLIER: u32 = 4;
 const MEMORIES_SUMMARIZE_ENDPOINT: &str = "/memories/trace_summarize";
+const GROK_RESPONSES_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 #[cfg(test)]
 pub(crate) const WEBSOCKET_CONNECT_TIMEOUT: Duration =
     Duration::from_millis(DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS);
@@ -182,6 +183,14 @@ pub(crate) const WEBSOCKET_CONNECT_TIMEOUT: Duration =
 /// OpenAI models, so transport selection must also consult the active model slug.
 fn responses_websocket_allowed_for_model(model: &str) -> bool {
     !is_grok_model_slug(model)
+}
+
+fn responses_stream_idle_timeout_for_model(model: &str, configured: Duration) -> Duration {
+    if is_grok_model_slug(model) {
+        configured.min(GROK_RESPONSES_STREAM_IDLE_TIMEOUT)
+    } else {
+        configured
+    }
 }
 
 pub(crate) struct CompactConversationRequestSettings {
@@ -1549,7 +1558,12 @@ impl ModelClientSession {
             .map(AuthManager::unauthorized_recovery);
         let mut pending_retry = PendingUnauthorizedRetry::default();
         loop {
-            let client_setup = self.client.current_client_setup().await?;
+            let mut client_setup = self.client.current_client_setup().await?;
+            client_setup.api_provider.stream_idle_timeout =
+                responses_stream_idle_timeout_for_model(
+                    model_info.slug.as_str(),
+                    client_setup.api_provider.stream_idle_timeout,
+                );
             let transport = self
                 .client
                 .build_api_transport(&client_setup.api_provider, RESPONSES_ENDPOINT)?;

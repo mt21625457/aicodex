@@ -10,6 +10,7 @@ use super::X_CODEX_TURN_METADATA_HEADER;
 use super::X_CODEX_WINDOW_ID_HEADER;
 use super::X_OPENAI_SUBAGENT_HEADER;
 use super::strip_reasoning_content_for_responses_input;
+use super::responses_stream_idle_timeout_for_model;
 use crate::AttestationContext;
 use crate::AttestationProvider;
 use crate::GenerateAttestationFuture;
@@ -162,6 +163,22 @@ fn grok_models_disable_responses_websocket_even_when_provider_supports_it() {
     assert!(!client.responses_websocket_enabled_for_model("aicodex_gateway_responses:grok-4"));
     assert!(!client.responses_websocket_enabled_for_model("xai/grok-4"));
     assert!(client.responses_websocket_enabled_for_model("gpt-5.5"));
+}
+
+#[test]
+fn grok_models_cap_responses_stream_idle_timeout() {
+    assert_eq!(
+        responses_stream_idle_timeout_for_model("grok-4.5", Duration::from_secs(3_600)),
+        Duration::from_secs(120)
+    );
+    assert_eq!(
+        responses_stream_idle_timeout_for_model("xai/grok-4", Duration::from_secs(30)),
+        Duration::from_secs(30)
+    );
+    assert_eq!(
+        responses_stream_idle_timeout_for_model("gpt-5.5", Duration::from_secs(3_600)),
+        Duration::from_secs(3_600)
+    );
 }
 
 #[tokio::test]

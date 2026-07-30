@@ -57,6 +57,29 @@ fn post_sampling_token_estimate_is_disabled_by_always_on_sinks() {
     });
 }
 
+#[test]
+fn grok_sampling_retry_and_follow_up_budgets_are_bounded() {
+    assert_eq!(sampling_stream_max_retries_for_model("grok-4.5", 5), 1);
+    assert_eq!(
+        sampling_stream_max_retries_for_model("xai/grok-4", 0),
+        0
+    );
+    assert_eq!(sampling_stream_max_retries_for_model("gpt-5.5", 5), 5);
+
+    assert!(!grok_follow_up_limit_exceeded(
+        "grok-4.5",
+        MAX_GROK_MODEL_FOLLOW_UPS_PER_TURN
+    ));
+    assert!(grok_follow_up_limit_exceeded(
+        "grok-4.5",
+        MAX_GROK_MODEL_FOLLOW_UPS_PER_TURN + 1
+    ));
+    assert!(!grok_follow_up_limit_exceeded(
+        "gpt-5.5",
+        MAX_GROK_MODEL_FOLLOW_UPS_PER_TURN + 1
+    ));
+}
+
 #[tokio::test]
 async fn plan_mode_uses_contributed_turn_item_for_last_agent_message() {
     let (mut session, turn_context) = crate::session::tests::make_session_and_context().await;

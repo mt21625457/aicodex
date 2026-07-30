@@ -27,17 +27,7 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
         ApiError::StreamFailure { kind, message } => {
             CodexErr::Stream(provider_stream_error_message(kind, &message))
         }
-        ApiError::ProviderMedia { kind, message } => match kind {
-            ProviderMediaErrorKind::InvalidImage
-            | ProviderMediaErrorKind::ImageTooLarge
-            | ProviderMediaErrorKind::ImageDimensionsTooLarge => CodexErr::InvalidImageRequest(),
-            ProviderMediaErrorKind::RequestTooLarge
-            | ProviderMediaErrorKind::DocumentTooLarge
-            | ProviderMediaErrorKind::InvalidDocument
-            | ProviderMediaErrorKind::PasswordProtectedDocument => {
-                CodexErr::InvalidRequest(message)
-            }
-        },
+        ApiError::ProviderMedia { kind, message } => map_provider_media_error(kind, message),
         ApiError::Retryable { message, delay } => {
             let error = CodexErr::Stream(message);
             match delay {
@@ -73,6 +63,10 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
             } => {
                 let body_text = body.unwrap_or_default();
 
+                if let Some(kind) = ProviderMediaErrorKind::classify(Some(status), &body_text) {
+                    return map_provider_media_error(kind, body_text);
+                }
+
                 if status == http::StatusCode::SERVICE_UNAVAILABLE
                     && let Ok(value) = serde_json::from_str::<serde_json::Value>(&body_text)
                     && matches!(
@@ -99,10 +93,6 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                             .map(str::to_string)
                             .unwrap_or_else(|| CYBER_POLICY_FALLBACK_MESSAGE.to_string());
                         CodexErr::new(CodexErrorDetails::CyberPolicy { message })
-                    } else if body_text
-                        .contains("The image data you provided does not represent a valid image")
-                    {
-                        CodexErr::InvalidImageRequest()
                     } else {
                         CodexErr::InvalidRequest(body_text)
                     }
@@ -168,6 +158,18 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
             TransportError::Network(msg) | TransportError::Build(msg) => CodexErr::Stream(msg),
         },
         ApiError::RateLimit(msg) => CodexErr::Stream(msg),
+    }
+}
+
+fn map_provider_media_error(kind: ProviderMediaErrorKind, message: String) -> CodexErr {
+    match kind {
+        ProviderMediaErrorKind::InvalidImage
+        | ProviderMediaErrorKind::ImageTooLarge
+        | ProviderMediaErrorKind::ImageDimensionsTooLarge => CodexErr::InvalidImageRequest(),
+        ProviderMediaErrorKind::RequestTooLarge
+        | ProviderMediaErrorKind::DocumentTooLarge
+        | ProviderMediaErrorKind::InvalidDocument
+        | ProviderMediaErrorKind::PasswordProtectedDocument => CodexErr::InvalidRequest(message),
     }
 }
 
