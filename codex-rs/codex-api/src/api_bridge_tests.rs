@@ -101,13 +101,13 @@ fn map_api_error_preserves_provider_stream_failure_class() {
 }
 
 #[test]
-fn map_api_error_makes_provider_idle_timeout_non_retryable() {
+fn map_api_error_keeps_provider_idle_timeout_retryable() {
     let err = map_api_error(ApiError::StreamIdleTimeout {
         message: "idle timeout waiting for meaningful content".to_string(),
     });
 
     assert!(matches!(err.details(), CodexErrorDetails::Stream(_)));
-    assert!(!err.is_retryable());
+    assert!(err.is_retryable());
 }
 
 #[test]

@@ -30,8 +30,7 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
         ApiError::StreamIdleTimeout { message } => CodexErr::Stream(provider_stream_error_message(
             ProviderStreamErrorKind::IdleTimeout,
             &message,
-        ))
-        .without_retry(),
+        )),
         ApiError::ProviderMedia { kind, message } => map_provider_media_error(kind, message),
         ApiError::Retryable { message, delay } => {
             let error = CodexErr::Stream(message);

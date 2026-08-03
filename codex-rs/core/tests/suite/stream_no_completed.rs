@@ -13,6 +13,8 @@ use core_test_support::streaming_sse::start_streaming_sse_server;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
+use std::time::Duration;
+use tokio::sync::oneshot;
 
 fn sse_incomplete() -> String {
     responses::sse(vec![serde_json::json!({
@@ -100,5 +102,119 @@ async fn retries_on_early_close() {
         "expected retry after incomplete SSE stream"
     );
 
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn grok_retries_after_responses_stream_idle_timeout() {
+    skip_if_no_network!();
+
+    let (stall_tx, stall_rx) = oneshot::channel();
+    let created_sse = responses::sse(vec![serde_json::json!({
+        "type": "response.created",
+        "response": {"id": "resp_stalled"},
+    })]);
+    let completed_sse = responses::sse_completed("resp_ok");
+    let (server, _) = start_streaming_sse_server(vec![
+        vec![
+            StreamingSseChunk {
+                gate: None,
+                body: created_sse,
+            },
+            StreamingSseChunk {
+                gate: Some(stall_rx),
+                body: String::new(),
+            },
+        ],
+        vec![StreamingSseChunk {
+            gate: None,
+            body: completed_sse,
+        }],
+    ])
+    .await;
+
+    let model_provider = ModelProviderInfo {
+        name: "grok-test".into(),
+        base_url: Some(format!("{}/v1", server.uri())),
+        env_key: Some("PATH".into()),
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        auth: None,
+        aws: None,
+        wire_api: WireApi::Responses,
+        supports_developer_role: None,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: Some(0),
+        stream_max_retries: Some(5),
+        stream_idle_timeout_ms: Some(50),
+        websocket_connect_timeout_ms: None,
+        requires_openai_auth: false,
+        supports_websockets: false,
+        supports_standalone_web_search: false,
+    };
+
+    let TestCodex { codex, .. } = test_codex()
+        .with_model("grok-4.5")
+        .with_config(move |config| {
+            config.model_provider = model_provider;
+        })
+        .build_with_streaming_server(&server)
+        .await
+        .unwrap();
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "hello".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await
+        .unwrap();
+
+    let retry_event = tokio::time::timeout(
+        Duration::from_secs(5),
+        wait_for_event(&codex, |event| matches!(event, EventMsg::StreamError(_))),
+    )
+    .await
+    .expect("Grok idle timeout should emit one visible retry event");
+    let EventMsg::StreamError(retry_error) = retry_event else {
+        unreachable!("predicate guarantees a stream error event");
+    };
+    assert!(
+        retry_error.message.contains("Reconnecting... 1/1"),
+        "expected bounded Grok retry status, got: {}",
+        retry_error.message
+    );
+    assert!(
+        retry_error
+            .additional_details
+            .as_deref()
+            .is_some_and(|details| details.contains("idle timeout")),
+        "expected idle-timeout retry details, got: {:?}",
+        retry_error.additional_details
+    );
+
+    let turn_complete = tokio::time::timeout(
+        Duration::from_secs(5),
+        wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))),
+    )
+    .await
+    .expect("turn should complete after one safe Grok stream retry");
+    let EventMsg::TurnComplete(turn_complete) = turn_complete else {
+        unreachable!("predicate guarantees a turn complete event");
+    };
+    assert_eq!(turn_complete.error, None);
+
+    let requests = server.requests().await;
+    assert_eq!(requests.len(), 2, "expected exactly one Grok retry");
+
+    drop(stall_tx);
     server.shutdown().await;
 }
