@@ -475,12 +475,101 @@ fn rejects_internal_agent_messages() {
 }
 
 #[test]
-fn rejects_oversized_request_items_from_existing_history() {
+fn allows_request_items_within_the_model_context_window() {
+    let prompt = Prompt {
+        input: vec![message(
+            "user",
+            vec![ContentItem::InputText {
+                text: "x".repeat(approx_bytes_for_tokens(12_000)),
+            }],
+        )],
+        base_instructions: BaseInstructions {
+            text: String::new(),
+        },
+        ..Default::default()
+    };
+
+    build_chat_completions_request(&prompt, &model_info(), None, None)
+        .expect("model context window should allow a message above the legacy 10K limit");
+}
+
+#[test]
+fn uses_model_defaults_for_chat_reasoning_and_output_limits() {
+    let prompt = Prompt {
+        input: vec![message(
+            "user",
+            vec![ContentItem::InputText {
+                text: "hello".to_string(),
+            }],
+        )],
+        base_instructions: BaseInstructions {
+            text: String::new(),
+        },
+        ..Default::default()
+    };
+    let mut model = model_info();
+    model.default_reasoning_level = Some(ReasoningEffort::High);
+    model.max_output_tokens = Some(384_000);
+
+    let request =
+        build_chat_completions_request(&prompt, &model, None, None).expect("build Chat request");
+    let payload = serde_json::to_value(&request).expect("serialize Chat request");
+
+    assert_eq!(request.reasoning_effort, Some(ReasoningEffort::High));
+    assert_eq!(payload["max_tokens"], 384_000);
+
+    let explicit_none = build_chat_completions_request(
+        &prompt,
+        &model,
+        Some(ReasoningEffort::None),
+        None,
+    )
+    .expect("build Chat request with an explicit reasoning setting");
+    assert_eq!(explicit_none.reasoning_effort, Some(ReasoningEffort::None));
+}
+
+#[test]
+fn derives_chat_request_limits_from_model_context_metadata() {
+    let mut deepseek_v4_flash = model_info();
+    deepseek_v4_flash.context_window = Some(1_000_000);
+    deepseek_v4_flash.max_context_window = Some(1_000_000);
+    deepseek_v4_flash.effective_context_window_percent = 95;
+
+    let limits = chat_request_context_limits(&deepseek_v4_flash).expect("valid model metadata");
+
+    assert_eq!(limits.max_item_tokens, 950_000);
+    assert_eq!(limits.max_total_tokens, 950_000);
+}
+
+#[test]
+fn rejects_invalid_chat_context_metadata() {
+    let mut model = model_info();
+    model.context_window = Some(0);
+    let error = chat_request_context_limits(&model).expect_err("zero context must be rejected");
+    assert!(error.to_string().contains("context_window `0`"));
+
+    model.context_window = Some(100_000);
+    model.effective_context_window_percent = 0;
+    let error = chat_request_context_limits(&model).expect_err("zero percent must be rejected");
+    assert!(
+        error
+            .to_string()
+            .contains("effective_context_window_percent `0`")
+    );
+
+    model.context_window = Some(i64::MAX);
+    model.effective_context_window_percent = 100;
+    let error = chat_request_context_limits(&model).expect_err("overflow must be rejected");
+    assert!(error.to_string().contains("overflows the request limit"));
+}
+
+#[test]
+fn rejects_request_items_that_exceed_the_model_context_window() {
     let oversized_message = Prompt {
         input: vec![message(
             "user",
             vec![ContentItem::InputText {
-                text: "x".repeat(50_000),
+                text: "x".repeat(approx_bytes_for_tokens(122_000)),
             }],
         )],
         base_instructions: BaseInstructions {
@@ -491,6 +580,7 @@ fn rejects_oversized_request_items_from_existing_history() {
     let error = build_chat_completions_request(&oversized_message, &model_info(), None, None)
         .expect_err("oversized message should be rejected");
     assert!(error.to_string().contains("message 0"));
+    assert!(error.to_string().contains("121600-token"));
 
     let merged_tool_calls = Prompt {
         input: vec![
@@ -498,7 +588,7 @@ fn rejects_oversized_request_items_from_existing_history() {
                 id: None,
                 name: "first".to_string(),
                 namespace: None,
-                arguments: "x".repeat(25_000),
+                arguments: "x".repeat(approx_bytes_for_tokens(61_000)),
                 call_id: "call_1".to_string(),
                 encrypted_function_args: None,
                 internal_chat_message_metadata_passthrough: None,
@@ -507,7 +597,7 @@ fn rejects_oversized_request_items_from_existing_history() {
                 id: None,
                 name: "second".to_string(),
                 namespace: None,
-                arguments: "y".repeat(25_000),
+                arguments: "y".repeat(approx_bytes_for_tokens(61_000)),
                 call_id: "call_2".to_string(),
                 encrypted_function_args: None,
                 internal_chat_message_metadata_passthrough: None,
@@ -521,6 +611,64 @@ fn rejects_oversized_request_items_from_existing_history() {
     let error = build_chat_completions_request(&merged_tool_calls, &model_info(), None, None)
         .expect_err("merged oversized tool message should be rejected");
     assert!(error.to_string().contains("message 0"));
+}
+
+#[test]
+fn rejects_requests_whose_total_exceeds_the_model_context_window() {
+    let prompt = Prompt {
+        input: vec![
+            message(
+                "user",
+                vec![ContentItem::InputText {
+                    text: "x".repeat(approx_bytes_for_tokens(60_000)),
+                }],
+            ),
+            message(
+                "assistant",
+                vec![ContentItem::OutputText {
+                    text: "y".repeat(approx_bytes_for_tokens(60_000)),
+                }],
+            ),
+        ],
+        base_instructions: BaseInstructions {
+            text: String::new(),
+        },
+        ..Default::default()
+    };
+    let mut model_with_100k_context = model_info();
+    model_with_100k_context.context_window = Some(100_000);
+    model_with_100k_context.effective_context_window_percent = 100;
+
+    let error = build_chat_completions_request(&prompt, &model_with_100k_context, None, None)
+        .expect_err("request total should not exceed the model context window");
+    assert!(
+        error
+            .to_string()
+            .contains("Chat request exceeds the 100000-token")
+    );
+}
+
+#[test]
+fn uses_legacy_chat_request_limits_when_model_context_is_unknown() {
+    let prompt = Prompt {
+        input: vec![message(
+            "user",
+            vec![ContentItem::InputText {
+                text: "x".repeat(approx_bytes_for_tokens(12_000)),
+            }],
+        )],
+        base_instructions: BaseInstructions {
+            text: String::new(),
+        },
+        ..Default::default()
+    };
+    let mut unknown_context_model = model_info();
+    unknown_context_model.context_window = None;
+    unknown_context_model.max_context_window = None;
+
+    let error = build_chat_completions_request(&prompt, &unknown_context_model, None, None)
+        .expect_err("unknown model context should retain the compatibility limit");
+    assert!(error.to_string().contains("10000-token"));
 }
 
 #[test]
@@ -1191,6 +1339,7 @@ fn file_tool_modes_build_complete_expected_requests() {
             tool_choice: Some("auto".to_string()),
             parallel_tool_calls: Some(true),
             reasoning_effort: None,
+            max_output_tokens: None,
             service_tier: None,
             response_format: None,
             tool_call_info: tool_call_info.clone(),

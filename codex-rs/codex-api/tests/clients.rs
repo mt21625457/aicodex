@@ -522,6 +522,7 @@ async fn chat_completions_client_uses_chat_path_auth_stream_headers_and_fixed_us
         tool_choice: None,
         parallel_tool_calls: None,
         reasoning_effort: None,
+        max_output_tokens: Some(384_000),
         service_tier: None,
         response_format: None,
         tool_call_info: HashMap::new(),
@@ -561,7 +562,8 @@ async fn chat_completions_client_uses_chat_path_auth_stream_headers_and_fixed_us
             "model": "chat-model",
             "messages": [{"role": "user", "content": "hello"}],
             "stream": true,
-            "stream_options": {"include_usage": true}
+            "stream_options": {"include_usage": true},
+            "max_tokens": 384000
         })
     );
     Ok(())
@@ -818,6 +820,7 @@ async fn responses_client_stream_request_preserves_exact_json_body() -> Result<(
         tool_choice: "auto".into(),
         parallel_tool_calls: false,
         reasoning: None,
+        max_output_tokens: Some(123),
         store: false,
         stream: true,
         stream_options: None,
@@ -841,6 +844,7 @@ async fn responses_client_stream_request_preserves_exact_json_body() -> Result<(
     let body: serde_json::Value =
         serde_json::from_slice(prepared.body.as_deref().expect("body should be JSON"))?;
     assert_eq!(body, expected);
+    assert_eq!(body["max_output_tokens"], 123);
     assert_eq!(body["input"][0]["id"], "msg_1");
     assert_eq!(
         prepared.headers.get(http::header::CONTENT_TYPE),
@@ -905,6 +909,7 @@ async fn streaming_client_retries_on_transport_error() -> Result<()> {
         tool_choice: "auto".into(),
         parallel_tool_calls: false,
         reasoning: None,
+        max_output_tokens: None,
         store: false,
         stream: true,
         stream_options: None,
@@ -1085,6 +1090,7 @@ async fn azure_store_sends_ids_and_headers() -> Result<()> {
         tool_choice: "auto".into(),
         parallel_tool_calls: false,
         reasoning: None,
+        max_output_tokens: None,
         store: true,
         stream: true,
         stream_options: None,

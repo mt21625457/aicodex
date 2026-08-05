@@ -39,8 +39,8 @@ use std::collections::HashMap;
 
 const MAX_CHAT_CONTEXT_ITEM_TOKENS: usize = 1_000;
 const MAX_CHAT_CONTEXT_ITEM_RENDER_TOKENS: usize = 900;
-const MAX_CHAT_REQUEST_ITEM_TOKENS: usize = 10_000;
-const MAX_CHAT_REQUEST_TOTAL_TOKENS: usize = 250_000;
+const DEFAULT_MAX_CHAT_REQUEST_ITEM_TOKENS: usize = 10_000;
+const DEFAULT_MAX_CHAT_REQUEST_TOTAL_TOKENS: usize = 250_000;
 const MAX_CHAT_MESSAGE_TOOL_CALLS: usize = 64;
 const UNSUPPORTED_IMAGE_PLACEHOLDER: &str = "[unsupported image reference omitted]";
 const UNSUPPORTED_AUDIO_PLACEHOLDER: &str = "[audio content omitted: unsupported by Chat API]";
@@ -431,12 +431,13 @@ pub(crate) fn build_chat_completions_request_for_provider(
         tools,
         tool_choice: has_tools.then(|| "auto".to_string()),
         parallel_tool_calls: has_tools.then_some(prompt.parallel_tool_calls),
-        reasoning_effort,
+        reasoning_effort: reasoning_effort.or_else(|| model_info.default_reasoning_level.clone()),
+        max_output_tokens: model_info.max_output_tokens,
         service_tier,
         response_format,
         tool_call_info,
     };
-    validate_chat_request_context(&request)?;
+    validate_chat_request_context(&request, model_info)?;
     Ok(request)
 }
 
@@ -488,7 +489,67 @@ fn dedicated_chat_guidance(prompt: &Prompt, tool_call_info: &[ChatToolCallInfo])
     Ok(guidance)
 }
 
-fn validate_chat_request_context(request: &ChatCompletionsApiRequest) -> Result<()> {
+#[derive(Debug, Clone, Copy)]
+struct ChatRequestContextLimits {
+    max_item_tokens: usize,
+    max_total_tokens: usize,
+}
+
+fn chat_request_context_limits(model_info: &ModelInfo) -> Result<ChatRequestContextLimits> {
+    let Some(context_window) = model_info.resolved_context_window() else {
+        return Ok(ChatRequestContextLimits {
+            max_item_tokens: DEFAULT_MAX_CHAT_REQUEST_ITEM_TOKENS,
+            max_total_tokens: DEFAULT_MAX_CHAT_REQUEST_TOTAL_TOKENS,
+        });
+    };
+    let context_window = usize::try_from(context_window).map_err(|_| {
+        CodexErr::InvalidRequest(format!(
+            "Chat model `{}` has an invalid context_window `{context_window}`",
+            model_info.slug,
+        ))
+    })?;
+    if context_window == 0 {
+        return Err(CodexErr::InvalidRequest(format!(
+            "Chat model `{}` has an invalid context_window `0`",
+            model_info.slug,
+        )));
+    }
+    let effective_context_window_percent =
+        usize::try_from(model_info.effective_context_window_percent).map_err(|_| {
+            CodexErr::InvalidRequest(format!(
+                "Chat model `{}` has an invalid effective_context_window_percent `{}`",
+                model_info.slug, model_info.effective_context_window_percent,
+            ))
+        })?;
+    if effective_context_window_percent == 0 || effective_context_window_percent > 100 {
+        return Err(CodexErr::InvalidRequest(format!(
+            "Chat model `{}` has an invalid effective_context_window_percent `{effective_context_window_percent}`",
+            model_info.slug,
+        )));
+    }
+    let max_total_tokens = context_window
+        .checked_mul(effective_context_window_percent)
+        .ok_or_else(|| {
+            CodexErr::InvalidRequest(format!(
+                "Chat model `{}` has context metadata that overflows the request limit",
+                model_info.slug,
+            ))
+        })?
+        / 100;
+
+    Ok(ChatRequestContextLimits {
+        // A request containing one large historical tool result is valid as long
+        // as the complete request remains within the model's usable context.
+        max_item_tokens: max_total_tokens,
+        max_total_tokens,
+    })
+}
+
+fn validate_chat_request_context(
+    request: &ChatCompletionsApiRequest,
+    model_info: &ModelInfo,
+) -> Result<()> {
+    let limits = chat_request_context_limits(model_info)?;
     let mut total_tokens = 0usize;
     for (index, message) in request.messages.iter().enumerate() {
         if message.tool_calls.len() > MAX_CHAT_MESSAGE_TOOL_CALLS {
@@ -500,6 +561,7 @@ fn validate_chat_request_context(request: &ChatCompletionsApiRequest) -> Result<
             &format!("message {index}"),
             &serde_json::to_string(message)?,
             &mut total_tokens,
+            limits,
         )?;
     }
     for (index, tool) in request.tools.iter().enumerate() {
@@ -507,6 +569,7 @@ fn validate_chat_request_context(request: &ChatCompletionsApiRequest) -> Result<
             &format!("tool {index}"),
             &serde_json::to_string(tool)?,
             &mut total_tokens,
+            limits,
         )?;
     }
     if let Some(response_format) = request.response_format.as_ref() {
@@ -514,6 +577,7 @@ fn validate_chat_request_context(request: &ChatCompletionsApiRequest) -> Result<
             "response format",
             &serde_json::to_string(response_format)?,
             &mut total_tokens,
+            limits,
         )?;
     }
     Ok(())
@@ -523,17 +587,20 @@ fn validate_chat_request_item(
     item_kind: &str,
     serialized: &str,
     total_tokens: &mut usize,
+    limits: ChatRequestContextLimits,
 ) -> Result<()> {
     let item_tokens = approx_token_count(serialized);
-    if item_tokens > MAX_CHAT_REQUEST_ITEM_TOKENS {
+    if item_tokens > limits.max_item_tokens {
         return Err(CodexErr::InvalidRequest(format!(
-            "Chat {item_kind} exceeds the {MAX_CHAT_REQUEST_ITEM_TOKENS}-token model-context limit"
+            "Chat {item_kind} exceeds the {}-token model-context limit",
+            limits.max_item_tokens,
         )));
     }
     *total_tokens = total_tokens.saturating_add(item_tokens);
-    if *total_tokens > MAX_CHAT_REQUEST_TOTAL_TOKENS {
+    if *total_tokens > limits.max_total_tokens {
         return Err(CodexErr::InvalidRequest(format!(
-            "Chat request exceeds the {MAX_CHAT_REQUEST_TOTAL_TOKENS}-token model-context limit"
+            "Chat request exceeds the {}-token model-context limit",
+            limits.max_total_tokens,
         )));
     }
     Ok(())

@@ -264,6 +264,8 @@ pub struct ResponsesApiRequest {
     pub tool_choice: String,
     pub parallel_tool_calls: bool,
     pub reasoning: Option<Reasoning>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
     pub store: bool,
     pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -782,6 +784,7 @@ impl<'a> From<&'a ResponsesApiRequest> for ResponseCreateWsRequest<'a> {
             tool_choice: &request.tool_choice,
             parallel_tool_calls: request.parallel_tool_calls,
             reasoning: request.reasoning.as_ref(),
+            max_output_tokens: request.max_output_tokens,
             store: request.store,
             stream: request.stream,
             stream_options: request.stream_options.as_ref(),
@@ -808,6 +811,8 @@ pub struct ResponseCreateWsRequest<'a> {
     pub tool_choice: &'a str,
     pub parallel_tool_calls: bool,
     pub reasoning: Option<&'a Reasoning>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
     pub store: bool,
     pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
