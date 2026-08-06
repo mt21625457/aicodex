@@ -132,6 +132,88 @@ async fn grok_remote_model_exposes_plain_multi_agent_v2_tools() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn grok_remote_model_respects_global_agents_disable() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_sandbox!(Ok(()));
+
+    let server = MockServer::start().await;
+    let requested_model = "grok-4.5";
+    let mut remote_model = test_remote_model(
+        requested_model,
+        ModelVisibility::List,
+        /*priority*/ 1_000,
+    );
+    remote_model.multi_agent_version = None;
+    mount_models_once(
+        &server,
+        ModelsResponse {
+            models: vec![remote_model],
+        },
+    )
+    .await;
+    let response_mock = mount_sse_once(
+        &server,
+        sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
+    )
+    .await;
+
+    let TestCodex { codex, .. } = test_codex()
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_config(|config| {
+            config.model = Some(requested_model.to_string());
+            config.agents_enabled = false;
+            config
+                .features
+                .disable(codex_features::Feature::MultiAgentV2)
+                .expect("test config should allow feature update");
+        })
+        .build(&server)
+        .await?;
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "inspect in parallel".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    let request = response_mock.single_request();
+    let request_body = request.body_json();
+    let tools = request_body["tools"]
+        .as_array()
+        .expect("request should include tools");
+    for tool_name in [
+        "collaboration",
+        "multi_agent_v1",
+        "spawn_agent",
+        "send_message",
+        "followup_task",
+        "wait_agent",
+        "interrupt_agent",
+        "list_agents",
+        "send_input",
+        "resume_agent",
+        "close_agent",
+    ] {
+        assert!(
+            !tools
+                .iter()
+                .any(|tool| tool["name"].as_str() == Some(tool_name)),
+            "globally disabled Grok must not receive {tool_name}: {tools:?}"
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn remote_models_get_model_info_uses_longest_matching_prefix() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
