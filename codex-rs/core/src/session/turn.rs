@@ -75,7 +75,6 @@ use codex_features::Feature;
 use codex_file_system::FindUpErrorPolicy;
 use codex_file_system::find_nearest_ancestor_with_markers;
 use codex_login::CodexAuth;
-use codex_mcp::ToolInfo;
 use codex_model_provider::RemoteCompactionSupport;
 use codex_model_provider_info::WireApi;
 use codex_models_manager::model_info::is_grok_model_slug;
@@ -284,7 +283,6 @@ pub(crate) async fn run_turn(
     if run_pending_session_start_hooks(&sess, &turn_context).await {
         return Ok(None);
     }
-    let mut can_drain_pending_input = input.is_empty();
     if run_hooks_and_record_inputs(&sess, &turn_context, &input, PersistContext::TurnStart).await {
         return Ok(None);
     }
@@ -487,7 +485,6 @@ pub(crate) async fn run_turn(
                         )
                         .await;
                 }
-                can_drain_pending_input = true;
                 // Process async hooks only after sampling and its tools have finished.
                 drain_async_hook_results(&sess, &turn_context, /*before_user_prompt*/ false).await;
                 let (has_pending_input, token_status) = async {

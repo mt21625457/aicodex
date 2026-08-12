@@ -18,7 +18,6 @@ use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadMemoryMode;
 use codex_rollout::EventPersistenceMode;
 use codex_rollout::RolloutItem;
-use codex_rollout::persisted_rollout_items;
 use codex_rollout::persisted_rollout_items_with_mode;
 
 use crate::AppendThreadItemsParams;

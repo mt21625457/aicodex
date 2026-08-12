@@ -57,7 +57,6 @@ pub struct ShellCommandHandler {
 
 pub(crate) struct ClaudeBashHandler {
     inner: ShellCommandHandler,
-    options: ShellCommandHandlerOptions,
 }
 
 #[derive(Clone, Copy)]
@@ -384,7 +383,6 @@ impl ClaudeBashHandler {
     pub(crate) fn new(options: ShellCommandHandlerOptions) -> Self {
         Self {
             inner: ShellCommandHandler::from(options.backend_config),
-            options,
         }
     }
 }

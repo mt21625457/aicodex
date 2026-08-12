@@ -281,7 +281,7 @@ async fn run_compact_task_inner_impl(
         CodexResponsesRequestKind::Compaction(compaction_metadata),
     );
 
-    let output_items = loop {
+    loop {
         // Clone is required because of the loop
         let turn_input = history
             .clone()
@@ -302,7 +302,7 @@ async fn run_compact_task_inner_impl(
         .await;
 
         match attempt_result {
-            Ok(output_items) => break output_items,
+            Ok(_) => break,
             Err(err)
                 if matches!(
                     err.details(),
@@ -353,7 +353,7 @@ async fn run_compact_task_inner_impl(
                 }
             }
         }
-    };
+    }
 
     let history_snapshot = sess.clone_history().await;
     let history_items = history_snapshot.annotated_items();

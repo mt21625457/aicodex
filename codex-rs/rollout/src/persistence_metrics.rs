@@ -12,7 +12,6 @@ use codex_protocol::protocol::ThreadHistoryMode;
 use crate::ResponseItemEnvelope;
 use crate::RolloutItem;
 use crate::policy::EventPersistenceMode;
-use crate::policy::is_persisted_rollout_item;
 use crate::policy::is_persisted_rollout_item_with_mode;
 use crate::policy::sanitize_rollout_item_for_persistence;
 

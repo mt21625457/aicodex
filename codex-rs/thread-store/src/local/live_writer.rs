@@ -8,7 +8,6 @@ use codex_rollout::RolloutConfig;
 use codex_rollout::RolloutItem;
 use codex_rollout::RolloutRecorder;
 use codex_rollout::RolloutRecorderParams;
-use codex_rollout::is_persisted_rollout_item;
 use codex_rollout::persisted_rollout_items_with_mode;
 use tracing::warn;
 

@@ -29,7 +29,6 @@ pub use parser::UpdateFileChunk;
 pub use parser::parse_patch;
 use sha2::Digest;
 use sha2::Sha256;
-use similar::TextDiff;
 pub use streaming_parser::StreamingPatchParser;
 use thiserror::Error;
 
@@ -49,7 +48,6 @@ pub use standalone_executable::main;
 
 use crate::invocation::ExtractHeredocError;
 use crate::text_file::read_patchable_text_file;
-use crate::text_file::read_patchable_text_file_with_fingerprint;
 
 /// Special argv[1] flag used when the Codex executable self-invokes to run the
 /// internal `apply_patch` path.

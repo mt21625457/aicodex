@@ -322,6 +322,13 @@ pub(crate) fn finalize_tool_router(
     hosted_specs: Vec<ToolSpec>,
     tool_search_handler_cache: &ToolSearchHandlerCache,
 ) -> CodexResult<ToolRouter> {
+    // Hosted WebSearch specs are model-visible; keep a Hidden runtime so Claude /
+    // Moonshot-style `web_search` function calls still dispatch locally.
+    for spec in &hosted_specs {
+        if matches!(spec, ToolSpec::WebSearch { .. }) {
+            registry.add_with_exposure(WebSearchHandler::new(spec.clone()), ToolExposure::Hidden);
+        }
+    }
     apply_direct_model_only_namespace_overrides(turn_context, &mut registry);
     let code_mode_enabled = matches!(
         effective_tool_mode(turn_context),
@@ -996,6 +1003,12 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistr
                     ShellCommandHandler::new(shell_command_options),
                     ToolExposure::Hidden,
                 );
+                // Claude native `bash` calls dispatch here without a separate
+                // model-visible shell tool.
+                registry.add_with_exposure(
+                    ClaudeBashHandler::new(shell_command_options),
+                    ToolExposure::Hidden,
+                );
             }
         }
         ConfigShellToolType::Disabled => {}
@@ -1004,6 +1017,10 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistr
         | ConfigShellToolType::ShellCommand => {
             if supports_shell_command {
                 registry.add(ShellCommandHandler::new(shell_command_options));
+                registry.add_with_exposure(
+                    ClaudeBashHandler::new(shell_command_options),
+                    ToolExposure::Hidden,
+                );
             }
         }
     }

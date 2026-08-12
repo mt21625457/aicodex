@@ -20,7 +20,6 @@ use crate::parser::Hunk;
 use crate::parser::ParseError;
 use crate::parser::parse_patch;
 use crate::text_file::read_patchable_text_file;
-use crate::unified_diff_from_chunks;
 use crate::unified_diff_from_chunks_with_mode;
 use codex_utils_path_uri::PathConvention;
 use codex_utils_path_uri::PathUri;
