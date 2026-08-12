@@ -3,6 +3,7 @@ use crate::config::MULTI_AGENT_USAGE_HINT_MAX_TOKENS;
 use crate::config::truncate_text_to_token_budget;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Configured multi-agent instructions emitted as a standalone developer message.
 pub(crate) struct MultiAgentUsageHint {
     text: String,
 }
@@ -20,6 +21,10 @@ impl ContextualUserFragment for MultiAgentUsageHint {
         "developer"
     }
 
+    fn requires_separate_message(&self) -> bool {
+        true
+    }
+
     fn markers(&self) -> (&'static str, &'static str) {
         Self::type_markers()
     }
@@ -32,7 +37,6 @@ impl ContextualUserFragment for MultiAgentUsageHint {
         self.text.clone()
     }
 }
-
 #[cfg(test)]
 #[path = "multi_agent_usage_hint_tests.rs"]
 mod tests;

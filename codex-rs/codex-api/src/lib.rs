@@ -128,6 +128,7 @@ pub use crate::endpoint::session_update_session_json;
 pub use crate::error::ApiError;
 pub use crate::error::ProviderMediaErrorKind;
 pub use crate::error::ProviderStreamErrorKind;
+pub use crate::files::HostedFileUploadContext;
 pub use crate::files::OPENAI_FILE_UPLOAD_LIMIT_BYTES;
 pub use crate::files::upload_openai_file;
 pub use crate::images::ImageBackground;

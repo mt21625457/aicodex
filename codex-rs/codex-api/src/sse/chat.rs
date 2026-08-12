@@ -192,6 +192,7 @@ impl ChatUsage {
                 .as_ref()
                 .map_or(0, |details| details.reasoning_tokens),
             total_tokens,
+            codex_rollout_budget_units: None,
         }
     }
 }

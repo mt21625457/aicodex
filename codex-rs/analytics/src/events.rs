@@ -2,6 +2,8 @@ use std::time::Instant;
 
 use crate::facts::AcceptedLineFingerprint;
 use crate::facts::AppInvocation;
+use crate::facts::ArtifactOperation;
+use crate::facts::ArtifactOperationLifecycle;
 use crate::facts::CodexCompactionEvent;
 use crate::facts::CodexErrKind;
 use crate::facts::CodexGoalEvent;
@@ -13,6 +15,7 @@ use crate::facts::CompactionStrategy;
 use crate::facts::CompactionTrigger;
 use crate::facts::GoalEventKind;
 use crate::facts::HookRunFact;
+use crate::facts::ImagePreparationMetadata;
 use crate::facts::InvocationType;
 use crate::facts::PluginInstallRequested;
 use crate::facts::PluginState;
@@ -62,6 +65,7 @@ pub(crate) struct TrackEventsRequest {
 pub(crate) enum TrackEventRequest {
     SkillInvocation(SkillInvocationEventRequest),
     ThreadInitialized(ThreadInitializedEvent),
+    ThreadArchive(ThreadArchiveEvent),
     GuardianReview(Box<GuardianReviewEventRequest>),
     AppMentioned(CodexAppMentionedEventRequest),
     AppUsed(CodexAppUsedEventRequest),
@@ -70,6 +74,7 @@ pub(crate) enum TrackEventRequest {
     Goal(Box<CodexGoalEventRequest>),
     TurnEvent(Box<CodexTurnEventRequest>),
     TurnSteer(CodexTurnSteerEventRequest),
+    ArtifactOperation(CodexArtifactOperationEventRequest),
     CommandExecution(CodexCommandExecutionEventRequest),
     FileChange(CodexFileChangeEventRequest),
     McpToolCall(CodexMcpToolCallEventRequest),
@@ -91,6 +96,59 @@ pub(crate) enum TrackEventRequest {
     ExternalAgentConfigImportFailure(CodexOnboardingExternalAgentImportFailureEventRequest),
 }
 
+#[derive(Serialize)]
+pub(crate) struct CodexArtifactOperationEventParams {
+    pub(crate) thread_id: String,
+    pub(crate) turn_id: String,
+    pub(crate) item_id: String,
+    pub(crate) lifecycle: ArtifactOperationLifecycle,
+    pub(crate) occurred_at_ms: u64,
+    pub(crate) product_client_id: String,
+    pub(crate) runtime: CodexRuntimeMetadata,
+    pub(crate) model_slug: String,
+    pub(crate) plugin_id: String,
+    pub(crate) script_path: String,
+    pub(crate) skill: String,
+    pub(crate) artifact_type: String,
+    pub(crate) operation_kind: String,
+    pub(crate) expected_output_count: u32,
+    pub(crate) output_format: String,
+    pub(crate) execution_backend: String,
+}
+
+#[derive(Serialize)]
+pub(crate) struct CodexArtifactOperationEventRequest {
+    pub(crate) event_type: &'static str,
+    pub(crate) event_params: CodexArtifactOperationEventParams,
+}
+
+pub(crate) fn codex_artifact_operation_event_request(
+    tracking: TrackEventsContext,
+    operation: ArtifactOperation,
+) -> CodexArtifactOperationEventRequest {
+    CodexArtifactOperationEventRequest {
+        event_type: "codex_artifact_operation",
+        event_params: CodexArtifactOperationEventParams {
+            thread_id: tracking.thread_id,
+            turn_id: tracking.turn_id,
+            item_id: operation.item_id,
+            lifecycle: operation.lifecycle,
+            occurred_at_ms: operation.occurred_at_ms,
+            product_client_id: tracking.product_client_id,
+            runtime: current_runtime_metadata(),
+            model_slug: tracking.model_slug,
+            plugin_id: operation.plugin_id,
+            script_path: operation.script_path,
+            skill: operation.skill,
+            artifact_type: operation.artifact_type,
+            operation_kind: operation.operation_kind,
+            expected_output_count: operation.expected_output_count,
+            output_format: operation.output_format,
+            execution_backend: operation.execution_backend,
+        },
+    }
+}
+
 impl TrackEventRequest {
     pub(crate) fn should_send_in_isolated_request(&self) -> bool {
         matches!(self, Self::AcceptedLineFingerprints(_))
@@ -101,6 +159,7 @@ impl TrackEventRequest {
             Self::PluginUsed(event) => event.event_params.plugin.plugin_id.is_some(),
             Self::SkillInvocation(event) => event.event_params.plugin_id.is_some(),
             Self::McpToolCall(event) => event.event_params.plugin_id.is_some(),
+            Self::ArtifactOperation(event) => !event.event_params.plugin_id.is_empty(),
             _ => false,
         }
     }
@@ -184,6 +243,26 @@ pub(crate) struct ThreadInitializedEventParams {
 pub(crate) struct ThreadInitializedEvent {
     pub(crate) event_type: &'static str,
     pub(crate) event_params: ThreadInitializedEventParams,
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ThreadArchiveAction {
+    Archived,
+    Unarchived,
+}
+
+#[derive(Serialize)]
+pub(crate) struct ThreadArchiveEventParams {
+    pub(crate) thread_id: String,
+    pub(crate) action: ThreadArchiveAction,
+    pub(crate) occurred_at_ms: u64,
+}
+
+#[derive(Serialize)]
+pub(crate) struct ThreadArchiveEvent {
+    pub(crate) event_type: &'static str,
+    pub(crate) event_params: ThreadArchiveEventParams,
 }
 
 #[derive(Serialize)]
@@ -538,6 +617,10 @@ pub(crate) struct CodexToolItemEventBase {
     /// App-server ThreadItem.id. For tool-originated items this generally
     /// corresponds to the originating core call_id.
     pub(crate) item_id: String,
+    pub(crate) cell_id: Option<String>,
+    pub(crate) parent_call_id: Option<String>,
+    pub(crate) originating_response_id: Option<String>,
+    pub(crate) subsequent_response_id: Option<String>,
     pub(crate) app_server_client: CodexAppServerClientMetadata,
     pub(crate) runtime: CodexRuntimeMetadata,
     pub(crate) thread_source: Option<ThreadSource>,
@@ -895,8 +978,12 @@ pub(crate) struct CodexTurnEventParams {
     pub(crate) personality: Option<String>,
     pub(crate) workspace_kind: Option<String>,
     pub(crate) num_input_images: usize,
+    pub(crate) image_preparations: Vec<ImagePreparationMetadata>,
     pub(crate) is_first_turn: bool,
     pub(crate) status: Option<TurnStatus>,
+    /// Client wall-clock time for the first non-startup turn/interrupt request
+    /// that later received a successful response.
+    pub(crate) explicit_client_interrupt_requested_at_ms: Option<u64>,
     pub(crate) turn_error: Option<CodexErrorInfo>,
     pub(crate) codex_error_kind: Option<CodexErrKind>,
     pub(crate) codex_error_http_status_code: Option<u16>,

@@ -518,13 +518,9 @@ fn uses_model_defaults_for_chat_reasoning_and_output_limits() {
     assert_eq!(request.reasoning_effort, Some(ReasoningEffort::High));
     assert_eq!(payload["max_tokens"], 384_000);
 
-    let explicit_none = build_chat_completions_request(
-        &prompt,
-        &model,
-        Some(ReasoningEffort::None),
-        None,
-    )
-    .expect("build Chat request with an explicit reasoning setting");
+    let explicit_none =
+        build_chat_completions_request(&prompt, &model, Some(ReasoningEffort::None), None)
+            .expect("build Chat request with an explicit reasoning setting");
     assert_eq!(explicit_none.reasoning_effort, Some(ReasoningEffort::None));
 }
 

@@ -1,5 +1,7 @@
 use super::PreviousSectionState;
+use super::WorldStateHash;
 use super::WorldStateSection;
+use super::multi_agent_usage_hint::MultiAgentUsageHintState;
 use crate::config::MULTI_AGENT_MODE_MAX_TOKENS;
 use crate::config::truncate_text_to_token_budget;
 use crate::context::ContextualUserFragment;
@@ -12,6 +14,8 @@ use serde::Serialize;
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub(crate) struct MultiAgentModeState {
     mode: Option<MultiAgentMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    usage_hint_hash: Option<WorldStateHash>,
 }
 
 impl MultiAgentModeState {
@@ -23,7 +27,13 @@ impl MultiAgentModeState {
                 ),
                 mode @ (MultiAgentMode::ExplicitRequestOnly | MultiAgentMode::Proactive) => mode,
             }),
+            usage_hint_hash: None,
         }
+    }
+
+    pub(crate) fn with_usage_hint(mut self, usage_hint: &MultiAgentUsageHintState) -> Self {
+        self.usage_hint_hash = Some(usage_hint.snapshot());
+        self
     }
 }
 
@@ -54,7 +64,8 @@ impl WorldStateSection for MultiAgentModeState {
         let current_mode = rendered_mode(self.mode.as_ref());
         let mode = match (current_mode, previous) {
             (Some(mode), PreviousSectionState::Known(previous))
-                if rendered_mode(previous.mode.as_ref()) == Some(mode) =>
+                if previous.mode.as_ref() == Some(mode)
+                    && previous.usage_hint_hash == self.usage_hint_hash =>
             {
                 return None;
             }

@@ -452,7 +452,6 @@ impl ModelProviderInfo {
     pub fn supports_developer_role(&self) -> bool {
         self.supports_developer_role.unwrap_or(true)
     }
-
     pub fn has_command_auth(&self) -> bool {
         self.auth.is_some()
     }

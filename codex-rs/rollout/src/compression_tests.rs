@@ -9,9 +9,6 @@ use std::time::SystemTime;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::HistoryPosition;
-use codex_protocol::protocol::InitialHistory;
-use codex_protocol::protocol::RolloutItem;
-use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::SessionSource;
@@ -21,7 +18,10 @@ use tempfile::TempDir;
 use uuid::Uuid;
 
 use super::*;
+use crate::InitialHistory;
 use crate::RolloutConfig;
+use crate::RolloutItem;
+use crate::RolloutLine;
 use crate::RolloutRecorder;
 use crate::RolloutRecorderParams;
 use crate::append_rollout_item_to_path;
@@ -309,22 +309,44 @@ async fn worker_compresses_old_active_and_archived_rollouts() -> anyhow::Result<
 }
 
 #[tokio::test]
+async fn worker_waits_for_rollout_maintenance_before_compressing() -> anyhow::Result<()> {
+    let home = TempDir::new()?;
+    let uuid = Uuid::from_u128(26);
+    let thread_id = ThreadId::from_string(&uuid.to_string())?;
+    let path = rollout_path(home.path(), "2025-01-03T12-00-00", uuid);
+    write_rollout(&path, thread_id, "migration in progress")?;
+    set_old_mtime(&path)?;
+    let guard = crate::try_acquire_rollout_maintenance_lock(home.path())?
+        .expect("claim rollout maintenance lock");
+
+    worker::run(home.path().to_path_buf()).await?;
+    assert!(path.exists());
+    assert!(!compressed_rollout_path(&path).exists());
+
+    drop(guard);
+    worker::run(home.path().to_path_buf()).await?;
+    assert!(!path.exists());
+    assert!(compressed_rollout_path(&path).exists());
+    Ok(())
+}
+
+#[tokio::test]
 async fn worker_skips_archived_paginated_fork_pointer_chain() -> anyhow::Result<()> {
     let home = TempDir::new()?;
+    let thread_id = ThreadId::from_string(&Uuid::from_u128(15).to_string())?;
     let source_uuid = Uuid::from_u128(16);
-    let source_id = ThreadId::from_string(&source_uuid.to_string())?;
+    let source_rollout_id = ThreadId::from_string(&source_uuid.to_string())?;
     let source_path = rollout_path(home.path(), "2025-01-03T12-00-00", source_uuid);
-    write_rollout(&source_path, source_id, "referenced source")?;
+    write_rollout(&source_path, thread_id, "referenced source")?;
     set_old_mtime(&source_path)?;
 
     let child_uuid = Uuid::from_u128(17);
-    let child_id = ThreadId::from_string(&child_uuid.to_string())?;
     let child_path = archived_rollout_path(home.path(), "2025-01-03T12-00-01", child_uuid);
-    write_rollout(&child_path, child_id, "fork child")?;
+    write_rollout(&child_path, thread_id, "fork child")?;
     set_history_base(
         child_path.as_path(),
         HistoryPosition {
-            thread_id: source_id,
+            thread_id: source_rollout_id,
             end_ordinal_exclusive: 2,
             end_byte_offset: std::fs::metadata(source_path.as_path())?.len(),
         },

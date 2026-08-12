@@ -90,6 +90,7 @@ mod tests {
                 }),
                 mcp_app_resource_uri: Some("ui://widget/lookup.html".to_string()),
                 plugin_id: Some("sample@test".to_string()),
+                read_only_hint: None,
                 result: Some(Box::new(McpToolCallResult {
                     content: vec![serde_json::json!({
                         "type": "text",
@@ -106,6 +107,8 @@ mod tests {
                 status: "completed".to_string(),
                 revised_prompt: Some("revised".to_string()),
                 result: "base64-result".to_string(),
+                transparent_background: None,
+                failure: None,
                 saved_path: Some(test_path_buf("/tmp/ig-1.png").abs()),
             }),
         ]);
@@ -140,6 +143,7 @@ mod tests {
                 }),
                 mcp_app_resource_uri: Some("ui://widget/lookup.html".to_string()),
                 plugin_id: Some("sample@test".to_string()),
+                read_only_hint: None,
                 result: Some(Box::new(redacted_mcp_tool_call_result())),
                 error: None,
                 duration_ms: Some(8),
@@ -158,6 +162,7 @@ mod tests {
             app_context: None,
             mcp_app_resource_uri: None,
             plugin_id: None,
+            read_only_hint: None,
             result: None,
             error: Some(McpToolCallError {
                 message: "secret error".to_string(),
@@ -178,6 +183,7 @@ mod tests {
                 app_context: None,
                 mcp_app_resource_uri: None,
                 plugin_id: None,
+                read_only_hint: None,
                 result: None,
                 error: Some(McpToolCallError {
                     message: REDACTED_PAYLOAD.to_string(),
@@ -197,6 +203,7 @@ mod tests {
             preview: "preview".to_string(),
             ephemeral: false,
             section: None,
+            section_entered_at: None,
             history_mode: Default::default(),
             model_provider: "mock_provider".to_string(),
             model_id: None,

@@ -43,12 +43,8 @@ pub(super) async fn read_thread(
                     metadata.rollout_path.as_path(),
                 )))
         && (!params.include_history
-            || sqlite_rollout_path_can_load_history_for_thread(
-                store,
-                &metadata.rollout_path,
-                thread_id,
-            )
-            .await)
+            || sqlite_rollout_path_can_load_history_for_thread(&metadata.rollout_path, thread_id)
+                .await)
     {
         let metadata_sandbox_policy = metadata.sandbox_policy.clone();
         let mut thread = stored_thread_from_sqlite_metadata(store, metadata).await?;
@@ -70,6 +66,11 @@ pub(super) async fn read_thread(
             }
             rollout_thread.recency_at = thread.recency_at;
             rollout_thread.section = thread.section;
+            rollout_thread.section_position = thread.section_position;
+            rollout_thread.section_entered_at = thread.section_entered_at;
+            if !thread.cwd.as_os_str().is_empty() {
+                rollout_thread.cwd = thread.cwd;
+            }
             if thread.name.is_some() {
                 rollout_thread.name = thread.name;
             }
@@ -103,7 +104,6 @@ pub(super) async fn read_thread(
 }
 
 async fn sqlite_rollout_path_can_load_history_for_thread(
-    store: &LocalThreadStore,
     path: &std::path::Path,
     thread_id: codex_protocol::ThreadId,
 ) -> bool {
@@ -113,9 +113,9 @@ async fn sqlite_rollout_path_can_load_history_for_thread(
     // SQLite metadata can outlive a moved/recreated rollout path. When history is
     // requested, verify the path still resolves to the requested thread before
     // trusting it as the source replay.
-    read_thread_from_rollout_path(store, path.to_path_buf())
+    read_session_meta_line(path)
         .await
-        .is_ok_and(|thread| thread.thread_id == thread_id)
+        .is_ok_and(|metadata| metadata.meta.id == thread_id)
 }
 
 pub(super) async fn read_thread_by_rollout_path(
@@ -140,6 +140,19 @@ pub(super) async fn read_thread_by_rollout_path(
         } else {
             thread.recency_at = metadata.recency_at;
             thread.section = metadata.section;
+            thread.section_position = metadata.section_position;
+            thread.section_entered_at = metadata.section_entered_at;
+            if !metadata.cwd.as_os_str().is_empty()
+                && resolve_requested_rollout_path(store, metadata.rollout_path.clone())
+                    .await
+                    .is_ok_and(|metadata_rollout_path| metadata_rollout_path == path)
+            {
+                thread.cwd = metadata.cwd;
+                thread.permission_profile = permission_profile_from_metadata_value(
+                    &metadata.sandbox_policy,
+                    thread.cwd.as_path(),
+                );
+            }
             let (fallback_sha, fallback_branch, fallback_origin_url) = match thread.git_info.take()
             {
                 Some(info) => (
@@ -317,7 +330,7 @@ async fn read_thread_from_rollout_path(
 
 pub(super) async fn load_history_items(
     path: &std::path::Path,
-) -> ThreadStoreResult<Vec<codex_protocol::protocol::RolloutItem>> {
+) -> ThreadStoreResult<Vec<codex_rollout::RolloutItem>> {
     let (items, _, _) = RolloutRecorder::load_rollout_items(path)
         .await
         .map_err(|err| ThreadStoreError::Internal {
@@ -334,12 +347,22 @@ async fn read_sqlite_metadata(
     runtime.get_thread(thread_id).await.ok().flatten()
 }
 
-async fn stored_thread_from_sqlite_metadata(
+pub(super) async fn stored_thread_from_sqlite_metadata(
     store: &LocalThreadStore,
     metadata: ThreadMetadata,
 ) -> ThreadStoreResult<StoredThread> {
     let session_meta = match read_required_session_meta_line(metadata.rollout_path.as_path()).await
     {
+        Ok(meta_line) if meta_line.meta.id != metadata.id => {
+            return Err(ThreadStoreError::Internal {
+                message: format!(
+                    "session metadata {} belongs to thread {}, expected {}",
+                    metadata.rollout_path.display(),
+                    meta_line.meta.id,
+                    metadata.id
+                ),
+            });
+        }
         Ok(meta_line) => Some(meta_line.meta),
         Err(_)
             if codex_rollout::existing_rollout_path(metadata.rollout_path.as_path())
@@ -357,7 +380,6 @@ async fn stored_thread_from_sqlite_metadata(
             });
         }
     };
-    let rollout_path = codex_rollout::plain_rollout_path(metadata.rollout_path.as_path());
     let forked_from_id = session_meta.as_ref().and_then(|meta| meta.forked_from_id);
     let parent_thread_id = session_meta.as_ref().and_then(|meta| meta.parent_thread_id);
     let history_mode = session_meta
@@ -365,6 +387,23 @@ async fn stored_thread_from_sqlite_metadata(
         .map(|meta| meta.history_mode)
         .unwrap_or(metadata.history_mode);
     let name = thread_name_from_metadata(store, &metadata, history_mode).await;
+    let mut thread = stored_thread_from_state_metadata(store, metadata, parent_thread_id);
+    thread.forked_from_id = forked_from_id;
+    thread.history_mode = history_mode;
+    thread.name = name;
+    Ok(thread)
+}
+
+pub(super) fn stored_thread_from_state_metadata(
+    store: &LocalThreadStore,
+    metadata: ThreadMetadata,
+    parent_thread_id: Option<codex_protocol::ThreadId>,
+) -> StoredThread {
+    let name = match metadata.history_mode {
+        ThreadHistoryMode::Paginated => sqlite_thread_name(&metadata),
+        ThreadHistoryMode::Legacy => distinct_thread_metadata_title(&metadata),
+    };
+    let rollout_path = codex_rollout::plain_rollout_path(metadata.rollout_path.as_path());
     let preview = metadata
         .preview
         .clone()
@@ -372,11 +411,11 @@ async fn stored_thread_from_sqlite_metadata(
         .unwrap_or_default();
     let permission_profile =
         permission_profile_from_metadata_value(&metadata.sandbox_policy, metadata.cwd.as_path());
-    Ok(StoredThread {
+    StoredThread {
         thread_id: metadata.id,
         extra_config: None,
         rollout_path: Some(rollout_path),
-        forked_from_id,
+        forked_from_id: None,
         parent_thread_id,
         preview,
         name,
@@ -392,10 +431,12 @@ async fn stored_thread_from_sqlite_metadata(
         recency_at: metadata.recency_at,
         archived_at: metadata.archived_at,
         section: metadata.section,
+        section_position: metadata.section_position,
+        section_entered_at: metadata.section_entered_at,
         cwd: metadata.cwd,
         cli_version: metadata.cli_version,
         source: parse_session_source(&metadata.source),
-        history_mode,
+        history_mode: metadata.history_mode,
         thread_source: metadata.thread_source,
         agent_nickname: metadata.agent_nickname,
         agent_role: metadata.agent_role,
@@ -410,7 +451,7 @@ async fn stored_thread_from_sqlite_metadata(
         token_usage: None,
         first_user_message: metadata.first_user_message,
         history: None,
-    })
+    }
 }
 
 async fn thread_name_from_metadata(
@@ -488,6 +529,8 @@ fn stored_thread_from_meta_line(
         recency_at: updated_at,
         archived_at: archived.then_some(updated_at),
         section: None,
+        section_position: None,
+        section_entered_at: None,
         cwd: meta_line.meta.cwd,
         cli_version: meta_line.meta.cli_version,
         source: meta_line.meta.source,
@@ -537,11 +580,11 @@ mod tests {
     use codex_protocol::items::UserMessageItem;
     use codex_protocol::protocol::EventMsg;
     use codex_protocol::protocol::ItemCompletedEvent;
-    use codex_protocol::protocol::RolloutItem;
     use codex_protocol::protocol::SandboxPolicy;
     use codex_protocol::protocol::SessionSource;
     use codex_protocol::protocol::ThreadHistoryMode;
     use codex_protocol::user_input::UserInput;
+    use codex_rollout::RolloutItem;
     use codex_state::ThreadMetadataBuilder;
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
@@ -643,6 +686,13 @@ mod tests {
         builder.recency_at = Some(recency_at);
         let mut metadata = builder.build(config.default_model_provider_id.as_str());
         metadata.title = "Stale SQLite name".to_string();
+        metadata.section = Some(codex_state::ThreadSection {
+            id: codex_state::PINNED_THREAD_SECTION_ID.to_string(),
+            name: codex_state::PINNED_THREAD_SECTION_NAME.to_string(),
+            appearance: None,
+        });
+        metadata.section_position = Some(2_000_000);
+        metadata.section_entered_at = Some(recency_at);
         runtime
             .upsert_thread(&metadata)
             .await
@@ -663,6 +713,12 @@ mod tests {
         let git_info = thread.git_info.expect("git info should be present");
         assert_eq!(thread.name.as_deref(), Some("Latest index name"));
         assert_eq!(thread.recency_at, recency_at);
+        assert_eq!(
+            thread.section.as_ref().map(|section| section.id.as_str()),
+            Some(codex_state::PINNED_THREAD_SECTION_ID)
+        );
+        assert_eq!(thread.section_position, Some(2_000_000));
+        assert_eq!(thread.section_entered_at, Some(recency_at));
         assert_eq!(git_info.branch.as_deref(), Some("sqlite-branch"));
         assert_eq!(
             git_info.commit_hash.as_ref().map(|sha| sha.0.as_str()),
@@ -835,7 +891,7 @@ mod tests {
                     text: "Rollout user message".to_string(),
                     text_elements: Vec::new(),
                 }])),
-                started_at_ms: None,
+                started_at_ms: Some(0),
                 completed_at_ms: 0,
             })),
         )
@@ -988,7 +1044,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_thread_preserves_rollout_cwd_when_sqlite_metadata_exists() {
+    async fn read_thread_preserves_sqlite_cwd_when_rollout_metadata_is_stale() {
         let home = TempDir::new().expect("temp dir");
         let config = test_config(home.path());
         let runtime = codex_state::StateRuntime::init(
@@ -1038,7 +1094,8 @@ mod tests {
             SessionSource::Cli,
         );
         builder.model_provider = Some(config.default_model_provider_id.clone());
-        builder.cwd = home.path().join("sqlite-workspace");
+        let sqlite_cwd = home.path().join("sqlite-workspace");
+        builder.cwd = sqlite_cwd.clone();
         let mut metadata = builder.build(config.default_model_provider_id.as_str());
         metadata.title = "Saved title".to_string();
         metadata.first_user_message = Some("Hello from sqlite".to_string());
@@ -1058,11 +1115,11 @@ mod tests {
             .expect("read thread");
 
         assert_eq!(thread.thread_id, thread_id);
-        assert_eq!(thread.rollout_path, Some(rollout_path));
+        assert_eq!(thread.rollout_path, Some(rollout_path.clone()));
         assert_eq!(thread.preview, "Hello from rollout");
         assert_eq!(thread.name, Some("Saved title".to_string()));
         assert_eq!(thread.model_provider, "rollout-provider");
-        assert_eq!(thread.cwd, rollout_cwd);
+        assert_eq!(thread.cwd, sqlite_cwd);
         let legacy_policy = SandboxPolicy::WorkspaceWrite {
             writable_roots: Vec::new(),
             network_access: false,
@@ -1073,9 +1130,70 @@ mod tests {
             thread.permission_profile,
             PermissionProfile::from_legacy_sandbox_policy_for_cwd(
                 &legacy_policy,
-                rollout_cwd.as_path()
+                sqlite_cwd.as_path()
             )
         );
+
+        let thread_by_rollout_path = store
+            .read_thread_by_rollout_path(
+                rollout_path.clone(),
+                /*include_archived*/ false,
+                /*include_history*/ false,
+            )
+            .await
+            .expect("read thread by rollout path");
+
+        assert_eq!(thread_by_rollout_path.cwd, sqlite_cwd);
+        assert_eq!(
+            thread_by_rollout_path.permission_profile,
+            thread.permission_profile
+        );
+
+        metadata.cwd = PathBuf::new();
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("update state db with empty cwd");
+
+        for thread in [
+            store
+                .read_thread(ReadThreadParams {
+                    thread_id,
+                    include_archived: false,
+                    include_history: false,
+                })
+                .await
+                .expect("read thread with empty sqlite cwd"),
+            store
+                .read_thread_by_rollout_path(
+                    rollout_path.clone(),
+                    /*include_archived*/ false,
+                    /*include_history*/ false,
+                )
+                .await
+                .expect("read rollout path with empty sqlite cwd"),
+        ] {
+            assert_eq!(thread.cwd, rollout_cwd);
+        }
+
+        metadata.cwd = sqlite_cwd;
+        metadata.rollout_path =
+            write_session_file(home.path(), "2025-01-04T12-00-00", uuid).expect("newer rollout");
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("update state db with newer rollout");
+
+        let thread_from_requested_rollout = store
+            .read_thread_by_rollout_path(
+                rollout_path,
+                /*include_archived*/ false,
+                /*include_history*/ false,
+            )
+            .await
+            .expect("read explicitly requested rollout");
+
+        assert_eq!(thread_from_requested_rollout.cwd, rollout_cwd);
     }
 
     #[tokio::test]

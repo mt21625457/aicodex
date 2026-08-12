@@ -36,7 +36,6 @@ use codex_protocol::protocol::AgentReasoningEvent;
 use codex_protocol::protocol::AgentReasoningRawContentEvent;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::ApplyPatchApprovalRequestEvent;
-use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::ContextCompactedEvent;
 use codex_protocol::protocol::DynamicToolCallResponseEvent;
 use codex_protocol::protocol::ErrorEvent;
@@ -53,7 +52,6 @@ use codex_protocol::protocol::McpToolCallBeginEvent;
 use codex_protocol::protocol::McpToolCallEndEvent;
 use codex_protocol::protocol::PatchApplyBeginEvent;
 use codex_protocol::protocol::PatchApplyEndEvent;
-use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
@@ -64,6 +62,8 @@ use codex_protocol::protocol::WebSearchBeginEvent;
 use codex_protocol::protocol::WebSearchEndEvent;
 #[cfg(test)]
 use codex_protocol::review_format::REVIEW_FALLBACK_MESSAGE;
+use codex_rollout::CompactedItem;
+use codex_rollout::RolloutItem;
 use codex_utils_path_uri::LegacyAppPathString;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -405,7 +405,7 @@ impl ThreadHistoryBuilder {
         match item {
             RolloutItem::EventMsg(event) => self.handle_event(event),
             RolloutItem::Compacted(payload) => self.handle_compacted(payload),
-            RolloutItem::ResponseItem(item) => self.handle_response_item(item),
+            RolloutItem::ResponseItem(item) => self.handle_response_item(&item.item),
             RolloutItem::InterAgentCommunication(_)
             | RolloutItem::InterAgentCommunicationMetadata { .. }
             | RolloutItem::TurnContext(_)
@@ -937,6 +937,7 @@ impl ThreadHistoryBuilder {
                 }),
             mcp_app_resource_uri: payload.mcp_app_resource_uri.clone(),
             plugin_id: payload.plugin_id.clone(),
+            read_only_hint: payload.read_only_hint,
             result: None,
             error: None,
             duration_ms: None,
@@ -989,6 +990,7 @@ impl ThreadHistoryBuilder {
                 }),
             mcp_app_resource_uri: payload.mcp_app_resource_uri.clone(),
             plugin_id: payload.plugin_id.clone(),
+            read_only_hint: payload.read_only_hint,
             result,
             error,
             duration_ms,
@@ -1010,6 +1012,8 @@ impl ThreadHistoryBuilder {
             status: String::new(),
             revised_prompt: None,
             result: String::new(),
+            transparent_background: None,
+            failure: None,
             saved_path: None,
         });
         self.upsert_item_in_current_turn(item);
@@ -1021,6 +1025,8 @@ impl ThreadHistoryBuilder {
             status: payload.status.clone(),
             revised_prompt: payload.revised_prompt.clone(),
             result: payload.result.clone(),
+            transparent_background: payload.transparent_background,
+            failure: payload.failure.clone(),
             saved_path: payload.saved_path.clone(),
         });
         self.upsert_item_in_current_turn(item);
@@ -2133,9 +2139,9 @@ mod tests {
     use codex_protocol::protocol::AgentReasoningRawContentEvent;
     use codex_protocol::protocol::ApplyPatchApprovalRequestEvent;
     use codex_protocol::protocol::CodexErrorInfo;
-    use codex_protocol::protocol::CompactedItem;
     use codex_protocol::protocol::DynamicToolCallResponseEvent;
     use codex_protocol::protocol::EnteredReviewModeEvent;
+    use codex_protocol::protocol::ExecCommandBeginEvent;
     use codex_protocol::protocol::ExecCommandEndEvent;
     use codex_protocol::protocol::ExecCommandSource;
     use codex_protocol::protocol::ExitedReviewModeEvent;
@@ -2152,6 +2158,7 @@ mod tests {
     use codex_protocol::protocol::UserMessageEvent;
     use codex_protocol::protocol::WebSearchBeginEvent;
     use codex_protocol::protocol::WebSearchEndEvent;
+    use codex_rollout::CompactedItem;
     use codex_utils_absolute_path::test_support::PathBufExt;
     use codex_utils_absolute_path::test_support::test_path_buf;
     use pretty_assertions::assert_eq;
@@ -2170,35 +2177,41 @@ mod tests {
                 local_images: Vec::new(),
                 ..Default::default()
             })),
-            RolloutItem::ResponseItem(ResponseItem::FunctionCall {
-                id: Some(ResponseItemId::from_server("fc-1".into())),
-                name: "exec_command".into(),
-                namespace: None,
-                arguments: serde_json::json!({
-                    "cmd": "printf hello",
-                    "workdir": "/tmp",
-                    "yield_time_ms": 1000,
-                    "max_output_tokens": 2000
-                })
-                .to_string(),
-                encrypted_function_args: None,
-                call_id: "call-exec-1".into(),
-                internal_chat_message_metadata_passthrough: None,
-            }),
-            RolloutItem::ResponseItem(ResponseItem::FunctionCallOutput {
-                id: None,
-                call_id: "call-exec-1".into(),
-                output: FunctionCallOutputPayload::from_text(
-                    "Chunk ID: chunk-1\n\
+            RolloutItem::ResponseItem(
+                ResponseItem::FunctionCall {
+                    id: Some(ResponseItemId::from_server("fc-1".into())),
+                    name: "exec_command".into(),
+                    namespace: None,
+                    arguments: serde_json::json!({
+                        "cmd": "printf hello",
+                        "workdir": "/tmp",
+                        "yield_time_ms": 1000,
+                        "max_output_tokens": 2000
+                    })
+                    .to_string(),
+                    encrypted_function_args: None,
+                    call_id: "call-exec-1".into(),
+                    internal_chat_message_metadata_passthrough: None,
+                }
+                .into(),
+            ),
+            RolloutItem::ResponseItem(
+                ResponseItem::FunctionCallOutput {
+                    id: None,
+                    call_id: "call-exec-1".into(),
+                    output: FunctionCallOutputPayload::from_text(
+                        "Chunk ID: chunk-1\n\
                      Wall time: 0.0123 seconds\n\
                      Process exited with code 0\n\
                      Original token count: 1\n\
                      Output:\n\
                      hello\n"
-                        .into(),
-                ),
-                internal_chat_message_metadata_passthrough: None,
-            }),
+                            .into(),
+                    ),
+                    internal_chat_message_metadata_passthrough: None,
+                }
+                .into(),
+            ),
         ];
 
         let turns = build_turns_from_rollout_items(&items);
@@ -2258,21 +2271,27 @@ mod tests {
                 phase: None,
                 memory_citation: None,
             })),
-            RolloutItem::ResponseItem(ResponseItem::FunctionCall {
-                id: Some(ResponseItemId::from_server("fc-1".into())),
-                name: "exec_command".into(),
-                namespace: None,
-                arguments: serde_json::json!({ "cmd": "pwd", "workdir": "/tmp" }).to_string(),
-                encrypted_function_args: None,
-                call_id: "call-exec-1".into(),
-                internal_chat_message_metadata_passthrough: None,
-            }),
-            RolloutItem::ResponseItem(ResponseItem::FunctionCallOutput {
-                id: None,
-                call_id: "call-exec-1".into(),
-                output: FunctionCallOutputPayload::from_text("Output:\n/tmp\n".into()),
-                internal_chat_message_metadata_passthrough: None,
-            }),
+            RolloutItem::ResponseItem(
+                ResponseItem::FunctionCall {
+                    id: Some(ResponseItemId::from_server("fc-1".into())),
+                    name: "exec_command".into(),
+                    namespace: None,
+                    arguments: serde_json::json!({ "cmd": "pwd", "workdir": "/tmp" }).to_string(),
+                    encrypted_function_args: None,
+                    call_id: "call-exec-1".into(),
+                    internal_chat_message_metadata_passthrough: None,
+                }
+                .into(),
+            ),
+            RolloutItem::ResponseItem(
+                ResponseItem::FunctionCallOutput {
+                    id: None,
+                    call_id: "call-exec-1".into(),
+                    output: FunctionCallOutputPayload::from_text("Output:\n/tmp\n".into()),
+                    internal_chat_message_metadata_passthrough: None,
+                }
+                .into(),
+            ),
             RolloutItem::EventMsg(EventMsg::AgentMessage(AgentMessageEvent {
                 message: "Done.".into(),
                 phase: None,
@@ -2312,26 +2331,32 @@ mod tests {
                 local_images: Vec::new(),
                 ..Default::default()
             })),
-            RolloutItem::ResponseItem(ResponseItem::FunctionCall {
-                id: Some(ResponseItemId::from_server("fc-1".into())),
-                name: "exec_command".into(),
-                namespace: None,
-                arguments: serde_json::json!({ "cmd": "pwd", "workdir": "/tmp" }).to_string(),
-                encrypted_function_args: None,
-                call_id: "call-exec-1".into(),
-                internal_chat_message_metadata_passthrough: None,
-            }),
+            RolloutItem::ResponseItem(
+                ResponseItem::FunctionCall {
+                    id: Some(ResponseItemId::from_server("fc-1".into())),
+                    name: "exec_command".into(),
+                    namespace: None,
+                    arguments: serde_json::json!({ "cmd": "pwd", "workdir": "/tmp" }).to_string(),
+                    encrypted_function_args: None,
+                    call_id: "call-exec-1".into(),
+                    internal_chat_message_metadata_passthrough: None,
+                }
+                .into(),
+            ),
             RolloutItem::EventMsg(EventMsg::AgentMessage(AgentMessageEvent {
                 message: "Done.".into(),
                 phase: None,
                 memory_citation: None,
             })),
-            RolloutItem::ResponseItem(ResponseItem::FunctionCallOutput {
-                id: None,
-                call_id: "call-exec-1".into(),
-                output: FunctionCallOutputPayload::from_text("Output:\n/tmp\n".into()),
-                internal_chat_message_metadata_passthrough: None,
-            }),
+            RolloutItem::ResponseItem(
+                ResponseItem::FunctionCallOutput {
+                    id: None,
+                    call_id: "call-exec-1".into(),
+                    output: FunctionCallOutputPayload::from_text("Output:\n/tmp\n".into()),
+                    internal_chat_message_metadata_passthrough: None,
+                }
+                .into(),
+            ),
         ];
 
         let turns = build_turns_from_rollout_items(&items);
@@ -2760,6 +2785,8 @@ mod tests {
                         status: "completed".to_string(),
                         revised_prompt: Some("A blue square".to_string()),
                         result: "cG5n".to_string(),
+                        transparent_background: Some(true),
+                        failure: None,
                         saved_path: Some(saved_path.clone()),
                     },
                 )),
@@ -2790,25 +2817,36 @@ mod tests {
                 status: "completed".to_string(),
                 revised_prompt: Some("A blue square".to_string()),
                 result: "cG5n".to_string(),
+                transparent_background: Some(true),
+                failure: None,
                 saved_path: Some(saved_path),
             })]
         );
     }
 
     #[test]
-    fn preserves_command_plugin_id_across_legacy_upsert() {
+    fn preserves_command_plugin_id_and_redacts_secrets_across_legacy_upsert() {
         let turn_id = "turn-1";
         let thread_id = ThreadId::new();
+        let command = vec![
+            "git".to_string(),
+            "-c".to_string(),
+            "http.extraHeader=Authorization: Bearer example_synthetic_bearer_token_123456"
+                .to_string(),
+            "push".to_string(),
+        ];
+        let parsed_cmd = vec![ParsedCommand::Unknown {
+            cmd: "git -c 'http.extraHeader=Authorization: Bearer example_synthetic_bearer_token_123456' push"
+                .to_string(),
+        }];
         let command_item = CoreTurnItem::CommandExecution(CoreCommandExecutionItem {
             id: "exec-1".to_string(),
             plugin_id: Some("sample@openai-curated".to_string()),
             script_path: Some("scripts/run.py".to_string()),
             process_id: Some("pid-1".to_string()),
-            command: vec!["echo".to_string(), "hello world".to_string()],
+            command: command.clone(),
             cwd: test_path_buf("/tmp").abs().into(),
-            parsed_cmd: vec![ParsedCommand::Unknown {
-                cmd: "echo hello world".to_string(),
-            }],
+            parsed_cmd: parsed_cmd.clone(),
             source: ExecCommandSource::Agent,
             interaction_input: None,
             status: CoreCommandExecutionStatus::Completed,
@@ -2827,6 +2865,19 @@ mod tests {
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
             }),
+            EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
+                call_id: "exec-1".to_string(),
+                plugin_id: Some("sample@openai-curated".to_string()),
+                script_path: Some("scripts/run.py".to_string()),
+                process_id: Some("pid-1".to_string()),
+                turn_id: turn_id.to_string(),
+                started_at_ms: 0,
+                command: command.clone(),
+                cwd: test_path_buf("/tmp").abs().into(),
+                parsed_cmd: parsed_cmd.clone(),
+                source: ExecCommandSource::Agent,
+                interaction_input: None,
+            }),
             EventMsg::ItemCompleted(ItemCompletedEvent {
                 thread_id,
                 turn_id: turn_id.to_string(),
@@ -2841,11 +2892,9 @@ mod tests {
                 process_id: Some("pid-1".to_string()),
                 turn_id: turn_id.to_string(),
                 completed_at_ms: 1_000,
-                command: vec!["echo".to_string(), "hello world".to_string()],
+                command,
                 cwd: test_path_buf("/tmp").abs().into(),
-                parsed_cmd: vec![ParsedCommand::Unknown {
-                    cmd: "echo hello world".to_string(),
-                }],
+                parsed_cmd,
                 source: ExecCommandSource::Agent,
                 interaction_input: None,
                 stdout: "hello world\n".to_string(),
@@ -2871,6 +2920,30 @@ mod tests {
             .into_iter()
             .map(RolloutItem::EventMsg)
             .collect::<Vec<_>>();
+
+        assert_eq!(
+            build_turns_from_rollout_items(&items[..2])[0].items,
+            vec![ThreadItem::CommandExecution {
+                id: "exec-1".to_string(),
+                plugin_id: Some("sample@openai-curated".to_string()),
+                script_path: Some("scripts/run.py".to_string()),
+                command: "git -c 'http.extraHeader=Authorization: Bearer [REDACTED_SECRET]' push"
+                    .to_string(),
+                cwd: test_path_buf("/tmp").abs().into(),
+                process_id: Some("pid-1".to_string()),
+                source: CommandExecutionSource::Agent,
+                status: CommandExecutionStatus::InProgress,
+                command_actions: vec![CommandAction::Unknown {
+                    command:
+                        "git -c 'http.extraHeader=Authorization: Bearer [REDACTED_SECRET]' push"
+                            .to_string(),
+                }],
+                aggregated_output: None,
+                exit_code: None,
+                duration_ms: None,
+                transcript_metadata: None,
+            }]
+        );
         let turns = build_turns_from_rollout_items(&items);
 
         assert_eq!(turns.len(), 1);
@@ -2880,13 +2953,16 @@ mod tests {
                 id: "exec-1".to_string(),
                 plugin_id: Some("sample@openai-curated".to_string()),
                 script_path: Some("scripts/run.py".to_string()),
-                command: "echo 'hello world'".to_string(),
+                command: "git -c 'http.extraHeader=Authorization: Bearer [REDACTED_SECRET]' push"
+                    .to_string(),
                 cwd: test_path_buf("/tmp").abs().into(),
                 process_id: Some("pid-1".to_string()),
                 source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::Completed,
                 command_actions: vec![CommandAction::Unknown {
-                    command: "echo hello world".to_string(),
+                    command:
+                        "git -c 'http.extraHeader=Authorization: Bearer [REDACTED_SECRET]' push"
+                            .to_string(),
                 }],
                 aggregated_output: Some("hello world\n".to_string()),
                 exit_code: Some(0),
@@ -3009,6 +3085,13 @@ mod tests {
                 status: "completed".into(),
                 revised_prompt: Some("final prompt".into()),
                 result: "Zm9v".into(),
+                transparent_background: Some(true),
+                failure: Some(
+                    codex_extension_items::image_generation::ImageGenerationFailure::UsageLimitExceeded {
+                        limit_id: "image_gen".into(),
+                        resets_at: Some(1_786_150_800),
+                    },
+                ),
                 saved_path: Some(test_path_buf("/tmp/ig_123.png").abs()),
             })),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
@@ -3049,6 +3132,13 @@ mod tests {
                         status: "completed".into(),
                         revised_prompt: Some("final prompt".into()),
                         result: "Zm9v".into(),
+                        transparent_background: Some(true),
+                        failure: Some(
+                            codex_extension_items::image_generation::ImageGenerationFailure::UsageLimitExceeded {
+                                limit_id: "image_gen".into(),
+                                resets_at: Some(1_786_150_800),
+                            },
+                        ),
                         saved_path: Some(test_path_buf("/tmp/ig_123.png").abs()),
                     }),
                 ],
@@ -3485,6 +3575,7 @@ mod tests {
                 app_name: None,
                 action_name: None,
                 plugin_id: None,
+                read_only_hint: None,
                 duration: Duration::from_millis(8),
                 result: Err("boom".into()),
             }),
@@ -3544,6 +3635,7 @@ mod tests {
                 app_context: None,
                 mcp_app_resource_uri: None,
                 plugin_id: None,
+                read_only_hint: None,
                 result: None,
                 error: Some(McpToolCallError {
                     message: "boom".into(),
@@ -3576,6 +3668,7 @@ mod tests {
                 app_name: Some("Calendar".into()),
                 action_name: Some("lookup".into()),
                 plugin_id: Some("sample@test".into()),
+                read_only_hint: Some(false),
                 duration: Duration::from_millis(8),
                 result: Ok(CallToolResult {
                     content: vec![serde_json::json!({
@@ -3614,6 +3707,7 @@ mod tests {
                 }),
                 mcp_app_resource_uri: Some("ui://widget/lookup.html".into()),
                 plugin_id: Some("sample@test".into()),
+                read_only_hint: Some(false),
                 result: Some(Box::new(McpToolCallResult {
                     content: vec![serde_json::json!({
                         "type": "text",
@@ -5039,7 +5133,7 @@ mod tests {
                 local_images: Vec::new(),
                 ..Default::default()
             })),
-            RolloutItem::ResponseItem(hook_prompt),
+            RolloutItem::ResponseItem(hook_prompt.into()),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 started_at: None,
@@ -5115,15 +5209,18 @@ mod tests {
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
             })),
-            RolloutItem::ResponseItem(codex_protocol::models::ResponseItem::Message {
-                id: Some(codex_protocol::ResponseItemId::with_suffix("msg", "1")),
-                role: "user".into(),
-                content: vec![codex_protocol::models::ContentItem::InputText {
-                    text: "plain text".into(),
-                }],
-                phase: None,
-                internal_chat_message_metadata_passthrough: None,
-            }),
+            RolloutItem::ResponseItem(
+                codex_protocol::models::ResponseItem::Message {
+                    id: Some(codex_protocol::ResponseItemId::with_suffix("msg", "1")),
+                    role: "user".into(),
+                    content: vec![codex_protocol::models::ContentItem::InputText {
+                        text: "plain text".into(),
+                    }],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough: None,
+                }
+                .into(),
+            ),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 started_at: None,
@@ -5158,21 +5255,24 @@ mod tests {
                 local_images: Vec::new(),
                 ..Default::default()
             })),
-            RolloutItem::ResponseItem(codex_protocol::models::ResponseItem::Reasoning {
-                id: Some(ResponseItemId::from_server("reasoning-1".into())),
-                summary: vec![
-                    codex_protocol::models::ReasoningItemReasoningSummary::SummaryText {
-                        text: "short thought".into(),
-                    },
-                ],
-                content: Some(vec![
-                    codex_protocol::models::ReasoningItemContent::ReasoningText {
-                        text: "full private reasoning".into(),
-                    },
-                ]),
-                encrypted_content: Some("signature".into()),
-                internal_chat_message_metadata_passthrough: None,
-            }),
+            RolloutItem::ResponseItem(
+                codex_protocol::models::ResponseItem::Reasoning {
+                    id: Some(ResponseItemId::from_server("reasoning-1".into())),
+                    summary: vec![
+                        codex_protocol::models::ReasoningItemReasoningSummary::SummaryText {
+                            text: "short thought".into(),
+                        },
+                    ],
+                    content: Some(vec![
+                        codex_protocol::models::ReasoningItemContent::ReasoningText {
+                            text: "full private reasoning".into(),
+                        },
+                    ]),
+                    encrypted_content: Some("signature".into()),
+                    internal_chat_message_metadata_passthrough: None,
+                }
+                .into(),
+            ),
             RolloutItem::EventMsg(EventMsg::AgentMessage(AgentMessageEvent {
                 message: "done".into(),
                 phase: None,
@@ -5232,17 +5332,20 @@ mod tests {
                     text: "private reasoning".into(),
                 },
             )),
-            RolloutItem::ResponseItem(codex_protocol::models::ResponseItem::Reasoning {
-                id: Some(ResponseItemId::from_server("reasoning-1".into())),
-                summary: Vec::new(),
-                content: Some(vec![
-                    codex_protocol::models::ReasoningItemContent::ReasoningText {
-                        text: "full private reasoning".into(),
-                    },
-                ]),
-                encrypted_content: Some("signature".into()),
-                internal_chat_message_metadata_passthrough: None,
-            }),
+            RolloutItem::ResponseItem(
+                codex_protocol::models::ResponseItem::Reasoning {
+                    id: Some(ResponseItemId::from_server("reasoning-1".into())),
+                    summary: Vec::new(),
+                    content: Some(vec![
+                        codex_protocol::models::ReasoningItemContent::ReasoningText {
+                            text: "full private reasoning".into(),
+                        },
+                    ]),
+                    encrypted_content: Some("signature".into()),
+                    internal_chat_message_metadata_passthrough: None,
+                }
+                .into(),
+            ),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: "turn-a".into(),
                 started_at: None,

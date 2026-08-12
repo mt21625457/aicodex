@@ -9,7 +9,6 @@ use crate::tools::router::ToolRouter;
 use codex_exec_server::ExecutorCapabilityDiscoverySnapshot;
 use codex_exec_server::ResolvedSelectedCapabilityRoot;
 use codex_mcp::McpBinding;
-use codex_mcp::ToolInfo;
 
 static NEXT_STEP_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -24,8 +23,6 @@ pub(crate) struct StepContext {
     pub(crate) executor_capability_discovery: Option<Arc<ExecutorCapabilityDiscoverySnapshot>>,
     /// The exact MCP connections, configuration, and catalog captured for this step.
     pub(crate) mcp: Arc<McpBinding>,
-    /// The fixed MCP tool list used for this exact sampling request.
-    pub(crate) mcp_tools: Vec<ToolInfo>,
     /// The finalized tool plan advertised and executed for this exact sampling request.
     pub(crate) tool_router: Arc<ToolRouter>,
     /// The canonical AGENTS.md value observed with this environment snapshot.

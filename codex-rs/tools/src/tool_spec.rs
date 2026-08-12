@@ -23,7 +23,9 @@ use crate::claude_native::ClaudeNativeToolKind;
 use crate::claude_native::ClaudeNativeToolPolicy;
 use crate::claude_native::ClaudeNativeToolSelection;
 use crate::claude_native::evaluate_native_tool;
+use crate::default_namespace_description;
 use codex_api::SearchCommands;
+use codex_protocol::DEFAULT_FUNCTION_NAMESPACE;
 use codex_protocol::config_types::WebSearchContextSize;
 use codex_protocol::config_types::WebSearchFilters as ConfigWebSearchFilters;
 use codex_protocol::config_types::WebSearchUserLocation as ConfigWebSearchUserLocation;
@@ -276,6 +278,7 @@ pub fn create_tools_json_for_claude_messages_with_options(
                                 kind: ClaudeToolCallKind::Function,
                             });
                         }
+                        ResponsesApiNamespaceTool::Custom(_) => {}
                     }
                 }
             }
@@ -863,6 +866,55 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash
+}
+
+pub fn create_tools_json_for_responses_lite(
+    tools: &[ToolSpec],
+) -> Result<Vec<Value>, serde_json::Error> {
+    let mut functions = ResponsesApiNamespace {
+        name: DEFAULT_FUNCTION_NAMESPACE.to_string(),
+        description: default_namespace_description(DEFAULT_FUNCTION_NAMESPACE),
+        tools: Vec::new(),
+    };
+    let mut functions_index = None;
+    let mut tools_json = Vec::new();
+
+    for tool in tools {
+        match tool {
+            ToolSpec::Function(tool) => {
+                functions
+                    .tools
+                    .push(ResponsesApiNamespaceTool::Function(tool.clone()));
+            }
+            ToolSpec::Freeform(tool) => {
+                functions
+                    .tools
+                    .push(ResponsesApiNamespaceTool::Custom(tool.clone()));
+            }
+            ToolSpec::Namespace(namespace) if namespace.name == DEFAULT_FUNCTION_NAMESPACE => {
+                if !namespace.description.trim().is_empty() {
+                    functions.description = namespace.description.clone();
+                }
+                functions.tools.extend(namespace.tools.clone());
+            }
+            tool => {
+                tools_json.push(serde_json::to_value(tool)?);
+                continue;
+            }
+        }
+        functions_index.get_or_insert(tools_json.len());
+    }
+
+    if let Some(functions_index) = functions_index
+        && !functions.tools.is_empty()
+    {
+        tools_json.insert(
+            functions_index,
+            serde_json::to_value(ToolSpec::Namespace(functions))?,
+        );
+    }
+
+    Ok(tools_json)
 }
 
 /// Returns raw JSON that can be embedded directly in a Responses API request.

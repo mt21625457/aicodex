@@ -326,6 +326,78 @@ async fn resume_lookup_model_providers_filters_only_last_lookup() {
 }
 
 #[test]
+fn turn_items_for_thread_returns_matching_turn_items() {
+    let thread = AppServerThread {
+        id: "thread-1".to_string(),
+        extra: None,
+        session_id: "thread-1".to_string(),
+        forked_from_id: None,
+        parent_thread_id: None,
+        preview: String::new(),
+        ephemeral: false,
+        section: None,
+        section_entered_at: None,
+        history_mode: Default::default(),
+        model_provider: "openai".to_string(),
+        created_at: 0,
+        updated_at: 0,
+        recency_at: Some(0),
+        status: codex_app_server_protocol::ThreadStatus::Idle,
+        path: None,
+        cwd: test_path_buf("/tmp/project").abs(),
+        cli_version: "0.0.0-test".to_string(),
+        source: codex_app_server_protocol::SessionSource::Exec,
+        can_accept_direct_input: None,
+        thread_source: None,
+        agent_nickname: None,
+        agent_role: None,
+        git_info: None,
+        name: None,
+        turns: vec![
+            codex_app_server_protocol::Turn {
+                id: "turn-1".to_string(),
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
+                items: vec![AppServerThreadItem::AgentMessage {
+                    id: "msg-1".to_string(),
+                    text: "hello".to_string(),
+                    phase: None,
+                    memory_citation: None,
+                }],
+                status: codex_app_server_protocol::TurnStatus::Completed,
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+            },
+            codex_app_server_protocol::Turn {
+                id: "turn-2".to_string(),
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
+                items: vec![AppServerThreadItem::Plan {
+                    id: "plan-1".to_string(),
+                    text: "ship it".to_string(),
+                }],
+                status: codex_app_server_protocol::TurnStatus::Completed,
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+            },
+        ],
+    };
+
+    assert_eq!(
+        turn_items_for_thread(&thread, "turn-1"),
+        Some(vec![AppServerThreadItem::AgentMessage {
+            id: "msg-1".to_string(),
+            text: "hello".to_string(),
+            phase: None,
+            memory_citation: None,
+        }])
+    );
+    assert_eq!(turn_items_for_thread(&thread, "missing-turn"), None);
+}
+
+#[test]
 fn should_backfill_turn_completed_items_backfills_persisted_summaries_only() {
     let notification =
         ServerNotification::TurnCompleted(codex_app_server_protocol::TurnCompletedNotification {
@@ -713,13 +785,16 @@ async fn session_configured_from_thread_response_preserves_parent_thread_id() {
         .await
         .expect("build config");
     let parent_thread_id = ThreadId::new();
+    let forked_from_id = ThreadId::new();
     let mut response = sample_thread_start_response();
     response.thread.parent_thread_id = Some(parent_thread_id.to_string());
+    response.thread.forked_from_id = Some(forked_from_id.to_string());
 
     let event = session_configured_from_thread_start_response(&response, &config)
         .expect("build bootstrap session configured event");
 
     assert_eq!(event.parent_thread_id, Some(parent_thread_id));
+    assert_eq!(event.forked_from_id, Some(forked_from_id));
 }
 
 fn sample_thread_start_response() -> ThreadStartResponse {
@@ -733,6 +808,7 @@ fn sample_thread_start_response() -> ThreadStartResponse {
             preview: String::new(),
             ephemeral: false,
             section: None,
+            section_entered_at: None,
             history_mode: Default::default(),
             model_provider: "openai".to_string(),
             model_id: None,

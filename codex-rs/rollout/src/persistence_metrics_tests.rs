@@ -10,7 +10,6 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExitedReviewModeEvent;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::ReviewTarget;
-use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
@@ -26,10 +25,12 @@ use super::is_thread_sampled;
 use super::measure_and_filter_rollout_items;
 use super::measure_and_filter_rollout_items_with_mode;
 use super::update_turn_measurements;
+use crate::ResponseItemEnvelope;
+use crate::RolloutItem;
 use crate::policy::EventPersistenceMode;
 
 fn retained_message(text: &str) -> RolloutItem {
-    RolloutItem::ResponseItem(ResponseItem::Message {
+    RolloutItem::ResponseItem(ResponseItemEnvelope::new(ResponseItem::Message {
         id: None,
         role: "user".to_string(),
         content: vec![ContentItem::InputText {
@@ -37,7 +38,7 @@ fn retained_message(text: &str) -> RolloutItem {
         }],
         phase: None,
         internal_chat_message_metadata_passthrough: None,
-    })
+    }))
 }
 
 fn turn_started(turn_id: &str) -> RolloutItem {
@@ -137,7 +138,7 @@ fn thread_sampling_is_stable_and_selects_whole_threads() {
 #[test]
 fn mixed_batch_reports_exact_policy_counts_and_bytes() {
     let kept = retained_message("hello");
-    let dropped = RolloutItem::ResponseItem(ResponseItem::Other);
+    let dropped = RolloutItem::ResponseItem(ResponseItemEnvelope::new(ResponseItem::Other));
     let items = vec![kept.clone(), dropped.clone()];
 
     let (persisted, measurement) =
@@ -232,7 +233,7 @@ fn turn_measurements_span_batches_and_include_items_before_start() {
         retained_message("first prompt"),
         turn_started("turn-1"),
         retained_message("first response"),
-        RolloutItem::ResponseItem(ResponseItem::Other),
+        RolloutItem::ResponseItem(ResponseItemEnvelope::new(ResponseItem::Other)),
         turn_complete("turn-1"),
     ];
     let second_turn = vec![

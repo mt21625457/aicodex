@@ -1,16 +1,21 @@
 use std::borrow::Cow;
+use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
+use app_test_support::create_fake_rollout_with_session_and_thread_source;
 use app_test_support::create_final_assistant_message_sse_response;
 use app_test_support::create_mock_responses_server_sequence;
 use axum::Router;
 use codex_app_server_protocol::CapabilityRootLocation;
+use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::EnvironmentAddResponse;
+use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::McpElicitationSchema;
@@ -25,6 +30,10 @@ use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::SelectedCapabilityRoot;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadReadParams;
+use codex_app_server_protocol::ThreadReadResponse;
+use codex_app_server_protocol::ThreadResumeParams;
+use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnEnvironmentParams;
@@ -32,6 +41,9 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput as V2UserInput;
 use codex_features::Feature;
+use codex_protocol::mcp::OPENAI_STANDARD_FORM_INPUT_EXTENSION_ID;
+use codex_protocol::protocol::SessionSource as CoreSessionSource;
+use codex_protocol::protocol::ThreadSource as CoreThreadSource;
 use codex_utils_path_uri::PathUri;
 use codex_utils_pty::DEFAULT_OUTPUT_BYTES_CAP;
 use core_test_support::responses;
@@ -45,9 +57,11 @@ use rmcp::model::ContentBlock;
 use rmcp::model::ElicitRequestParams;
 use rmcp::model::ElicitationAction;
 use rmcp::model::ElicitationSchema;
+use rmcp::model::InitializeRequestParams;
+use rmcp::model::InitializeResult;
 use rmcp::model::JsonObject;
 use rmcp::model::ListToolsResult;
-use rmcp::model::Meta;
+use rmcp::model::MetaObject;
 use rmcp::model::PrimitiveSchemaDefinition;
 use rmcp::model::ServerCapabilities;
 use rmcp::model::ServerInfo;
@@ -129,6 +143,9 @@ async fn mcp_server_tool_call_returns_tool_result() -> Result<()> {
         Some(json!({
             "echoed": "hello from app",
             "threadId": thread_id,
+            "clientCapabilities": {
+                "extensions": {},
+            },
         }))
     );
     assert_eq!(response.is_error, Some(false));
@@ -142,6 +159,190 @@ async fn mcp_server_tool_call_returns_tool_result() -> Result<()> {
     mcp_server_handle.abort();
     let _ = mcp_server_handle.await;
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_server_tool_call_forwards_only_server_extensions() -> Result<()> {
+    let responses_server = responses::start_mock_server().await;
+    let (mcp_server_url, mcp_server_handle) = start_mcp_server().await?;
+    let codex_home = TempDir::new()?;
+    mcp_tool_config(&responses_server.uri(), &mcp_server_url, AUTO_COMPACT_LIMIT)
+        .write(codex_home.path())?;
+
+    let app_ui = json!({
+        "mimeTypes": [
+            "text/html;profile=mcp-app",
+            "text/x-dil;profile=mcp-app",
+        ],
+        "futureField": {"preserved": true},
+    });
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build()
+        .await?;
+    mcp.initialize_with_capabilities(
+        ClientInfo {
+            name: "codex_test".to_string(),
+            title: None,
+            version: "0.1.0".to_string(),
+        },
+        Some(InitializeCapabilities {
+            experimental_api: true,
+            request_attestation: false,
+            mcp_server_openai_form_elicitation: true,
+            opt_out_notification_methods: None,
+            extensions: Some(HashMap::from([
+                ("io.modelcontextprotocol/ui".to_string(), app_ui.clone()),
+                (
+                    OPENAI_STANDARD_FORM_INPUT_EXTENSION_ID.to_string(),
+                    json!({}),
+                ),
+            ])),
+        }),
+    )
+    .await?;
+    let ThreadStartResponse { thread, .. } = mcp
+        .start_thread(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let thread_id = thread.id;
+
+    let response: McpServerToolCallResponse = mcp
+        .request(|request_id| ClientRequest::McpServerToolCall {
+            request_id,
+            params: McpServerToolCallParams {
+                thread_id: thread_id.clone(),
+                server: TEST_SERVER_NAME.to_string(),
+                tool: TEST_TOOL_NAME.to_string(),
+                arguments: Some(json!({"message": "capabilities"})),
+                meta: None,
+            },
+        })
+        .await?;
+
+    assert_eq!(
+        response.structured_content,
+        Some(json!({
+            "echoed": "capabilities",
+            "threadId": thread_id,
+            "clientCapabilities": {
+                "extensions": {
+                    "openai/form": {},
+                    "io.modelcontextprotocol/ui": app_ui,
+                }
+            },
+        }))
+    );
+
+    mcp_server_handle.abort();
+    let _ = mcp_server_handle.await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn model_mcp_tool_call_uses_session_client_extensions() -> Result<()> {
+    let call_id = "call-session-capabilities";
+    let namespace = format!("mcp__{TEST_SERVER_NAME}");
+    let responses = vec![
+        responses::sse(vec![
+            responses::ev_response_created("resp-capabilities"),
+            responses::ev_function_call_with_namespace(
+                call_id,
+                &namespace,
+                TEST_TOOL_NAME,
+                &serde_json::to_string(&json!({"message": "capabilities"}))?,
+            ),
+            responses::ev_completed("resp-capabilities"),
+        ]),
+        create_final_assistant_message_sse_response("done")?,
+    ];
+    let responses_server = create_mock_responses_server_sequence(responses).await;
+    let (mcp_server_url, mcp_server_handle) = start_mcp_server().await?;
+    let codex_home = TempDir::new()?;
+    mcp_tool_config(&responses_server.uri(), &mcp_server_url, AUTO_COMPACT_LIMIT)
+        .write(codex_home.path())?;
+
+    let app_ui = json!({
+        "mimeTypes": [
+            "text/html;profile=mcp-app",
+            "text/x-dil;profile=mcp-app",
+        ],
+        "futureField": {"preserved": true},
+    });
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build()
+        .await?;
+    mcp.initialize_with_capabilities(
+        ClientInfo {
+            name: "codex_test".to_string(),
+            title: None,
+            version: "0.1.0".to_string(),
+        },
+        Some(InitializeCapabilities {
+            experimental_api: true,
+            request_attestation: false,
+            mcp_server_openai_form_elicitation: true,
+            opt_out_notification_methods: None,
+            extensions: Some(std::collections::HashMap::from([(
+                "io.modelcontextprotocol/ui".to_string(),
+                app_ui.clone(),
+            )])),
+        }),
+    )
+    .await?;
+    let ThreadStartResponse { thread, .. } = mcp
+        .start_thread(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    mcp.request::<TurnStartResponse>(|request_id| ClientRequest::TurnStart {
+        request_id,
+        params: TurnStartParams {
+            thread_id: thread.id.clone(),
+            client_user_message_id: None,
+            input: vec![V2UserInput::Text {
+                text: "Call the MCP tool".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        },
+    })
+    .await?;
+
+    let completed = wait_for_mcp_tool_call_completed(&mut mcp, call_id).await?;
+    let ThreadItem::McpToolCall {
+        result: Some(result),
+        ..
+    } = completed.item
+    else {
+        panic!("expected completed MCP tool call item");
+    };
+    assert_eq!(
+        result.structured_content,
+        Some(json!({
+            "echoed": "capabilities",
+            "threadId": thread.id,
+            "clientCapabilities": {
+                "extensions": {
+                    "openai/form": {},
+                    "io.modelcontextprotocol/ui": app_ui,
+                }
+            },
+        }))
+    );
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    mcp_server_handle.abort();
+    let _ = mcp_server_handle.await;
     Ok(())
 }
 
@@ -179,23 +380,247 @@ async fn mcp_server_tool_call_returns_error_for_unknown_thread() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_server_tool_call_round_trips_elicitation() -> Result<()> {
+    mcp_server_tool_call_round_trips_elicitation_for_thread(ElicitationThread::Start {
+        params: ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            approval_policy: Some(codex_app_server_protocol::AskForApproval::UnlessTrusted),
+            ..Default::default()
+        },
+        session_source: "vscode",
+        client_advertises_standard_form_input: false,
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_server_tool_call_round_trips_user_input_in_full_access_for_user_thread_with_form_input_capability()
+-> Result<()> {
+    mcp_server_tool_call_round_trips_elicitation_for_thread(ElicitationThread::Start {
+        params: ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            approval_policy: Some(codex_app_server_protocol::AskForApproval::Never),
+            sandbox: Some(codex_app_server_protocol::SandboxMode::DangerFullAccess),
+            thread_source: Some(codex_app_server_protocol::ThreadSource::User),
+            ..Default::default()
+        },
+        session_source: "vscode",
+        client_advertises_standard_form_input: true,
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_server_tool_call_round_trips_user_input_for_custom_frontend_user_thread_with_form_input_capability()
+-> Result<()> {
+    mcp_server_tool_call_round_trips_elicitation_for_thread(ElicitationThread::Start {
+        params: ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            approval_policy: Some(codex_app_server_protocol::AskForApproval::Never),
+            sandbox: Some(codex_app_server_protocol::SandboxMode::DangerFullAccess),
+            thread_source: Some(codex_app_server_protocol::ThreadSource::User),
+            ..Default::default()
+        },
+        session_source: "chatgpt",
+        client_advertises_standard_form_input: true,
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_server_tool_call_uses_current_frontend_for_full_access_elicitation() -> Result<()> {
+    mcp_server_tool_call_round_trips_elicitation_for_thread(ElicitationThread::Resume {
+        source: CoreSessionSource::Exec,
+        params: ThreadResumeParams {
+            model: Some("mock-model".to_string()),
+            approval_policy: Some(codex_app_server_protocol::AskForApproval::Never),
+            sandbox: Some(codex_app_server_protocol::SandboxMode::DangerFullAccess),
+            ..Default::default()
+        },
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_server_tool_call_declines_full_access_elicitation_without_form_input_capability()
+-> Result<()> {
+    assert_full_access_form_elicitation_is_declined(FullAccessElicitationCase {
+        thread_source: Some(codex_app_server_protocol::ThreadSource::User),
+        client_advertises_standard_form_input: false,
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_server_tool_call_declines_full_access_elicitation_with_unspecified_thread_source()
+-> Result<()> {
+    assert_full_access_form_elicitation_is_declined(FullAccessElicitationCase {
+        thread_source: None,
+        client_advertises_standard_form_input: true,
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_server_tool_call_declines_full_access_elicitation_for_automation_thread() -> Result<()>
+{
+    assert_full_access_form_elicitation_is_declined(FullAccessElicitationCase {
+        thread_source: Some(codex_app_server_protocol::ThreadSource::Feature(
+            "automation".to_string(),
+        )),
+        client_advertises_standard_form_input: true,
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_server_tool_call_declines_full_access_elicitation_for_subagent_thread() -> Result<()> {
+    assert_full_access_form_elicitation_is_declined(FullAccessElicitationCase {
+        thread_source: Some(codex_app_server_protocol::ThreadSource::Subagent),
+        client_advertises_standard_form_input: true,
+    })
+    .await
+}
+
+struct FullAccessElicitationCase {
+    thread_source: Option<codex_app_server_protocol::ThreadSource>,
+    client_advertises_standard_form_input: bool,
+}
+
+async fn assert_full_access_form_elicitation_is_declined(
+    case: FullAccessElicitationCase,
+) -> Result<()> {
     let responses_server = responses::start_mock_server().await;
     let (mcp_server_url, mcp_server_handle) = start_mcp_server().await?;
     let codex_home = TempDir::new()?;
     mcp_tool_config(&responses_server.uri(), &mcp_server_url, AUTO_COMPACT_LIMIT)
         .write(codex_home.path())?;
 
-    let mut mcp = TestAppServer::builder()
-        .with_codex_home(codex_home.path())
-        .build_initialized()
-        .await?;
-    let ThreadStartResponse { thread, .. } = mcp
+    let mut mcp = initialize_elicitation_app_server(
+        codex_home.path(),
+        "vscode",
+        case.client_advertises_standard_form_input,
+    )
+    .await?;
+    let ThreadStartResponse {
+        thread,
+        approval_policy,
+        sandbox,
+        ..
+    } = mcp
         .start_thread(ThreadStartParams {
             model: Some("mock-model".to_string()),
-            approval_policy: Some(codex_app_server_protocol::AskForApproval::UnlessTrusted),
+            approval_policy: Some(codex_app_server_protocol::AskForApproval::Never),
+            sandbox: Some(codex_app_server_protocol::SandboxMode::DangerFullAccess),
+            thread_source: case.thread_source,
             ..Default::default()
         })
         .await?;
+    assert_eq!(
+        approval_policy,
+        codex_app_server_protocol::AskForApproval::Never
+    );
+    assert_eq!(
+        sandbox,
+        codex_app_server_protocol::SandboxPolicy::DangerFullAccess
+    );
+
+    let request_id = mcp
+        .send_mcp_server_tool_call_request(McpServerToolCallParams {
+            thread_id: thread.id,
+            server: TEST_SERVER_NAME.to_string(),
+            tool: TEST_TOOL_NAME.to_string(),
+            arguments: Some(json!({
+                "message": ELICITATION_TRIGGER_MESSAGE,
+            })),
+            meta: None,
+        })
+        .await?;
+    let response: McpServerToolCallResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
+    assert_eq!(
+        response.content,
+        vec![json!({"type": "text", "text": "declined"})]
+    );
+
+    mcp_server_handle.abort();
+    let _ = mcp_server_handle.await;
+
+    Ok(())
+}
+
+enum ElicitationThread {
+    Start {
+        params: ThreadStartParams,
+        session_source: &'static str,
+        client_advertises_standard_form_input: bool,
+    },
+    Resume {
+        source: CoreSessionSource,
+        params: ThreadResumeParams,
+    },
+}
+
+async fn mcp_server_tool_call_round_trips_elicitation_for_thread(
+    mut elicitation_thread: ElicitationThread,
+) -> Result<()> {
+    let responses_server = responses::start_mock_server().await;
+    let (mcp_server_url, mcp_server_handle) = start_mcp_server().await?;
+    let codex_home = TempDir::new()?;
+    mcp_tool_config(&responses_server.uri(), &mcp_server_url, AUTO_COMPACT_LIMIT)
+        .write(codex_home.path())?;
+
+    if let ElicitationThread::Resume { source, params } = &mut elicitation_thread {
+        params.thread_id = create_fake_rollout_with_session_and_thread_source(
+            codex_home.path(),
+            "2025-02-01T10-00-00",
+            "2025-02-01T10:00:00Z",
+            "Saved user message",
+            Some("mock_provider"),
+            /*git_info*/ None,
+            source.clone(),
+            Some(CoreThreadSource::User),
+        )?;
+    }
+
+    let (session_source, client_advertises_standard_form_input) = match &elicitation_thread {
+        ElicitationThread::Start {
+            session_source,
+            client_advertises_standard_form_input,
+            ..
+        } => (*session_source, *client_advertises_standard_form_input),
+        ElicitationThread::Resume { .. } => ("vscode", true),
+    };
+    let mut mcp = initialize_elicitation_app_server(
+        codex_home.path(),
+        session_source,
+        client_advertises_standard_form_input,
+    )
+    .await?;
+    let thread = match elicitation_thread {
+        ElicitationThread::Start { params, .. } => mcp.start_thread(params).await?.thread,
+        ElicitationThread::Resume { source, params } => {
+            let resume_id = mcp.send_thread_resume_request(params).await?;
+            let ThreadResumeResponse {
+                thread,
+                approval_policy,
+                sandbox,
+                ..
+            } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(resume_id)).await??;
+            assert_eq!(
+                thread.source,
+                codex_app_server_protocol::SessionSource::from(source)
+            );
+            assert_eq!(
+                approval_policy,
+                codex_app_server_protocol::AskForApproval::Never
+            );
+            assert_eq!(
+                sandbox,
+                codex_app_server_protocol::SandboxPolicy::DangerFullAccess
+            );
+            thread
+        }
+    };
 
     let tool_call_request_id = mcp
         .send_mcp_server_tool_call_request(McpServerToolCallParams {
@@ -265,6 +690,37 @@ async fn mcp_server_tool_call_round_trips_elicitation() -> Result<()> {
     let _ = mcp_server_handle.await;
 
     Ok(())
+}
+
+async fn initialize_elicitation_app_server(
+    codex_home: &Path,
+    session_source: &str,
+    client_advertises_standard_form_input: bool,
+) -> Result<TestAppServer> {
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home)
+        .with_args(&["--session-source", session_source])
+        .build()
+        .await?;
+    mcp.initialize_with_capabilities(
+        ClientInfo {
+            name: "codex_test".to_string(),
+            title: None,
+            version: "0.1.0".to_string(),
+        },
+        Some(InitializeCapabilities {
+            experimental_api: true,
+            extensions: client_advertises_standard_form_input.then(|| {
+                HashMap::from([(
+                    OPENAI_STANDARD_FORM_INPUT_EXTENSION_ID.to_string(),
+                    json!({}),
+                )])
+            }),
+            ..Default::default()
+        }),
+    )
+    .await?;
+    Ok(mcp)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -561,6 +1017,7 @@ async fn mcp_tool_call_completion_notification_contains_truncated_large_result()
         app_context: None,
         mcp_app_resource_uri: None,
         plugin_id: None,
+        read_only_hint: None,
         result: Some(result),
         error: None,
         duration_ms: None,
@@ -579,10 +1036,177 @@ async fn mcp_tool_call_completion_notification_contains_truncated_large_result()
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_tool_call_hint_survives_mid_call_thread_read_and_resume() -> Result<()> {
+    let call_id = "call-mid-flight-mcp";
+    let namespace = format!("mcp__{TEST_SERVER_NAME}");
+    let responses = vec![
+        responses::sse(vec![
+            responses::ev_response_created("resp-mid-flight"),
+            responses::ev_function_call_with_namespace(
+                call_id,
+                &namespace,
+                TEST_TOOL_NAME,
+                &serde_json::to_string(&json!({
+                    "message": ELICITATION_TRIGGER_MESSAGE,
+                }))?,
+            ),
+            responses::ev_completed("resp-mid-flight"),
+        ]),
+        create_final_assistant_message_sse_response("done")?,
+    ];
+    let responses_server = create_mock_responses_server_sequence(responses).await;
+    let (mcp_server_url, mcp_server_handle) = start_mcp_server().await?;
+    let codex_home = TempDir::new()?;
+    mcp_tool_config(&responses_server.uri(), &mcp_server_url, AUTO_COMPACT_LIMIT)
+        .write(codex_home.path())?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let ThreadStartResponse { thread, .. } = mcp
+        .start_thread(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            approval_policy: Some(codex_app_server_protocol::AskForApproval::UnlessTrusted),
+            ..Default::default()
+        })
+        .await?;
+    let TurnStartResponse { turn, .. } = mcp
+        .request(|request_id| ClientRequest::TurnStart {
+            request_id,
+            params: TurnStartParams {
+                thread_id: thread.id.clone(),
+                client_user_message_id: None,
+                input: vec![V2UserInput::Text {
+                    text: "Call the MCP tool".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+        })
+        .await?;
+
+    let server_request = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_request_message(),
+    )
+    .await??;
+    let ServerRequest::McpServerElicitationRequest { request_id, .. } = server_request else {
+        panic!("expected MCP elicitation while the tool call is in progress");
+    };
+
+    let read_id = mcp
+        .send_thread_read_request(ThreadReadParams {
+            thread_id: thread.id.clone(),
+            include_turns: true,
+        })
+        .await?;
+    let ThreadReadResponse {
+        thread: read_thread,
+        ..
+    } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(read_id)).await??;
+    assert_eq!(read_thread.id, thread.id);
+
+    let resume_id = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: thread.id.clone(),
+            ..Default::default()
+        })
+        .await?;
+    let ThreadResumeResponse {
+        thread: resumed_thread,
+        ..
+    } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(resume_id)).await??;
+
+    let expected_item = ThreadItem::McpToolCall {
+        id: call_id.to_string(),
+        server: TEST_SERVER_NAME.to_string(),
+        tool: TEST_TOOL_NAME.to_string(),
+        status: McpToolCallStatus::InProgress,
+        arguments: json!({ "message": ELICITATION_TRIGGER_MESSAGE }),
+        app_context: None,
+        mcp_app_resource_uri: None,
+        plugin_id: None,
+        read_only_hint: Some(true),
+        result: None,
+        error: None,
+        duration_ms: None,
+    };
+    let resumed_item = resumed_thread
+        .turns
+        .iter()
+        .flat_map(|turn| &turn.items)
+        .find(|item| matches!(item, ThreadItem::McpToolCall { id, .. } if id == call_id))
+        .expect("resumed thread should include the in-progress MCP tool call");
+    assert_eq!(resumed_item, &expected_item);
+
+    mcp.send_response(
+        request_id,
+        serde_json::to_value(McpServerElicitationRequestResponse {
+            action: McpServerElicitationAction::Accept,
+            content: Some(json!({ "confirmed": true })),
+            meta: None,
+        })?,
+    )
+    .await?;
+
+    let completed = wait_for_mcp_tool_call_completed(&mut mcp, call_id).await?;
+    assert_eq!(completed.turn_id, turn.id);
+    let ThreadItem::McpToolCall {
+        status,
+        read_only_hint,
+        ..
+    } = &completed.item
+    else {
+        panic!("expected the completed MCP tool call item");
+    };
+    assert_eq!(status, &McpToolCallStatus::Completed);
+    assert_eq!(read_only_hint, &Some(true));
+
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let completed_read_id = mcp
+        .send_thread_read_request(ThreadReadParams {
+            thread_id: thread.id,
+            include_turns: true,
+        })
+        .await?;
+    let ThreadReadResponse {
+        thread: completed_read,
+        ..
+    } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(completed_read_id)).await??;
+    let persisted_item = completed_read
+        .turns
+        .iter()
+        .flat_map(|turn| &turn.items)
+        .find(|item| matches!(item, ThreadItem::McpToolCall { id, .. } if id == call_id))
+        .expect("completed thread history should include the persisted MCP tool call");
+    assert_eq!(persisted_item, &completed.item);
+
+    mcp_server_handle.abort();
+    let _ = mcp_server_handle.await;
+
+    Ok(())
+}
+
 #[derive(Clone, Default)]
 struct ToolAppsMcpServer;
 
 impl ServerHandler for ToolAppsMcpServer {
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, rmcp::ErrorData> {
+        context.peer.set_peer_info(request);
+        Ok(self.get_info())
+    }
+
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
     }
@@ -632,8 +1256,13 @@ impl ServerHandler for ToolAppsMcpServer {
             .get("threadId")
             .and_then(|value| value.as_str())
             .unwrap_or_default();
+        let client_capabilities = context.peer.peer_info().map(|request| {
+            json!({
+                "extensions": request.capabilities.extensions.clone().unwrap_or_default(),
+            })
+        });
 
-        let mut meta = Meta::new();
+        let mut meta = MetaObject::new();
         meta.0.insert("calledBy".to_string(), json!("mcp-app"));
 
         if message == LARGE_RESPONSE_MESSAGE {
@@ -713,10 +1342,14 @@ impl ServerHandler for ToolAppsMcpServer {
             return Ok(CallToolResult::success(vec![ContentBlock::text(output)]).into());
         }
 
-        let mut result = CallToolResult::structured(json!({
+        let mut structured_content = json!({
             "echoed": message,
             "threadId": thread_id,
-        }));
+        });
+        if let Some(client_capabilities) = client_capabilities {
+            structured_content["clientCapabilities"] = client_capabilities;
+        }
+        let mut result = CallToolResult::structured(structured_content);
         result.content = vec![ContentBlock::text(format!("echo: {message}"))];
         result.meta = Some(meta);
         Ok(result.into())

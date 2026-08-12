@@ -20,6 +20,10 @@ use time::macros::format_description;
 use uuid::Uuid;
 
 use crate::INTERACTIVE_SESSION_SOURCES;
+use crate::ResponseItemEnvelope;
+use crate::RolloutItem;
+use crate::RolloutLine;
+use crate::find_rollout_path_by_rollout_id;
 use crate::find_thread_path_by_id_str;
 use crate::list::Cursor;
 use crate::list::ThreadItem;
@@ -29,12 +33,11 @@ use crate::list::get_threads;
 use crate::list::read_head_for_summary;
 use crate::rollout_date_parts;
 use anyhow::Result;
+use codex_history::CodexHarnessMetadata;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::RolloutItem;
-use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::SessionSource;
@@ -130,7 +133,53 @@ async fn find_thread_path_falls_back_when_db_path_is_stale() {
         .await
         .expect("lookup should succeed");
     assert_eq!(found, Some(fs_rollout_path.clone()));
-    assert_state_db_rollout_path(home, thread_id, Some(fs_rollout_path.as_path())).await;
+    assert_state_db_rollout_path(home, thread_id, Some(stale_db_path.as_path())).await;
+}
+
+#[tokio::test]
+async fn filesystem_lookup_distinguishes_thread_ids_from_rollout_ids() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path();
+    let thread_uuid = Uuid::from_u128(401);
+    let rollout_uuid = Uuid::from_u128(402);
+    let original_ts = "2025-01-03T13-00-00";
+    let reverted_ts = "2025-01-04T13-00-00";
+    write_session_file(
+        home,
+        original_ts,
+        thread_uuid,
+        /*num_records*/ 1,
+        Some(SessionSource::Cli),
+    )
+    .unwrap();
+    write_session_file(
+        home,
+        reverted_ts,
+        thread_uuid,
+        /*num_records*/ 1,
+        Some(SessionSource::Cli),
+    )
+    .unwrap();
+    let reverted_source = home.join(format!(
+        "sessions/2025/01/04/rollout-{reverted_ts}-{thread_uuid}.jsonl"
+    ));
+    let reverted_path = home.join(format!(
+        "sessions/2025/01/04/rollout-{reverted_ts}-{thread_uuid}_{rollout_uuid}.jsonl"
+    ));
+    fs::rename(reverted_source, reverted_path.as_path()).unwrap();
+
+    assert_eq!(
+        find_thread_path_by_id_str(home, &thread_uuid.to_string(), /*state_db_ctx*/ None)
+            .await
+            .unwrap(),
+        Some(reverted_path.clone())
+    );
+    assert_eq!(
+        find_rollout_path_by_rollout_id(home, thread_id_from_uuid(rollout_uuid))
+            .await
+            .unwrap(),
+        Some(reverted_path)
+    );
 }
 
 #[tokio::test]
@@ -210,7 +259,7 @@ async fn find_thread_path_falls_back_when_db_path_points_to_another_thread() {
         .await
         .expect("lookup should succeed");
     assert_eq!(found, Some(fs_rollout_path.clone()));
-    assert_state_db_rollout_path(home, thread_id, Some(fs_rollout_path.as_path())).await;
+    assert_state_db_rollout_path(home, thread_id, Some(stale_db_path.as_path())).await;
 }
 
 #[tokio::test]
@@ -1265,6 +1314,39 @@ async fn test_base_instructions_present_in_meta_is_preserved() {
 }
 
 #[tokio::test]
+async fn read_head_for_summary_omits_harness_metadata() {
+    let temp = TempDir::new().unwrap();
+    let rollout_path = temp.path().join("rollout.jsonl");
+    let response_item = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "hello".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let line = RolloutLine {
+        timestamp: "2025-04-03T10:30:00Z".to_string(),
+        ordinal: None,
+        item: RolloutItem::ResponseItem(ResponseItemEnvelope {
+            item: response_item.clone(),
+            metadata: Some(CodexHarnessMetadata {}),
+        }),
+    };
+    fs::write(
+        &rollout_path,
+        format!("{}\n", serde_json::to_string(&line).unwrap()),
+    )
+    .unwrap();
+
+    let head = read_head_for_summary(&rollout_path).await.unwrap();
+
+    assert_eq!(head, vec![serde_json::to_value(response_item).unwrap()]);
+    assert!(head[0].get("metadata").is_none());
+}
+
+#[tokio::test]
 async fn test_created_at_sort_uses_file_mtime_for_updated_at() -> Result<()> {
     let temp = TempDir::new().unwrap();
     let home = temp.path();
@@ -1384,7 +1466,7 @@ async fn test_updated_at_uses_file_mtime() -> Result<()> {
         let response_line = RolloutLine {
             timestamp: format!("{ts}-{idx:02}"),
             ordinal: None,
-            item: RolloutItem::ResponseItem(ResponseItem::Message {
+            item: RolloutItem::ResponseItem(ResponseItemEnvelope::new(ResponseItem::Message {
                 id: None,
                 role: "assistant".into(),
                 content: vec![ContentItem::OutputText {
@@ -1392,7 +1474,7 @@ async fn test_updated_at_uses_file_mtime() -> Result<()> {
                 }],
                 phase: None,
                 internal_chat_message_metadata_passthrough: None,
-            }),
+            })),
         };
         writeln!(file, "{}", serde_json::to_string(&response_line)?)?;
     }

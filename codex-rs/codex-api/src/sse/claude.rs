@@ -432,6 +432,7 @@ impl ClaudeUsage {
             output_tokens,
             reasoning_output_tokens: 0,
             total_tokens,
+            codex_rollout_budget_units: None,
         })
     }
 }
@@ -2595,6 +2596,7 @@ mod tests {
                 output_tokens: 9,
                 reasoning_output_tokens: 0,
                 total_tokens: 109,
+                codex_rollout_budget_units: None,
             }
         );
     }
@@ -2719,6 +2721,7 @@ mod tests {
                 output_tokens: 8,
                 reasoning_output_tokens: 0,
                 total_tokens: 20,
+                codex_rollout_budget_units: None,
             }
         );
         let end_turn = events
@@ -2803,6 +2806,7 @@ mod tests {
                 output_tokens: 2,
                 reasoning_output_tokens: 0,
                 total_tokens: 12,
+                codex_rollout_budget_units: None,
             })
         );
     }
@@ -2826,6 +2830,7 @@ mod tests {
                 output_tokens: 1,
                 reasoning_output_tokens: 0,
                 total_tokens: 4,
+                codex_rollout_budget_units: None,
             })
         );
     }
@@ -2854,6 +2859,7 @@ mod tests {
                 output_tokens: 5,
                 reasoning_output_tokens: 0,
                 total_tokens: 16,
+                codex_rollout_budget_units: None,
             })
         );
     }

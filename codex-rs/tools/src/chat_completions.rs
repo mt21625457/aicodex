@@ -421,6 +421,7 @@ fn chat_tool_identities_with_protect(
                             &tool.name,
                             ChatToolCallKind::Function,
                         ),
+                        ResponsesApiNamespaceTool::Custom(_) => {}
                     }
                 }
             }
@@ -537,6 +538,7 @@ fn create_uncapped_tools_json_for_chat_completions(
                                 },
                             );
                         }
+                        ResponsesApiNamespaceTool::Custom(_) => {}
                     }
                 }
             }

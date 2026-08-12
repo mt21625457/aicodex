@@ -4,13 +4,14 @@ use codex_core::ForkSnapshot;
 use codex_core::NewThread;
 use codex_core::ThreadConfigSnapshot;
 use codex_core::parse_turn_item;
+use codex_history::InitialHistory;
+use codex_history::ResumedHistory;
+use codex_history::RolloutItem;
+use codex_history::RolloutLine;
 use codex_protocol::items::TurnItem;
+use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::Op;
-use codex_protocol::protocol::ResumedHistory;
-use codex_protocol::protocol::RolloutItem;
-use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSettingsAppliedEvent;
 use codex_protocol::user_input::UserInput;
@@ -238,7 +239,7 @@ async fn assert_copied_fork_persists_inherited_history(history_mode: ThreadHisto
             }),
             /*thread_source*/ None,
             /*parent_trace*/ None,
-            /*supports_openai_form_elicitation*/ false,
+            ClientMcpExtensions::default(),
         )
         .await
         .expect("fork from stored history");
@@ -274,7 +275,7 @@ async fn assert_copied_fork_persists_inherited_history(history_mode: ThreadHisto
                     codex_login::CodexAuth::from_api_key("dummy"),
                 ),
                 /*parent_trace*/ None,
-                /*supports_openai_form_elicitation*/ false,
+                ClientMcpExtensions::default(),
             )
             .await
             .expect("resume copied paginated fork")

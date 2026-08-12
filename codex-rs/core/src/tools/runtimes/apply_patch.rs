@@ -5,18 +5,15 @@
 //! sandboxing enforced by the explicit filesystem sandbox context.
 use crate::exec::is_likely_sandbox_denied;
 use crate::session::turn_context::TurnEnvironment;
-use crate::tools::hook_names::HookToolName;
 use crate::tools::sandboxing::Approvable;
 use crate::tools::sandboxing::ApprovalAction;
-use crate::tools::sandboxing::ApprovalCtx;
 use crate::tools::sandboxing::ExecApprovalRequirement;
-use crate::tools::sandboxing::PermissionRequestPayload;
 use crate::tools::sandboxing::SandboxAttempt;
 use crate::tools::sandboxing::Sandboxable;
 use crate::tools::sandboxing::ToolCtx;
 use crate::tools::sandboxing::ToolError;
 use crate::tools::sandboxing::ToolRuntime;
-use crate::tools::sandboxing::with_cached_approval;
+use crate::tools::sandboxing::executor_windows_sandbox_level;
 use codex_apply_patch::AppliedPatchDelta;
 use codex_apply_patch::ApplyPatchAction;
 use codex_exec_server::FileSystemSandboxContext;
@@ -28,21 +25,23 @@ use codex_protocol::exec_output::StreamOutput;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::FileChange;
-use codex_protocol::protocol::ReviewDecision;
 use codex_sandboxing::SandboxType;
 use codex_sandboxing::SandboxablePreference;
+use codex_sandboxing::is_likely_executor_managed_sandbox_denied;
 use codex_sandboxing::policy_transforms::effective_permission_profile;
+use codex_sandboxing::record_filesystem_sandbox_violation;
 use codex_utils_path_uri::PathUri;
 use futures::future::BoxFuture;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash, serde::Serialize)]
 pub(crate) struct ApplyPatchApprovalKey {
-    environment_id: String,
-    path: PathUri,
+    pub(crate) environment_id: String,
+    pub(crate) path: PathUri,
 }
 
 #[derive(Debug)]
@@ -50,7 +49,7 @@ pub struct ApplyPatchRequest {
     pub turn_environment: TurnEnvironment,
     pub action: ApplyPatchAction,
     pub file_paths: Vec<PathUri>,
-    pub changes: std::collections::HashMap<PathBuf, FileChange>,
+    pub changes: Arc<std::collections::HashMap<PathBuf, FileChange>>,
     pub exec_approval_requirement: ExecApprovalRequirement,
     pub additional_permissions: Option<AdditionalPermissionProfile>,
     pub permissions_preapproved: bool,
@@ -106,6 +105,8 @@ impl ApplyPatchRuntime {
             cwd: req.action.cwd.clone(),
             files: req.file_paths.clone(),
             patch: req.action.patch.clone(),
+            changes: Arc::clone(&req.changes),
+            permissions_preapproved: req.permissions_preapproved,
         }
     }
 
@@ -113,28 +114,27 @@ impl ApplyPatchRuntime {
         req: &ApplyPatchRequest,
         attempt: &SandboxAttempt<'_>,
     ) -> Option<FileSystemSandboxContext> {
-        file_system_sandbox_context_for_attempt(req.additional_permissions.as_ref(), attempt)
-    }
-}
+        if !attempt.sandbox_requested {
+            return None;
+        }
 
-fn file_system_sandbox_context_for_attempt(
-    additional_permissions: Option<&AdditionalPermissionProfile>,
-    attempt: &SandboxAttempt<'_>,
-) -> Option<FileSystemSandboxContext> {
-    if attempt.sandbox == SandboxType::None {
-        return None;
+        let permissions = effective_permission_profile(
+            attempt.exec_server_permissions,
+            req.additional_permissions.as_ref(),
+        );
+        Some(FileSystemSandboxContext {
+            permissions: permissions.into(),
+            cwd: Some(attempt.sandbox_cwd.clone()),
+            workspace_roots: attempt.workspace_roots.to_vec(),
+            windows_sandbox_level: executor_windows_sandbox_level(
+                attempt.windows_sandbox_level,
+                attempt.sandbox_cwd,
+            ),
+            windows_sandbox_private_desktop: attempt.windows_sandbox_private_desktop,
+            windows_sandbox_proxy_settings_mode: None,
+            use_legacy_landlock: attempt.use_legacy_landlock,
+        })
     }
-
-    let permissions = effective_permission_profile(attempt.permissions, additional_permissions);
-    Some(FileSystemSandboxContext {
-        permissions: permissions.into(),
-        cwd: Some(attempt.sandbox_cwd.clone()),
-        workspace_roots: attempt.workspace_roots.to_vec(),
-        windows_sandbox_level: attempt.windows_sandbox_level,
-        windows_sandbox_private_desktop: attempt.windows_sandbox_private_desktop,
-        windows_sandbox_proxy_settings_mode: None,
-        use_legacy_landlock: attempt.use_legacy_landlock,
-    })
 }
 
 fn wants_no_sandbox_approval(policy: AskForApproval) -> bool {
@@ -214,9 +214,9 @@ impl Approvable<ApplyPatchRequest> for ApplyPatchRuntime {
     fn approval_action(
         &self,
         req: &ApplyPatchRequest,
-        ctx: &ApprovalCtx<'_>,
+        call_id: &str,
     ) -> std::io::Result<ApprovalAction> {
-        Ok(ApplyPatchRuntime::build_approval_action(req, ctx.call_id))
+        Ok(ApplyPatchRuntime::build_approval_action(req, call_id))
     }
 
     fn wants_no_sandbox_approval(&self, policy: AskForApproval) -> bool {
@@ -233,7 +233,6 @@ impl Approvable<ApplyPatchRequest> for ApplyPatchRuntime {
     ) -> Option<ExecApprovalRequirement> {
         Some(req.exec_approval_requirement.clone())
     }
-
     fn permission_request_payload(
         &self,
         req: &ApplyPatchRequest,
@@ -246,8 +245,12 @@ impl Approvable<ApplyPatchRequest> for ApplyPatchRuntime {
 }
 
 impl ToolRuntime<ApplyPatchRequest, ApplyPatchRuntimeOutput> for ApplyPatchRuntime {
-    fn workspace_roots<'a>(&self, req: &'a ApplyPatchRequest) -> &'a [PathUri] {
-        req.turn_environment.workspace_roots()
+    fn turn_environment<'a>(&self, req: &'a ApplyPatchRequest) -> &'a TurnEnvironment {
+        &req.turn_environment
+    }
+
+    fn uses_executor_managed_process_sandbox(&self, req: &ApplyPatchRequest) -> bool {
+        req.turn_environment.environment.is_remote()
     }
 
     fn sandbox_cwd<'a>(&self, req: &'a ApplyPatchRequest) -> Option<&'a PathUri> {
@@ -271,8 +274,9 @@ impl ToolRuntime<ApplyPatchRequest, ApplyPatchRuntimeOutput> for ApplyPatchRunti
             .await;
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
-        let result = codex_apply_patch::apply_patch(
+        let result = codex_apply_patch::apply_patch_with_mode(
             &req.action.patch,
+            req.action.update_file_mode(),
             &req.action.cwd,
             &mut stdout,
             &mut stderr,
@@ -297,7 +301,18 @@ impl ToolRuntime<ApplyPatchRequest, ApplyPatchRuntimeOutput> for ApplyPatchRunti
             duration: started_at.elapsed(),
             timed_out: false,
         };
-        if failed && is_likely_sandbox_denied(attempt.sandbox, &output) {
+        let sandbox_denied = failed
+            && if attempt.sandbox == SandboxType::None {
+                attempt.sandbox_requested && is_likely_executor_managed_sandbox_denied(&output)
+            } else {
+                is_likely_sandbox_denied(attempt.sandbox, &output)
+            };
+        if sandbox_denied {
+            // TODO(iceweasel): Report executor filesystem sandbox backends like process/start so
+            // executor-managed apply_patch denials can emit backend-specific violation telemetry.
+            if attempt.sandbox != SandboxType::None {
+                record_filesystem_sandbox_violation(attempt.sandbox, &output);
+            }
             return Err(ToolError::Codex(CodexErr::Sandbox(SandboxErr::Denied {
                 output: Box::new(output),
                 network_policy_decision: None,

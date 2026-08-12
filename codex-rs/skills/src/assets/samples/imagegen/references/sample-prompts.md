@@ -2,7 +2,7 @@
 
 These prompt recipes are shared across both top-level modes of the skill:
 - built-in `image_gen` tool (default)
-- `scripts/image_gen.py` CLI fallback for explicit CLI/API/model requests or user-confirmed true-transparent-output fallback requests
+- `scripts/image_gen.py` CLI fallback for explicit or user-confirmed CLI/API/model requests
 
 Use these as starting points. They are intentionally complete prompt recipes, not the default amount of augmentation to add to every user request.
 
@@ -13,13 +13,13 @@ When adapting a user's prompt:
 
 The labeled lines are prompt scaffolding, not a closed schema. `Asset type` and `Input images` are prompt-only scaffolding; the CLI does not expose them as dedicated flags.
 
-Execution details such as explicit CLI flags, `quality`, `input_fidelity`, masks, output formats, and local output paths depend on mode. Use the built-in tool by default, including simple transparent-image requests. For transparent images, prompt for a flat chroma-key background and remove it locally with `python "${AICODEX_HOME:-${CODEX_HOME:-$HOME/.aicodex}}/skills/.system/imagegen/scripts/remove_chroma_key.py"`; only apply CLI-specific controls when the user explicitly opts into fallback mode or explicitly confirms that the transparent request should use true CLI transparency.
+Execution details such as explicit CLI flags, `quality`, `input_fidelity`, masks, output formats, and local output paths depend on mode. Use the built-in tool by default, including simple transparent-image requests; preserve native alpha when available, otherwise prompt for a flat chroma-key background and remove it locally with `python "${AICODEX_HOME:-${CODEX_HOME:-$HOME/.aicodex}}/skills/.system/imagegen/scripts/remove_chroma_key.py"`. Apply CLI-specific controls only when the user chooses or confirms fallback.
 
 CLI model notes:
 - `gpt-image-2` is the fallback CLI default for new workflows.
 - `gpt-image-2` supports `quality` values `low`, `medium`, `high`, and `auto`.
 - For 4K-style `gpt-image-2` output, use `3840x2160` or `2160x3840`.
-- If transparent output needs true CLI fallback, ask before using `gpt-image-1.5` unless the user already explicitly requested `gpt-image-1.5`, `scripts/image_gen.py`, or CLI fallback. Explain that built-in chroma-key removal is the default path, but `gpt-image-2` does not support `background=transparent`.
+- CLI `gpt-image-2` does not support `background=transparent`; ask before using `gpt-image-1.5` unless the user explicitly requested that model.
 - Do not set `input_fidelity` with `gpt-image-2`; image inputs already use high fidelity.
 
 For prompting principles (structure, specificity, invariants, iteration), see `references/prompting.md`.

@@ -494,6 +494,7 @@ fn mcp_tool_call_begin_and_end_emit_item_events() {
                 app_context: None,
                 mcp_app_resource_uri: None,
                 plugin_id: None,
+                read_only_hint: None,
                 result: None,
                 error: None,
                 duration_ms: None,
@@ -513,6 +514,7 @@ fn mcp_tool_call_begin_and_end_emit_item_events() {
                 app_context: None,
                 mcp_app_resource_uri: None,
                 plugin_id: None,
+                read_only_hint: None,
                 result: Some(Box::new(McpToolCallResult {
                     content: Vec::new(),
                     structured_content: None,
@@ -586,6 +588,7 @@ fn mcp_tool_call_failure_sets_failed_status() {
                 app_context: None,
                 mcp_app_resource_uri: None,
                 plugin_id: None,
+                read_only_hint: None,
                 result: None,
                 error: Some(McpToolCallError {
                     message: "tool exploded".to_string(),
@@ -636,6 +639,7 @@ fn mcp_tool_call_defaults_arguments_and_preserves_structured_content() {
                 app_context: None,
                 mcp_app_resource_uri: None,
                 plugin_id: None,
+                read_only_hint: None,
                 result: None,
                 error: None,
                 duration_ms: None,
@@ -655,6 +659,7 @@ fn mcp_tool_call_defaults_arguments_and_preserves_structured_content() {
                 app_context: None,
                 mcp_app_resource_uri: None,
                 plugin_id: None,
+                read_only_hint: None,
                 result: Some(Box::new(McpToolCallResult {
                     content: vec![json!({
                         "type": "text",

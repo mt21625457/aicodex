@@ -70,7 +70,7 @@ durationMs: number | null, transcriptMetadata: TranscriptMetadata | null, } | { 
 /**
  * Deprecated: use `appContext.resourceUri` instead.
  */
-mcpAppResourceUri?: string, pluginId: string | null, result: McpToolCallResult | null, error: McpToolCallError | null,
+mcpAppResourceUri?: string, pluginId: string | null, readOnlyHint: boolean | null, result: McpToolCallResult | null, error: McpToolCallError | null,
 /**
  * The duration of the MCP tool call in milliseconds.
  */

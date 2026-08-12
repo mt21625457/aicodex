@@ -1,5 +1,5 @@
+use crate::RolloutItem;
 use crate::protocol::EventMsg;
-use crate::protocol::RolloutItem;
 use codex_extension_items::ExtensionItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ResponseItem;
@@ -28,7 +28,7 @@ pub fn is_persisted_rollout_item_with_mode(
     event_mode: EventPersistenceMode,
 ) -> bool {
     match item {
-        RolloutItem::ResponseItem(item) => should_persist_response_item(item),
+        RolloutItem::ResponseItem(item) => should_persist_response_item(&item.item),
         RolloutItem::InterAgentCommunication(_)
         | RolloutItem::InterAgentCommunicationMetadata { .. } => true,
         RolloutItem::EventMsg(ev) => {
@@ -182,6 +182,7 @@ pub fn should_persist_event_msg_with_mode(
         // Extended history keeps terminal details that are useful for full-fidelity replay but
         // are too verbose for the default rollout representation.
         EventMsg::Error(_)
+        | EventMsg::ThreadQueueChanged(_)
         | EventMsg::GuardianAssessment(_)
         | EventMsg::ExecCommandEnd(_)
         | EventMsg::ViewImageToolCall(_)
