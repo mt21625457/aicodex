@@ -2,8 +2,6 @@ use super::residency::is_v2_resident_session_source;
 use super::*;
 use crate::agent::role::apply_role_to_config_for_multi_agent_v2;
 use crate::config::PermissionProfileSnapshot;
-use crate::context::ContextualUserFragment;
-use crate::context::MultiAgentUsageHint;
 use codex_extension_api::ExtensionDataInit;
 
 const AGENT_NAMES: &str = include_str!("../agent_names.txt");
@@ -807,10 +805,14 @@ impl AgentControl {
             && multi_agent_version == MultiAgentVersion::V2
             && let Some(subagent_usage_hint_text) =
                 config.multi_agent_v2.subagent_usage_hint_text.clone()
+            && let Some(subagent_usage_hint_message) =
+                crate::context_manager::updates::build_developer_update_item(vec![
+                    subagent_usage_hint_text,
+                ])
         {
-            forked_rollout_items.push(RolloutItem::ResponseItem(ContextualUserFragment::into(
-                MultiAgentUsageHint::new(&subagent_usage_hint_text),
-            )));
+            forked_rollout_items.push(RolloutItem::ResponseItem(
+                subagent_usage_hint_message.into(),
+            ));
         }
         let mut thread_extension_init = ExtensionDataInit::new();
         thread_extension_init.insert(selected_capability_roots);

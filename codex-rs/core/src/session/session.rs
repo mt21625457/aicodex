@@ -13,6 +13,7 @@ use codex_http_client::ClientRouteClass;
 use codex_http_client::RouteAwareClientPool;
 use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_model_provider::SharedModelProvider;
+use codex_model_provider::create_model_provider;
 use codex_protocol::SessionId;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
@@ -233,7 +234,7 @@ impl SessionConfiguration {
         ThreadConfigSnapshot {
             model: self.collaboration_mode.model().to_string(),
             model_provider_id: self.provider_id.clone(),
-            wire_api: self.provider.wire_api,
+            wire_api: self.provider.info().wire_api,
             service_tier: self.service_tier.clone(),
             approval_policy: self.approval_policy.value(),
             approvals_reviewer: self.approvals_reviewer,
@@ -337,7 +338,8 @@ impl SessionConfiguration {
                     requirement_source: codex_config::RequirementSource::Unknown,
                 })?;
             next_configuration.provider_id = provider_id;
-            next_configuration.provider = provider;
+            next_configuration.provider =
+                create_model_provider(provider, /*auth_manager*/ None);
         }
         if let Some(summary) = updates.reasoning_summary {
             next_configuration.model_reasoning_summary = Some(summary);
@@ -631,7 +633,7 @@ impl Session {
         git_enrichment_policy: GitEnrichmentPolicy,
         windows_sandbox_proxy_settings_mode: codex_sandboxing::WindowsSandboxProxySettingsMode,
     ) -> anyhow::Result<Arc<Self>> {
-        if session_configuration.provider.wire_api == WireApi::Chat
+        if session_configuration.provider.info().wire_api == WireApi::Chat
             && !matches!(config.chat_file_tool_mode, ChatFileToolMode::Legacy)
             && !config.features.enabled(Feature::DedicatedFileTools)
         {

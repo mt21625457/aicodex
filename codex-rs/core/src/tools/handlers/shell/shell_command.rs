@@ -341,7 +341,9 @@ impl ToolExecutor<ToolInvocation> for ClaudeBashHandler {
                 session.as_ref(),
                 turn.as_ref(),
                 &shell_params.command,
-                &cwd,
+                &PathUri::from_abs_path(&cwd),
+                Some(&cwd),
+                &turn_environment.environment_id,
             )
             .await;
             let exec_params = ShellCommandHandler::to_exec_params(
@@ -350,7 +352,6 @@ impl ToolExecutor<ToolInvocation> for ClaudeBashHandler {
                 turn.as_ref(),
                 &turn_environment,
                 cwd,
-                self.options.allow_login_shell,
             )?;
             let shell_type = Some(
                 turn_environment
@@ -367,7 +368,7 @@ impl ToolExecutor<ToolInvocation> for ClaudeBashHandler {
                 additional_permissions: None,
                 prefix_rule: None,
                 session,
-                turn,
+                step_context,
                 turn_environment,
                 tracker,
                 call_id,

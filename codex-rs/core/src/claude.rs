@@ -736,6 +736,7 @@ fn has_tool_spec(tools: &[codex_tools::ToolSpec], name: &str) -> bool {
         codex_tools::ToolSpec::Namespace(namespace) => {
             namespace.tools.iter().any(|tool| match tool {
                 codex_tools::ResponsesApiNamespaceTool::Function(tool) => tool.name == name,
+                codex_tools::ResponsesApiNamespaceTool::Custom(tool) => tool.name == name,
             })
         }
     })

@@ -7,7 +7,6 @@ use crate::session::turn_context::TurnContext;
 use crate::tools::code_mode::execute_spec::create_code_mode_tool;
 use crate::tools::context::ToolInvocation;
 use crate::tools::effective_tool_mode;
-use crate::tools::handlers::ApplyPatchHandler;
 use crate::tools::handlers::ClaudeBashHandler;
 use crate::tools::handlers::CodeModeExecuteHandler;
 use crate::tools::handlers::CodeModeWaitHandler;
@@ -967,6 +966,8 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistr
     let exec_permission_approvals_enabled = features.enabled(Feature::ExecPermissionApprovals);
     let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
     let supports_shell_command = context.environments.single_local_environment().is_some();
+    let prefer_dedicated_file_tools =
+        crate::tools::dedicated_file_tool_plan::model_visible(turn_context, environment_mode);
     let shell_command_options = ShellCommandHandlerOptions {
         backend_config: shell_command_backend_for_features(features),
         allow_login_shell,
@@ -1097,10 +1098,18 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
         ));
     }
 
-    if environment_mode.has_environment() && turn_context.model_info.apply_patch_tool_type.is_some()
-    {
-        let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
-        registry.add(ApplyPatchHandler::new(include_environment_id));
+    let provider_capabilities = turn_context.provider.capabilities();
+    let apply_patch_tool_type = turn_context
+        .model_info
+        .apply_patch_tool_type
+        .as_ref()
+        .or(provider_capabilities.default_apply_patch_tool_type.as_ref());
+    for (runtime, exposure) in crate::tools::dedicated_file_tool_plan::planned_runtimes(
+        turn_context,
+        environment_mode,
+        apply_patch_tool_type.is_some(),
+    ) {
+        registry.register_trusted_with_exposure(runtime, exposure);
     }
 
     if turn_context
@@ -1215,8 +1224,15 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
             } else {
                 base_exposure
             };
-            registry.add_with_exposure(
-                SpawnAgentHandler::new(SpawnAgentToolOptions {
+            let prepare_handler = |handler: Arc<dyn CoreToolRuntime>| {
+                if is_grok_model_slug(&turn_context.model_info.slug) {
+                    Arc::new(PlainFunctionOverride { handler }) as Arc<dyn CoreToolRuntime>
+                } else {
+                    handler
+                }
+            };
+            registry.register_trusted_with_exposure(
+                prepare_handler(Arc::new(SpawnAgentHandler::new(SpawnAgentToolOptions {
                     available_models: turn_context.available_models.clone(),
                     agent_type_description,
                     expose_agent_type: !turn_context.config.agent_roles.is_empty(),
@@ -1224,14 +1240,25 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                     expose_spawn_agent_model_overrides: true,
                     multi_agent_version: turn_context.multi_agent_version,
                     usage_hint_text: turn_context.config.multi_agent_v2.usage_hint_text.clone(),
-                }),
+                }))),
                 exposure,
             );
-            registry.add_with_exposure(SendInputHandler, exposure);
-            registry.add_with_exposure(ResumeAgentHandler, exposure);
-            registry
-                .add_with_exposure(WaitAgentHandler::new(context.wait_agent_timeouts), exposure);
-            registry.add_with_exposure(CloseAgentHandler, exposure);
+            registry.register_trusted_with_exposure(
+                prepare_handler(Arc::new(SendInputHandler)),
+                exposure,
+            );
+            registry.register_trusted_with_exposure(
+                prepare_handler(Arc::new(ResumeAgentHandler)),
+                exposure,
+            );
+            registry.register_trusted_with_exposure(
+                prepare_handler(Arc::new(WaitAgentHandler::new(context.wait_agent_timeouts))),
+                exposure,
+            );
+            registry.register_trusted_with_exposure(
+                prepare_handler(Arc::new(CloseAgentHandler)),
+                exposure,
+            );
         }
     }
 }
@@ -1436,8 +1463,10 @@ impl ToolExecutor<ToolInvocation> for PlainFunctionOverride {
     fn spec(&self) -> ToolSpec {
         match self.handler.spec() {
             ToolSpec::Namespace(mut namespace) if namespace.tools.len() == 1 => {
-                let ResponsesApiNamespaceTool::Function(tool) = namespace.tools.remove(0);
-                ToolSpec::Function(tool)
+                match namespace.tools.remove(0) {
+                    ResponsesApiNamespaceTool::Function(tool) => ToolSpec::Function(tool),
+                    ResponsesApiNamespaceTool::Custom(tool) => ToolSpec::Freeform(tool),
+                }
             }
             spec => spec,
         }

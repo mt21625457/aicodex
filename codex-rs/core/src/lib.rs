@@ -4,6 +4,10 @@
 // user-visible output must go through the appropriate abstraction (e.g.,
 // the TUI or the tracing stack).
 #![deny(clippy::print_stdout, clippy::print_stderr)]
+// Deep async tool → approval → guardian → session-init chains can overflow the
+// default auto-trait recursion limit when checking `Send` (same pattern as
+// app-server / mcp-server).
+#![recursion_limit = "256"]
 
 mod apply_patch;
 mod apps;

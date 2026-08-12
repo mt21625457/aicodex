@@ -31,8 +31,6 @@ use codex_sandboxing::is_likely_executor_managed_sandbox_denied;
 use codex_sandboxing::policy_transforms::effective_permission_profile;
 use codex_sandboxing::record_filesystem_sandbox_violation;
 use codex_utils_path_uri::PathUri;
-use futures::future::BoxFuture;
-use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -53,9 +51,6 @@ pub struct ApplyPatchRequest {
     pub exec_approval_requirement: ExecApprovalRequirement,
     pub additional_permissions: Option<AdditionalPermissionProfile>,
     pub permissions_preapproved: bool,
-    pub hook_tool_name: HookToolName,
-    pub hook_input: Value,
-    pub approval_cache_namespace: String,
 }
 
 #[derive(Debug)]
@@ -69,8 +64,6 @@ pub struct ConditionalWriteRequest {
     pub patch: String,
     pub delta: AppliedPatchDelta,
     pub exec_approval_requirement: ExecApprovalRequirement,
-    pub hook_tool_name: HookToolName,
-    pub hook_input: Value,
 }
 
 #[derive(Default)]
@@ -93,11 +86,6 @@ impl ApplyPatchRuntime {
         &self.committed_delta
     }
 
-    #[cfg(test)]
-    fn wants_no_sandbox_approval(&self, policy: AskForApproval) -> bool {
-        wants_no_sandbox_approval(policy)
-    }
-
     fn build_approval_action(req: &ApplyPatchRequest, call_id: &str) -> ApprovalAction {
         ApprovalAction::ApplyPatch {
             id: call_id.to_string(),
@@ -114,35 +102,32 @@ impl ApplyPatchRuntime {
         req: &ApplyPatchRequest,
         attempt: &SandboxAttempt<'_>,
     ) -> Option<FileSystemSandboxContext> {
-        if !attempt.sandbox_requested {
-            return None;
-        }
-
-        let permissions = effective_permission_profile(
-            attempt.exec_server_permissions,
-            req.additional_permissions.as_ref(),
-        );
-        Some(FileSystemSandboxContext {
-            permissions: permissions.into(),
-            cwd: Some(attempt.sandbox_cwd.clone()),
-            workspace_roots: attempt.workspace_roots.to_vec(),
-            windows_sandbox_level: executor_windows_sandbox_level(
-                attempt.windows_sandbox_level,
-                attempt.sandbox_cwd,
-            ),
-            windows_sandbox_private_desktop: attempt.windows_sandbox_private_desktop,
-            windows_sandbox_proxy_settings_mode: None,
-            use_legacy_landlock: attempt.use_legacy_landlock,
-        })
+        file_system_sandbox_context_for_attempt(req.additional_permissions.as_ref(), attempt)
     }
 }
 
-fn wants_no_sandbox_approval(policy: AskForApproval) -> bool {
-    match policy {
-        AskForApproval::Never => false,
-        AskForApproval::Granular(config) => config.allows_sandbox_approval(),
-        AskForApproval::OnRequest | AskForApproval::UnlessTrusted => true,
+fn file_system_sandbox_context_for_attempt(
+    additional_permissions: Option<&AdditionalPermissionProfile>,
+    attempt: &SandboxAttempt<'_>,
+) -> Option<FileSystemSandboxContext> {
+    if !attempt.sandbox_requested {
+        return None;
     }
+
+    let permissions =
+        effective_permission_profile(attempt.exec_server_permissions, additional_permissions);
+    Some(FileSystemSandboxContext {
+        permissions: permissions.into(),
+        cwd: Some(attempt.sandbox_cwd.clone()),
+        workspace_roots: attempt.workspace_roots.to_vec(),
+        windows_sandbox_level: executor_windows_sandbox_level(
+            attempt.windows_sandbox_level,
+            attempt.sandbox_cwd,
+        ),
+        windows_sandbox_private_desktop: attempt.windows_sandbox_private_desktop,
+        windows_sandbox_proxy_settings_mode: None,
+        use_legacy_landlock: attempt.use_legacy_landlock,
+    })
 }
 
 impl Sandboxable for ApplyPatchRuntime {
@@ -155,62 +140,6 @@ impl Sandboxable for ApplyPatchRuntime {
 }
 
 impl Approvable<ApplyPatchRequest> for ApplyPatchRuntime {
-    type ApprovalKey = ApplyPatchApprovalKey;
-
-    fn approval_keys(&self, req: &ApplyPatchRequest) -> Vec<Self::ApprovalKey> {
-        req.file_paths
-            .iter()
-            .cloned()
-            .map(|path| ApplyPatchApprovalKey {
-                environment_id: req.turn_environment.environment_id.clone(),
-                path,
-            })
-            .collect()
-    }
-
-    fn start_approval_async<'a>(
-        &'a mut self,
-        req: &'a ApplyPatchRequest,
-        ctx: ApprovalCtx<'a>,
-    ) -> BoxFuture<'a, ReviewDecision> {
-        let session = ctx.session;
-        let turn = ctx.turn;
-        let call_id = ctx.call_id.to_string();
-        let retry_reason = ctx.retry_reason.clone();
-        let approval_keys = self.approval_keys(req);
-        let changes = req.changes.clone();
-        Box::pin(async move {
-            if req.permissions_preapproved && retry_reason.is_none() {
-                return ReviewDecision::Approved;
-            }
-            if let Some(reason) = retry_reason {
-                return session
-                    .request_patch_approval(
-                        turn,
-                        call_id,
-                        changes.clone(),
-                        Some(reason),
-                        /*grant_root*/ None,
-                    )
-                    .await;
-            }
-
-            with_cached_approval(
-                &session.services,
-                &req.approval_cache_namespace,
-                approval_keys,
-                || async move {
-                    session
-                        .request_patch_approval(
-                            turn, call_id, changes, /*reason*/ None, /*grant_root*/ None,
-                        )
-                        .await
-                },
-            )
-            .await
-        })
-    }
-
     fn approval_action(
         &self,
         req: &ApplyPatchRequest,
@@ -220,7 +149,12 @@ impl Approvable<ApplyPatchRequest> for ApplyPatchRuntime {
     }
 
     fn wants_no_sandbox_approval(&self, policy: AskForApproval) -> bool {
-        wants_no_sandbox_approval(policy)
+        match policy {
+            AskForApproval::Never => false,
+            AskForApproval::Granular(granular_config) => granular_config.allows_sandbox_approval(),
+            AskForApproval::OnRequest => true,
+            AskForApproval::UnlessTrusted => true,
+        }
     }
 
     // apply_patch approvals are decided upstream by assess_patch_safety.
@@ -232,15 +166,6 @@ impl Approvable<ApplyPatchRequest> for ApplyPatchRuntime {
         req: &ApplyPatchRequest,
     ) -> Option<ExecApprovalRequirement> {
         Some(req.exec_approval_requirement.clone())
-    }
-    fn permission_request_payload(
-        &self,
-        req: &ApplyPatchRequest,
-    ) -> Option<PermissionRequestPayload> {
-        Some(PermissionRequestPayload {
-            tool_name: req.hook_tool_name.clone(),
-            tool_input: req.hook_input.clone(),
-        })
     }
 }
 
@@ -265,9 +190,10 @@ impl ToolRuntime<ApplyPatchRequest, ApplyPatchRuntimeOutput> for ApplyPatchRunti
     ) -> Result<ApplyPatchRuntimeOutput, ToolError> {
         let started_at = Instant::now();
         let fs = req.turn_environment.environment.get_filesystem();
-        let sandbox = Self::file_system_sandbox_context_for_attempt(req, attempt);
+        let sandbox = ApplyPatchRuntime::file_system_sandbox_context_for_attempt(req, attempt);
         let lock_paths = canonical_lock_paths(fs.as_ref(), &req.file_paths, sandbox.as_ref()).await;
         let _mutation_guards = ctx
+            .step_context
             .turn
             .file_mutation_locks
             .lock_paths(&req.turn_environment.environment_id, &lock_paths)
@@ -326,70 +252,28 @@ impl ToolRuntime<ApplyPatchRequest, ApplyPatchRuntimeOutput> for ApplyPatchRunti
 }
 
 impl Approvable<ConditionalWriteRequest> for ApplyPatchRuntime {
-    type ApprovalKey = ApplyPatchApprovalKey;
-
-    fn approval_keys(&self, req: &ConditionalWriteRequest) -> Vec<Self::ApprovalKey> {
-        vec![ApplyPatchApprovalKey {
-            environment_id: req.turn_environment.environment_id.clone(),
-            path: req.canonical_path.clone(),
-        }]
-    }
-
-    fn start_approval_async<'a>(
-        &'a mut self,
-        req: &'a ConditionalWriteRequest,
-        ctx: ApprovalCtx<'a>,
-    ) -> BoxFuture<'a, ReviewDecision> {
-        let approval_keys = self.approval_keys(req);
-        let changes = req.changes.clone();
-        let session = ctx.session;
-        let turn = ctx.turn;
-        let call_id = ctx.call_id.to_string();
-        let retry_reason = ctx.retry_reason.clone();
-        Box::pin(async move {
-            if let Some(reason) = retry_reason {
-                return session
-                    .request_patch_approval(
-                        turn,
-                        call_id,
-                        changes,
-                        Some(reason),
-                        /*grant_root*/ None,
-                    )
-                    .await;
-            }
-            with_cached_approval(
-                &session.services,
-                "file_mutation",
-                approval_keys,
-                || async move {
-                    session
-                        .request_patch_approval(
-                            turn, call_id, changes, /*reason*/ None, /*grant_root*/ None,
-                        )
-                        .await
-                },
-            )
-            .await
-        })
-    }
-
     fn approval_action(
         &self,
         req: &ConditionalWriteRequest,
-        ctx: &ApprovalCtx<'_>,
+        call_id: &str,
     ) -> std::io::Result<ApprovalAction> {
         Ok(ApprovalAction::ApplyPatch {
-            id: ctx.call_id.to_string(),
+            id: call_id.to_string(),
             environment_id: req.turn_environment.environment_id.clone(),
             cwd: req.turn_environment.cwd().clone(),
             files: vec![req.path.clone()],
             patch: req.patch.clone(),
+            changes: Arc::new(req.changes.clone()),
+            permissions_preapproved: false,
         })
     }
 
     fn wants_no_sandbox_approval(&self, policy: AskForApproval) -> bool {
-        wants_no_sandbox_approval(policy)
+        match policy {
+            AskForApproval::Never => false,
+            AskForApproval::Granular(granular_config) => granular_config.allows_sandbox_approval(),
+            AskForApproval::OnRequest | AskForApproval::UnlessTrusted => true,
+        }
     }
 
     fn exec_approval_requirement(
@@ -398,21 +282,15 @@ impl Approvable<ConditionalWriteRequest> for ApplyPatchRuntime {
     ) -> Option<ExecApprovalRequirement> {
         Some(req.exec_approval_requirement.clone())
     }
-
-    fn permission_request_payload(
-        &self,
-        req: &ConditionalWriteRequest,
-    ) -> Option<PermissionRequestPayload> {
-        Some(PermissionRequestPayload {
-            tool_name: req.hook_tool_name.clone(),
-            tool_input: req.hook_input.clone(),
-        })
-    }
 }
 
 impl ToolRuntime<ConditionalWriteRequest, ApplyPatchRuntimeOutput> for ApplyPatchRuntime {
-    fn workspace_roots<'a>(&self, req: &'a ConditionalWriteRequest) -> &'a [PathUri] {
-        req.turn_environment.workspace_roots()
+    fn turn_environment<'a>(&self, req: &'a ConditionalWriteRequest) -> &'a TurnEnvironment {
+        &req.turn_environment
+    }
+
+    fn uses_executor_managed_process_sandbox(&self, req: &ConditionalWriteRequest) -> bool {
+        req.turn_environment.environment.is_remote()
     }
 
     fn sandbox_cwd<'a>(&self, req: &'a ConditionalWriteRequest) -> Option<&'a PathUri> {
@@ -430,6 +308,7 @@ impl ToolRuntime<ConditionalWriteRequest, ApplyPatchRuntimeOutput> for ApplyPatc
             file_system_sandbox_context_for_attempt(/*additional_permissions*/ None, attempt);
         let file_system = req.turn_environment.environment.get_filesystem();
         let _mutation_guard = ctx
+            .step_context
             .turn
             .file_mutation_locks
             .lock_paths(

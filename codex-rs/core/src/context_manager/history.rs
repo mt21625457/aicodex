@@ -168,10 +168,10 @@ impl ContextManager {
             }
 
             let processed = ResponseItemEnvelope {
-                item: self.process_item(item_ref, policy),
+                item: self.process_item(item, policy),
                 metadata: metadata.cloned(),
             };
-            self.track_custom_tool_call_name(&processed);
+            self.track_custom_tool_call_name(&processed.item);
             Arc::make_mut(&mut self.items).push(processed);
         }
     }
@@ -555,7 +555,7 @@ impl ContextManager {
     fn rebuild_custom_tool_call_name_index(&mut self) {
         self.custom_tool_call_names_by_call_id.clear();
         for item in self.items.iter() {
-            if let ResponseItem::CustomToolCall { call_id, name, .. } = item {
+            if let ResponseItem::CustomToolCall { call_id, name, .. } = &item.item {
                 self.custom_tool_call_names_by_call_id
                     .insert(call_id.clone(), name.clone());
             }

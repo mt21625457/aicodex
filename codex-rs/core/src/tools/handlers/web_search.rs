@@ -134,7 +134,7 @@ impl WebSearchHandler {
             id: session.session_id().to_string(),
             model: self.search_model(turn),
             reasoning: None,
-            input: recent_input(history.raw_items()),
+            input: recent_input(&history.raw_items().cloned().collect::<Vec<_>>()),
             commands: Some(commands),
             settings: Some(self.settings.clone()),
             max_output_tokens: Some(search_output_token_budget(turn)),

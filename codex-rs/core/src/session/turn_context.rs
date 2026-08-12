@@ -518,7 +518,7 @@ impl Session {
         let mut per_turn_config = (*config).clone();
         per_turn_config.cwd = cwd;
         per_turn_config.model_provider_id = session_configuration.provider_id.clone();
-        per_turn_config.model_provider = session_configuration.provider.clone();
+        per_turn_config.model_provider = session_configuration.provider.info().clone();
         per_turn_config.permissions.approval_policy = session_configuration.approval_policy.clone();
         let workspace_roots = session_configuration.primary_workspace_roots();
         per_turn_config.workspace_roots = workspace_roots.clone();
@@ -1006,9 +1006,10 @@ impl Session {
             let state = self.state.lock().await;
             state.session_configuration.clone()
         };
-        self.services
-            .turn_environments
-            .update_selections(session_configuration.environment_selections());
+        self.services.turn_environments.update_selections(
+            session_configuration.environment_selections(),
+            &session_configuration.turn_environment_config(),
+        );
         let turn_environments = self.services.turn_environments.snapshot().await;
         (session_configuration, turn_environments)
     }

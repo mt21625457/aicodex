@@ -57,7 +57,7 @@ impl Default for Prompt {
     fn default() -> Self {
         Self {
             input: Vec::new(),
-            tools: Vec::new(),
+            tools: Arc::from([]),
             hidden_tools: Vec::new(),
             chat_file_tool_mode: ChatFileToolMode::Legacy,
             claude_file_tool_mode: ClaudeFileToolMode::Auto,

@@ -445,11 +445,11 @@ impl ToolRegistry {
             .tools
             .values()
             .filter_map(|tool| {
-                if tool.exposure() != ToolExposure::Hidden {
+                if tool.exposure != ToolExposure::Hidden {
                     return None;
                 }
-                let spec = tool.spec();
-                matches!(&spec, ToolSpec::Freeform(_)).then(|| (tool.tool_name(), spec))
+                let spec = tool.runtime.spec();
+                matches!(&spec, ToolSpec::Freeform(_)).then(|| (tool.runtime.tool_name(), spec))
             })
             .collect::<Vec<_>>();
         tools.sort_by(|(left, _), (right, _)| left.cmp(right));

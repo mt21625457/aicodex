@@ -108,6 +108,12 @@ pub(crate) async fn build_compaction_initial_context(
     }
 }
 
+pub(crate) fn should_use_remote_compact_task(
+    provider: &codex_model_provider_info::ModelProviderInfo,
+) -> bool {
+    provider.supports_remote_compaction()
+}
+
 pub(crate) async fn run_inline_auto_compact_task(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,

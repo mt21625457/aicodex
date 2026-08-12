@@ -147,13 +147,35 @@ pub(crate) fn build_chat_completions_request_for_provider(
                                             {
                                                 Some(existing_tool)
                                             }
-                                            ResponsesApiNamespaceTool::Function(_) => None,
+                                            ResponsesApiNamespaceTool::Function(_)
+                                            | ResponsesApiNamespaceTool::Custom(_) => None,
                                         })
                                     {
                                         *existing_tool = discovered_tool;
                                     } else {
                                         existing_namespace.tools.push(
                                             ResponsesApiNamespaceTool::Function(discovered_tool),
+                                        );
+                                    }
+                                }
+                                ResponsesApiNamespaceTool::Custom(discovered_tool) => {
+                                    if let Some(existing_tool) = existing_namespace
+                                        .tools
+                                        .iter_mut()
+                                        .find_map(|tool| match tool {
+                                            ResponsesApiNamespaceTool::Custom(existing_tool)
+                                                if existing_tool.name == discovered_tool.name =>
+                                            {
+                                                Some(existing_tool)
+                                            }
+                                            ResponsesApiNamespaceTool::Function(_)
+                                            | ResponsesApiNamespaceTool::Custom(_) => None,
+                                        })
+                                    {
+                                        *existing_tool = discovered_tool;
+                                    } else {
+                                        existing_namespace.tools.push(
+                                            ResponsesApiNamespaceTool::Custom(discovered_tool),
                                         );
                                     }
                                 }
