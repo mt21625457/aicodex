@@ -2,7 +2,12 @@ module(name = "codex")
 
 bazel_dep(name = "bazel_skylib", version = "1.9.0")
 bazel_dep(name = "platforms", version = "1.0.0")
+
+# Expose the public protobuf rules already used transitively by rules_rs.
+bazel_dep(name = "protobuf", version = "34.0.bcr.1", repo_name = "com_google_protobuf")
+bazel_dep(name = "rules_proto", version = "7.1.0")
 bazel_dep(name = "llvm", version = "0.8.11")
+bazel_dep(name = "windows_support", version = "0.2.0")
 
 # Patch hermetic LLVM for Codex's custom libc++ and Windows gnullvm runtime
 # needs that have not landed upstream.
@@ -15,6 +20,57 @@ single_version_override(
         "//patches:llvm_windows_mingw_compat.patch",
     ],
 )
+
+# Preserve case-only SDK aliases when native Windows repository setup feeds
+# case-sensitive remote executors.
+single_version_override(
+    module_name = "windows_support",
+    patch_strip = 1,
+    patches = [
+        "//patches:windows-support-remote-case-aliases.patch",
+    ],
+    version = "0.2.0",
+)
+
+# MSVC repository materialization fails closed until a user who has accepted
+# Microsoft's Visual Studio terms explicitly supplies
+# --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1. Do not configure that
+# acceptance globally: Linux, macOS, and Windows GNU do not require it.
+msvc_runtime = use_extension("@windows_support//windows:extensions.bzl", "msvc_runtime")
+msvc_runtime.configure(
+    architectures = [
+        "x64",
+        "arm64",
+    ],
+    msvc_version = "14.50.35717",
+    visual_studio_installer_manifest_integrity = "sha256-qOhU+p8/uurCfXME4pfxZg1xN0ATid61fPeYPzPBb+8=",
+    visual_studio_installer_manifest_url = "https://download.visualstudio.microsoft.com/download/pr/fdc37f6e-59f6-4054-838a-b476eeaa6ec3/1d82370739911457e0a2f6be15d8b5f569531b352b2eabb961429eea1e99e356/VisualStudio.vsman",
+)
+use_repo(msvc_runtime, "msvc_runtime")
+
+windows_sdk = use_extension("@windows_support//windows:extensions.bzl", "windows_sdk")
+windows_sdk.configure(
+    architectures = [
+        "x64",
+        "arm64",
+    ],
+    transformations = {
+        "base/c/Include/10.0.26100.0/shared/driverspecs.h": "base/c/Include/10.0.26100.0/shared/DriverSpecs.h",
+        "base/c/Include/10.0.26100.0/shared/specstrings.h": "base/c/Include/10.0.26100.0/shared/SpecStrings.h",
+        "base/c/Include/10.0.26100.0/um/ole2.h": "base/c/Include/10.0.26100.0/um/Ole2.h",
+        "base/c/Include/10.0.26100.0/um/olectl.h": "base/c/Include/10.0.26100.0/um/OleCtl.h",
+        "**/*.h": "lowercase",
+        "**/*.lib": "lowercase",
+        "**/*.Lib": "lowercase",
+    },
+    windows_sdk_integrity = {
+        "Microsoft.Windows.SDK.CPP": "sha256-/0VWYL7gcadEcVqWZWZvopwHaBV509gVlZqe7FpVZCQ=",
+        "Microsoft.Windows.SDK.CPP.x64": "sha256-rWzpD/lAEGmdKVSLPCseUsieuBFD4hmRVdmlw4ABtSs=",
+        "Microsoft.Windows.SDK.CPP.arm64": "sha256-A7wMA9Q5zvhQdLvNQl+dXTptO0Z5Z6zSHaO6bf7q+mc=",
+    },
+    windows_sdk_version = "10.0.26100.7705",
+)
+use_repo(windows_sdk, "windows_sdk")
 
 # Abseil picks a MinGW pthread TLS path that does not match our hermetic
 # windows-gnullvm toolchain; force it onto the portable C++11 thread-local path.
@@ -206,6 +262,10 @@ use_repo(rules_rust_bindgen, "rules_rust_bindgen")
 
 register_toolchains("@rules_rust_bindgen//:all")
 
+# Generate Rust protobuf/gRPC libraries against the workspace's prost/tonic
+# versions instead of the versions bundled with rules_rs's default toolchain.
+register_toolchains("//bazel/toolchains/prost:toolchain")
+
 crate = use_extension("@rules_rs//rs:extensions.bzl", "crate")
 crate.from_cargo(
     cargo_lock = "//codex-rs:Cargo.lock",
@@ -394,10 +454,12 @@ crate.annotation(
     crate_features_select = {
         "aarch64-apple-darwin": ["v8_enable_sandbox"],
         "aarch64-pc-windows-gnullvm": ["v8_enable_sandbox"],
+        "aarch64-pc-windows-msvc": ["v8_enable_sandbox"],
         "aarch64-unknown-linux-gnu": ["v8_enable_sandbox"],
         "aarch64-unknown-linux-musl": ["v8_enable_sandbox"],
         "x86_64-apple-darwin": ["v8_enable_sandbox"],
         "x86_64-pc-windows-gnullvm": ["v8_enable_sandbox"],
+        "x86_64-pc-windows-msvc": ["v8_enable_sandbox"],
         "x86_64-unknown-linux-gnu": ["v8_enable_sandbox"],
         "x86_64-unknown-linux-musl": ["v8_enable_sandbox"],
     },
@@ -484,15 +546,6 @@ archive_override(
 )
 
 http_archive(
-    name = "v8_crate_146_4_0",
-    build_file = "//third_party/v8:v8_crate.BUILD.bazel",
-    sha256 = "d97bcac5cdc5a195a4813f1855a6bc658f240452aac36caa12fd6c6f16026ab1",
-    strip_prefix = "v8-146.4.0",
-    type = "tar.gz",
-    urls = ["https://static.crates.io/crates/v8/v8-146.4.0.crate"],
-)
-
-http_archive(
     name = "v8_crate_150_4_0",
     build_file = "//third_party/v8:v8_crate.BUILD.bazel",
     sha256 = "42a978ff11f15b24e5c05a7123cf2b68f41e763546699781a924ef4e2cf43a49",
@@ -527,18 +580,18 @@ git_repository(
 http_file(
     name = "rusty_v8_150_4_0_aarch64_pc_windows_msvc_archive",
     downloaded_file_path = "rusty_v8_release_aarch64-pc-windows-msvc.lib.gz",
-    sha256 = "ce9f2e4321e0dd4bc64882b6daefc028863608ed934e387a98ca384f1f7923f8",
+    sha256 = "54722842af36b74248c403ff531254efac6ff65d281198bab0c6350fc1188ad4",
     urls = [
-        "https://github.com/denoland/rusty_v8/releases/download/v150.4.0/rusty_v8_release_aarch64-pc-windows-msvc.lib.gz",
+        "https://github.com/openai/codex/releases/download/rusty-v8-v150.4.0/rusty_v8_ptrcomp_sandbox_release_aarch64-pc-windows-msvc.lib.gz",
     ],
 )
 
 http_file(
     name = "rusty_v8_150_4_0_x86_64_pc_windows_msvc_archive",
     downloaded_file_path = "rusty_v8_release_x86_64-pc-windows-msvc.lib.gz",
-    sha256 = "571bf6a028576ac1413c8a942383f637f91e94b0c964bbeefff8a098637aaa40",
+    sha256 = "732ec5da4243aa166799780c8519a5eea6f32f6e47657a323342794dc3c239d6",
     urls = [
-        "https://github.com/denoland/rusty_v8/releases/download/v150.4.0/rusty_v8_release_x86_64-pc-windows-msvc.lib.gz",
+        "https://github.com/openai/codex/releases/download/rusty-v8-v150.4.0/rusty_v8_ptrcomp_sandbox_release_x86_64-pc-windows-msvc.lib.gz",
     ],
 )
 

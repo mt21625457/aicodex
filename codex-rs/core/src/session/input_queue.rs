@@ -1,16 +1,23 @@
 use crate::state::ActiveTurn;
 use crate::state::MailboxDeliveryPhase;
 use crate::state::TurnState;
+use codex_diagnostics::Gauge;
+use codex_diagnostics::GaugeGuard;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::user_input::UserInput;
+use serde::Deserialize;
+use serde::Serialize;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::watch;
 
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum TurnInput {
+static PENDING_MAILBOX_MESSAGES: Gauge = Gauge::new("core.mailbox.pending");
+
+/// Input consumed by a regular turn.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum TurnInput {
     UserInput {
         content: Vec<UserInput>,
         client_id: Option<String>,
@@ -40,6 +47,7 @@ pub(crate) struct InputQueue {
 struct PendingMailboxCommunication {
     communication: InterAgentCommunication,
     parent_turn_id: Option<String>,
+    _diagnostics_guard: GaugeGuard,
 }
 
 impl InputQueue {
@@ -85,6 +93,7 @@ impl InputQueue {
             .push_back(PendingMailboxCommunication {
                 communication,
                 parent_turn_id,
+                _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
             });
         self.activity_tx.send_replace(InputQueueActivity::Mailbox);
     }

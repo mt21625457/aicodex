@@ -1,3 +1,6 @@
+use std::collections::BTreeMap;
+use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -55,6 +58,9 @@ const TEST_ALLOW_HTTP_REMOTE_PLUGIN_BUNDLE_DOWNLOADS: &str =
     "CODEX_TEST_ALLOW_HTTP_REMOTE_PLUGIN_BUNDLE_DOWNLOADS";
 const ALTERNATE_MARKETPLACE_RELATIVE_PATH: &str = ".claude-plugin/marketplace.json";
 const ALTERNATE_PLUGIN_MANIFEST_RELATIVE_PATH: &str = ".claude-plugin/plugin.json";
+type RemoteInstalledPluginFixtures = BTreeMap<String, BTreeMap<String, Vec<serde_json::Value>>>;
+static REMOTE_INSTALLED_PLUGIN_FIXTURES: OnceLock<Mutex<RemoteInstalledPluginFixtures>> =
+    OnceLock::new();
 
 fn write_plugins_enabled_config(codex_home: &std::path::Path) -> std::io::Result<()> {
     std::fs::write(
@@ -586,6 +592,7 @@ async fn plugin_list_keeps_valid_marketplaces_when_another_marketplace_fails_to_
                     path: valid_plugin_path,
                 },
                 installed: false,
+                installed_at: None,
                 enabled: false,
                 install_policy: PluginInstallPolicy::Available,
                 install_policy_source: None,
@@ -875,6 +882,7 @@ async fn plugin_list_uses_alternate_discoverable_manifest_and_keeps_undiscoverab
                         path: valid_plugin_path,
                     },
                     installed: false,
+                    installed_at: None,
                     enabled: false,
                     install_policy: PluginInstallPolicy::Available,
                     install_policy_source: None,
@@ -919,6 +927,7 @@ async fn plugin_list_uses_alternate_discoverable_manifest_and_keeps_undiscoverab
                         )?,
                     },
                     installed: false,
+                    installed_at: None,
                     enabled: false,
                     install_policy: PluginInstallPolicy::Available,
                     install_policy_source: None,
@@ -1968,6 +1977,7 @@ async fn plugin_list_includes_remote_marketplaces_when_remote_plugin_enabled() -
       "scope": "GLOBAL",
       "installation_policy": "AVAILABLE",
       "installation_policy_source": "WORKSPACE_SETTING",
+      "installed_at": "2026-01-02T00:00:00Z",
       "must_show_installation_interstitial": false,
       "authentication_policy": "ON_USE",
       "status": "ENABLED",
@@ -2091,6 +2101,10 @@ async fn plugin_list_includes_remote_marketplaces_when_remote_plugin_enabled() -
         Some("1.2.3")
     );
     assert_eq!(remote_marketplace.plugins[0].installed, true);
+    assert_eq!(
+        remote_marketplace.plugins[0].installed_at,
+        Some(1_767_312_000)
+    );
     assert_eq!(remote_marketplace.plugins[0].enabled, true);
     assert_eq!(
         remote_marketplace.plugins[0].install_policy_source,
@@ -3371,8 +3385,7 @@ plugin_sharing = true
             )
         ]
     );
-    wait_for_remote_installed_scope_request(&server, "WORKSPACE").await?;
-    wait_for_remote_installed_scope_request(&server, "GLOBAL").await?;
+    wait_for_remote_installed_snapshot_request(&server).await?;
     Ok(())
 }
 
@@ -3458,8 +3471,7 @@ plugin_sharing = false
             true
         )]
     );
-    wait_for_remote_installed_scope_request(&server, "WORKSPACE").await?;
-    wait_for_remote_installed_scope_request(&server, "GLOBAL").await?;
+    wait_for_remote_installed_snapshot_request(&server).await?;
     Ok(())
 }
 
@@ -3545,7 +3557,7 @@ plugin_sharing = false
         ),
     )
     .await?;
-    wait_for_remote_installed_scope_request(&server, "USER").await?;
+    wait_for_remote_installed_snapshot_request(&server).await?;
     Ok(())
 }
 
@@ -4263,8 +4275,7 @@ async fn plugin_list_fetches_shared_with_me_kind() -> Result<()> {
         share_context.discoverability,
         Some(PluginShareDiscoverability::Unlisted)
     );
-    wait_for_remote_installed_scope_request(&server, "WORKSPACE").await?;
-    wait_for_remote_installed_scope_request(&server, "GLOBAL").await?;
+    wait_for_remote_installed_snapshot_request(&server).await?;
     wait_for_remote_plugin_request_count(&server, "/ps/plugins/list", /*expected_count*/ 0).await?;
     Ok(())
 }
@@ -4743,7 +4754,7 @@ async fn wait_for_remote_plugin_list_scope_request_count(
     Ok(())
 }
 
-async fn wait_for_remote_installed_scope_request(server: &MockServer, scope: &str) -> Result<()> {
+async fn wait_for_remote_installed_snapshot_request(server: &MockServer) -> Result<()> {
     timeout(DEFAULT_TIMEOUT, async {
         loop {
             let Some(requests) = server.received_requests().await else {
@@ -4752,10 +4763,7 @@ async fn wait_for_remote_installed_scope_request(server: &MockServer, scope: &st
             if requests.iter().any(|request| {
                 request.method == "GET"
                     && request.url.path().ends_with("/ps/plugins/installed")
-                    && request
-                        .url
-                        .query_pairs()
-                        .any(|(name, value)| name == "scope" && value == scope)
+                    && request.url.query_pairs().all(|(name, _)| name != "scope")
             }) {
                 return Ok::<(), anyhow::Error>(());
             }
@@ -4990,12 +4998,53 @@ async fn mount_shared_workspace_plugins(server: &MockServer, body: &str) {
 }
 
 async fn mount_remote_installed_plugins(server: &MockServer, scope: &str, body: &str) {
+    let plugins = serde_json::from_str::<serde_json::Value>(body)
+        .expect("installed plugin fixture should be valid JSON")["plugins"]
+        .as_array()
+        .expect("installed plugin fixture should contain plugins")
+        .clone();
+    REMOTE_INSTALLED_PLUGIN_FIXTURES
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(server.uri())
+        .or_default()
+        .insert(scope.to_string(), plugins);
+
     Mock::given(method("GET"))
         .and(path("/backend-api/ps/plugins/installed"))
         .and(query_param("scope", scope))
         .and(header("authorization", "Bearer chatgpt-token"))
         .and(header("chatgpt-account-id", "account-123"))
         .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .mount(server)
+        .await;
+
+    let server_uri = server.uri();
+    Mock::given(method("GET"))
+        .and(path("/backend-api/ps/plugins/installed"))
+        .and(query_param_is_missing("scope"))
+        .and(header("authorization", "Bearer chatgpt-token"))
+        .and(header("chatgpt-account-id", "account-123"))
+        .respond_with(move |_request: &wiremock::Request| {
+            let fixtures = REMOTE_INSTALLED_PLUGIN_FIXTURES
+                .get()
+                .expect("installed plugin fixtures should exist")
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let scoped_plugins = fixtures
+                .get(&server_uri)
+                .expect("installed plugin fixtures should exist for this server");
+            let plugins = ["GLOBAL", "WORKSPACE", "USER"]
+                .into_iter()
+                .flat_map(|scope| scoped_plugins.get(scope).into_iter().flatten())
+                .cloned()
+                .collect::<Vec<_>>();
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "plugins": plugins,
+                "pagination": {"limit": 50, "next_page_token": null},
+            }))
+        })
         .mount(server)
         .await;
 }

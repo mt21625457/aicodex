@@ -42,6 +42,52 @@ async fn token_count_none_resets_context_indicator() {
 }
 
 #[tokio::test]
+async fn resumed_session_hides_unknown_token_usage_until_an_update_arrives() {
+    let (mut chat, _rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.set_token_info(/*info*/ None);
+
+    let width = 80;
+    let height = chat.desired_height(width);
+    let mut terminal =
+        ratatui::Terminal::new(TestBackend::new(width, height)).expect("create terminal");
+    terminal
+        .draw(|frame| chat.render(frame.area(), frame.buffer_mut()))
+        .expect("render resumed session");
+    let rendered = normalized_backend_snapshot(terminal.backend());
+    assert!(!rendered.contains("100% context left"));
+    insta::assert_snapshot!(
+        rendered
+            .lines()
+            .find(|line| line.contains("context left"))
+            .map(str::trim)
+            .unwrap_or("(hidden)"),
+        @"(hidden)"
+    );
+
+    chat.config.tui_status_line = Some(vec![
+        "context-remaining".to_string(),
+        "context-used".to_string(),
+        "total-input-tokens".to_string(),
+        "total-output-tokens".to_string(),
+    ]);
+    chat.refresh_status_line();
+    assert_eq!(status_line_text(&chat), None);
+
+    handle_token_count(
+        &mut chat,
+        Some(make_token_info(
+            /*total_tokens*/ 12_700, /*context_window*/ 13_000,
+        )),
+    );
+    chat.refresh_status_line();
+    assert_eq!(
+        status_line_text(&chat),
+        Some("Context 30% left · Context 70% used · 0 in · 0 out".to_string())
+    );
+}
+
+#[tokio::test]
 async fn app_server_cyber_policy_error_renders_dedicated_notice() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
 
@@ -2051,6 +2097,7 @@ async fn request_user_input_interrupt_pauses_active_goal_turn() {
             item_id: "call-1".to_string(),
             turn_id: "turn-1".to_string(),
             questions: Vec::new(),
+            is_blocking: true,
             auto_resolution_ms: None,
         });
 
@@ -2363,6 +2410,61 @@ async fn ambient_pet_can_be_disabled() {
 }
 
 #[tokio::test]
+async fn added_history_uses_pet_adjusted_terminal_width() {
+    #[derive(Debug)]
+    struct WidthCell(std::sync::Arc<std::sync::atomic::AtomicU16>);
+
+    impl HistoryCell for WidthCell {
+        fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+            self.0.store(width, std::sync::atomic::Ordering::Relaxed);
+            if width == u16::MAX {
+                Vec::new()
+            } else {
+                vec!["width-sensitive history".into()]
+            }
+        }
+
+        fn raw_lines(&self) -> Vec<Line<'static>> {
+            Vec::new()
+        }
+    }
+
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    enable_test_ambient_pet(&mut chat);
+    chat.last_rendered_width.set(Some(80));
+    set_active_cell(
+        &mut chat,
+        Box::new(PlainHistoryCell::new(vec!["active response".into()])),
+    );
+    let width = std::sync::Arc::new(std::sync::atomic::AtomicU16::new(0));
+
+    chat.add_to_history(WidthCell(std::sync::Arc::clone(&width)));
+
+    assert_eq!(width.load(std::sync::atomic::Ordering::Relaxed), 69);
+    assert!(chat.transcript.needs_final_message_separator);
+    let backend = VT100Backend::new(/*width*/ 80, /*height*/ 4);
+    let mut terminal = crate::custom_terminal::Terminal::with_options(backend).expect("terminal");
+    terminal.set_viewport_area(Rect::new(
+        /*x*/ 0, /*y*/ 3, /*width*/ 80, /*height*/ 1,
+    ));
+    for lines in drain_insert_history(&mut rx) {
+        crate::insert_history::insert_history_lines(&mut terminal, lines)
+            .expect("insert history lines");
+    }
+    insta::assert_snapshot!(terminal.backend().vt100().screen().contents().trim(), @r"
+active response
+
+width-sensitive history
+");
+
+    width.store(0, std::sync::atomic::Ordering::Relaxed);
+    chat.set_raw_output_mode(/*enabled*/ true);
+    chat.last_rendered_width.set(Some(12));
+    chat.add_to_history(WidthCell(std::sync::Arc::clone(&width)));
+    assert_eq!(width.load(std::sync::atomic::Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
 #[serial]
 async fn ambient_pet_reserves_history_wrap_width() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
@@ -2542,7 +2644,6 @@ async fn status_widget_and_approval_modal_snapshot() {
     let height = chat.desired_height(width);
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
         .expect("create terminal");
-    terminal.set_viewport_area(Rect::new(0, 0, width, height));
     terminal
         .draw(|f| chat.render(f.area(), f.buffer_mut()))
         .expect("draw status + approval modal");
@@ -3573,7 +3674,7 @@ fn goal_status_indicator_line_formats_goal_text() {
             "Goal unmet (4K / 5K tokens)",
         ),
         (GoalStatusIndicator::Paused, "Goal paused (/goal resume)"),
-        (GoalStatusIndicator::Blocked, "Goal blocked (/goal resume)"),
+        (GoalStatusIndicator::Blocked, "Goal stalled (/goal resume)"),
         (
             GoalStatusIndicator::UsageLimited,
             "Goal hit usage limits (/goal resume)",
@@ -3941,7 +4042,6 @@ async fn reasoning_delta_restores_recreated_status_indicator_header() {
     let height = chat.desired_height(width);
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
         .expect("create terminal");
-    terminal.set_viewport_area(Rect::new(/*x*/ 0, /*y*/ 0, width, height));
     terminal
         .draw(|frame| chat.render(frame.area(), frame.buffer_mut()))
         .expect("draw restored reasoning status");

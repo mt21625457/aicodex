@@ -54,11 +54,11 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::MultiAgentVersion;
-use codex_protocol::protocol::RolloutItem;
-use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::UserMessageEvent;
+use codex_rollout::RolloutItem;
+use codex_rollout::RolloutLine;
 use codex_rollout::append_rollout_item_to_path;
 use codex_rollout::append_thread_name;
 use codex_rollout::read_session_meta_line;
@@ -660,7 +660,14 @@ async fn thread_fork_defers_inherited_active_goal_until_next_turn() -> Result<()
         .await??;
         turn_ids.push(completed.turn.id);
     }
-    mcp.clear_message_buffer();
+    // Stop the source before its active goal exists so a late idle hook cannot continue it.
+    timeout(DEFAULT_READ_TIMEOUT, mcp.shutdown_gracefully()).await??;
+    drop(mcp);
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_managed_config()
+        .build_initialized()
+        .await?;
 
     let state_db = StateRuntime::init(
         codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
@@ -691,24 +698,6 @@ async fn thread_fork_defers_inherited_active_goal_until_next_turn() -> Result<()
         .get_thread_goal(source_thread_id)
         .await?
         .expect("source goal");
-
-    let ordinary_fork_id = mcp
-        .send_thread_fork_request(ThreadForkParams {
-            thread_id: source_thread.id.clone(),
-            ..Default::default()
-        })
-        .await?;
-    let ThreadForkResponse {
-        thread: ordinary_fork,
-        ..
-    } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(ordinary_fork_id)).await??;
-    assert_eq!(
-        state_db
-            .thread_goals()
-            .get_thread_goal(ThreadId::from_string(&ordinary_fork.id)?)
-            .await?,
-        None
-    );
 
     let mut forked_threads = Vec::new();
     for (last_turn_id, before_turn_id, expected_turn_count) in [
@@ -1290,7 +1279,7 @@ async fn thread_fork_creates_reference_backed_paginated_thread() -> Result<()> {
 
     let turn_id = mcp
         .send_turn_start_request(TurnStartParams {
-            thread_id: forked_thread_id,
+            thread_id: forked_thread_id.clone(),
             input: vec![UserInput::Text {
                 text: "Continue from the fork".to_string(),
                 text_elements: Vec::new(),
@@ -1333,6 +1322,33 @@ async fn thread_fork_creates_reference_backed_paginated_thread() -> Result<()> {
     let excluded_turns_path = excluded_turns_thread.path.expect("forked rollout path");
     let excluded_turns_meta = read_session_meta_line(excluded_turns_path.as_path()).await?;
     assert_eq!(excluded_turns_meta.meta.history_base, Some(history_base));
+
+    let ThreadForkResponse {
+        thread: nested_thread,
+        ..
+    } = mcp
+        .request(|request_id| ClientRequest::ThreadFork {
+            request_id,
+            params: ThreadForkParams {
+                thread_id: forked_thread_id.clone(),
+                exclude_turns: true,
+                ..ThreadForkParams::default()
+            },
+        })
+        .await?;
+    assert_eq!(nested_thread.forked_from_id, Some(forked_thread_id.clone()));
+    assert_eq!(nested_thread.history_mode, ThreadHistoryMode::Paginated);
+    assert!(nested_thread.turns.is_empty());
+    let nested_path = nested_thread.path.expect("nested fork rollout path");
+    let nested_meta = read_session_meta_line(nested_path.as_path()).await?;
+    assert_eq!(
+        nested_meta
+            .meta
+            .history_base
+            .expect("nested fork history base")
+            .thread_id,
+        ThreadId::from_string(forked_thread_id.as_str())?
+    );
     Ok(())
 }
 
@@ -1373,15 +1389,18 @@ async fn assert_thread_fork_freezes_active_paginated_turn_as_interrupted(
     let source_path = rollout_path(codex_home.path(), "2025-01-05T12-00-00", &source_thread_id);
     let source_id = ThreadId::from_string(source_thread_id.as_str())?;
     let user_response_item = |id: &str| {
-        RolloutItem::ResponseItem(ResponseItem::Message {
-            id: None,
-            role: "user".to_string(),
-            content: vec![ContentItem::InputText {
-                text: format!("{id} model input"),
-            }],
-            phase: None,
-            internal_chat_message_metadata_passthrough: None,
-        })
+        RolloutItem::ResponseItem(
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: format!("{id} model input"),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            }
+            .into(),
+        )
     };
     let completed_user_item = |id: &str, completed_at_ms| {
         RolloutItem::EventMsg(EventMsg::ItemCompleted(ItemCompletedEvent {
@@ -1483,17 +1502,18 @@ async fn assert_thread_fork_freezes_active_paginated_turn_as_interrupted(
                 ..
             },
             RolloutLine {
-                item: RolloutItem::ResponseItem(codex_protocol::models::ResponseItem::Message {
-                    role,
-                    ..
-                }),
+                item: RolloutItem::ResponseItem(response_item),
                 ..
             },
             RolloutLine {
                 item: RolloutItem::EventMsg(EventMsg::TurnAborted(aborted)),
                 ..
             },
-        ] if role == expected_marker_role && aborted.turn_id.as_deref() == Some("active-turn")
+        ] if matches!(
+            &response_item.item,
+            codex_protocol::models::ResponseItem::Message { role, .. }
+                if role == expected_marker_role
+        ) && aborted.turn_id.as_deref() == Some("active-turn")
     ));
 
     append_rollout_item_to_path(source_path.as_path(), &user_response_item("after-fork")).await?;

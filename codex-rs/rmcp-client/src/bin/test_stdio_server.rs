@@ -20,7 +20,7 @@ use rmcp::model::JsonObject;
 use rmcp::model::ListResourceTemplatesResult;
 use rmcp::model::ListResourcesResult;
 use rmcp::model::ListToolsResult;
-use rmcp::model::Meta;
+use rmcp::model::MetaObject;
 use rmcp::model::PaginatedRequestParams;
 use rmcp::model::ReadResourceRequestParams;
 use rmcp::model::ReadResourceResult;
@@ -52,6 +52,7 @@ const SMALL_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAA
 const APP_ONLY_CWD_MARKER_FILE_ENV: &str = "MCP_TEST_APP_ONLY_CWD_MARKER_FILE";
 const DYNAMIC_SERVER_METADATA_ENV: &str = "MCP_TEST_DYNAMIC_SERVER_METADATA";
 const INITIALIZE_BARRIER_FILE_ENV: &str = "MCP_TEST_INITIALIZE_BARRIER_FILE";
+const SERVER_INSTRUCTIONS_ENV: &str = "MCP_TEST_SERVER_INSTRUCTIONS";
 
 fn dynamic_server_process_label() -> Option<String> {
     std::env::var_os(DYNAMIC_SERVER_METADATA_ENV)
@@ -92,7 +93,7 @@ impl TestToolServer {
             Arc::new(thread_hint_schema),
         );
         thread_hint_tool.annotations = Some(ToolAnnotations::new().read_only(true));
-        let mut thread_hint_meta = Meta::new();
+        let mut thread_hint_meta = MetaObject::new();
         thread_hint_meta.insert("ui".to_string(), json!({ "visibility": [] }));
         thread_hint_tool.meta = Some(thread_hint_meta);
 
@@ -493,7 +494,7 @@ impl ServerHandler for TestToolServer {
         )]));
 
         let server_info = ServerInfo::new(capabilities);
-        match dynamic_server_process_label() {
+        let server_info = match dynamic_server_process_label() {
             Some(process_label) => server_info
                 .with_server_info(
                     Implementation::new("codex-rmcp-test-server", env!("CARGO_PKG_VERSION"))
@@ -503,12 +504,16 @@ impl ServerHandler for TestToolServer {
             None => {
                 server_info.with_instructions("Use these tools to exercise the rmcp test server.")
             }
+        };
+        match std::env::var(SERVER_INSTRUCTIONS_ENV) {
+            Ok(instructions) => server_info.with_instructions(instructions),
+            Err(_) => server_info,
         }
     }
 
     fn list_tools(
         &self,
-        _request: Option<PaginatedRequestParams>,
+        request: Option<PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
         let tools = self.tools.clone();
@@ -519,10 +524,28 @@ impl ServerHandler for TestToolServer {
                 && let Some(cwd) = tools.iter_mut().find(|tool| tool.name == "cwd")
             {
                 cwd.meta
-                    .get_or_insert_with(Meta::new)
+                    .get_or_insert_with(MetaObject::new)
                     .insert("ui".to_string(), json!({ "visibility": ["app"] }));
             }
-            Ok(ListToolsResult::with_all_items(tools))
+            let mut result = ListToolsResult::with_all_items(tools);
+            match (
+                std::env::var("MCP_TEST_TOOL_PAGINATION").as_deref(),
+                request.and_then(|request| request.cursor).as_deref(),
+            ) {
+                (Ok("two-pages"), None) => {
+                    result.tools.retain(|tool| tool.name == "echo");
+                    result.next_cursor = Some("second".to_string());
+                }
+                (Ok("two-pages"), Some("second")) => {
+                    result.tools.retain(|tool| tool.name == "sync");
+                }
+                (Ok("oversized-cursor"), None) => {
+                    result.tools.retain(|tool| tool.name == "echo");
+                    result.next_cursor = Some("x".repeat(65_537));
+                }
+                _ => {}
+            }
+            Ok(result)
         }
     }
 
@@ -632,7 +655,7 @@ impl ServerHandler for TestToolServer {
                 Ok(Self::structured_result(structured_content))
             }
             "encrypted_output" => {
-                let mut meta = Meta::new();
+                let mut meta = MetaObject::new();
                 meta.insert("codex/encryptedContent".to_string(), json!(true));
                 let mut result = CallToolResult::success(vec![
                     rmcp::model::ContentBlock::text("Lookup completed"),
@@ -724,7 +747,7 @@ impl TestToolServer {
                 content.push(rmcp::model::ContentBlock::image(valid_data_b64, mime_type));
             }
             ImageScenario::ImageOnlyOriginalDetail => {
-                let mut meta = rmcp::model::Meta::new();
+                let mut meta = MetaObject::new();
                 meta.insert(
                     "codex/imageDetail".to_string(),
                     serde_json::json!("original"),
@@ -877,9 +900,51 @@ fn parse_data_url(url: &str) -> Option<(String, String)> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(windows)]
+    if std::env::var_os("MCP_TEST_DESCENDANT_ROLE").is_some() {
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        return Ok(());
+    }
+
     eprintln!("starting rmcp test server");
     if let Ok(pid_file) = std::env::var("MCP_TEST_PID_FILE") {
         std::fs::write(pid_file, std::process::id().to_string())?;
+    }
+    #[cfg(windows)]
+    if let Ok(marker_file) = std::env::var("MCP_TEST_BREAKAWAY_DENIED_FILE") {
+        use std::os::windows::process::CommandExt;
+
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+        const ERROR_ACCESS_DENIED: i32 = 5;
+
+        let escaped = std::process::Command::new(std::env::current_exe()?)
+            .creation_flags(CREATE_BREAKAWAY_FROM_JOB)
+            .env("MCP_TEST_DESCENDANT_ROLE", "1")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        match escaped {
+            Err(error) if error.raw_os_error() == Some(ERROR_ACCESS_DENIED) => {
+                std::fs::write(marker_file, "denied")?;
+            }
+            Err(error) => return Err(error.into()),
+            Ok(mut child) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("MCP descendant unexpectedly escaped its Windows job".into());
+            }
+        }
+    }
+    #[cfg(windows)]
+    if let Ok(pid_file) = std::env::var("MCP_TEST_DESCENDANT_PID_FILE") {
+        let child = std::process::Command::new(std::env::current_exe()?)
+            .env("MCP_TEST_DESCENDANT_ROLE", "1")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+        std::fs::write(pid_file, child.id().to_string())?;
     }
     // Run the server with STDIO transport. If the client disconnects we simply
     // bubble up the error so the process exits.

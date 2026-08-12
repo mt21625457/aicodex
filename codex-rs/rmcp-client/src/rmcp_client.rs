@@ -4,7 +4,9 @@ use std::ffi::OsString;
 use std::future::Future;
 use std::io;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
+use std::sync::PoisonError;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -33,7 +35,6 @@ use rmcp::model::ElicitResult;
 use rmcp::model::ElicitationAction;
 use rmcp::model::Extensions;
 use rmcp::model::InitializeRequestParams;
-use rmcp::model::InitializeResult;
 use rmcp::model::ListResourceTemplatesResult;
 use rmcp::model::ListResourcesResult;
 use rmcp::model::ListToolsResult;
@@ -44,10 +45,12 @@ use rmcp::model::ReadResourceResult;
 use rmcp::model::RequestId;
 use rmcp::model::RequestMetaObject;
 use rmcp::model::RequestParamsMeta;
+use rmcp::model::ServerPeerInfo;
 use rmcp::model::ServerResult;
 use rmcp::model::Tool;
 use rmcp::service::ClientCacheConfig;
 use rmcp::service::ClientServiceExt;
+use rmcp::service::RequestHandle;
 use rmcp::service::RoleClient;
 use rmcp::service::RunningService;
 use rmcp::transport::AuthorizationManager;
@@ -68,8 +71,11 @@ use tracing::instrument;
 use tracing::warn;
 
 use crate::elicitation_client_service::ElicitationClientService;
+use crate::event_notification_transport::capture_event_notifications;
+use crate::event_notification_transport::event_notification_channel;
 use crate::http_client_adapter::StreamableHttpClientAdapter;
 use crate::http_client_adapter::StreamableHttpClientAdapterError;
+use crate::http_client_adapter::StreamableHttpRedirectMode;
 use crate::in_process_transport::InProcessTransportFactory;
 use crate::oauth::OAuthPersistor;
 use crate::oauth::ResolvedOAuthCredentialStore;
@@ -139,7 +145,19 @@ enum TransportRecipe {
         pinned_credential_store: Arc<OnceLock<ResolvedOAuthCredentialStore>>,
         http_client: Arc<dyn HttpClient>,
         auth_provider: Option<SharedAuthProvider>,
+        redirect_mode: StreamableHttpRedirectMode,
+        initialize_deadline: Arc<StdMutex<Option<Instant>>>,
     },
+}
+
+struct InitializeDeadlineGuard {
+    deadline: Arc<StdMutex<Option<Instant>>>,
+}
+
+impl Drop for InitializeDeadlineGuard {
+    fn drop(&mut self) {
+        *self.deadline.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
 }
 
 #[derive(Clone)]
@@ -236,7 +254,7 @@ where
 }
 
 #[derive(Debug, thiserror::Error)]
-enum ClientOperationError {
+pub(crate) enum ClientOperationError {
     #[error(transparent)]
     Service(#[from] rmcp::service::ServiceError),
     #[error("timed out awaiting {label} after {duration:.0?}")]
@@ -327,6 +345,12 @@ pub struct ToolWithConnectorId {
 pub struct ListToolsWithConnectorIdResult {
     pub next_cursor: Option<String>,
     pub tools: Vec<ToolWithConnectorId>,
+}
+
+/// An active Plugin Runtime event request and its request-scoped notifications.
+pub struct CancellableEventStreamRequest {
+    pub handle: RequestHandle<RoleClient>,
+    pub notifications: crate::EventNotificationReceiver,
 }
 
 /// MCP client implemented on top of the official `rmcp` SDK.
@@ -481,6 +505,36 @@ impl RmcpClient {
         auth_provider: Option<SharedAuthProvider>,
         protocol_mode: McpProtocolMode,
     ) -> Result<Self> {
+        Self::new_streamable_http_client_with_protocol_mode_and_redirect_mode(
+            server_name,
+            url,
+            bearer_token,
+            http_headers,
+            env_http_headers,
+            store_mode,
+            keyring_backend_kind,
+            http_client,
+            auth_provider,
+            protocol_mode,
+            StreamableHttpRedirectMode::Legacy,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn new_streamable_http_client_with_protocol_mode_and_redirect_mode(
+        server_name: &str,
+        url: &str,
+        bearer_token: Option<String>,
+        http_headers: Option<HashMap<String, String>>,
+        env_http_headers: Option<HashMap<String, String>>,
+        store_mode: OAuthCredentialsStoreMode,
+        keyring_backend_kind: AuthKeyringBackendKind,
+        http_client: Arc<dyn HttpClient>,
+        auth_provider: Option<SharedAuthProvider>,
+        protocol_mode: McpProtocolMode,
+        redirect_mode: StreamableHttpRedirectMode,
+    ) -> Result<Self> {
         let transport_recipe = TransportRecipe::StreamableHttp {
             server_name: server_name.to_string(),
             url: url.to_string(),
@@ -492,6 +546,8 @@ impl RmcpClient {
             pinned_credential_store: Arc::new(OnceLock::new()),
             http_client,
             auth_provider,
+            redirect_mode,
+            initialize_deadline: Arc::new(StdMutex::new(None)),
         };
         let transport = Self::create_pending_transport(&transport_recipe).await?;
         Ok(Self {
@@ -515,7 +571,7 @@ impl RmcpClient {
         params: InitializeRequestParams,
         timeout: Option<Duration>,
         send_elicitation: SendElicitation,
-    ) -> Result<InitializeResult> {
+    ) -> Result<ServerPeerInfo> {
         let client_service = ElicitationClientService::new(
             params.clone(),
             send_elicitation,
@@ -629,7 +685,7 @@ impl RmcpClient {
         })
     }
 
-    fn meta_string(meta: Option<&rmcp::model::Meta>, key: &str) -> Option<String> {
+    fn meta_string(meta: Option<&rmcp::model::MetaObject>, key: &str) -> Option<String> {
         meta.and_then(|meta| meta.get(key))
             .and_then(Value::as_str)
             .map(str::trim)
@@ -799,9 +855,19 @@ impl RmcpClient {
         method: &str,
         params: Option<serde_json::Value>,
     ) -> Result<ServerResult> {
+        self.send_custom_request_with_timeout(method, params, /*timeout*/ None)
+            .await
+    }
+
+    pub async fn send_custom_request_with_timeout(
+        &self,
+        method: &str,
+        params: Option<serde_json::Value>,
+        timeout: Option<Duration>,
+    ) -> Result<ServerResult> {
         self.refresh_oauth_if_needed().await?;
         let response = self
-            .run_service_operation("requests/custom", /*timeout*/ None, move |service| {
+            .run_service_operation("requests/custom", timeout, move |service| {
                 let params = params.clone();
                 async move {
                     service
@@ -815,6 +881,29 @@ impl RmcpClient {
             .await?;
         self.persist_oauth_tokens().await;
         Ok(response)
+    }
+
+    /// Starts a Plugin Runtime event stream without waiting for its final response.
+    pub async fn send_event_stream_request(
+        &self,
+        params: Option<serde_json::Value>,
+    ) -> Result<CancellableEventStreamRequest> {
+        let service = self.service().await?;
+        let (sender, notifications) = event_notification_channel();
+        let mut request = CustomRequest::new("events/stream", params);
+        request.extensions.insert(sender);
+        let handle = service
+            .peer()
+            .send_cancellable_request(
+                ClientRequest::CustomRequest(request),
+                rmcp::service::PeerRequestOptions::no_options(),
+            )
+            .await?;
+
+        Ok(CancellableEventStreamRequest {
+            handle,
+            notifications,
+        })
     }
 
     async fn service(&self) -> Result<Arc<RunningService<RoleClient, ElicitationClientService>>> {
@@ -914,7 +1003,15 @@ impl RmcpClient {
                 pinned_credential_store,
                 http_client,
                 auth_provider,
+                redirect_mode,
+                initialize_deadline,
             } => {
+                let has_configured_headers = http_headers
+                    .as_ref()
+                    .is_some_and(|headers| !headers.is_empty())
+                    || env_http_headers
+                        .as_ref()
+                        .is_some_and(|headers| !headers.is_empty());
                 let default_headers =
                     build_default_headers(http_headers.clone(), env_http_headers.clone())?;
                 let auth_provider =
@@ -928,19 +1025,27 @@ impl RmcpClient {
                     && auth_provider.is_none()
                     && !default_headers.contains_key(AUTHORIZATION)
                 {
-                    if let Some(store) = pinned_credential_store.get().copied() {
-                        // Rebuilds reread the source selected during first construction. Only the
-                        // initial construction below evaluates configured store policy.
-                        store
-                            .load(&DefaultKeyringStore, server_name, url)?
-                            .map(|tokens| ResolvedOAuthTokens { tokens, store })
-                    } else {
+                    let oauth_server_name = server_name.clone();
+                    let oauth_url = url.clone();
+                    let oauth_store_mode = *store_mode;
+                    let oauth_keyring_backend_kind = *keyring_backend_kind;
+                    let pinned_credential_store = Arc::clone(pinned_credential_store);
+
+                    tokio::task::spawn_blocking(move || -> Result<Option<ResolvedOAuthTokens>> {
+                        if let Some(store) = pinned_credential_store.get().copied() {
+                            // Rebuilds reread the source selected during first construction. Only
+                            // initial construction below evaluates configured store policy.
+                            return store
+                                .load(&DefaultKeyringStore, &oauth_server_name, &oauth_url)
+                                .map(|tokens| tokens.map(|tokens| ResolvedOAuthTokens { tokens, store }));
+                        }
+
                         match resolve_oauth_tokens_from_store_policy(
                             &DefaultKeyringStore,
-                            server_name,
-                            url,
-                            *store_mode,
-                            *keyring_backend_kind,
+                            &oauth_server_name,
+                            &oauth_url,
+                            oauth_store_mode,
+                            oauth_keyring_backend_kind,
                         ) {
                             Ok(tokens) => {
                                 if let Some(resolved) = tokens.as_ref() {
@@ -948,18 +1053,22 @@ impl RmcpClient {
                                     // first concrete source so Auto is not reevaluated mid-client.
                                     pinned_credential_store.set(resolved.store).map_err(|_| {
                                         anyhow!(
-                                            "OAuth credential store pinned concurrently for MCP server `{server_name}`"
+                                            "OAuth credential store pinned concurrently for MCP server `{oauth_server_name}`"
                                         )
                                     })?;
                                 }
-                                tokens
+                                Ok(tokens)
                             }
                             Err(err) => {
-                                warn!("failed to read tokens for server `{server_name}`: {err}");
-                                None
+                                warn!(
+                                    "failed to read tokens for server `{oauth_server_name}`: {err}"
+                                );
+                                Ok(None)
                             }
                         }
-                    }
+                    })
+                    .await
+                    .map_err(|error| anyhow!("OAuth credential loading task failed: {error}"))??
                 } else {
                     None
                 };
@@ -976,6 +1085,9 @@ impl RmcpClient {
                         credential_store,
                         default_headers.clone(),
                         Arc::clone(http_client),
+                        has_configured_headers,
+                        *redirect_mode,
+                        Arc::clone(initialize_deadline),
                     )
                     .await
                     {
@@ -1007,6 +1119,9 @@ impl RmcpClient {
                                     Arc::clone(http_client),
                                     default_headers,
                                     /*auth_provider*/ None,
+                                    has_configured_headers,
+                                    *redirect_mode,
+                                    Arc::clone(initialize_deadline),
                                 ),
                                 http_config,
                             );
@@ -1026,6 +1141,9 @@ impl RmcpClient {
                             Arc::clone(http_client),
                             default_headers,
                             auth_provider,
+                            has_configured_headers,
+                            *redirect_mode,
+                            Arc::clone(initialize_deadline),
                         ),
                         http_config,
                     );
@@ -1044,6 +1162,21 @@ impl RmcpClient {
         Arc<RunningService<RoleClient, ElicitationClientService>>,
         Option<OAuthPersistor>,
     )> {
+        let _initialize_deadline = match &self.transport_recipe {
+            TransportRecipe::StreamableHttp {
+                initialize_deadline,
+                ..
+            } => {
+                *initialize_deadline
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) =
+                    timeout.and_then(|duration| Instant::now().checked_add(duration));
+                Some(InitializeDeadlineGuard {
+                    deadline: Arc::clone(initialize_deadline),
+                })
+            }
+            TransportRecipe::InProcess { .. } | TransportRecipe::Stdio { .. } => None,
+        };
         let lifecycle = self.protocol_mode.client_lifecycle();
         let (transport, oauth_persistor) = match pending_transport {
             PendingTransport::InProcess { transport } => (
@@ -1060,7 +1193,7 @@ impl RmcpClient {
             ),
             PendingTransport::StreamableHttp { transport } => (
                 client_service
-                    .serve_with_lifecycle(transport, lifecycle)
+                    .serve_with_lifecycle(capture_event_notifications(transport), lifecycle)
                     .boxed(),
                 None,
             ),
@@ -1333,6 +1466,7 @@ impl RmcpClient {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn create_oauth_transport_and_runtime(
     server_name: &str,
     url: &str,
@@ -1340,13 +1474,18 @@ async fn create_oauth_transport_and_runtime(
     credential_store: ResolvedOAuthCredentialStore,
     default_headers: HeaderMap,
     http_client: Arc<dyn HttpClient>,
+    has_configured_headers: bool,
+    redirect_mode: StreamableHttpRedirectMode,
+    initialize_deadline: Arc<StdMutex<Option<Instant>>>,
 ) -> Result<(
     StreamableHttpClientTransport<AuthClient<StreamableHttpClientAdapter>>,
     OAuthPersistor,
 )> {
-    let oauth_http_client = Arc::new(OAuthHttpClientAdapter::new(
+    let oauth_http_client = Arc::new(OAuthHttpClientAdapter::new_with_redirect_mode(
         http_client.clone(),
         default_headers.clone(),
+        has_configured_headers,
+        redirect_mode,
     ));
     let mut manager =
         AuthorizationManager::new_with_oauth_http_client(url.to_string(), oauth_http_client)
@@ -1370,7 +1509,14 @@ async fn create_oauth_transport_and_runtime(
     };
 
     let auth_client = AuthClient::new(
-        StreamableHttpClientAdapter::new(http_client, default_headers, /*auth_provider*/ None),
+        StreamableHttpClientAdapter::new(
+            http_client,
+            default_headers,
+            /*auth_provider*/ None,
+            has_configured_headers,
+            redirect_mode,
+            initialize_deadline,
+        ),
         manager,
     );
     let auth_manager = auth_client.auth_manager.clone();

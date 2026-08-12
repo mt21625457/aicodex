@@ -11,7 +11,6 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use codex_exec_server::HttpClient;
 use rmcp::transport::AuthorizationManager;
-use rmcp::transport::AuthorizationRequest;
 use rmcp::transport::AuthorizationSession;
 use rmcp::transport::auth::OAuthClientConfig;
 use rmcp::transport::auth::OAuthHttpClient;
@@ -27,7 +26,10 @@ use urlencoding::decode;
 
 use crate::StoredOAuthTokens;
 use crate::WrappedOAuthTokenResponse;
+use crate::http_client_adapter::StreamableHttpRedirectMode;
 use crate::oauth::compute_expires_at_millis;
+use crate::oauth_client_registration::McpOAuthClientRegistration;
+use crate::oauth_client_registration::start_authorization as start_client_registration;
 use crate::oauth_http_client::OAuthHttpClientAdapter;
 use crate::save_oauth_tokens;
 use crate::utils::build_default_headers;
@@ -38,6 +40,7 @@ struct OAuthHttpContext {
     http_headers: Option<HashMap<String, String>>,
     env_http_headers: Option<HashMap<String, String>>,
     http_client: Arc<dyn HttpClient>,
+    redirect_mode: StreamableHttpRedirectMode,
 }
 
 struct CallbackServerGuard {
@@ -90,6 +93,7 @@ pub async fn perform_oauth_login(
     env_http_headers: Option<HashMap<String, String>>,
     scopes: &[String],
     oauth_client_id: Option<&str>,
+    client_registration: McpOAuthClientRegistration,
     oauth_resource: Option<&str>,
     callback_port: Option<u16>,
     callback_url: Option<&str>,
@@ -104,11 +108,13 @@ pub async fn perform_oauth_login(
         env_http_headers,
         scopes,
         oauth_client_id,
+        client_registration,
         oauth_resource,
         callback_port,
         callback_url,
         http_client,
         /*emit_browser_url*/ true,
+        StreamableHttpRedirectMode::Legacy,
     )
     .await
 }
@@ -123,10 +129,12 @@ pub async fn perform_oauth_login_silent(
     env_http_headers: Option<HashMap<String, String>>,
     scopes: &[String],
     oauth_client_id: Option<&str>,
+    client_registration: McpOAuthClientRegistration,
     oauth_resource: Option<&str>,
     callback_port: Option<u16>,
     callback_url: Option<&str>,
     http_client: Arc<dyn HttpClient>,
+    redirect_mode: StreamableHttpRedirectMode,
 ) -> Result<()> {
     perform_oauth_login_with_browser_output(
         server_name,
@@ -137,11 +145,13 @@ pub async fn perform_oauth_login_silent(
         env_http_headers,
         scopes,
         oauth_client_id,
+        client_registration,
         oauth_resource,
         callback_port,
         callback_url,
         http_client,
         /*emit_browser_url*/ false,
+        redirect_mode,
     )
     .await
 }
@@ -156,16 +166,19 @@ async fn perform_oauth_login_with_browser_output(
     env_http_headers: Option<HashMap<String, String>>,
     scopes: &[String],
     oauth_client_id: Option<&str>,
+    client_registration: McpOAuthClientRegistration,
     oauth_resource: Option<&str>,
     callback_port: Option<u16>,
     callback_url: Option<&str>,
     http_client: Arc<dyn HttpClient>,
     emit_browser_url: bool,
+    redirect_mode: StreamableHttpRedirectMode,
 ) -> Result<()> {
     let http_context = OAuthHttpContext {
         http_headers,
         env_http_headers,
         http_client,
+        redirect_mode,
     };
     OauthLoginFlow::new(
         server_name,
@@ -175,6 +188,7 @@ async fn perform_oauth_login_with_browser_output(
         http_context,
         scopes,
         oauth_client_id,
+        client_registration,
         oauth_resource,
         /*launch_browser*/ true,
         callback_port,
@@ -196,16 +210,19 @@ pub async fn perform_oauth_login_return_url(
     env_http_headers: Option<HashMap<String, String>>,
     scopes: &[String],
     oauth_client_id: Option<&str>,
+    client_registration: McpOAuthClientRegistration,
     oauth_resource: Option<&str>,
     timeout_secs: Option<i64>,
     callback_port: Option<u16>,
     callback_url: Option<&str>,
     http_client: Arc<dyn HttpClient>,
+    redirect_mode: StreamableHttpRedirectMode,
 ) -> Result<OauthLoginHandle> {
     let http_context = OAuthHttpContext {
         http_headers,
         env_http_headers,
         http_client,
+        redirect_mode,
     };
     let flow = OauthLoginFlow::new(
         server_name,
@@ -215,6 +232,7 @@ pub async fn perform_oauth_login_return_url(
         http_context,
         scopes,
         oauth_client_id,
+        client_registration,
         oauth_resource,
         /*launch_browser*/ false,
         callback_port,
@@ -428,6 +446,8 @@ fn resolve_redirect_uri(server: &Server, callback_url: Option<&str>) -> Result<S
 }
 
 fn callback_id_from_server_url(server_url: &str) -> Result<String> {
+    // Native Codex callback IDs intentionally hash the complete MCP URL (minus its fragment)
+    // with SHA-256. Python connector callback IDs use SHAKE-256 over the origin and are distinct.
     let mut parsed =
         Url::parse(server_url).with_context(|| format!("invalid MCP server URL `{server_url}`"))?;
     parsed
@@ -483,6 +503,7 @@ impl OauthLoginFlow {
         http_context: OAuthHttpContext,
         scopes: &[String],
         oauth_client_id: Option<&str>,
+        client_registration: McpOAuthClientRegistration,
         oauth_resource: Option<&str>,
         launch_browser: bool,
         callback_port: Option<u16>,
@@ -515,19 +536,45 @@ impl OauthLoginFlow {
             http_headers,
             env_http_headers,
             http_client,
+            redirect_mode,
         } = http_context;
+        let has_configured_headers = http_headers
+            .as_ref()
+            .is_some_and(|headers| !headers.is_empty())
+            || env_http_headers
+                .as_ref()
+                .is_some_and(|headers| !headers.is_empty());
         let default_headers = build_default_headers(http_headers, env_http_headers)?;
-        let oauth_http_client = Arc::new(OAuthHttpClientAdapter::new(http_client, default_headers));
+        let oauth_http_client = Arc::new(OAuthHttpClientAdapter::new_with_redirect_mode(
+            http_client,
+            default_headers,
+            has_configured_headers,
+            redirect_mode,
+        ));
 
         let scope_refs: Vec<&str> = scopes.iter().map(String::as_str).collect();
-        let oauth_state = start_authorization(
-            server_url,
-            oauth_http_client,
-            &scope_refs,
-            &redirect_uri,
-            oauth_client_id,
-        )
-        .await?;
+        let oauth_state = if let Some(oauth_client_id) =
+            oauth_client_id.filter(|client_id| !client_id.trim().is_empty())
+        {
+            start_authorization(
+                server_url,
+                oauth_http_client,
+                &scope_refs,
+                &redirect_uri,
+                oauth_client_id,
+            )
+            .await?
+        } else {
+            start_client_registration(
+                server_url,
+                oauth_http_client,
+                &scope_refs,
+                &redirect_uri,
+                &callback_id,
+                client_registration,
+            )
+            .await?
+        };
         let auth_url = append_query_param(
             &oauth_state.get_authorization_url().await?,
             "resource",
@@ -649,25 +696,11 @@ async fn start_authorization(
     http_client: Arc<dyn OAuthHttpClient>,
     scopes: &[&str],
     redirect_uri: &str,
-    oauth_client_id: Option<&str>,
+    oauth_client_id: &str,
 ) -> Result<OAuthState> {
     let mut auth_manager =
         AuthorizationManager::new_with_oauth_http_client(server_url, http_client).await?;
     auth_manager.set_allow_missing_issuer(true);
-
-    let Some(oauth_client_id) = oauth_client_id.filter(|client_id| !client_id.trim().is_empty())
-    else {
-        let mut oauth_state = OAuthState::Unauthorized(auth_manager);
-        oauth_state
-            .start_authorization(
-                AuthorizationRequest::new(redirect_uri)
-                    .with_scopes(scopes.iter().copied())
-                    .with_client_name("Codex"),
-            )
-            .await?;
-        return Ok(oauth_state);
-    };
-
     let metadata = auth_manager.resolve_metadata().await?.metadata;
     auth_manager.set_metadata(metadata);
     auth_manager.configure_client(
@@ -700,6 +733,7 @@ fn append_query_param(url: &str, key: &str, value: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
@@ -726,8 +760,10 @@ mod tests {
     use url::Url;
 
     use super::CallbackOutcome;
+    use super::McpOAuthClientRegistration;
     use super::OAuthHttpClientAdapter;
     use super::OAuthProviderError;
+    use super::StreamableHttpRedirectMode;
     use super::append_callback_id_to_redirect_uri;
     use super::append_query_param;
     use super::callback_id_from_server_url;
@@ -768,7 +804,7 @@ mod tests {
         }
     }
 
-    async fn spawn_oauth_metadata_server() -> String {
+    async fn spawn_oauth_metadata_server() -> (String, Arc<AtomicUsize>) {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind metadata listener");
@@ -778,8 +814,11 @@ mod tests {
             "issuer": format!("{base_url}/mcp"),
             "authorization_endpoint": format!("{base_url}/oauth/authorize"),
             "token_endpoint": format!("{base_url}/oauth/token"),
-            "scopes_supported": [""],
+            "registration_endpoint": format!("{base_url}/oauth/register"),
+            "scopes_supported": ["read", "offline_access"],
         });
+        let registration_requests = Arc::new(AtomicUsize::new(0));
+        let captured_registration_requests = Arc::clone(&registration_requests);
         let path_scoped_metadata = metadata.clone();
         let app = Router::new()
             .route(
@@ -795,6 +834,16 @@ mod tests {
                     let metadata = metadata.clone();
                     async move { Json(metadata) }
                 }),
+            )
+            .route(
+                "/oauth/register",
+                post(move || {
+                    let registration_requests = Arc::clone(&captured_registration_requests);
+                    async move {
+                        registration_requests.fetch_add(1, Ordering::SeqCst);
+                        Json(json!({"client_id": "unexpected-dynamic-client"}))
+                    }
+                }),
             );
 
         tokio::spawn(async move {
@@ -803,40 +852,51 @@ mod tests {
                 .expect("serve oauth metadata");
         });
 
-        base_url
+        (base_url, registration_requests)
     }
 
     #[tokio::test]
-    async fn start_authorization_uses_configured_client_id() {
-        let base_url = spawn_oauth_metadata_server().await;
-        let oauth_state = start_authorization(
-            &format!("{base_url}/mcp"),
-            Arc::new(OAuthHttpClientAdapter::new(
-                Arc::new(RouteAwareHttpClient::new(HttpClientFactory::new(
-                    OutboundProxyPolicy::ReqwestDefault,
-                ))),
-                HeaderMap::new(),
-            )),
-            &[],
-            "http://127.0.0.1/callback",
-            Some("eci-prd-pub-codex-123"),
-        )
-        .await
-        .expect("start oauth authorization");
-
-        let authorization_url = oauth_state
-            .get_authorization_url()
+    async fn configured_client_preserves_exact_scopes_and_redirect_without_registration() {
+        for (scopes, expected_scope) in [(&[][..], None), (&["read"][..], Some("read"))] {
+            let (base_url, registration_requests) = spawn_oauth_metadata_server().await;
+            let redirect_uri = "http://127.0.0.1:43123/callback/configured-client";
+            let oauth_state = start_authorization(
+                &format!("{base_url}/mcp"),
+                Arc::new(OAuthHttpClientAdapter::new(
+                    Arc::new(RouteAwareHttpClient::new(HttpClientFactory::new(
+                        OutboundProxyPolicy::ReqwestDefault,
+                    ))),
+                    HeaderMap::new(),
+                )),
+                scopes,
+                redirect_uri,
+                "eci-prd-pub-codex-123",
+            )
             .await
-            .expect("read authorization url");
-        let auth_url = Url::parse(&authorization_url).expect("authorization url should parse");
-        let client_id = auth_url
-            .query_pairs()
-            .find(|(key, _)| key == "client_id")
-            .map(|(_, value)| value.into_owned());
+            .expect("start pre-registered OAuth authorization");
 
-        assert_eq!(client_id.as_deref(), Some("eci-prd-pub-codex-123"));
+            let authorization_url = oauth_state
+                .get_authorization_url()
+                .await
+                .expect("read authorization URL");
+            let query = Url::parse(&authorization_url)
+                .expect("authorization URL should parse")
+                .query_pairs()
+                .into_owned()
+                .collect::<HashMap<String, String>>();
+
+            assert_eq!(
+                query.get("client_id").map(String::as_str),
+                Some("eci-prd-pub-codex-123")
+            );
+            assert_eq!(
+                query.get("redirect_uri").map(String::as_str),
+                Some(redirect_uri)
+            );
+            assert_eq!(query.get("scope").map(String::as_str), expected_scope);
+            assert_eq!(registration_requests.load(Ordering::SeqCst), 0);
+        }
     }
-
     #[tokio::test]
     async fn oauth_callback_validates_rfc_9207_issuer_before_token_exchange() {
         for (supports_issuer, callback_issuer, expected_token_requests) in [
@@ -903,7 +963,7 @@ mod tests {
                 )),
                 &[],
                 "http://127.0.0.1/callback",
-                Some("test-client"),
+                "test-client",
             )
             .await
             .expect("start issuer-aware authorization");
@@ -948,6 +1008,7 @@ mod tests {
             /*env_http_headers*/ None,
             &[],
             /*oauth_client_id*/ None,
+            McpOAuthClientRegistration::Auto,
             /*oauth_resource*/ None,
             /*callback_port*/ None,
             /*callback_url*/ None,
@@ -971,10 +1032,12 @@ mod tests {
             /*env_http_headers*/ None,
             &[],
             /*oauth_client_id*/ None,
+            McpOAuthClientRegistration::Auto,
             /*oauth_resource*/ None,
             /*callback_port*/ None,
             /*callback_url*/ None,
             http_client.clone(),
+            StreamableHttpRedirectMode::Legacy,
         )
         .await
         .expect_err("OAuth metadata discovery should fail through the supplied client");
@@ -1070,12 +1133,7 @@ mod tests {
         assert_ne!(callback_id, different_path);
         assert_ne!(callback_id, different_query);
         assert_ne!(callback_id, different_origin);
-        assert_eq!(callback_id.len(), 12);
-        assert!(
-            callback_id
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
-        );
+        assert_eq!(callback_id, "XuuuHAzzHOni");
     }
 
     #[test]

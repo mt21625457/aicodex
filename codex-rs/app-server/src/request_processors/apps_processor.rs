@@ -1,5 +1,6 @@
 use super::*;
 use crate::app_info::app_info_to_api;
+use codex_connectors::AppToolPolicyEvaluator;
 
 mod installed;
 mod read;
@@ -250,12 +251,13 @@ impl AppsRequestProcessor {
         let mut codex_apps_ready = true;
         let mut last_notified_apps = None;
         let mut sent_app_list_update = false;
+        let app_policy = AppToolPolicyEvaluator::new(&config.config_layer_stack);
 
         if accessible_connectors.is_some() || all_connectors.is_some() {
-            let merged = connectors::with_app_enabled_state(
-                merge_loaded_apps(all_connectors.as_deref(), accessible_connectors.as_deref()),
-                &config,
-            );
+            let merged = app_policy.apply_app_enabled_state(merge_loaded_apps(
+                all_connectors.as_deref(),
+                accessible_connectors.as_deref(),
+            ));
             if !force_refetch {
                 last_notified_apps = Some(merged);
             } else if should_send_app_list_updated_notification(
@@ -314,10 +316,10 @@ impl AppsRequestProcessor {
                 } else {
                     accessible_connectors.as_deref()
                 };
-            let merged = connectors::with_app_enabled_state(
-                merge_loaded_apps(all_connectors_for_update, accessible_connectors_for_update),
-                &config,
-            );
+            let merged = app_policy.apply_app_enabled_state(merge_loaded_apps(
+                all_connectors_for_update,
+                accessible_connectors_for_update,
+            ));
             if should_send_app_list_updated_notification(
                 merged.as_slice(),
                 accessible_loaded,
@@ -363,6 +365,18 @@ impl AppsRequestProcessor {
     ) -> Result<Config, JSONRPCErrorError> {
         self.config_manager
             .load_latest_config(fallback_cwd)
+            .await
+            .map_err(|err| internal_error(format!("failed to reload config: {err}")))
+    }
+
+    async fn load_apps_config(&self, thread_id: Option<&str>) -> Result<Config, JSONRPCErrorError> {
+        let Some(thread_id) = thread_id else {
+            return self.load_latest_config(/*fallback_cwd*/ None).await;
+        };
+        let (_, thread) = self.load_thread(thread_id).await?;
+        let thread_config = thread.config().await;
+        self.config_manager
+            .load_latest_config_for_thread(thread_config.as_ref())
             .await
             .map_err(|err| internal_error(format!("failed to reload config: {err}")))
     }

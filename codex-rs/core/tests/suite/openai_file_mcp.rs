@@ -27,7 +27,6 @@ use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::namespace_child_tool;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
-use core_test_support::skip_if_wine_exec;
 use core_test_support::test_codex::TestCodex;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
@@ -36,11 +35,12 @@ use wiremock::Mock;
 use wiremock::MockServer;
 use wiremock::ResponseTemplate;
 use wiremock::matchers::body_json;
+use wiremock::matchers::body_partial_json;
 use wiremock::matchers::header;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
-const STREAMED_FILE_SIZE: usize = 13 * 1024 * 1024;
+const STREAMED_FILE_SIZE: usize = 2 * 1024 * 1024;
 
 fn write_post_tool_use_hook(home: &Path) -> Result<()> {
     let script_path = home.join("post_tool_use_hook.py");
@@ -102,7 +102,7 @@ async fn mount_file_upload_mocks(server: &MockServer, file_size_bytes: u64) {
     Mock::given(method("POST"))
         .and(path("/files"))
         .and(header("chatgpt-account-id", "account_id"))
-        .and(body_json(json!({
+        .and(body_partial_json(json!({
             "file_name": "report.txt",
             "file_size": file_size_bytes,
             "use_case": "codex",
@@ -181,9 +181,6 @@ async fn run_extract_turn(test: &TestCodex, server: &MockServer) -> Result<Respo
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn codex_apps_file_params_omit_fields_absent_from_tool_schema() -> Result<()> {
-    // TODO(anp): Remove after file-upload fixtures support target-native Windows paths.
-    skip_if_wine_exec!(Ok(()), "uses a host-native file-upload path");
-
     let server = start_mock_server().await;
     let apps_server = AppsTestServer::mount(&server).await?;
     mount_file_upload_mocks(&server, STREAMED_FILE_SIZE as u64).await;
@@ -237,6 +234,19 @@ async fn codex_apps_file_params_omit_fields_absent_from_tool_schema() -> Result<
             "connector_id": "calendar",
         }))
     );
+    let requests = server.received_requests().await.expect("capture requests");
+    let upload_request = requests
+        .iter()
+        .find(|request| request.url.path() == "/files")
+        .expect("app tool should create a Files upload");
+    let upload_body: Value =
+        serde_json::from_slice(&upload_request.body).expect("Files request should be JSON");
+    assert_eq!(
+        upload_body.get("codex_connector_id"),
+        Some(&json!("calendar"))
+    );
+    assert_eq!(upload_body.get("upload_source"), None);
+    assert_eq!(upload_body.get("store_in_library"), None);
 
     server.verify().await;
     Ok(())

@@ -1,5 +1,6 @@
 use super::*;
 use codex_core::McpManager;
+use codex_mcp::McpServerSource;
 
 const MCP_TOOL_THREAD_ID_META_KEY: &str = "threadId";
 
@@ -117,9 +118,15 @@ impl McpRequestProcessor {
         let McpServerOauthLoginParams {
             name,
             thread_id,
+            client_registration,
             scopes,
             timeout_secs,
         } = params;
+        let client_registration = match client_registration.unwrap_or_default() {
+            McpServerOauthClientRegistration::Auto => McpOAuthClientRegistration::Auto,
+            McpServerOauthClientRegistration::Cimd => McpOAuthClientRegistration::Cimd,
+            McpServerOauthClientRegistration::Dcr => McpOAuthClientRegistration::Dcr,
+        };
 
         let auth = self.auth_manager.auth().await;
         let (mcp_config, runtime_context) = match thread_id.as_deref() {
@@ -149,6 +156,11 @@ impl McpRequestProcessor {
                 "No MCP server named '{name}' found."
             )));
         };
+        let redirect_mode = if server.is_agent_plugin() {
+            StreamableHttpRedirectMode::AgentPluginV1
+        } else {
+            StreamableHttpRedirectMode::Legacy
+        };
         let server = server.config();
 
         let (url, http_headers, env_http_headers) = match &server.transport {
@@ -176,6 +188,7 @@ impl McpRequestProcessor {
                 &server.transport,
                 Arc::clone(&http_client),
                 codex_rmcp_client::OAuthDiscoveryTimeout::Requested,
+                redirect_mode,
             )
             .await
         } else {
@@ -183,9 +196,10 @@ impl McpRequestProcessor {
         };
         let resolved_scopes =
             resolve_oauth_scopes(scopes, server.scopes.clone(), discovered_scopes);
+        let oauth_credential_name = server.oauth_credential_name(&name);
 
         let handle = perform_oauth_login_return_url(
-            &name,
+            oauth_credential_name.as_ref(),
             &url,
             mcp_config.mcp_oauth_credentials_store_mode,
             mcp_config.auth_keyring_backend_kind,
@@ -193,11 +207,13 @@ impl McpRequestProcessor {
             env_http_headers,
             &resolved_scopes.scopes,
             server.oauth_client_id(),
+            client_registration,
             server.oauth_resource.as_deref(),
             timeout_secs,
             mcp_config.mcp_oauth_callback_port,
             mcp_config.mcp_oauth_callback_url.as_deref(),
             http_client,
+            redirect_mode,
         )
         .await
         .map_err(|err| internal_error(format!("failed to login to MCP server '{name}': {err}")))?;
@@ -366,6 +382,17 @@ impl McpRequestProcessor {
             .iter()
             .map(|name| McpServerStatus {
                 name: name.clone(),
+                plugin_id: mcp_config.mcp_server_catalog.server(name).and_then(
+                    |server| match server.source() {
+                        McpServerSource::Plugin(plugin)
+                        | McpServerSource::SelectedPlugin(plugin) => {
+                            Some(plugin.plugin_id().to_owned())
+                        }
+                        McpServerSource::Config
+                        | McpServerSource::Compatibility { .. }
+                        | McpServerSource::Extension { .. } => None,
+                    },
+                ),
                 server_info: server_infos.get(name).cloned(),
                 tools: tools_by_server.get(name).cloned().unwrap_or_default(),
                 resources: resources.get(name).cloned().unwrap_or_default(),

@@ -9,10 +9,12 @@ use crate::config::PermissionProfileSnapshot;
 use crate::exec_env::CODEX_PERMISSION_PROFILE_ENV_VAR;
 use crate::exec_env::create_env;
 use crate::exec_env::inject_permission_profile_env;
+use crate::exec_env::inject_session_id_env;
 use crate::sandboxing::SandboxPermissions;
 use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context;
 use crate::session::turn_context::TurnEnvironment;
+use crate::session::turn_context::TurnEnvironmentConfig;
 use crate::shell::Shell;
 use crate::shell::ShellType;
 use crate::tools::context::FunctionToolOutput;
@@ -80,8 +82,8 @@ async fn shell_command_handler_to_exec_params_uses_selected_environment() {
     Arc::make_mut(&mut turn_context.config)
         .permissions
         .set_permission_profile_from_session_snapshot(PermissionProfileSnapshot::active(
-            permission_profile,
-            ActivePermissionProfile::new("test-profile"),
+            permission_profile.clone(),
+            ActivePermissionProfile::new("thread-profile"),
         ))
         .expect("set active permission profile");
 
@@ -99,6 +101,7 @@ async fn shell_command_handler_to_exec_params_uses_selected_environment() {
     let expected_command = selected_shell.derive_exec_args(&command, /*use_login_shell*/ true);
     let selected_cwd = turn_context.config.cwd.join("selected-environment");
     let expected_cwd = selected_cwd.join("subdir");
+    let active_permission_profile = ActivePermissionProfile::new("selected-profile");
     let selected_environment = TurnEnvironment::new(
         "selected-environment".to_string(),
         Arc::clone(
@@ -111,13 +114,21 @@ async fn shell_command_handler_to_exec_params_uses_selected_environment() {
         PathUri::from_abs_path(&selected_cwd),
         Vec::new(),
         Some(selected_shell),
+        TurnEnvironmentConfig {
+            allow_login_shell: true,
+            permission_profile: PermissionProfileSnapshot::active(
+                permission_profile,
+                active_permission_profile.clone(),
+            ),
+            selected_capability_roots: None,
+        },
     );
     let mut expected_env = create_env(
         &turn_context.config.permissions.shell_environment_policy,
         Some(session.thread_id),
     );
-    let active_permission_profile = turn_context.config.permissions.active_permission_profile();
-    inject_permission_profile_env(&mut expected_env, active_permission_profile.as_ref());
+    inject_session_id_env(&mut expected_env, session.session_id());
+    inject_permission_profile_env(&mut expected_env, Some(&active_permission_profile));
 
     let params = ShellCommandToolCallParams {
         command,
@@ -136,7 +147,6 @@ async fn shell_command_handler_to_exec_params_uses_selected_environment() {
         &turn_context,
         &selected_environment,
         expected_cwd.clone(),
-        /*allow_login_shell*/ true,
     )
     .expect("login shells should be allowed");
 
@@ -146,9 +156,7 @@ async fn shell_command_handler_to_exec_params_uses_selected_environment() {
     assert_eq!(exec_params.env, expected_env);
     assert_eq!(
         exec_params.env.get(CODEX_PERMISSION_PROFILE_ENV_VAR),
-        active_permission_profile
-            .as_ref()
-            .map(|profile| &profile.id)
+        Some(&active_permission_profile.id)
     );
     assert_eq!(exec_params.network, turn_context.network);
     assert_eq!(
@@ -192,10 +200,12 @@ fn shell_command_handler_respects_explicit_login_flag() {
 #[tokio::test]
 async fn shell_command_handler_defaults_to_non_login_when_disallowed() {
     let (session, turn_context) = make_session_and_context().await;
-    let turn_environment = turn_context
+    let mut turn_environment = turn_context
         .environments
         .primary()
-        .expect("primary environment");
+        .expect("primary environment")
+        .clone();
+    turn_environment.config.allow_login_shell = false;
     let cwd = turn_environment
         .cwd()
         .to_abs_path()
@@ -215,9 +225,8 @@ async fn shell_command_handler_defaults_to_non_login_when_disallowed() {
         &params,
         &session,
         &turn_context,
-        turn_environment,
+        &turn_environment,
         cwd,
-        /*allow_login_shell*/ false,
     )
     .expect("non-login shells should still be allowed");
 
@@ -226,6 +235,44 @@ async fn shell_command_handler_defaults_to_non_login_when_disallowed() {
         session
             .user_shell()
             .derive_exec_args("echo hello", /*use_login_shell*/ false)
+    );
+}
+
+#[tokio::test]
+async fn shell_command_handler_rejects_justification_without_sandbox_permissions() {
+    let (session, turn_context) = make_session_and_context().await;
+    let turn_environment = turn_context
+        .environments
+        .primary()
+        .expect("primary environment");
+    let cwd = turn_environment
+        .cwd()
+        .to_abs_path()
+        .expect("native environment cwd");
+    let params = ShellCommandToolCallParams {
+        command: "echo hello".to_string(),
+        workdir: None,
+        login: None,
+        timeout_ms: None,
+        sandbox_permissions: None,
+        additional_permissions: None,
+        prefix_rule: None,
+        justification: Some("Allow this command".to_string()),
+    };
+
+    let err = ShellCommandHandler::to_exec_params(
+        &params,
+        &session,
+        &turn_context,
+        turn_environment,
+        cwd,
+    )
+    .expect_err("justification without sandbox permissions should be rejected");
+
+    assert!(
+        err.to_string()
+            .contains("`justification` requires an explicit `sandbox_permissions`"),
+        "unexpected error: {err}"
     );
 }
 

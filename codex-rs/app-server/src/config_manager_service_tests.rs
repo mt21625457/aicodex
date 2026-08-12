@@ -1,5 +1,6 @@
 use super::*;
 use anyhow::Result;
+use axum::http::HeaderValue;
 use codex_app_server_protocol::AppConfig;
 use codex_app_server_protocol::AppToolApproval;
 use codex_app_server_protocol::AppsConfig;
@@ -8,6 +9,8 @@ use codex_app_server_protocol::ConfigLayerSource as ApiConfigLayerSource;
 use codex_config::CloudConfigBundleLoader;
 use codex_config::LoaderOverrides;
 use codex_config::test_support::CloudConfigBundleFixture;
+use codex_http_client::HttpClientFactory;
+use codex_http_client::OutboundProxyPolicy;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
 use tempfile::tempdir;
@@ -103,6 +106,47 @@ unified_exec = true
 personality = true
 "#;
     assert_eq!(updated, expected);
+    Ok(())
+}
+
+#[tokio::test]
+async fn psp_feature_configures_first_party_routing() -> Result<()> {
+    let tmp = tempdir()?;
+    let service = ConfigManager::new_for_tests(
+        tmp.path().to_path_buf(),
+        Vec::new(),
+        LoaderOverrides::without_managed_config_for_tests(),
+        CloudConfigBundleLoader::default(),
+    );
+
+    let config = service
+        .load_with_overrides(
+            Some(
+                [(
+                    "features".to_string(),
+                    serde_json::json!({ "apps": true, "psp": true }),
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            Default::default(),
+        )
+        .await?;
+
+    assert!(config.features.enabled(codex_features::Feature::Psp));
+    assert_eq!(
+        config.http_client_factory(),
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault)
+            .with_chatgpt_cookies([HeaderValue::from_static("oai-chat-psp=true")])
+    );
+    assert_eq!(
+        config
+            .config_layer_stack
+            .effective_config()
+            .get("features")
+            .and_then(|features| features.get("psp")),
+        Some(&toml::Value::Boolean(true))
+    );
     Ok(())
 }
 
@@ -636,9 +680,14 @@ async fn write_value_defaults_to_selected_user_config_path() {
 }
 
 #[tokio::test]
-async fn load_default_config_preserves_selected_user_config_path_after_load_error() {
+async fn load_default_config_preserves_managed_requirements_and_selected_user_config_path() {
     let tmp = tempdir().expect("tempdir");
     std::fs::write(tmp.path().join(CONFIG_TOML_FILE), "model = \"gpt-main\"").unwrap();
+    std::fs::write(
+        tmp.path().join("requirements.toml"),
+        "allowed_login_methods = [\"api\"]\nallowed_chatgpt_workspaces = [\"managed-workspace\"]\n",
+    )
+    .unwrap();
     let selected_path = tmp.path().join("work.config.toml");
     std::fs::write(&selected_path, "not valid toml").unwrap();
     let selected_file =
@@ -668,6 +717,61 @@ async fn load_default_config_preserves_selected_user_config_path_after_load_erro
         config.config_layer_stack.get_user_config_file(),
         Some(&selected_file)
     );
+    assert_eq!(
+        config
+            .config_layer_stack
+            .requirements()
+            .managed_auth_policy(),
+        codex_config::ManagedAuthPolicy {
+            allowed_login_methods: Some(vec![codex_protocol::config_types::ForcedLoginMethod::Api]),
+            allowed_chatgpt_workspaces: Some(vec!["managed-workspace".to_string()]),
+        }
+    );
+}
+
+#[tokio::test]
+async fn managed_auth_policy_survives_unusable_requirements_file_changes() -> Result<()> {
+    let tmp = tempdir()?;
+    std::fs::write(tmp.path().join(CONFIG_TOML_FILE), "")?;
+    let requirements_path = tmp.path().join("requirements.toml");
+    std::fs::write(
+        &requirements_path,
+        "allowed_login_methods = [\"api\"]\nallowed_chatgpt_workspaces = [\"startup\"]\n",
+    )?;
+    let service = ConfigManager::new_for_tests(
+        tmp.path().to_path_buf(),
+        Vec::new(),
+        LoaderOverrides::with_managed_config_path_for_tests(tmp.path().join("managed_config.toml")),
+        CloudConfigBundleLoader::default(),
+    );
+    let startup = service.load_latest_config(/*fallback_cwd*/ None).await?;
+    let auth_manager = codex_login::AuthManager::shared_from_config(
+        &startup, /*enable_codex_api_key_env*/ false,
+    )
+    .await;
+    std::fs::write(
+        &requirements_path,
+        "allowed_login_methods = [\"chatgpt\"]\nallowed_chatgpt_workspaces = []\n",
+    )?;
+    for refreshed in [
+        service.load_latest_config(/*fallback_cwd*/ None).await?,
+        service.load_latest_config_for_thread(&startup).await?,
+    ] {
+        assert_eq!(refreshed.forced_login_method, None);
+        assert_eq!(refreshed.forced_chatgpt_workspace_id, None);
+    }
+    assert!(
+        auth_manager.is_login_method_allowed(codex_protocol::config_types::ForcedLoginMethod::Api)
+    );
+    assert!(
+        !auth_manager
+            .is_login_method_allowed(codex_protocol::config_types::ForcedLoginMethod::Chatgpt)
+    );
+    assert_eq!(
+        auth_manager.effective_chatgpt_workspaces(),
+        Some(vec!["startup".to_string()])
+    );
+    Ok(())
 }
 
 #[tokio::test]

@@ -16,7 +16,7 @@ pub(crate) struct CatalogRequestProcessor {
 const SKILLS_LIST_CWD_CONCURRENCY: usize = 5;
 
 fn skills_to_info(
-    skills: &[codex_core::skills::SkillMetadata],
+    skills: &[codex_skills::SkillMetadata],
     disabled_paths: &HashSet<AbsolutePathBuf>,
 ) -> Vec<codex_app_server_protocol::SkillMetadata> {
     skills
@@ -70,6 +70,7 @@ fn hooks_to_info(hooks: &[codex_hooks::HookListEntry]) -> Vec<HookMetadata> {
             key: hook.key.clone(),
             event_name: hook.event_name.into(),
             handler_type: hook.handler_type.into(),
+            execution_mode: hook.execution_mode.into(),
             matcher: hook.matcher.clone(),
             command: hook.command.clone(),
             timeout_sec: hook.timeout_sec,
@@ -88,7 +89,7 @@ fn hooks_to_info(hooks: &[codex_hooks::HookListEntry]) -> Vec<HookMetadata> {
 }
 
 fn errors_to_info(
-    errors: &[codex_core::skills::SkillError],
+    errors: &[codex_skills::SkillError],
 ) -> Vec<codex_app_server_protocol::SkillErrorInfo> {
     errors
         .iter()
@@ -506,17 +507,36 @@ impl CatalogRequestProcessor {
             .await;
         let skills_service = self.thread_manager.skills_service();
         let plugins_manager = self.thread_manager.plugins_manager();
+        if force_reload
+            && workspace_codex_plugins_enabled
+            && config.features.enabled(Feature::Plugins)
+        {
+            plugins_manager.clear_cache();
+            skills_service.clear_cache();
+        }
+        // Plugin configuration is user-scoped; workspace skill rules are applied below.
+        let (effective_skill_roots, plugin_skill_snapshots) = if workspace_codex_plugins_enabled {
+            let plugins_input = config.plugins_config_input();
+            let plugins = plugins_manager.plugins_for_config(&plugins_input).await;
+            (
+                plugins.effective_plugin_skill_roots(),
+                plugins_manager.plugin_skill_snapshots_for_config(&plugins_input),
+            )
+        } else {
+            (Vec::new(), None)
+        };
         let fs = self
             .thread_manager
             .environment_manager()
             .default_environment()
             .map(|environment| environment.get_filesystem());
+        let skills_request = skills_service.for_request();
         let mut data = futures::stream::iter(cwds.into_iter().enumerate())
             .map(|(index, cwd)| {
-                let config = &config;
                 let fs = fs.clone();
-                let plugins_manager = &plugins_manager;
-                let skills_service = &skills_service;
+                let skills_request = &skills_request;
+                let effective_skill_roots = effective_skill_roots.clone();
+                let plugin_skill_snapshots = plugin_skill_snapshots.clone();
                 async move {
                     let (cwd_abs, config_layer_stack) = match self.resolve_cwd_config(&cwd).await {
                         Ok(resolved) => resolved,
@@ -535,24 +555,13 @@ impl CatalogRequestProcessor {
                             );
                         }
                     };
-                    let effective_skill_roots = if workspace_codex_plugins_enabled {
-                        let plugins_input = config.plugins_config_input();
-                        plugins_manager
-                            .effective_skill_roots_for_layer_stack(
-                                &config_layer_stack,
-                                &plugins_input,
-                            )
-                            .await
-                    } else {
-                        Vec::new()
-                    };
-                    let skills_input = codex_core::skills::SkillsLoadInput::new(
+                    let skills_input = codex_skills_extension::HostSkillsLoadInput::new(
                         cwd_abs.clone(),
                         effective_skill_roots,
                         config_layer_stack,
-                        config.bundled_skills_enabled(),
-                    );
-                    let snapshot = skills_service
+                    )
+                    .with_plugin_skill_snapshots(plugin_skill_snapshots);
+                    let snapshot = skills_request
                         .snapshot_for_cwd(&skills_input, force_reload, fs)
                         .await;
                     let outcome = snapshot.outcome();

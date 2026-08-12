@@ -73,6 +73,22 @@ fn test_absolute_path() -> AbsolutePathBuf {
 }
 
 #[test]
+fn external_agent_config_detect_response_defaults_connectors_for_older_servers() {
+    let response = serde_json::from_value::<ExternalAgentConfigDetectResponse>(json!({
+        "items": [],
+    }))
+    .expect("older detect response should deserialize");
+
+    assert_eq!(
+        response,
+        ExternalAgentConfigDetectResponse {
+            items: Vec::new(),
+            connectors: Vec::new(),
+        }
+    );
+}
+
+#[test]
 fn thread_background_terminals_list_response_round_trips_foreign_paths() {
     for (uri, expected_cwd) in [
         ("file:///home/alice/repo", "/home/alice/repo"),
@@ -239,7 +255,9 @@ fn thread_resume_response_round_trips_initial_turns_page() {
             section: Some(ThreadSection {
                 id: "01984de2-8f74-7c91-a3b2-5c5e937cf318".to_string(),
                 name: "Pinned".to_string(),
+                appearance: None,
             }),
+            section_entered_at: Some(1),
             history_mode: Default::default(),
             model_provider: "openai".to_string(),
             created_at: 1,
@@ -285,17 +303,21 @@ fn thread_resume_response_round_trips_initial_turns_page() {
         json!({
             "id": "01984de2-8f74-7c91-a3b2-5c5e937cf318",
             "name": "Pinned",
+            "appearance": null,
         })
     );
+    assert_eq!(value["thread"]["sectionEnteredAt"], json!(1));
 
     let mut legacy_thread = value["thread"].clone();
-    legacy_thread
+    let legacy_thread_fields = legacy_thread
         .as_object_mut()
-        .expect("serialized thread should be an object")
-        .remove("section");
+        .expect("serialized thread should be an object");
+    legacy_thread_fields.remove("section");
+    legacy_thread_fields.remove("sectionEnteredAt");
     let legacy_thread =
         serde_json::from_value::<Thread>(legacy_thread).expect("deserialize legacy thread");
     assert_eq!(legacy_thread.section, None);
+    assert_eq!(legacy_thread.section_entered_at, None);
 
     assert_eq!(
         value.get("initialTurnsPage"),
@@ -475,40 +497,14 @@ fn thread_list_params_accepts_section_id_filter() {
 }
 
 #[test]
-fn thread_metadata_update_params_distinguish_section_id_set_clear_and_omission() {
-    for section_id in [
-        "01984de2-8f74-7c91-a3b2-5c5e937cf318",
-        "01984de2-8f74-7c91-a3b2-5c5e937cf319",
-    ] {
-        let params = serde_json::from_value::<ThreadMetadataUpdateParams>(json!({
-            "threadId": "thr_123",
-            "sectionId": section_id,
-        }))
-        .expect("section ID metadata patch should deserialize");
-
-        assert_eq!(
-            params.section_id.as_ref().map(|section| section.as_deref()),
-            Some(Some(section_id))
-        );
-        assert_eq!(params.git_info, None);
-    }
-
-    let params = serde_json::from_value::<ThreadMetadataUpdateParams>(json!({
-        "threadId": "thr_123",
-        "sectionId": null,
-    }))
-    .expect("cleared section ID metadata patch should deserialize");
-    assert_eq!(params.section_id, Some(None));
-
-    let params = serde_json::from_value::<ThreadMetadataUpdateParams>(json!({
-        "threadId": "thr_123",
-    }))
-    .expect("omitted section ID metadata patch should deserialize");
-    assert_eq!(params.section_id, None);
-}
-
-#[test]
 fn thread_section_list_params_and_response_round_trip() {
+    let legacy = serde_json::from_value::<ThreadSection>(json!({
+        "id": "legacy",
+        "name": "Legacy",
+    }))
+    .expect("legacy sections without appearance should deserialize");
+    assert_eq!(legacy.appearance, None);
+
     let params = serde_json::from_value::<ThreadSectionListParams>(json!({
         "cursor": "section-cursor",
         "limit": 25,
@@ -526,6 +522,7 @@ fn thread_section_list_params_and_response_round_trip() {
         data: vec![ThreadSection {
             id: "01984de2-8f74-7c91-a3b2-5c5e937cf318".to_string(),
             name: "Pinned".to_string(),
+            appearance: None,
         }],
         next_cursor: None,
     };
@@ -536,6 +533,7 @@ fn thread_section_list_params_and_response_round_trip() {
             "data": [{
                 "id": "01984de2-8f74-7c91-a3b2-5c5e937cf318",
                 "name": "Pinned",
+                "appearance": null,
             }],
             "nextCursor": null,
         })
@@ -545,6 +543,21 @@ fn thread_section_list_params_and_response_round_trip() {
             .expect("section list should deserialize"),
         response
     );
+}
+
+#[test]
+fn thread_section_updates_distinguish_omitted_and_cleared_appearance() {
+    for (value, appearance) in [
+        (json!({ "sectionId": "section", "name": "Work" }), None),
+        (
+            json!({ "sectionId": "section", "name": "Work", "appearance": null }),
+            Some(None),
+        ),
+    ] {
+        let params = serde_json::from_value::<ThreadSectionUpdateParams>(value)
+            .expect("section update should deserialize");
+        assert_eq!(params.appearance, appearance);
+    }
 }
 
 #[test]
@@ -2000,6 +2013,7 @@ fn config_requirements_granular_allowed_approval_policy_is_marked_experimental()
             hooks: None,
             enforce_residency: None,
             network: None,
+            auto_review: None,
             models: None,
             sqlite_home: None,
             log_dir: None,
@@ -2434,11 +2448,12 @@ fn mcp_server_status_serializes_absent_server_info_as_null() {
     let response = ListMcpServerStatusResponse {
         data: vec![McpServerStatus {
             name: "not-ready".to_string(),
+            plugin_id: None,
             server_info: None,
             tools: HashMap::new(),
             resources: Vec::new(),
             resource_templates: Vec::new(),
-            auth_status: McpAuthStatus::Unsupported,
+            auth_status: McpAuthStatus::Unknown,
         }],
         next_cursor: None,
     };
@@ -2448,11 +2463,12 @@ fn mcp_server_status_serializes_absent_server_info_as_null() {
         json!({
             "data": [{
                 "name": "not-ready",
+                "pluginId": null,
                 "serverInfo": null,
                 "tools": {},
                 "resources": [],
                 "resourceTemplates": [],
-                "authStatus": "unsupported",
+                "authStatus": "unknown",
             }],
             "nextCursor": null,
         })
@@ -2519,6 +2535,7 @@ fn mcp_server_status_serializes_absent_server_info_metadata_as_null() {
     let response = ListMcpServerStatusResponse {
         data: vec![McpServerStatus {
             name: "initialized".to_string(),
+            plugin_id: Some("lookup@test".to_string()),
             server_info: Some(McpServerInfo {
                 name: "lookup-server".to_string(),
                 title: None,
@@ -2540,6 +2557,7 @@ fn mcp_server_status_serializes_absent_server_info_metadata_as_null() {
         json!({
             "data": [{
                 "name": "initialized",
+                "pluginId": "lookup@test",
                 "serverInfo": {
                     "name": "lookup-server",
                     "title": null,
@@ -2940,10 +2958,19 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         plugin_id: Some("sample@openai-curated".to_string()),
         script_path: Some("scripts/run.py".to_string()),
         process_id: Some("pid-1".to_string()),
-        command: vec!["echo".to_string(), "done".to_string()],
+        command: vec![
+            "git".to_string(),
+            "-c".to_string(),
+            "http.extraHeader=Authorization: Bearer example_synthetic_bearer_token_123456"
+                .to_string(),
+            "-c".to_string(),
+            "http.extraHeader=X-Trace:example".to_string(),
+            "push".to_string(),
+        ],
         cwd: PathUri::from_abs_path(&test_path_buf("/tmp").abs()),
         parsed_cmd: vec![codex_protocol::parse_command::ParsedCommand::Unknown {
-            cmd: "echo done".to_string(),
+            cmd: "git -c 'http.extraHeader=Authorization: Bearer example_synthetic_bearer_token_123456' -c http.extraHeader=X-Trace:example push"
+                .to_string(),
         }],
         source: CoreExecCommandSource::Agent,
         interaction_input: None,
@@ -2962,13 +2989,15 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             id: "exec-1".to_string(),
             plugin_id: Some("sample@openai-curated".to_string()),
             script_path: Some("scripts/run.py".to_string()),
-            command: "echo done".to_string(),
+            command: "git -c 'http.extraHeader=Authorization: Bearer [REDACTED_SECRET]' -c 'http.extraHeader=X-Trace:example' push"
+                .to_string(),
             cwd: LegacyAppPathString::from_abs_path(&test_path_buf("/tmp").abs()),
             process_id: Some("pid-1".to_string()),
             source: CommandExecutionSource::Agent,
             status: CommandExecutionStatus::Completed,
             command_actions: vec![CommandAction::Unknown {
-                command: "echo done".to_string(),
+                command: "git -c 'http.extraHeader=Authorization: Bearer [REDACTED_SECRET]' -c http.extraHeader=X-Trace:example push"
+                    .to_string(),
             }],
             aggregated_output: Some("done\n".to_string()),
             exit_code: Some(0),
@@ -3173,6 +3202,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         app_name: Some("Calendar".to_string()),
         action_name: Some("create_event".to_string()),
         plugin_id: Some("sample@test".to_string()),
+        read_only_hint: Some(true),
         status: CoreMcpToolCallStatus::InProgress,
         result: None,
         error: None,
@@ -3196,6 +3226,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             }),
             mcp_app_resource_uri: Some("app://connector".to_string()),
             plugin_id: Some("sample@test".to_string()),
+            read_only_hint: Some(true),
             result: None,
             error: None,
             duration_ms: None,
@@ -3213,6 +3244,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         app_name: None,
         action_name: None,
         plugin_id: None,
+        read_only_hint: Some(false),
         status: CoreMcpToolCallStatus::Completed,
         result: Some(CallToolResult {
             content: vec![json!({"type": "text", "text": "ok"})],
@@ -3235,6 +3267,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             app_context: None,
             mcp_app_resource_uri: None,
             plugin_id: None,
+            read_only_hint: Some(false),
             result: Some(Box::new(McpToolCallResult {
                 content: vec![json!({"type": "text", "text": "ok"})],
                 structured_content: Some(json!({"ok": true})),
@@ -3263,6 +3296,7 @@ fn mcp_tool_call_app_context_serializes_connector_id() {
         }),
         mcp_app_resource_uri: Some("app://connector".to_string()),
         plugin_id: None,
+        read_only_hint: Some(false),
         result: None,
         error: None,
         duration_ms: None,
@@ -3286,6 +3320,7 @@ fn mcp_tool_call_app_context_serializes_connector_id() {
             },
             "mcpAppResourceUri": "app://connector",
             "pluginId": null,
+            "readOnlyHint": false,
             "result": null,
             "error": null,
             "durationMs": null,
@@ -3753,12 +3788,14 @@ fn plugin_install_params_serialization_omits_force_remote_sync() {
         serde_json::to_value(PluginInstallParams {
             marketplace_path: Some(marketplace_path.clone()),
             remote_marketplace_name: None,
+            install_attempt_id: Some("94c79f7b-cceb-4415-9a3e-b51b2f718d43".to_string()),
             plugin_name: "gmail".to_string(),
         })
         .unwrap(),
         json!({
             "marketplacePath": marketplace_path_json,
             "remoteMarketplaceName": null,
+            "installAttemptId": "94c79f7b-cceb-4415-9a3e-b51b2f718d43",
             "pluginName": "gmail",
         }),
     );
@@ -3773,6 +3810,7 @@ fn plugin_install_params_serialization_omits_force_remote_sync() {
         PluginInstallParams {
             marketplace_path: Some(marketplace_path),
             remote_marketplace_name: None,
+            install_attempt_id: None,
             plugin_name: "gmail".to_string(),
         },
     );
@@ -3787,6 +3825,7 @@ fn plugin_install_params_serialization_omits_force_remote_sync() {
         PluginInstallParams {
             marketplace_path: None,
             remote_marketplace_name: Some("openai-curated-remote".to_string()),
+            install_attempt_id: None,
             plugin_name: "gmail".to_string(),
         },
     );
@@ -4009,6 +4048,7 @@ fn plugin_share_list_response_serializes_share_items() {
                     share_context: None,
                     source: PluginSource::Remote,
                     installed: false,
+                    installed_at: None,
                     enabled: false,
                     install_policy: PluginInstallPolicy::Available,
                     install_policy_source: Some(PluginInstallPolicySource::WorkspaceSetting),
@@ -4035,6 +4075,7 @@ fn plugin_share_list_response_serializes_share_items() {
                     "shareContext": null,
                     "source": { "type": "remote" },
                     "installed": false,
+                    "installedAt": null,
                     "enabled": false,
                     "installPolicy": "AVAILABLE",
                     "installPolicySource": "WORKSPACE_SETTING",
@@ -4067,6 +4108,7 @@ fn plugin_summary_defaults_missing_availability_to_available() {
     .unwrap();
 
     assert_eq!(summary.availability, PluginAvailability::Available);
+    assert_eq!(summary.installed_at, None);
     assert_eq!(summary.local_version, None);
     assert_eq!(summary.share_context, None);
     assert_eq!(summary.must_show_installation_interstitial, None);
@@ -4085,6 +4127,7 @@ fn plugin_summary_round_trips_plan_eligibility_metadata() {
         "shareContext": null,
         "source": { "type": "remote" },
         "installed": false,
+        "installedAt": null,
         "enabled": false,
         "installPolicy": "NOT_AVAILABLE",
         "installPolicySource": null,
@@ -4757,5 +4800,47 @@ fn realtime_start_deserializes_client_handoff_channel_prefixes() {
             ),
             ("final".to_string(), vec!["[DONE]".to_string()]),
         ]))
+    );
+}
+
+#[test]
+fn tool_request_user_input_params_default_legacy_missing_is_blocking_to_true() {
+    let params = serde_json::from_value::<ToolRequestUserInputParams>(json!({
+        "threadId": "thread-1",
+        "turnId": "turn-1",
+        "itemId": "call-1",
+        "questions": [{
+            "id": "q1",
+            "header": "Confirm",
+            "question": "Continue?",
+            "options": [{
+                "label": "Yes",
+                "description": "Continue."
+            }]
+        }],
+        "autoResolutionMs": 60_000
+    }))
+    .expect("legacy request_user_input params should deserialize");
+
+    assert_eq!(
+        params,
+        ToolRequestUserInputParams {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            item_id: "call-1".to_string(),
+            questions: vec![ToolRequestUserInputQuestion {
+                id: "q1".to_string(),
+                header: "Confirm".to_string(),
+                question: "Continue?".to_string(),
+                is_other: false,
+                is_secret: false,
+                options: Some(vec![ToolRequestUserInputOption {
+                    label: "Yes".to_string(),
+                    description: "Continue.".to_string(),
+                }]),
+            }],
+            is_blocking: true,
+            auto_resolution_ms: Some(60_000),
+        }
     );
 }

@@ -1,12 +1,19 @@
 use crate::agent::AgentStatus;
 use crate::config::ConstraintResult;
 use crate::elicitation::ElicitationRegistration;
+use crate::environment_config::EnvironmentConfig;
 use crate::session::SessionIo;
 use crate::session::SessionSettingsUpdate;
 use crate::session::SteerInputError;
+use crate::session::TurnInput;
 use crate::session::session::Session;
+use crate::user_message_admission::UserMessageAdmission;
+use codex_diagnostics::Gauge;
+use codex_diagnostics::GaugeGuard;
 use codex_exec_server::SelectedCapabilityRootsStatus;
+use codex_extension_api::ThreadIdleCause;
 use codex_features::Feature;
+use codex_history::RolloutItem;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ApprovalsReviewer;
@@ -27,7 +34,6 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::Op;
-use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::SessionSource;
@@ -41,6 +47,7 @@ use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_protocol::user_input::UserInput;
+use codex_thread_store::PersistContext;
 use codex_thread_store::StoredThread;
 use codex_thread_store::StoredThreadHistory;
 use codex_thread_store::ThreadMetadataPatch;
@@ -59,6 +66,8 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use codex_rollout::state_db::StateDbHandle;
+
+static LIVE_THREADS: Gauge = Gauge::new("core.threads.live");
 
 #[derive(Clone, Debug)]
 pub struct ThreadConfigSnapshot {
@@ -92,8 +101,8 @@ pub enum TryStartTurnIfIdleRejectionReason {
     /// User/client-triggered mailbox work is already queued and must take
     /// priority over extension-initiated idle work.
     PendingTriggerTurn,
-    /// The thread is in Plan mode, where automatic idle work must not start a
-    /// new model turn.
+    /// The thread is in Plan mode, where idle work without user input must not
+    /// start a new model turn.
     PlanMode,
     /// Another turn or task is active, or the idle reservation was lost before
     /// the automatic turn could start.
@@ -105,11 +114,11 @@ pub enum TryStartTurnIfIdleRejectionReason {
 #[derive(Debug)]
 pub struct TryStartTurnIfIdleError {
     reason: TryStartTurnIfIdleRejectionReason,
-    input: Vec<ResponseItem>,
+    input: Vec<TurnInput>,
 }
 
 impl TryStartTurnIfIdleError {
-    pub(crate) fn new(reason: TryStartTurnIfIdleRejectionReason, input: Vec<ResponseItem>) -> Self {
+    pub(crate) fn new(reason: TryStartTurnIfIdleRejectionReason, input: Vec<TurnInput>) -> Self {
         Self { reason, input }
     }
 
@@ -118,9 +127,9 @@ impl TryStartTurnIfIdleError {
         self.reason
     }
 
-    /// Consumes the rejection and returns the original model-visible input
+    /// Consumes the rejection and returns the original turn input
     /// unchanged, so callers can retry, drop, or log it explicitly.
-    pub fn into_input(self) -> Vec<ResponseItem> {
+    pub fn into_input(self) -> Vec<TurnInput> {
         self.input
     }
 }
@@ -186,6 +195,7 @@ pub struct CodexThread {
     session_configured: SessionConfiguredEvent,
     rollout_path: Option<PathBuf>,
     out_of_band_elicitations: Mutex<OutOfBandElicitations>,
+    _diagnostics_guard: GaugeGuard,
 }
 
 #[derive(Default)]
@@ -219,6 +229,7 @@ impl CodexThread {
             session_configured,
             rollout_path,
             out_of_band_elicitations: Mutex::new(OutOfBandElicitations::default()),
+            _diagnostics_guard: LIVE_THREADS.track(),
         }
     }
 
@@ -229,6 +240,11 @@ impl CodexThread {
     /// Returns the session telemetry handle for thread-scoped production instrumentation.
     pub fn session_telemetry(&self) -> SessionTelemetry {
         self.session.services.session_telemetry.clone()
+    }
+
+    /// Returns extension-owned data attached to this thread runtime.
+    pub fn thread_extension_data(&self) -> &codex_extension_api::ExtensionData {
+        &self.session.services.thread_extension_data
     }
 
     pub async fn shutdown_and_wait(&self) -> CodexResult<()> {
@@ -256,13 +272,15 @@ impl CodexThread {
         }
     }
 
-    pub async fn emit_thread_idle_lifecycle_if_idle(&self) {
-        self.session.emit_thread_idle_lifecycle_if_idle().await;
+    pub async fn emit_thread_idle_lifecycle_if_idle(&self, cause: ThreadIdleCause) {
+        self.session.emit_thread_idle_lifecycle_if_idle(cause).await;
     }
 
     #[doc(hidden)]
     pub async fn ensure_rollout_materialized(&self) {
-        self.session.ensure_rollout_materialized().await;
+        self.session
+            .ensure_rollout_materialized(PersistContext::Standard)
+            .await;
     }
 
     #[doc(hidden)]
@@ -294,6 +312,46 @@ impl CodexThread {
         self.io
             .submit_user_input_with_client_user_message_id(op, trace, client_user_message_id)
             .await
+    }
+
+    /// Waits until Core has started a turn or steered the active turn.
+    pub async fn submit_user_input_and_wait_for_admission(
+        &self,
+        op: Op,
+        trace: Option<W3cTraceContext>,
+        client_user_message_id: Option<String>,
+    ) -> CodexResult<UserMessageAdmission> {
+        let Op::UserInput { .. } = &op else {
+            return Err(CodexErr::InvalidRequest(
+                "user message admission requires user input".to_string(),
+            ));
+        };
+        self.session
+            .services
+            .agent_control
+            .ensure_execution_capacity_for_op(self.session.thread_id(), &op)
+            .await?;
+        let submission_id = crate::session::new_submission_id();
+        let (_pending_admission, admission) = self
+            .session
+            .pending_user_message_admissions
+            .register(submission_id.clone());
+        self.io
+            .submit_with_id(Submission {
+                id: submission_id.clone(),
+                op,
+                client_user_message_id,
+                trace,
+                parent_turn_id: None,
+            })
+            .await?;
+        tokio::select! {
+            biased;
+            result = admission => result.unwrap_or(Err(CodexErr::InternalAgentDied)),
+            () = self.io.session_loop_termination.clone() => {
+                Err(CodexErr::InternalAgentDied)
+            },
+        }
     }
 
     /// Persist whether this thread is eligible for future memory generation.
@@ -332,22 +390,22 @@ impl CodexThread {
         self.session.inject_if_running(items).await
     }
 
-    /// Starts an automatic regular turn with model-visible items only when idle
-    /// work is allowed for this thread.
+    /// Starts an automatic regular turn with response items or user input only
+    /// when idle work is allowed for this thread.
     ///
     /// This is the required entry point for extensions that want to launch
     /// model-visible work from `ThreadLifecycleContributor::on_thread_idle`.
-    /// The call succeeds only if no user/client-triggered turn is queued, no
-    /// task is currently active, and the thread is not in Plan mode. Active
-    /// Review tasks are rejected by the active-task check because Review turns
-    /// are not steerable.
+    /// The call succeeds only if no user/client-triggered turn is queued and no
+    /// task is currently active. Work without user input is also rejected in
+    /// Plan mode. Active Review tasks are rejected by the active-task check
+    /// because Review turns are not steerable.
     ///
     /// On rejection, the returned error includes a stable reason and carries
     /// the original `items` unchanged so the caller can decide whether to drop
     /// them, retry later, or log why no automatic turn was started.
     pub async fn try_start_turn_if_idle(
         &self,
-        items: Vec<ResponseItem>,
+        items: Vec<TurnInput>,
     ) -> Result<(), TryStartTurnIfIdleError> {
         self.session.try_start_turn_if_idle(items).await
     }
@@ -364,12 +422,6 @@ impl CodexThread {
                 app_server_client_version,
                 mcp_elicitations_auto_deny,
             )
-            .await
-    }
-
-    pub async fn set_openai_form_elicitation_support(&self, supported: bool) -> anyhow::Result<()> {
-        self.session
-            .set_openai_form_elicitation_support(supported)
             .await
     }
 
@@ -481,6 +533,20 @@ impl CodexThread {
 
     /// Record raw Responses API items without starting a new turn.
     pub async fn inject_response_items(&self, items: Vec<ResponseItem>) -> CodexResult<()> {
+        self.inject_response_items_for_turn(items).await?;
+        self.session.flush_rollout().await?;
+        Ok(())
+    }
+
+    /// Record raw Responses API items immediately before admitting a user turn.
+    ///
+    /// The caller must submit the associated user input while retaining its
+    /// thread-operation lock. The subsequent turn persistence includes both
+    /// these items and the user input, without an independent rollout flush.
+    pub async fn inject_response_items_for_turn(
+        &self,
+        items: Vec<ResponseItem>,
+    ) -> CodexResult<()> {
         if items.is_empty() {
             return Err(CodexErr::InvalidRequest(
                 "items must not be empty".to_string(),
@@ -496,12 +562,11 @@ impl CodexThread {
                 .await?;
             self.session
                 .record_context_updates_and_set_reference_context_item(step_context.as_ref())
-                .await;
+                .await?;
         }
         self.session
             .inject_no_new_turn(items, Some(turn_context.as_ref()))
             .await;
-        self.session.flush_rollout().await?;
         Ok(())
     }
 
@@ -641,13 +706,18 @@ impl CodexThread {
         self.session.thread_environment_selections().await
     }
 
+    /// Installs resolved environment configuration and capability roots on this thread.
+    pub async fn environment_ready(
+        &self,
+        selection: &TurnEnvironmentSelection,
+        config: EnvironmentConfig,
+    ) -> CodexResult<()> {
+        self.session.environment_ready(selection, config).await
+    }
+
     /// Passively inspects the selected capability roots whose environments are ready now.
     pub fn inspect_selected_capability_roots(&self) -> SelectedCapabilityRootsStatus {
-        self.session
-            .services
-            .turn_environments
-            .environment_manager()
-            .inspect_selected_capability_roots(&self.session.services.selected_capability_roots)
+        self.session.inspect_selected_capability_roots()
     }
 
     pub async fn read_mcp_resource(

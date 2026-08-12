@@ -1,3 +1,4 @@
+use codex_analytics::InvocationType;
 use codex_extension_api::FunctionCallError;
 use codex_extension_api::ToolCall;
 use codex_extension_api::ToolExecutor;
@@ -27,11 +28,9 @@ const TOOL_NAME: &str = "read";
 const MAX_READ_RESPONSE_BYTES: usize = 512 * 1024;
 
 #[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 struct ReadArgs {
-    authority: SkillToolAuthority,
     package: String,
-    resource: String,
+    resource: Option<String>,
     cursor: Option<String>,
 }
 
@@ -56,39 +55,48 @@ impl ToolExecutor<ToolCall> for ReadTool {
     fn spec(&self) -> ToolSpec {
         skill_function_tool::<ReadArgs, ReadResponse>(
             TOOL_NAME,
-            "Read one page from a skill resource. Pass the exact authority and package from skills.list or an explicitly selected skill's resource_access metadata, plus its main_resource or a referenced resource beneath that package. Pass next_cursor back as cursor to continue.",
+            "Read one page from a skill. Pass its provided package, expanding any root alias. Omit resource to read SKILL.md; to read another file, use the same package and pass the file's complete skill:// identifier as resource. If the package is not provided, use skills.list to find it. Pass next_cursor back as cursor to continue.",
         )
     }
 
     fn handle(&self, call: ToolCall) -> ToolExecutorFuture<'_> {
         Box::pin(async move {
             let args: ReadArgs = parse_args(&call)?;
-            if let SkillToolAuthority::Executor { id } = &args.authority {
-                validate_handle("authority.id", id, MAX_HANDLE_BYTES)?;
-            }
             validate_handle("package", &args.package, MAX_HANDLE_BYTES)?;
-            validate_handle("resource", &args.resource, MAX_HANDLE_BYTES)?;
+            if let Some(resource) = args.resource.as_deref() {
+                validate_handle("resource", resource, MAX_HANDLE_BYTES)?;
+            }
 
-            let output_authority = args.authority.selector();
-            let catalog = self.context.catalog(&call.turn_id, output_authority).await;
-            let Some(skill_entry) = catalog.entries.iter().find(|entry| {
-                entry.enabled
-                    && args.authority.matches(&entry.authority)
-                    && entry.id.0 == args.package
-            }) else {
+            let mut selected_skill = None;
+            for selector in [
+                super::SkillToolAuthoritySelector::Orchestrator,
+                super::SkillToolAuthoritySelector::Executor,
+            ] {
+                let catalog = self.context.catalog(&call.turn_id, selector).await;
+                if let Some(entry) = catalog.entries.into_iter().find(|entry| {
+                    entry.enabled
+                        && entry.id.0 == args.package
+                        && SkillToolAuthority::from_authority(&entry.authority)
+                            .is_some_and(|authority| authority.selector() == selector)
+                }) {
+                    selected_skill = Some((entry, selector));
+                    break;
+                }
+            }
+            let Some((skill_entry, output_authority)) = selected_skill else {
                 return Err(FunctionCallError::RespondToModel(
-                    "skill package is not available from the requested authority".to_string(),
+                    "skill package is not available".to_string(),
                 ));
             };
             let authority = skill_entry.authority.clone();
             let package = skill_entry.id.clone();
             let main_prompt = skill_entry.main_prompt.clone();
-            let requested_resource = if args.resource == main_prompt.as_str() {
-                main_prompt.clone()
-            } else {
-                main_prompt
-                    .bind_environment_package_resource(&package, args.resource.clone())
-                    .unwrap_or_else(|| SkillResourceId::new(args.resource))
+            let requested_resource = match args.resource {
+                None => main_prompt.clone(),
+                Some(resource) if resource == main_prompt.as_str() => main_prompt.clone(),
+                Some(resource) => main_prompt
+                    .bind_environment_package_resource(&package, resource.clone())
+                    .unwrap_or_else(|| SkillResourceId::new(resource)),
             };
             let resolved_executor_roots = self
                 .context
@@ -96,6 +104,27 @@ impl ToolExecutor<ToolCall> for ReadTool {
                 .as_ref()
                 .map(|query| query.resolved_executor_roots.clone())
                 .unwrap_or_default();
+            let sandbox = requested_resource
+                .environment_path()
+                .and_then(|(environment_id, _)| {
+                    self.context.sandbox_contexts.as_ref().and_then(|contexts| {
+                        contexts.get(environment_id).map(|captured| {
+                            call.environments
+                                .iter()
+                                .find(|environment| environment.environment_id == environment_id)
+                                .map(|environment| environment.file_system_sandbox_context.clone())
+                                .unwrap_or_else(|| captured.clone())
+                        })
+                    })
+                });
+            if self.context.sandbox_contexts.is_some()
+                && requested_resource.environment_path().is_some()
+                && sandbox.is_none()
+            {
+                return Err(FunctionCallError::RespondToModel(
+                    "failed to read skill resource".to_string(),
+                ));
+            }
             let result = self
                 .context
                 .thread_state
@@ -106,6 +135,7 @@ impl ToolExecutor<ToolCall> for ReadTool {
                         package,
                         resource: requested_resource.clone(),
                         resolved_executor_roots,
+                        sandbox,
                         host_snapshot: None,
                         mcp_resources: self.context.mcp_resources.clone(),
                     },
@@ -148,7 +178,21 @@ impl ToolExecutor<ToolCall> for ReadTool {
                 ));
             }
             let response = page_response(result.resource.as_str(), &result.contents, start)?;
-            skill_json_output(&response, output_authority)
+            let output = skill_json_output(&response, output_authority)?;
+
+            if requested_resource == main_prompt
+                && args.cursor.is_none()
+                && let Some(analytics) = self.context.analytics.as_ref()
+            {
+                analytics.track_skill_invocation(
+                    &skill_entry,
+                    call.model.clone(),
+                    call.turn_id.clone(),
+                    InvocationType::Implicit,
+                );
+            }
+
+            Ok(output)
         })
     }
 }

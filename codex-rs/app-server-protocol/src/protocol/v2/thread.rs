@@ -7,11 +7,14 @@ use super::Thread;
 use super::ThreadHistoryMode;
 use super::ThreadItem;
 use super::ThreadSection;
+use super::ThreadSectionAppearance;
 use super::ThreadSource;
 use super::Turn;
 use super::TurnEnvironmentParams;
 use super::TurnItemsView;
 use super::shared::v2_enum_from_core;
+use crate::JsonSchema;
+use crate::TS;
 use codex_experimental_api_macros::ExperimentalApi;
 pub use codex_protocol::capabilities::CapabilityRootLocation;
 pub use codex_protocol::capabilities::SelectedCapabilityRoot;
@@ -31,13 +34,11 @@ use codex_protocol::protocol::TokenUsageInfo as CoreTokenUsageInfo;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::LegacyAppPathString;
 use codex_utils_path_uri::PathUri;
-use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use ts_rs::TS;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -866,15 +867,6 @@ pub struct ThreadMetadataUpdateParams {
     /// provide a string to replace the stored value.
     #[ts(optional = nullable)]
     pub git_info: Option<ThreadMetadataGitInfoUpdateParams>,
-    /// Omit to leave the section unchanged, set to `null` to clear it, or provide a section ID.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        serialize_with = "crate::protocol::serde_helpers::serialize_double_option",
-        deserialize_with = "crate::protocol::serde_helpers::deserialize_double_option"
-    )]
-    #[ts(optional = nullable, type = "string | null")]
-    pub section_id: Option<Option<String>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -919,6 +911,31 @@ pub struct ThreadMetadataGitInfoUpdateParams {
 pub struct ThreadMetadataUpdateResponse {
     pub thread: Thread,
 }
+
+/// Parameters for moving a thread within a server-owned section ordering.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadSectionMoveParams {
+    /// Thread to move into, within, or out of a section.
+    pub thread_id: String,
+    /// Destination section, or `null` to remove the thread from its section.
+    #[serde(deserialize_with = "Option::deserialize")]
+    #[schemars(
+        required,
+        schema_with = "crate::protocol::serde_helpers::nullable_string_schema"
+    )]
+    #[ts(type = "string | null")]
+    pub section_id: Option<String>,
+    /// Existing thread to insert before; omission or null appends to the section.
+    #[ts(optional = nullable)]
+    pub before_thread_id: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadSectionMoveResponse {}
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "lowercase")]
@@ -1123,6 +1140,70 @@ pub struct ThreadSectionListResponse {
     pub next_cursor: Option<String>,
 }
 
+/// Parameters for creating an independently persisted thread section.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadSectionCreateParams {
+    /// The user-visible name of the section.
+    pub name: String,
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub appearance: Option<ThreadSectionAppearance>,
+}
+
+/// The independently persisted section created by the server.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadSectionCreateResponse {
+    pub section: ThreadSection,
+}
+
+/// Parameters for updating an independently persisted thread section.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadSectionUpdateParams {
+    /// The stable, server-generated identity of the section to update.
+    pub section_id: String,
+    /// The updated user-visible name of the section.
+    pub name: String,
+    /// Omit to preserve appearance, use `null` to clear it, or provide a replacement.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "crate::protocol::serde_helpers::serialize_double_option",
+        deserialize_with = "crate::protocol::serde_helpers::deserialize_double_option"
+    )]
+    #[schemars(with = "Option<ThreadSectionAppearance>")]
+    #[ts(optional = nullable, as = "Option<ThreadSectionAppearance>")]
+    pub appearance: Option<Option<ThreadSectionAppearance>>,
+}
+
+/// The independently persisted section after its name is updated.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadSectionUpdateResponse {
+    pub section: ThreadSection,
+}
+
+/// Parameters for deleting an independently persisted thread section.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadSectionDeleteParams {
+    /// The stable, server-generated identity of the section to delete.
+    pub section_id: String,
+}
+
+/// Successful deletion does not return additional section data.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadSectionDeleteResponse {}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, ExperimentalApi)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -1196,7 +1277,7 @@ pub struct ThreadSearchParams {
     pub limit: Option<u32>,
     /// Optional sort key; defaults to created_at.
     #[ts(optional = nullable)]
-    pub sort_key: Option<ThreadSortKey>,
+    pub sort_key: Option<ThreadSearchSortKey>,
     /// Optional sort direction; defaults to descending (newest first).
     #[ts(optional = nullable)]
     pub sort_direction: Option<SortDirection>,
@@ -1241,6 +1322,16 @@ pub enum ThreadSourceKind {
 #[serde(rename_all = "snake_case")]
 #[ts(export_to = "v2/")]
 pub enum ThreadSortKey {
+    CreatedAt,
+    UpdatedAt,
+    RecencyAt,
+    SectionPosition,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export_to = "v2/")]
+pub enum ThreadSearchSortKey {
     CreatedAt,
     UpdatedAt,
     RecencyAt,

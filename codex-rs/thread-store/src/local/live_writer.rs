@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 
 use codex_protocol::ThreadId;
-use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadMemoryMode;
 use codex_rollout::RolloutConfig;
+use codex_rollout::RolloutItem;
 use codex_rollout::RolloutRecorder;
 use codex_rollout::RolloutRecorderParams;
-use codex_rollout::persisted_rollout_items;
+use codex_rollout::is_persisted_rollout_item;
 use tracing::warn;
 
 use super::LocalThreadStore;
@@ -30,11 +30,7 @@ pub(super) async fn create_thread(
     let _live_writer_guard = store.live_writer_locks.lock(thread_id).await;
     let history_mode = params.history_mode;
     store.ensure_live_recorder_absent(thread_id).await?;
-    let writer_lock = if matches!(history_mode, ThreadHistoryMode::Paginated) {
-        Some(store.writer_lock_coordinator.acquire(thread_id)?)
-    } else {
-        None
-    };
+    let writer_lock = store.writer_lock_coordinator.acquire(thread_id)?;
     let recorder = create_thread::create_thread(store, params).await?;
     store
         .insert_live_recorder(thread_id, recorder, history_mode, writer_lock)
@@ -47,6 +43,7 @@ pub(super) async fn resume_thread(
 ) -> ThreadStoreResult<()> {
     let _live_writer_guard = store.live_writer_locks.lock(params.thread_id).await;
     store.ensure_live_recorder_absent(params.thread_id).await?;
+    let writer_lock = store.writer_lock_coordinator.acquire(params.thread_id)?;
     let history_mode = if let Some(history) = params.history.as_deref() {
         canonical_history_mode_from_rollout_items(history)
     } else if let Some(rollout_path) = params.rollout_path.as_ref() {
@@ -102,11 +99,6 @@ pub(super) async fn resume_thread(
         cwd,
         model_provider_id: params.metadata.model_provider.clone(),
         generate_memories: matches!(params.metadata.memory_mode, ThreadMemoryMode::Enabled),
-    };
-    let writer_lock = if matches!(history_mode, ThreadHistoryMode::Paginated) {
-        Some(store.writer_lock_coordinator.acquire(params.thread_id)?)
-    } else {
-        None
     };
     let recorder = RolloutRecorder::new(&config, RolloutRecorderParams::resume(rollout_path))
         .await
@@ -297,8 +289,8 @@ async fn write_and_project(
     let (recorder, history_mode) = live_writer_parts(store, thread_id).await?;
     let sync_rollout_path = matches!(&write_op, RolloutWriteOp::Persist | RolloutWriteOp::Flush);
     let write_op = match write_op {
-        RolloutWriteOp::AppendItems(items) => {
-            let items = persisted_rollout_items(items.as_slice(), history_mode);
+        RolloutWriteOp::AppendItems(mut items) => {
+            items.retain(|item| is_persisted_rollout_item(item, history_mode));
             if items.is_empty() {
                 return Ok(());
             }

@@ -336,6 +336,7 @@ fn turn_items_for_thread_returns_matching_turn_items() {
         preview: String::new(),
         ephemeral: false,
         section: None,
+        section_entered_at: None,
         history_mode: Default::default(),
         model_provider: "openai".to_string(),
         created_at: 0,
@@ -784,13 +785,16 @@ async fn session_configured_from_thread_response_preserves_parent_thread_id() {
         .await
         .expect("build config");
     let parent_thread_id = ThreadId::new();
+    let forked_from_id = ThreadId::new();
     let mut response = sample_thread_start_response();
     response.thread.parent_thread_id = Some(parent_thread_id.to_string());
+    response.thread.forked_from_id = Some(forked_from_id.to_string());
 
     let event = session_configured_from_thread_start_response(&response, &config)
         .expect("build bootstrap session configured event");
 
     assert_eq!(event.parent_thread_id, Some(parent_thread_id));
+    assert_eq!(event.forked_from_id, Some(forked_from_id));
 }
 
 fn sample_thread_start_response() -> ThreadStartResponse {
@@ -804,6 +808,7 @@ fn sample_thread_start_response() -> ThreadStartResponse {
             preview: String::new(),
             ephemeral: false,
             section: None,
+            section_entered_at: None,
             history_mode: Default::default(),
             model_provider: "openai".to_string(),
             created_at: 0,

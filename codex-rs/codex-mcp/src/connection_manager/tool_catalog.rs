@@ -58,6 +58,32 @@ pub fn tool_is_model_visible(tool: &ToolInfo) -> bool {
 }
 
 impl McpConnectionSet {
+    pub(crate) async fn stable_catalog_revision(&self) -> Option<u64> {
+        for (server_name, view) in &self.servers {
+            if !view
+                .connection
+                .client
+                .startup_complete
+                .load(Ordering::Acquire)
+            {
+                return None;
+            }
+            let Some(client) = view.connection.client.ready_transport() else {
+                if !view.connection.client.is_codex_apps_mcp_server
+                    && self.required_servers.binary_search(server_name).is_err()
+                    && matches!(view.connection.client.client.peek(), Some(Err(_)))
+                {
+                    continue;
+                }
+                return None;
+            };
+            if client.is_closed().await {
+                return None;
+            }
+        }
+        Some(*self.tool_catalog_revision.read().await)
+    }
+
     /// Returns all tools with model-visible names normalized.
     #[instrument(level = "trace", skip_all, fields(mcp_server_count = self.servers.len()))]
     pub async fn list_all_tools(&self) -> Vec<ToolInfo> {
@@ -151,9 +177,6 @@ impl McpConnectionSet {
         let revision = self.tool_catalog_revision.read().await;
         let mut listed_tools = Vec::new();
         let mut clients = std::collections::HashMap::new();
-        let optional_startup_deadline = *self
-            .optional_startup_deadline
-            .get_or_init(|| tokio::time::Instant::now() + OPTIONAL_MCP_STARTUP_GRACE);
         join_all(self.servers.iter().map(|(server_name, view)| async move {
             if !view
                 .connection
@@ -173,18 +196,29 @@ impl McpConnectionSet {
                     return;
                 }
                 if !must_wait_for_startup {
-                    if tokio::time::timeout_at(
-                        optional_startup_deadline,
-                        view.connection.client.client(),
-                    )
-                    .await
-                    .is_err()
+                    let optional_startup_deadline = if view.connection.startup_is_dormant() {
+                        tokio::time::Instant::now() + OPTIONAL_MCP_STARTUP_GRACE
+                    } else {
+                        *self.optional_startup_deadline.get_or_init(|| {
+                            tokio::time::Instant::now() + OPTIONAL_MCP_STARTUP_GRACE
+                        })
+                    };
+                    let startup_deadline = view
+                        .connection
+                        .client
+                        .tool_catalog_cache_context
+                        .as_ref()
+                        .map(|cache| cache.optional_startup_deadline(optional_startup_deadline))
+                        .unwrap_or(optional_startup_deadline);
+                    if tokio::time::timeout_at(startup_deadline, view.connection.client())
+                        .await
+                        .is_err()
                     {
                         trace!(server_name = %server_name, "omitting pending optional MCP server");
                     }
                     return;
                 }
-                let _ = view.connection.client.client().await;
+                let _ = view.connection.client().await;
             }
         }))
         .await;
@@ -211,7 +245,7 @@ impl McpConnectionSet {
                 return Some((server_name.clone(), None, server_tools));
             }
             view.connection.client.reconnect_failed_startup().await;
-            let Ok(mut client) = view.connection.client.client().await else {
+            let Ok(mut client) = view.connection.client().await else {
                 trace!(server_name = %server_name, "omitting MCP server without an exact ready client");
                 return None;
             };
@@ -343,6 +377,7 @@ impl McpConnectionSet {
             /*codex_apps_refresh_trigger*/ "explicit",
             &managed_client.client,
             view.tool_timeout,
+            view.catalog_item_limit,
             managed_client.server_instructions.as_deref(),
         )
         .await
