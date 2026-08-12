@@ -742,7 +742,6 @@ impl TestCodexBuilder {
                 Box::pin(thread_manager.start_thread(StartThreadOptions {
                     history_mode: self.history_mode,
                     dynamic_tools: self.dynamic_tools.clone(),
-                    supports_openai_form_elicitation: self.supports_openai_form_elicitation,
                     client_mcp_extensions: client_mcp_extensions(),
                     ..StartThreadOptions::new(config.clone())
                 }))

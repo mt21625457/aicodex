@@ -692,3 +692,13 @@ pub(crate) fn build_api_turns_from_rollout_items_with_mode(
     }
     builder.finish()
 }
+
+pub(crate) fn build_legacy_api_turns_from_rollout_items(items: &[RolloutItem]) -> Vec<Turn> {
+    let mut builder = ThreadHistoryBuilder::new();
+    for item in items {
+        if is_persisted_rollout_item(item, CoreThreadHistoryMode::Legacy) {
+            builder.handle_rollout_item(item);
+        }
+    }
+    builder.finish()
+}

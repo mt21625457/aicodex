@@ -1425,7 +1425,7 @@ fn record_items_preserves_code_mode_exec_output_content() {
 
     history.record_items([&call, &output], policy);
 
-    assert_eq!(history.raw_items(), &[call, output]);
+    assert_eq!(raw_items(&history), vec![call, output]);
 }
 
 #[test]
@@ -1454,7 +1454,7 @@ fn record_items_preserves_code_mode_exec_output_after_history_replace() {
     history.replace(vec![call.clone()]);
     history.record_items([&output], policy);
 
-    assert_eq!(history.raw_items(), &[call, output]);
+    assert_eq!(raw_items(&history), vec![call, output]);
 }
 
 #[test]
@@ -1484,7 +1484,7 @@ fn record_items_drops_code_mode_exec_index_when_call_is_removed() {
     history.remove_first_item();
     history.record_items([&output], policy);
 
-    match &history.items[0] {
+    match &history.items[0].item {
         ResponseItem::CustomToolCallOutput { output, .. } => {
             let output = output.text_content().unwrap_or_default();
             assert_ne!(output, long_output);

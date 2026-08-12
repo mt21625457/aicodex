@@ -80,7 +80,7 @@ pub(crate) async fn handle_retryable_response_stream_error(
             error = %err,
             "Falling back from WebSockets to HTTPS transport"
         );
-        *retries = 0;
+        retry_state.retries = 0;
         return Ok(());
     }
 

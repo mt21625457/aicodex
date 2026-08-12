@@ -2188,9 +2188,11 @@ mod tests {
                     ),
                     output_schema: None,
                 })],
-            })],
+            })]
+            .into(),
             base_instructions: BaseInstructions {
                 text: "be useful".to_string(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -2276,7 +2278,8 @@ mod tests {
                 }),
                 search_context_size: None,
                 search_content_types: None,
-            }],
+            }]
+            .into(),
             ..Default::default()
         };
 
@@ -2323,7 +2326,8 @@ mod tests {
                 user_location: None,
                 search_context_size: Some(codex_protocol::config_types::WebSearchContextSize::High),
                 search_content_types: None,
-            }],
+            }]
+            .into(),
             ..Default::default()
         };
 
@@ -2365,7 +2369,8 @@ mod tests {
                 user_location: None,
                 search_context_size: None,
                 search_content_types: None,
-            }],
+            }]
+            .into(),
             ..Default::default()
         };
 
@@ -2409,7 +2414,8 @@ mod tests {
                 user_location: None,
                 search_context_size: None,
                 search_content_types: None,
-            }],
+            }]
+            .into(),
             ..Default::default()
         };
 
@@ -2487,6 +2493,7 @@ mod tests {
                 ToolSpec::Freeform(FreeformTool {
                     name: "exec".to_string(),
                     description: "Execute raw input".to_string(),
+                    defer_loading: None,
                     format: FreeformToolFormat {
                         r#type: "grammar".to_string(),
                         syntax: "lark".to_string(),
@@ -2501,7 +2508,8 @@ mod tests {
                     search_context_size: None,
                     search_content_types: None,
                 },
-            ],
+            ]
+            .into(),
             ..Default::default()
         };
 
@@ -2659,6 +2667,7 @@ mod tests {
             ],
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -2739,6 +2748,7 @@ mod tests {
             ],
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -2789,6 +2799,7 @@ mod tests {
             ],
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -2856,6 +2867,7 @@ mod tests {
             ],
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -2944,6 +2956,7 @@ mod tests {
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -2982,6 +2995,7 @@ mod tests {
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -3058,6 +3072,7 @@ mod tests {
             ],
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -3121,6 +3136,7 @@ mod tests {
             ],
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -3162,6 +3178,7 @@ mod tests {
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -3215,6 +3232,7 @@ mod tests {
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -3284,6 +3302,7 @@ mod tests {
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -3334,6 +3353,7 @@ mod tests {
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -3406,7 +3426,8 @@ mod tests {
                     search_context_size: None,
                     search_content_types: None,
                 },
-            ],
+            ]
+            .into(),
             parallel_tool_calls: true,
             ..Default::default()
         };
@@ -3695,6 +3716,7 @@ mod tests {
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -3743,6 +3765,7 @@ mod tests {
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -3821,7 +3844,8 @@ mod tests {
                     ),
                     output_schema: None,
                 }),
-            ],
+            ]
+            .into(),
             ..Default::default()
         };
 
@@ -4100,6 +4124,7 @@ mod tests {
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -4153,6 +4178,7 @@ mod tests {
             ],
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -4230,6 +4256,7 @@ mod tests {
             ],
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -4291,6 +4318,7 @@ mod tests {
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -4357,6 +4385,7 @@ mod tests {
             ],
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -4404,6 +4433,7 @@ mod tests {
             }],
             base_instructions: BaseInstructions {
                 text: "stable system".to_string(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -4471,6 +4501,7 @@ mod tests {
             ],
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -4574,6 +4605,7 @@ mod tests {
             ],
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -4680,6 +4712,7 @@ mod tests {
             ],
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -4818,6 +4851,7 @@ mod tests {
             ],
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -4906,6 +4940,7 @@ mod tests {
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -4938,6 +4973,7 @@ mod tests {
             }],
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -5003,6 +5039,7 @@ mod tests {
             ],
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -5057,9 +5094,11 @@ mod tests {
                 user_location: None,
                 search_context_size: None,
                 search_content_types: None,
-            }],
+            }]
+            .into(),
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -5125,9 +5164,11 @@ mod tests {
                 user_location: None,
                 search_context_size: None,
                 search_content_types: None,
-            }],
+            }]
+            .into(),
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -5219,9 +5260,11 @@ mod tests {
                 user_location: None,
                 search_context_size: None,
                 search_content_types: None,
-            }],
+            }]
+            .into(),
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -5290,9 +5333,11 @@ mod tests {
                 user_location: None,
                 search_context_size: None,
                 search_content_types: None,
-            }],
+            }]
+            .into(),
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -5355,9 +5400,11 @@ mod tests {
                 user_location: None,
                 search_context_size: None,
                 search_content_types: None,
-            }],
+            }]
+            .into(),
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -5414,9 +5461,11 @@ mod tests {
                 user_location: None,
                 search_context_size: None,
                 search_content_types: None,
-            }],
+            }]
+            .into(),
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };
@@ -5473,9 +5522,11 @@ mod tests {
                 user_location: None,
                 search_context_size: Some(codex_protocol::config_types::WebSearchContextSize::High),
                 search_content_types: None,
-            }],
+            }]
+            .into(),
             base_instructions: BaseInstructions {
                 text: String::new(),
+                provenance: None,
             },
             ..Default::default()
         };

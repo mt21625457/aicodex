@@ -2627,7 +2627,10 @@ async fn spawn_agent_fork_strips_canonicalized_oversized_parent_usage_hint() {
             ],
         )
         .await;
-    parent_thread.session.ensure_rollout_materialized().await;
+    parent_thread
+        .session
+        .ensure_rollout_materialized(PersistContext::Standard)
+        .await;
     parent_thread
         .session
         .flush_rollout()

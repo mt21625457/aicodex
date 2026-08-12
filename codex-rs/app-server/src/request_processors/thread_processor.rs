@@ -2634,7 +2634,7 @@ impl ThreadRequestProcessor {
                     .paginated_thread_full_turns(thread_id)
                     .await
                     .map_err(ThreadReadViewError::JsonRpc)?;
-                return Ok(());
+                return Ok(None);
             }
             let history = loaded_thread
                 .load_history(/*include_archived*/ true)

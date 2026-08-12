@@ -1,6 +1,7 @@
 use super::*;
 use crate::config::PermissionProfileSnapshot;
 use crate::session::turn_context::TurnEnvironmentConfig;
+use crate::tools::sandboxing::Approvable;
 use crate::tools::sandboxing::SandboxAttempt;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::AdditionalPermissionProfile;
@@ -34,25 +35,30 @@ fn test_turn_environment(environment_id: &str) -> crate::session::turn_context::
 #[test]
 fn wants_no_sandbox_approval_granular_respects_sandbox_flag() {
     let runtime = ApplyPatchRuntime::new();
-    assert!(runtime.wants_no_sandbox_approval(AskForApproval::OnRequest));
-    assert!(
-        !runtime.wants_no_sandbox_approval(AskForApproval::Granular(GranularApprovalConfig {
+    assert!(Approvable::<ApplyPatchRequest>::wants_no_sandbox_approval(
+        &runtime,
+        AskForApproval::OnRequest
+    ));
+    assert!(!Approvable::<ApplyPatchRequest>::wants_no_sandbox_approval(
+        &runtime,
+        AskForApproval::Granular(GranularApprovalConfig {
             sandbox_approval: false,
             rules: true,
             skill_approval: true,
             request_permissions: true,
             mcp_elicitations: true,
-        }))
-    );
-    assert!(
-        runtime.wants_no_sandbox_approval(AskForApproval::Granular(GranularApprovalConfig {
+        })
+    ));
+    assert!(Approvable::<ApplyPatchRequest>::wants_no_sandbox_approval(
+        &runtime,
+        AskForApproval::Granular(GranularApprovalConfig {
             sandbox_approval: true,
             rules: true,
             skill_approval: true,
             request_permissions: true,
             mcp_elicitations: true,
-        }))
-    );
+        })
+    ));
 }
 
 #[tokio::test]
@@ -73,9 +79,6 @@ async fn approval_action_preserves_patch_path_uris() {
         },
         additional_permissions: None,
         permissions_preapproved: false,
-        hook_tool_name: HookToolName::apply_patch(),
-        hook_input: serde_json::json!({ "command": expected_patch }),
-        approval_cache_namespace: "apply_patch".to_string(),
     };
 
     let approval_action = ApplyPatchRuntime::build_approval_action(&request, "call-1");
@@ -113,9 +116,6 @@ async fn permission_request_payload_uses_apply_patch_hook_name_and_aliases() {
         },
         additional_permissions: None,
         permissions_preapproved: false,
-        hook_tool_name: HookToolName::apply_patch(),
-        hook_input: serde_json::json!({ "command": expected_patch }),
-        approval_cache_namespace: "apply_patch".to_string(),
     };
 
     let payload =
@@ -150,9 +150,6 @@ async fn approval_keys_include_environment_id() {
         },
         additional_permissions: None,
         permissions_preapproved: false,
-        hook_tool_name: HookToolName::apply_patch(),
-        hook_input: serde_json::json!({ "command": "patch" }),
-        approval_cache_namespace: "apply_patch".to_string(),
     };
 
     let keys = runtime
@@ -191,9 +188,6 @@ async fn sandbox_cwd_uses_patch_action_cwd() {
         },
         additional_permissions: None,
         permissions_preapproved: false,
-        hook_tool_name: HookToolName::apply_patch(),
-        hook_input: serde_json::json!({ "command": "patch" }),
-        approval_cache_namespace: "apply_patch".to_string(),
     };
 
     assert_eq!(runtime.sandbox_cwd(&req), Some(&req.action.cwd));
@@ -225,9 +219,6 @@ async fn file_system_sandbox_context_preserves_executor_workspace_permissions() 
         },
         additional_permissions: Some(additional_permissions.clone()),
         permissions_preapproved: false,
-        hook_tool_name: HookToolName::apply_patch(),
-        hook_input: serde_json::json!({ "command": "patch" }),
-        approval_cache_namespace: "apply_patch".to_string(),
     };
     let exec_server_permissions = PermissionProfile::workspace_write();
     let file_system_policy = exec_server_permissions.file_system_sandbox_policy();
@@ -301,9 +292,6 @@ async fn file_system_sandbox_context_respects_sandbox_request() {
         },
         additional_permissions: None,
         permissions_preapproved: false,
-        hook_tool_name: HookToolName::apply_patch(),
-        hook_input: serde_json::json!({ "command": "patch" }),
-        approval_cache_namespace: "apply_patch".to_string(),
     };
     let permissions = PermissionProfile::Disabled;
     let manager = SandboxManager::new();

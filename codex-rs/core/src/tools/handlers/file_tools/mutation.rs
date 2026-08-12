@@ -3,7 +3,6 @@ use crate::session::turn_context::TurnEnvironment;
 use crate::tools::context::ToolInvocation;
 use crate::tools::events::ToolEmitter;
 use crate::tools::events::ToolEventCtx;
-use crate::tools::hook_names::HookToolName;
 use crate::tools::orchestrator::ToolOrchestrator;
 use crate::tools::runtimes::apply_patch::ApplyPatchRuntime;
 use crate::tools::runtimes::apply_patch::ConditionalWriteRequest;
@@ -15,9 +14,9 @@ use codex_apply_patch::AppliedPatchFileChange;
 use codex_file_system::ConditionalWritePrecondition;
 use codex_protocol::protocol::FileChange;
 use codex_utils_path_uri::PathUri;
-use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 pub(super) struct ReviewableFileMutation<'a> {
     pub path: &'a PathUri,
@@ -35,12 +34,6 @@ pub(super) async fn commit_reviewable_mutation(
 ) -> Result<(), FunctionCallError> {
     let (changes, patch, delta) =
         mutation_artifacts(mutation.path, mutation.old_text, mutation.new_text);
-    let hook_input = match &invocation.payload {
-        crate::tools::context::ToolPayload::Function { arguments } => {
-            serde_json::from_str(arguments).unwrap_or_else(|_| Value::String(arguments.clone()))
-        }
-        _ => Value::Null,
-    };
     let request = ConditionalWriteRequest {
         turn_environment: environment.clone(),
         path: mutation.path.clone(),
@@ -51,11 +44,9 @@ pub(super) async fn commit_reviewable_mutation(
         patch,
         delta,
         exec_approval_requirement: default_exec_approval_requirement(
-            invocation.turn.approval_policy.value(),
+            invocation.turn.approval_policy(),
             &invocation.turn.file_system_sandbox_policy(),
         ),
-        hook_tool_name: HookToolName::new(invocation.tool_name.to_string()),
-        hook_input,
     };
     let emitter = ToolEmitter::apply_patch_for_environment(
         changes,
@@ -74,7 +65,7 @@ pub(super) async fn commit_reviewable_mutation(
     let mut runtime = ApplyPatchRuntime::new();
     let tool_ctx = ToolCtx {
         session: invocation.session.clone(),
-        turn: invocation.turn.clone(),
+        step_context: Arc::clone(&invocation.step_context),
         call_id: invocation.call_id.clone(),
         tool_name: invocation.tool_name.clone(),
     };
@@ -84,7 +75,7 @@ pub(super) async fn commit_reviewable_mutation(
             &request,
             &tool_ctx,
             invocation.turn.as_ref(),
-            invocation.turn.approval_policy.value(),
+            invocation.turn.approval_policy(),
         )
         .await
         .map(|result| result.output);

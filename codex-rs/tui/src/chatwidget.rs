@@ -1186,6 +1186,9 @@ impl ChatWidget {
             match saved {
                 Some(info) => self.apply_token_info(info),
                 None => {
+                    self.token_usage_pending = false;
+                    self.bottom_pane
+                        .set_context_window_pending(/*pending*/ false);
                     self.bottom_pane
                         .set_context_window(/*percent*/ None, /*used_tokens*/ None);
                     self.token_info = None;

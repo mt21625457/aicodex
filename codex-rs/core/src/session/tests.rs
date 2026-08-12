@@ -4873,7 +4873,7 @@ pub(crate) async fn make_session_configuration_for_tests() -> SessionConfigurati
 async fn session_configuration_provider_update_changes_snapshot_and_turn_config() {
     let session_configuration = make_session_configuration_for_tests().await;
     let original_provider_id = session_configuration.provider_id.clone();
-    let mut alternate_provider = session_configuration.provider.clone();
+    let mut alternate_provider = session_configuration.provider.info().clone();
     alternate_provider.name = "Alternate provider".to_string();
     alternate_provider.wire_api = WireApi::Claude;
 
@@ -4907,7 +4907,7 @@ async fn session_configuration_provider_update_changes_snapshot_and_turn_config(
         "alternate_provider"
     );
     assert_eq!(updated.provider_id, "alternate_provider");
-    assert_eq!(updated.provider, alternate_provider);
+    assert_eq!(updated.provider.info(), &alternate_provider);
 
     let per_turn_config = Session::build_per_turn_config(&updated, updated.cwd().clone());
     assert_eq!(per_turn_config.model_provider_id, "alternate_provider");
@@ -8783,6 +8783,7 @@ async fn refresh_mcp_servers_preserves_elicitation_auto_deny() -> anyhow::Result
             default_tools_approval_mode: None,
             enabled_tools: None,
             disabled_tools: None,
+            omit_tools_from: None,
             scopes: None,
             oauth: None,
             oauth_resource: None,
@@ -8876,7 +8877,10 @@ async fn deferred_environment_roots_refresh_plugin_availability() {
             &turn_context.config,
             &session.services.mcp_thread_init,
             &session.services.thread_extension_data,
-            &originator,
+            crate::mcp::McpThreadIdentity {
+                session_source: &SessionSource::Exec,
+                originator: &originator,
+            },
             std::slice::from_ref(&selected_root),
             /*executor_capability_discovery*/ None,
         )
@@ -9133,6 +9137,7 @@ async fn refresh_mcp_servers_shuts_down_replaced_stdio_server_process() -> anyho
         default_tools_approval_mode: None,
         enabled_tools: None,
         disabled_tools: None,
+        omit_tools_from: None,
         scopes: None,
         oauth: None,
         oauth_resource: None,

@@ -15,7 +15,6 @@ use crate::tools::handlers::ReadFileHandler;
 use crate::tools::handlers::WriteFileHandler;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExposure;
-use crate::tools::registry::override_tool_exposure;
 
 pub(crate) fn model_visible(
     turn_context: &TurnContext,
@@ -43,7 +42,7 @@ pub(crate) fn planned_runtimes(
     turn_context: &TurnContext,
     environment_mode: ToolEnvironmentMode,
     apply_patch_available: bool,
-) -> Vec<Arc<dyn CoreToolRuntime>> {
+) -> Vec<(Arc<dyn CoreToolRuntime>, ToolExposure)> {
     if !environment_mode.has_environment() {
         return Vec::new();
     }
@@ -78,27 +77,38 @@ pub(crate) fn planned_runtimes(
         ToolExposure::Direct
     };
     let mut runtimes = vec![
-        override_tool_exposure(
-            Arc::new(ApplyPatchHandler::new(include_environment_id)),
+        (
+            Arc::new(ApplyPatchHandler::new(include_environment_id)) as Arc<dyn CoreToolRuntime>,
             apply_patch_exposure,
         ),
-        override_tool_exposure(
-            Arc::new(ClaudeTextEditorHandler::new(include_environment_id)),
+        (
+            Arc::new(ClaudeTextEditorHandler::new(include_environment_id))
+                as Arc<dyn CoreToolRuntime>,
             ToolExposure::Hidden,
         ),
     ];
     if dedicated_mode {
         let state = Arc::clone(&turn_context.file_tool_state);
         runtimes.extend([
-            Arc::new(ReadFileHandler::new(
-                Arc::clone(&state),
-                include_environment_id,
-            )) as Arc<dyn CoreToolRuntime>,
-            Arc::new(EditFileHandler::new(
-                Arc::clone(&state),
-                include_environment_id,
-            )),
-            Arc::new(WriteFileHandler::new(state, include_environment_id)),
+            (
+                Arc::new(ReadFileHandler::new(
+                    Arc::clone(&state),
+                    include_environment_id,
+                )) as Arc<dyn CoreToolRuntime>,
+                ToolExposure::Direct,
+            ),
+            (
+                Arc::new(EditFileHandler::new(
+                    Arc::clone(&state),
+                    include_environment_id,
+                )) as Arc<dyn CoreToolRuntime>,
+                ToolExposure::Direct,
+            ),
+            (
+                Arc::new(WriteFileHandler::new(state, include_environment_id))
+                    as Arc<dyn CoreToolRuntime>,
+                ToolExposure::Direct,
+            ),
         ]);
     }
     runtimes

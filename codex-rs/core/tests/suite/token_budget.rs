@@ -820,10 +820,9 @@ async fn get_context_remaining_returns_token_budget_remaining_fragment() -> Resu
         "get_context_remaining should be exposed when token budget is enabled"
     );
 
-    let thread_id = test.session_configured.thread_id;
     let token_budgets = token_budget_contexts(&requests[1]);
     assert_eq!(token_budgets.len(), 1);
-    token_budget_window_ids(&token_budgets[0], thread_id);
+    token_budget_window_ids(&token_budgets[0], "/root");
     let (remaining_context, success) = requests[2]
         .function_call_output_content_and_success(call_id)
         .expect("get_context_remaining output should be present");

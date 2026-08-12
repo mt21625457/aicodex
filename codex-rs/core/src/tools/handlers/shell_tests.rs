@@ -252,7 +252,6 @@ async fn shell_command_handler_emits_file_change_for_generated_file() {
     let (session, mut turn, rx) = make_session_and_context_with_rx().await;
     {
         let turn = Arc::get_mut(&mut turn).expect("unique turn context");
-        turn.permission_profile = PermissionProfile::Disabled;
         Arc::make_mut(&mut turn.config)
             .permissions
             .set_permission_profile(PermissionProfile::Disabled)

@@ -12,6 +12,7 @@
 use std::sync::Arc;
 
 use codex_app_server_protocol::ServerNotification;
+use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadHistoryBuilder;
 use codex_app_server_protocol::ThreadTokenUsage;
 use codex_app_server_protocol::ThreadTokenUsageUpdatedNotification;
@@ -20,7 +21,6 @@ use codex_app_server_protocol::TurnStatus;
 use codex_core::CodexThread;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::TokenUsageInfo;
 use codex_rollout::RolloutItem;
 
@@ -64,7 +64,7 @@ pub(super) async fn send_thread_token_usage_info_update_to_connection(
     token_usage_turn_id: Option<String>,
 ) {
     let token_usage_turn_id =
-        token_usage_turn_id.unwrap_or_else(|| latest_token_usage_turn_id(thread));
+        token_usage_turn_id.unwrap_or_else(|| latest_token_usage_turn_id(&thread.turns));
     send_thread_token_usage_update(
         outgoing,
         connection_id,

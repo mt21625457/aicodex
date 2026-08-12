@@ -272,15 +272,6 @@ fn apply_patch_payload_command(payload: &ToolPayload) -> Option<String> {
     }
 }
 
-fn mutation_hook_input(payload: &ToolPayload, patch: &str) -> serde_json::Value {
-    match payload {
-        ToolPayload::Function { arguments } => serde_json::from_str(arguments)
-            .unwrap_or_else(|_| serde_json::Value::String(arguments.clone())),
-        ToolPayload::Custom { .. } => serde_json::json!({ "command": patch }),
-        _ => serde_json::Value::Null,
-    }
-}
-
 async fn effective_patch_permissions(
     session: &Session,
     environment: &TurnEnvironment,
@@ -401,21 +392,8 @@ impl ApplyPatchHandler {
             tracker,
             call_id,
             tool_name,
-            payload,
             ..
         } = invocation;
-        let is_apply_patch = tool_name.to_string() == "apply_patch";
-        let hook_tool_name = if is_apply_patch {
-            HookToolName::apply_patch()
-        } else {
-            HookToolName::new(tool_name.to_string())
-        };
-        let hook_input = mutation_hook_input(&payload, &patch_input);
-        let approval_cache_namespace = if is_apply_patch {
-            "apply_patch"
-        } else {
-            "file_mutation"
-        };
         let args = match codex_apply_patch::parse_patch(&patch_input) {
             Ok(args) => args,
             Err(parse_error) => {

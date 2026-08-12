@@ -83,6 +83,7 @@ fn serializes_complete_text_request() {
         )],
         base_instructions: BaseInstructions {
             text: "be concise".to_string(),
+            provenance: None,
         },
         output_schema: Some(json!({
             "type": "object",
@@ -149,6 +150,7 @@ fn provider_without_developer_role_support_serializes_instructions_as_system_mes
         ],
         base_instructions: BaseInstructions {
             text: "base instructions".to_string(),
+            provenance: None,
         },
         ..Default::default()
     };
@@ -211,6 +213,7 @@ fn merges_assistant_text_and_tool_calls_into_one_message() {
         ],
         base_instructions: BaseInstructions {
             text: String::new(),
+            provenance: None,
         },
         ..Default::default()
     };
@@ -279,7 +282,7 @@ fn serializes_complete_tool_history_request() {
                 internal_chat_message_metadata_passthrough: None,
             },
         ],
-        tools: vec![tool],
+        tools: vec![tool].into(),
         hidden_tools: Vec::new(),
         chat_file_tool_mode: ChatFileToolMode::Legacy,
         claude_file_tool_mode: codex_features::ClaudeFileToolMode::Auto,
@@ -287,6 +290,7 @@ fn serializes_complete_tool_history_request() {
         parallel_tool_calls: true,
         base_instructions: BaseInstructions {
             text: String::new(),
+            provenance: None,
         },
         output_schema: None,
         output_schema_strict: true,
@@ -363,7 +367,8 @@ fn dedicated_request_preserves_hidden_historical_apply_patch_calls() {
             first_party_file_tool("read_file"),
             first_party_file_tool("edit_file"),
             first_party_file_tool("write_file"),
-        ],
+        ]
+        .into(),
         chat_file_tool_mode: ChatFileToolMode::Dedicated,
         dedicated_file_tools_enabled: true,
         parallel_tool_calls: true,
@@ -422,6 +427,7 @@ fn serializes_supported_and_unsupported_images_as_explicit_parts() {
         )],
         base_instructions: BaseInstructions {
             text: String::new(),
+            provenance: None,
         },
         ..Default::default()
     };
@@ -464,6 +470,7 @@ fn rejects_internal_agent_messages() {
         }],
         base_instructions: BaseInstructions {
             text: String::new(),
+            provenance: None,
         },
         ..Default::default()
     };
@@ -485,6 +492,7 @@ fn allows_request_items_within_the_model_context_window() {
         )],
         base_instructions: BaseInstructions {
             text: String::new(),
+            provenance: None,
         },
         ..Default::default()
     };
@@ -504,6 +512,7 @@ fn uses_model_defaults_for_chat_reasoning_and_output_limits() {
         )],
         base_instructions: BaseInstructions {
             text: String::new(),
+            provenance: None,
         },
         ..Default::default()
     };
@@ -570,6 +579,7 @@ fn rejects_request_items_that_exceed_the_model_context_window() {
         )],
         base_instructions: BaseInstructions {
             text: String::new(),
+            provenance: None,
         },
         ..Default::default()
     };
@@ -601,6 +611,7 @@ fn rejects_request_items_that_exceed_the_model_context_window() {
         ],
         base_instructions: BaseInstructions {
             text: String::new(),
+            provenance: None,
         },
         ..Default::default()
     };
@@ -628,6 +639,7 @@ fn rejects_requests_whose_total_exceeds_the_model_context_window() {
         ],
         base_instructions: BaseInstructions {
             text: String::new(),
+            provenance: None,
         },
         ..Default::default()
     };
@@ -655,6 +667,7 @@ fn uses_legacy_chat_request_limits_when_model_context_is_unknown() {
         )],
         base_instructions: BaseInstructions {
             text: String::new(),
+            provenance: None,
         },
         ..Default::default()
     };
@@ -689,6 +702,7 @@ fn reasoning_only_history_is_flushed_before_the_next_user_boundary() {
         ],
         base_instructions: BaseInstructions {
             text: String::new(),
+            provenance: None,
         },
         ..Default::default()
     };
@@ -748,9 +762,10 @@ fn serializes_and_bounds_tool_search_history() {
                 internal_chat_message_metadata_passthrough: None,
             },
         ],
-        tools: vec![tool],
+        tools: vec![tool].into(),
         base_instructions: BaseInstructions {
             text: String::new(),
+            provenance: None,
         },
         ..Default::default()
     };
@@ -850,9 +865,11 @@ fn tool_search_history_uses_latest_valid_schema_and_ignores_malformed_legacy_too
                 /*required*/ None,
                 /*additional_properties*/ None,
             ),
-        }],
+        }]
+        .into(),
         base_instructions: BaseInstructions {
             text: String::new(),
+            provenance: None,
         },
         ..Default::default()
     };
@@ -944,9 +961,11 @@ fn tool_search_budget_overflow_keeps_base_tools_and_reverse_metadata() {
                 ),
                 output_schema: None,
             }),
-        ],
+        ]
+        .into(),
         base_instructions: BaseInstructions {
             text: String::new(),
+            provenance: None,
         },
         ..Default::default()
     };
@@ -1033,9 +1052,11 @@ fn tool_search_history_does_not_override_matching_prompt_tool_schema() {
                 Some(AdditionalProperties::Boolean(false)),
             ),
             output_schema: None,
-        })],
+        })]
+        .into(),
         base_instructions: BaseInstructions {
             text: String::new(),
+            provenance: None,
         },
         ..Default::default()
     };
@@ -1079,7 +1100,8 @@ fn dedicated_guidance_uses_actual_hashed_wire_names() {
     let prompt = Prompt {
         tools: ["read_file", "edit_file", "write_file"]
             .map(first_party_file_tool)
-            .to_vec(),
+            .to_vec()
+            .into(),
         chat_file_tool_mode: ChatFileToolMode::Dedicated,
         dedicated_file_tools_enabled: true,
         ..Default::default()
@@ -1110,7 +1132,8 @@ fn dedicated_guidance_fails_closed_on_duplicate_reverse_mapping() {
     let prompt = Prompt {
         tools: ["read_file", "edit_file", "write_file"]
             .map(first_party_file_tool)
-            .to_vec(),
+            .to_vec()
+            .into(),
         chat_file_tool_mode: ChatFileToolMode::Dedicated,
         dedicated_file_tools_enabled: true,
         ..Default::default()
@@ -1144,7 +1167,7 @@ fn dedicated_guidance_is_bounded_stable_single_copy_and_legacy_safe() {
                 text: "edit safely".to_string(),
             }],
         )],
-        tools: third_party_tools.clone(),
+        tools: third_party_tools.clone().into(),
         chat_file_tool_mode: ChatFileToolMode::Dedicated,
         dedicated_file_tools_enabled: true,
         ..Default::default()
@@ -1164,7 +1187,7 @@ fn dedicated_guidance_is_bounded_stable_single_copy_and_legacy_safe() {
                 text: "edit safely".to_string(),
             }],
         )],
-        tools,
+        tools: tools.into(),
         chat_file_tool_mode: ChatFileToolMode::Dedicated,
         dedicated_file_tools_enabled: true,
         ..Default::default()
@@ -1191,7 +1214,7 @@ fn dedicated_guidance_is_bounded_stable_single_copy_and_legacy_safe() {
 
     let legacy = Prompt {
         input: dedicated.input,
-        tools: third_party_tools,
+        tools: third_party_tools.into(),
         chat_file_tool_mode: ChatFileToolMode::Legacy,
         dedicated_file_tools_enabled: true,
         ..Default::default()
@@ -1211,6 +1234,7 @@ fn file_tool_modes_build_complete_expected_requests() {
     let apply_patch = ToolSpec::Freeform(FreeformTool {
         name: "apply_patch".to_string(),
         description: "patch description".to_string(),
+        defer_loading: None,
         format: FreeformToolFormat {
             r#type: "grammar".to_string(),
             syntax: "lark".to_string(),
@@ -1341,7 +1365,7 @@ fn file_tool_modes_build_complete_expected_requests() {
             tool_call_info: tool_call_info.clone(),
         }
     };
-    let build = |mode, tools, hidden_tools| {
+    let build = |mode, tools: Vec<ToolSpec>, hidden_tools: Vec<ToolSpec>| {
         build_chat_completions_request(
             &Prompt {
                 input: vec![message(
@@ -1352,8 +1376,9 @@ fn file_tool_modes_build_complete_expected_requests() {
                 )],
                 base_instructions: BaseInstructions {
                     text: "system instructions".to_string(),
+                    provenance: None,
                 },
-                tools,
+                tools: tools.into(),
                 hidden_tools,
                 chat_file_tool_mode: mode,
                 dedicated_file_tools_enabled: true,
@@ -1398,6 +1423,7 @@ fn dedicated_mapped_names_are_stable_across_reordering_and_apply_patch_visibilit
     let apply_patch = ToolSpec::Freeform(FreeformTool {
         name: "apply_patch".to_string(),
         description: "patch".to_string(),
+        defer_loading: None,
         format: FreeformToolFormat {
             r#type: "grammar".to_string(),
             syntax: "lark".to_string(),
@@ -1412,7 +1438,7 @@ fn dedicated_mapped_names_are_stable_across_reordering_and_apply_patch_visibilit
                     text: "edit safely".to_string(),
                 }],
             )],
-            tools,
+            tools: tools.into(),
             hidden_tools,
             chat_file_tool_mode: mode,
             dedicated_file_tools_enabled: true,

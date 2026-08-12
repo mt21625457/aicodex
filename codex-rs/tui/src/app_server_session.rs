@@ -939,6 +939,7 @@ impl AppServerSession {
                         params: ThreadReadParams {
                             thread_id: thread_id.to_string(),
                             include_turns: false,
+                            items_view: None,
                         },
                     })
                     .await

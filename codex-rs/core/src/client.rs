@@ -990,6 +990,7 @@ impl ModelClient {
         );
         let prompt_cache_key = Some(self.prompt_cache_key(responses_metadata));
         let service_tier = model_info.service_tier_for_request(service_tier);
+        let provider = self.state.provider.info();
         let request = ResponsesApiRequest {
             model: model_info.slug.clone(),
             instructions,
@@ -999,7 +1000,10 @@ impl ModelClient {
             parallel_tool_calls: prompt.parallel_tool_calls && !model_info.use_responses_lite,
             reasoning: Some(reasoning),
             max_output_tokens: model_info.max_output_tokens,
-            store: provider.is_azure_responses_endpoint(),
+            store: codex_api::is_azure_responses_provider(
+                &provider.name,
+                provider.base_url.as_deref(),
+            ),
             stream: true,
             stream_options,
             include,

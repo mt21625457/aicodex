@@ -196,7 +196,6 @@ use crate::context_manager::ContextManager;
 use crate::thread_rollout_truncation::initial_history_has_prior_user_turns;
 use codex_config::CONFIG_TOML_FILE;
 use codex_config::ConfigLayerSource;
-use codex_config::ConfigLayerStackOrdering;
 use codex_config::config_toml::ChatFileToolMode;
 use codex_config::types::McpServerConfig;
 use codex_model_provider::create_model_provider;
@@ -360,7 +359,6 @@ use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::ApplyPatchApprovalRequestEvent;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CodexErrorInfo;
-use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::ContextTokenUsageSource;
 use codex_protocol::protocol::DeprecationNoticeEvent;
 use codex_protocol::protocol::ErrorEvent;
@@ -3750,6 +3748,9 @@ impl Session {
                 _ => {}
             }
         }
+
+        let multi_agent_v2_usage_hint_text =
+            multi_agents::usage_hint_text(turn_context, &session_source);
 
         let mut items = Vec::with_capacity(4);
         if let Some(developer_message) =
