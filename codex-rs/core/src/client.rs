@@ -76,7 +76,7 @@ use codex_login::RefreshTokenError;
 use codex_login::UnauthorizedRecovery;
 use codex_login::default_client::add_originator_header;
 use codex_login::default_client::create_client_for_route;
-use codex_models_manager::model_info::is_grok_model_slug;
+use codex_models_manager::model_info::is_openai_gpt_model_slug;
 use codex_otel::SessionTelemetry;
 use codex_otel::current_span_w3c_trace_context;
 use codex_protocol::auth::AuthMode;
@@ -179,10 +179,13 @@ const MEMORIES_SUMMARIZE_ENDPOINT: &str = "/memories/trace_summarize";
 pub(crate) const WEBSOCKET_CONNECT_TIMEOUT: Duration =
     Duration::from_millis(DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS);
 
-/// Grok Responses is HTTP-only. Shared Gateway providers may still advertise WebSockets for
-/// OpenAI models, so transport selection must also consult the active model slug.
+/// Only official OpenAI GPT models may use Responses WebSocket.
+///
+/// Shared Gateway providers may still advertise WebSockets for GPT, so transport
+/// selection must consult the active model slug. Grok, DeepSeek, MiniMax, and
+/// other Responses models stay on HTTP.
 fn responses_websocket_allowed_for_model(model: &str) -> bool {
-    !is_grok_model_slug(model)
+    is_openai_gpt_model_slug(model)
 }
 
 pub(crate) struct CompactConversationRequestSettings {
@@ -1036,8 +1039,8 @@ impl ModelClient {
         true
     }
 
-    /// Like [`Self::responses_websocket_enabled`], but also respects models that require HTTP-only
-    /// Responses transport (for example Grok), even when the shared provider advertises WebSockets.
+    /// Like [`Self::responses_websocket_enabled`], but only OpenAI GPT models may use
+    /// Responses WebSocket even when the shared provider advertises WebSockets.
     pub fn responses_websocket_enabled_for_model(&self, model: &str) -> bool {
         self.responses_websocket_enabled() && responses_websocket_allowed_for_model(model)
     }

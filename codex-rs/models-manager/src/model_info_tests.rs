@@ -314,6 +314,20 @@ fn unknown_k3_models_advertise_low_high_max_reasoning_levels() {
 }
 
 #[test]
+fn openai_gpt_model_slug_recognizes_official_gpt_families() {
+    assert!(is_openai_gpt_model_slug("gpt-5.5"));
+    assert!(is_openai_gpt_model_slug("chatgpt-5.5"));
+    assert!(is_openai_gpt_model_slug(
+        "aicodex_gateway_responses:gpt-5.4"
+    ));
+    assert!(is_openai_gpt_model_slug("openai/gpt-5.1-codex"));
+    assert!(!is_openai_gpt_model_slug("deepseek-v4-flash"));
+    assert!(!is_openai_gpt_model_slug("grok-4.5"));
+    assert!(!is_openai_gpt_model_slug("MiniMax-M3"));
+    assert!(!is_openai_gpt_model_slug("k3"));
+}
+
+#[test]
 fn grok_models_use_multi_agent_v2_metadata() {
     use codex_protocol::protocol::MultiAgentVersion;
 
