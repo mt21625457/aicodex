@@ -138,7 +138,7 @@ fn chat_provider_never_enables_responses_websocket() {
 }
 
 #[test]
-fn grok_models_disable_responses_websocket_even_when_provider_supports_it() {
+fn only_openai_gpt_models_enable_responses_websocket_when_provider_supports_it() {
     let mut provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
     provider.supports_websockets = true;
     let client = ModelClient::new(
@@ -158,10 +158,17 @@ fn grok_models_disable_responses_websocket_even_when_provider_supports_it() {
     );
 
     assert!(client.responses_websocket_enabled());
+    assert!(client.responses_websocket_enabled_for_model("gpt-5.5"));
+    assert!(client.responses_websocket_enabled_for_model("chatgpt-5.5"));
+    assert!(client.responses_websocket_enabled_for_model("aicodex_gateway_responses:gpt-5.4"));
     assert!(!client.responses_websocket_enabled_for_model("grok-4.5"));
     assert!(!client.responses_websocket_enabled_for_model("aicodex_gateway_responses:grok-4"));
     assert!(!client.responses_websocket_enabled_for_model("xai/grok-4"));
-    assert!(client.responses_websocket_enabled_for_model("gpt-5.5"));
+    assert!(!client.responses_websocket_enabled_for_model("deepseek-v4-flash"));
+    assert!(
+        !client.responses_websocket_enabled_for_model("aicodex_gateway_responses:deepseek-v4-pro")
+    );
+    assert!(!client.responses_websocket_enabled_for_model("MiniMax-M3"));
 }
 
 #[tokio::test]

@@ -196,14 +196,28 @@ pub fn model_info_from_slug(slug: &str) -> ModelInfo {
 
 /// Returns whether a model slug identifies a Grok model routed through xAI Responses.
 pub fn is_grok_model_slug(model: &str) -> bool {
-    let normalized = model
+    let normalized = unprefixed_model_slug(model);
+    normalized.starts_with("grok-") || normalized.starts_with("grok_")
+}
+
+/// Returns whether a model slug identifies an official OpenAI GPT model.
+///
+/// These are the only models allowed to use Responses WebSocket on shared
+/// Gateway providers. Grok, DeepSeek, MiniMax, and other Responses families
+/// stay on HTTP.
+pub fn is_openai_gpt_model_slug(model: &str) -> bool {
+    let normalized = unprefixed_model_slug(model);
+    normalized.starts_with("gpt-") || normalized.starts_with("chatgpt-")
+}
+
+fn unprefixed_model_slug(model: &str) -> String {
+    model
         .trim()
         .rsplit([':', '/'])
         .next()
         .unwrap_or(model)
         .trim()
-        .to_ascii_lowercase();
-    normalized.starts_with("grok-") || normalized.starts_with("grok_")
+        .to_ascii_lowercase()
 }
 
 fn fallback_context_window_for_slug(slug: &str) -> i64 {
