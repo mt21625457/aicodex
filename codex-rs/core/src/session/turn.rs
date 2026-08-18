@@ -349,16 +349,14 @@ pub(crate) async fn run_turn(
             break;
         }
 
-        let is_initial_sampling_request = next_step_context.is_some();
         let skip_pre_sampling_admission = skip_pre_sampling_admission_once;
         skip_pre_sampling_admission_once = false;
-        // Chat intentionally follows Responses here: only Claude performs admission before the
-        // initial sampling request because its native context recovery depends on this estimate.
+        // All wire APIs admit before sampling so input + reserved output cannot
+        // overflow a shared context window. Claude used to be the only path
+        // that did this on the initial request.
         let should_run_pre_sampling_admission = !skip_pre_sampling_admission
             && !post_compaction_model_follow_up_active
-            && pending_input.is_empty()
-            && (!is_initial_sampling_request
-                || turn_context.provider.info().wire_api == WireApi::Claude);
+            && pending_input.is_empty();
         if should_run_pre_sampling_admission
             && pre_sampling_admission_compactions < MAX_PRE_SAMPLING_ADMISSION_COMPACTIONS_PER_TURN
         {
@@ -665,12 +663,9 @@ pub(crate) async fn run_turn(
                 }
                 continue;
             }
-            // Chat intentionally follows Responses and surfaces this error without Claude's
-            // provider-specific in-turn recovery attempt.
-            Err(err)
-                if matches!(err.details(), CodexErrorDetails::ContextWindowExceeded)
-                    && turn_context.provider.info().wire_api == WireApi::Claude =>
-            {
+            // Shared-window providers (Claude, Chat, Responses) recover from a
+            // mid-turn overflow by compacting once, then retrying the request.
+            Err(err) if matches!(err.details(), CodexErrorDetails::ContextWindowExceeded) => {
                 if context_window_recovery_attempted {
                     let event = EventMsg::Error(
                         CodexErr::ContextWindowExceeded
@@ -1265,13 +1260,13 @@ async fn pre_sampling_admission_status(
                 .auto_compact_scope_limit
                 .is_some_and(|limit| tokens >= limit)
         });
-    // Chat intentionally follows Responses; this full-window estimate is Claude-specific.
     let estimated_full_context_window_limit_reached =
         turn_context.config.model_auto_compact_token_limit.is_none()
-            && turn_context.provider.info().wire_api == WireApi::Claude
             && estimated_context_tokens.is_some_and(|tokens| {
                 turn_context
-                    .model_context_window()
+                    .model_info
+                    .auto_compact_context_limit()
+                    .or_else(|| turn_context.model_context_window())
                     .is_some_and(|limit| tokens >= limit)
             });
     let token_limit_reached = token_status.token_limit_reached

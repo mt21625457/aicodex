@@ -443,7 +443,7 @@ pub(crate) fn build_chat_completions_request_for_provider(
         })
     });
 
-    let request = ChatCompletionsApiRequest {
+    let mut request = ChatCompletionsApiRequest {
         model: model_info.slug.clone(),
         messages,
         stream: true,
@@ -459,8 +459,26 @@ pub(crate) fn build_chat_completions_request_for_provider(
         response_format,
         tool_call_info,
     };
+    request.max_output_tokens =
+        model_info.clamped_max_output_tokens(Some(estimate_chat_request_input_tokens(&request)));
     validate_chat_request_context(&request, model_info)?;
     Ok(request)
+}
+
+fn estimate_chat_request_input_tokens(request: &ChatCompletionsApiRequest) -> i64 {
+    let mut total = 0i64;
+    for message in &request.messages {
+        total = total.saturating_add(crate::context_manager::estimate_serialized_tokens(message));
+    }
+    for tool in &request.tools {
+        total = total.saturating_add(crate::context_manager::estimate_serialized_tokens(tool));
+    }
+    if let Some(response_format) = request.response_format.as_ref() {
+        total = total.saturating_add(crate::context_manager::estimate_serialized_tokens(
+            response_format,
+        ));
+    }
+    total
 }
 
 fn dedicated_chat_guidance(prompt: &Prompt, tool_call_info: &[ChatToolCallInfo]) -> Result<String> {

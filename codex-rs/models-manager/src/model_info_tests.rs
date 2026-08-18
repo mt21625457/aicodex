@@ -277,8 +277,8 @@ fn model_context_window_uses_model_value_without_override() {
 fn unknown_deepseek_models_use_large_fallback_context_window() {
     let model = model_info_from_slug("deepseek-v4-pro");
 
-    assert_eq!(model.context_window, Some(1_000_000));
-    assert_eq!(model.max_context_window, Some(1_000_000));
+    assert_eq!(model.context_window, Some(1_048_576));
+    assert_eq!(model.max_context_window, Some(1_048_576));
 }
 
 #[test]

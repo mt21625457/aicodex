@@ -43,6 +43,9 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
         ApiError::Stream(msg) => CodexErr::Stream(msg),
         ApiError::ServerOverloaded => CodexErr::ServerOverloaded,
         ApiError::Api { status, message } => {
+            if is_context_window_http_error(status, &message) {
+                return CodexErr::ContextWindowExceeded;
+            }
             let user_message = api_error_user_message(status, &message);
             CodexErr::UnexpectedStatus(UnexpectedResponseError {
                 status,
@@ -87,7 +90,9 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                 }
 
                 let error = if status == http::StatusCode::BAD_REQUEST {
-                    if let Ok(parsed) = serde_json::from_str::<Value>(&body_text)
+                    if is_context_window_http_error(status, &body_text) {
+                        CodexErr::ContextWindowExceeded
+                    } else if let Ok(parsed) = serde_json::from_str::<Value>(&body_text)
                         && let Some(error) = parsed.get("error")
                         && error.get("code").and_then(Value::as_str)
                             == Some(CYBER_POLICY_ERROR_CODE)
@@ -217,6 +222,45 @@ mod tests;
 
 fn extract_request_tracking_id(headers: Option<&HeaderMap>) -> Option<String> {
     extract_request_id(headers).or_else(|| extract_header(headers, CF_RAY_HEADER))
+}
+
+fn is_context_window_http_error(status: http::StatusCode, body: &str) -> bool {
+    if status != http::StatusCode::BAD_REQUEST {
+        return false;
+    }
+    if let Ok(parsed) = serde_json::from_str::<Value>(body) {
+        let code = parsed
+            .get("error")
+            .and_then(|error| error.get("code"))
+            .and_then(Value::as_str)
+            .or_else(|| parsed.get("code").and_then(Value::as_str));
+        if matches!(
+            code,
+            Some("context_length_exceeded" | "model_context_window_exceeded")
+        ) {
+            return true;
+        }
+        let message = parsed
+            .get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)
+            .unwrap_or(body);
+        if is_context_window_error_message(message) {
+            return true;
+        }
+    }
+    is_context_window_error_message(body)
+}
+
+fn is_context_window_error_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    let mentions_window = lower.contains("maximum context length")
+        || lower.contains("context length")
+        || lower.contains("context window");
+    let mentions_overflow = lower.contains("exceed")
+        || lower.contains("too large")
+        || lower.contains("however, you requested");
+    mentions_window && mentions_overflow
 }
 
 fn api_error_user_message(status: http::StatusCode, body: &str) -> Option<String> {

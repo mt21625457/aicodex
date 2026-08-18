@@ -994,6 +994,15 @@ impl ModelClient {
         let prompt_cache_key = Some(self.prompt_cache_key(responses_metadata));
         let service_tier = model_info.service_tier_for_request(service_tier);
         let provider = self.state.provider.info();
+        let tool_tokens = tools
+            .as_ref()
+            .map(crate::context_manager::estimate_serialized_tokens)
+            .unwrap_or(0);
+        let estimated_input = crate::context_manager::estimate_request_input_tokens(
+            &instructions,
+            &input,
+        )
+        .saturating_add(tool_tokens);
         let request = ResponsesApiRequest {
             model: model_info.slug.clone(),
             instructions,
@@ -1002,7 +1011,7 @@ impl ModelClient {
             tool_choice: "auto".to_string(),
             parallel_tool_calls: prompt.parallel_tool_calls && !model_info.use_responses_lite,
             reasoning: Some(reasoning),
-            max_output_tokens: model_info.max_output_tokens,
+            max_output_tokens: model_info.clamped_max_output_tokens(Some(estimated_input)),
             store: codex_api::is_azure_responses_provider(
                 &provider.name,
                 provider.base_url.as_deref(),

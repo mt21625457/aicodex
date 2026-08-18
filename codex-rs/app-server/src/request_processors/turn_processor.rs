@@ -772,6 +772,11 @@ impl TurnRequestProcessor {
             } else {
                 (None, None, None)
             };
+        let model_provider = super::remap_oauth_gateway_provider_for_deepseek(
+            model.as_deref(),
+            model_provider,
+            self.config.model_provider_id.as_str(),
+        );
         let model_provider = if let Some(provider_id) = model_provider {
             let config = thread.config().await;
             if !config.model_providers.contains_key(&provider_id) {

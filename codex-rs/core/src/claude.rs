@@ -651,6 +651,8 @@ pub(crate) fn build_claude_messages_request(
         Some(max_tokens) => max_tokens,
         None => DEFAULT_MAX_TOKENS,
     };
+    let estimated_input = estimate_claude_request_input_tokens(&system, &messages, &tools);
+    let max_tokens = model_info.clamp_output_tokens(max_tokens, Some(estimated_input));
     let (thinking, reasoning_effort) = if is_kimi_k3 {
         kimi_k3_thinking_and_effort(options.reasoning_effort)
     } else if requires_budgetless_thinking {
@@ -916,6 +918,21 @@ fn mark_latest_stable_prior_text_block(
         }
     }
     0
+}
+
+fn estimate_claude_request_input_tokens(
+    system: &str,
+    messages: &[ClaudeMessage],
+    tools: &[ClaudeTool],
+) -> i64 {
+    let mut total = crate::context_manager::estimate_text_tokens(system);
+    for message in messages {
+        total = total.saturating_add(crate::context_manager::estimate_serialized_tokens(message));
+    }
+    for tool in tools {
+        total = total.saturating_add(crate::context_manager::estimate_serialized_tokens(tool));
+    }
+    total
 }
 
 fn system_prompt(system: String, options: ClaudePromptCacheOptions) -> Option<ClaudeSystemPrompt> {
@@ -3312,6 +3329,49 @@ mod tests {
                 .expect("request");
 
         assert_eq!(request.max_tokens, 12_345);
+    }
+
+    #[test]
+    fn clamps_claude_max_tokens_to_remaining_shared_window() {
+        let mut catalog_model = model_info();
+        catalog_model.slug = "deepseek-v4-flash".to_string();
+        catalog_model.context_window = Some(1_000);
+        catalog_model.max_context_window = Some(1_000);
+        catalog_model.max_output_tokens = Some(800);
+        let prompt = Prompt {
+            input: vec![ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "x".repeat(1_200),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            }],
+            base_instructions: BaseInstructions {
+                text: String::new(),
+                provenance: None,
+            },
+            ..Default::default()
+        };
+        let request =
+            build_claude_messages_request(&prompt, &catalog_model, ClaudeRequestOptions::default())
+                .expect("request");
+        let estimated_input = estimate_claude_request_input_tokens(
+            match &request.system {
+                Some(ClaudeSystemPrompt::Text(text)) => text.as_str(),
+                Some(ClaudeSystemPrompt::Blocks(_)) | None => "",
+            },
+            &request.messages,
+            &request.tools,
+        );
+
+        assert!(estimated_input > 0, "fixture should produce input tokens");
+        assert_eq!(
+            request.max_tokens,
+            catalog_model.clamp_output_tokens(800, Some(estimated_input))
+        );
+        assert!(request.max_tokens < 800);
     }
 
     #[test]

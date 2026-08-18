@@ -63,6 +63,63 @@ mod thread_wire_api_tests {
     }
 
     #[test]
+    fn oauth_deepseek_models_default_to_responses_not_claude() {
+        for model in [
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+            "aicodex_gateway_claude:deepseek-v4-flash",
+        ] {
+            assert_eq!(
+                infer_thread_wire_api(Some(model), "aicodex_gateway_claude"),
+                Some("responses".to_string()),
+                "unexpected wire API for {model} on stale Claude gateway provider"
+            );
+            assert_eq!(
+                infer_thread_wire_api(Some(model), "aicodex_gateway"),
+                Some("responses".to_string()),
+                "unexpected wire API for {model} on generic gateway provider"
+            );
+            assert_eq!(
+                infer_thread_wire_api(Some(model), "custom_oauth"),
+                Some("responses".to_string()),
+                "unexpected wire API for {model} without provider metadata"
+            );
+        }
+        assert_eq!(
+            infer_thread_wire_api(Some("deepseek-v4-flash"), "openai_chat"),
+            Some("chat".to_string())
+        );
+    }
+
+    #[test]
+    fn remaps_stale_oauth_claude_provider_for_deepseek() {
+        assert_eq!(
+            super::super::remap_oauth_gateway_provider_for_deepseek(
+                Some("deepseek-v4-flash"),
+                Some("aicodex_gateway_claude".to_string()),
+                "aicodex_gateway_claude",
+            ),
+            Some("aicodex_gateway_responses".to_string())
+        );
+        assert_eq!(
+            super::super::remap_oauth_gateway_provider_for_deepseek(
+                Some("deepseek-v4-pro"),
+                None,
+                "aicodex_gateway_claude",
+            ),
+            Some("aicodex_gateway_responses".to_string())
+        );
+        assert_eq!(
+            super::super::remap_oauth_gateway_provider_for_deepseek(
+                Some("k3"),
+                Some("aicodex_gateway_claude".to_string()),
+                "aicodex_gateway_claude",
+            ),
+            Some("aicodex_gateway_claude".to_string())
+        );
+    }
+
+    #[test]
     fn does_not_treat_english_chat_suffix_as_chat_wire_api() {
         assert_eq!(
             infer_thread_wire_api(Some("gpt-5.2"), "not_a_chat"),
@@ -1172,6 +1229,31 @@ mod thread_processor_behavior_tests {
             Some("mock_provider".to_string())
         );
         assert_eq!(request_overrides, None);
+        Ok(())
+    }
+
+    #[test]
+    fn merge_persisted_resume_metadata_remaps_stale_oauth_claude_provider_for_deepseek()
+    -> Result<()> {
+        let mut request_overrides = None;
+        let mut typesafe_overrides = ConfigOverrides::default();
+        let mut persisted_metadata = test_thread_metadata(Some("deepseek-v4-flash"), None)?;
+        persisted_metadata.model_provider = "aicodex_gateway_claude".to_string();
+
+        merge_persisted_resume_metadata(
+            &mut request_overrides,
+            &mut typesafe_overrides,
+            &persisted_metadata,
+        );
+
+        assert_eq!(
+            typesafe_overrides.model,
+            Some("deepseek-v4-flash".to_string())
+        );
+        assert_eq!(
+            typesafe_overrides.model_provider,
+            Some("aicodex_gateway_responses".to_string())
+        );
         Ok(())
     }
 
