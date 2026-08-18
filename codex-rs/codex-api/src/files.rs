@@ -336,6 +336,8 @@ fn authorized_request(
         http::HeaderValue::from_static(crate::AICODEX_USER_AGENT),
     );
 
+    crate::aicodex_app_proof::apply_to_headers(&mut headers, method.as_str(), url);
+
     client_pool
         .request(method, url)
         .timeout(OPENAI_FILE_REQUEST_TIMEOUT)

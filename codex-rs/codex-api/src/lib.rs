@@ -1,3 +1,4 @@
+pub(crate) mod aicodex_app_proof;
 pub(crate) mod api_bridge;
 pub(crate) mod auth;
 mod chat_completions;

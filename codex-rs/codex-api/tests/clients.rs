@@ -1,9 +1,9 @@
 #![allow(clippy::expect_used)]
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -36,11 +36,11 @@ use codex_client::RequestBody;
 use codex_client::Response;
 use codex_client::StreamResponse;
 use codex_client::TransportError;
-use codex_protocol::ResponseItemId;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::ResponseItemId;
 use http::HeaderMap;
 use http::HeaderValue;
 use http::StatusCode;
@@ -53,6 +53,24 @@ fn assert_path_ends_with(requests: &[Request], suffix: &str) {
     assert!(
         url.ends_with(suffix),
         "expected url to end with {suffix}, got {url}"
+    );
+}
+
+fn assert_has_app_proof(request: &Request) {
+    assert_app_proof_header(
+        request
+            .headers
+            .get("x-aicodex-app-proof")
+            .and_then(|header| header.to_str().ok()),
+        &request.url,
+    );
+}
+
+fn assert_app_proof_header(value: Option<&str>, url: &str) {
+    let value = value.unwrap_or("");
+    assert!(
+        value.starts_with("v1;ts=") && value.contains(";nonce=") && value.contains(";mac="),
+        "expected official app proof on {url}, got {value}"
     );
 }
 
@@ -453,6 +471,7 @@ async fn responses_client_uses_responses_path() -> Result<()> {
 
     let requests = state.take_stream_requests();
     assert_path_ends_with(&requests, "/responses");
+    assert_has_app_proof(&requests[0]);
     assert_eq!(
         requests[0]
             .headers
@@ -494,8 +513,8 @@ async fn auth_headers_cannot_override_the_product_user_agent() -> Result<()> {
 }
 
 #[tokio::test]
-async fn chat_completions_client_uses_chat_path_auth_stream_headers_and_fixed_user_agent()
--> Result<()> {
+async fn chat_completions_client_uses_chat_path_auth_stream_headers_and_fixed_user_agent(
+) -> Result<()> {
     let state = RecordingState::default();
     let transport = RecordingTransport::new(state.clone());
     let mut provider = provider("chat");
@@ -535,6 +554,7 @@ async fn chat_completions_client_uses_chat_path_auth_stream_headers_and_fixed_us
     let requests = state.take_stream_requests();
     assert_path_ends_with(&requests, "/chat/completions");
     let request = &requests[0];
+    assert_has_app_proof(request);
     assert_eq!(
         request
             .headers
@@ -586,6 +606,7 @@ async fn claude_messages_client_uses_messages_path_and_version_header() -> Resul
     let requests = state.take_stream_requests();
     assert_path_ends_with(&requests, "/messages");
     let req = &requests[0];
+    assert_has_app_proof(req);
     assert_eq!(
         req.headers
             .get("anthropic-version")
@@ -701,6 +722,7 @@ async fn claude_messages_client_counts_tokens_on_count_tokens_path() -> Result<(
     let requests = state.take_execute_requests();
     assert_path_ends_with(&requests, "/messages/count_tokens");
     let req = &requests[0];
+    assert_has_app_proof(req);
     assert_eq!(req.timeout, Some(Duration::from_secs(15)));
     assert_eq!(
         req.headers
@@ -873,6 +895,7 @@ async fn streaming_client_adds_auth_headers() -> Result<()> {
     let requests = state.take_stream_requests();
     assert_eq!(requests.len(), 1);
     let req = &requests[0];
+    assert_has_app_proof(req);
 
     let auth_header = req.headers.get(http::header::AUTHORIZATION);
     assert!(auth_header.is_some(), "missing auth header");
@@ -933,7 +956,25 @@ async fn streaming_client_retries_on_transport_error() -> Result<()> {
     assert_eq!(transport.attempts(), 2);
     let requests = transport.requests();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0], requests[1]);
+    let mut first_headers = requests[0].1.clone();
+    let mut second_headers = requests[1].1.clone();
+    let first_proof = first_headers.remove("x-aicodex-app-proof");
+    let second_proof = second_headers.remove("x-aicodex-app-proof");
+    assert_app_proof_header(
+        first_proof.as_ref().and_then(|value| value.to_str().ok()),
+        "retry attempt 1",
+    );
+    assert_app_proof_header(
+        second_proof.as_ref().and_then(|value| value.to_str().ok()),
+        "retry attempt 2",
+    );
+    assert_ne!(
+        first_proof, second_proof,
+        "each retry must mint a fresh official app proof"
+    );
+    assert_eq!(requests[0].0, requests[1].0);
+    assert_eq!(first_headers, second_headers);
+    assert_eq!(requests[0].2, requests[1].2);
     let RequestBody::EncodedJson(first_body) = &requests[0].0 else {
         panic!("expected an encoded JSON body");
     };
@@ -1120,6 +1161,7 @@ async fn azure_store_sends_ids_and_headers() -> Result<()> {
     let requests = state.take_stream_requests();
     assert_eq!(requests.len(), 1);
     let req = &requests[0];
+    assert_has_app_proof(req);
 
     assert_eq!(
         req.headers.get("session-id").and_then(|v| v.to_str().ok()),

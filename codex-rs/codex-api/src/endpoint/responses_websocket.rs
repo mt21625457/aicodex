@@ -408,6 +408,8 @@ impl ResponsesWebsocketClient {
             merge_request_headers(&self.provider.headers, extra_headers, default_headers);
         self.auth.add_auth_headers(&mut headers);
 
+        crate::aicodex_app_proof::apply_to_headers(&mut headers, "GET", ws_url.as_str());
+
         let (stream, _status, server_reasoning_included, models_etag, server_model) =
             connect_websocket(ws_url, headers, http_client_factory, turn_state.clone()).await?;
         Ok(ResponsesWebsocketConnection::new(
@@ -442,6 +444,7 @@ impl ResponsesWebsocketClient {
         let mut headers =
             merge_request_headers(&self.provider.headers, extra_headers, default_headers);
         self.auth.add_auth_headers(&mut headers);
+        crate::aicodex_app_proof::apply_to_headers(&mut headers, "GET", ws_url.as_str());
 
         let (mut stream, status, reasoning_included, models_etag, server_model) =
             connect_websocket(
