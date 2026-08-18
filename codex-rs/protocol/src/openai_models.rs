@@ -441,8 +441,8 @@ pub struct ModelInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_context_window: Option<i64>,
     /// Token threshold for automatic compaction. When omitted, core derives it
-    /// from `context_window` (90%). When provided, core clamps it to 90% of the
-    /// context window when available.
+    /// from `context_window` (90%, minus reserved output). When provided, core
+    /// clamps it to that derived input limit when a context window is available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_compact_token_limit: Option<i64>,
     /// Opaque identifier for compaction-compatible model configurations.
@@ -492,17 +492,56 @@ impl ModelInfo {
         self.context_window.or(self.max_context_window)
     }
 
-    pub fn auto_compact_token_limit(&self) -> Option<i64> {
-        let context_limit = self
-            .resolved_context_window()
-            .map(|context_window| (context_window * 9) / 10);
-        let config_limit = self.auto_compact_token_limit;
-        if let Some(context_limit) = context_limit {
-            return Some(
-                config_limit.map_or(context_limit, |limit| std::cmp::min(limit, context_limit)),
-            );
+    /// Tokens reserved for model output when a provider counts
+    /// `input + max_tokens` against a shared context window.
+    pub fn reserved_output_tokens(&self) -> i64 {
+        self.max_output_tokens
+            .and_then(|tokens| i64::try_from(tokens).ok())
+            .unwrap_or(0)
+    }
+
+    /// Input-side compact threshold: 90% of the window, further reduced when
+    /// catalog output reservation would overflow the shared window.
+    pub fn auto_compact_context_limit(&self) -> Option<i64> {
+        let context_window = self.resolved_context_window()?;
+        let percent_limit = (context_window * 9) / 10;
+        let reserved_limit = context_window.saturating_sub(self.reserved_output_tokens());
+        if reserved_limit <= 0 {
+            return Some(percent_limit);
         }
-        config_limit
+        Some(percent_limit.min(reserved_limit))
+    }
+
+    pub fn auto_compact_token_limit(&self) -> Option<i64> {
+        match (
+            self.auto_compact_token_limit,
+            self.auto_compact_context_limit(),
+        ) {
+            (Some(config_limit), Some(derived)) => Some(config_limit.min(derived)),
+            (Some(config_limit), None) => Some(config_limit),
+            (None, derived) => derived,
+        }
+    }
+
+    /// `min(requested, remaining)` so `input + max_tokens` cannot exceed the window.
+    pub fn clamp_output_tokens(&self, requested: u64, estimated_input_tokens: Option<i64>) -> u64 {
+        if requested == 0 {
+            return 0;
+        }
+        let Some(context_window) = self.resolved_context_window() else {
+            return requested;
+        };
+        let remaining = match estimated_input_tokens {
+            Some(input) => context_window.saturating_sub(input.max(0)),
+            None => context_window,
+        };
+        let remaining = u64::try_from(remaining).unwrap_or(0);
+        requested.min(remaining).max(1)
+    }
+
+    pub fn clamped_max_output_tokens(&self, estimated_input_tokens: Option<i64>) -> Option<u64> {
+        self.max_output_tokens
+            .map(|requested| self.clamp_output_tokens(requested, estimated_input_tokens))
     }
 
     pub fn supports_personality(&self) -> bool {
@@ -1751,6 +1790,35 @@ mod tests {
 
         assert_eq!(model.resolved_context_window(), Some(400_000));
         assert_eq!(model.auto_compact_token_limit(), Some(360_000));
+    }
+
+    #[test]
+    fn auto_compact_token_limit_subtracts_reserved_output() {
+        let model = ModelInfo {
+            context_window: Some(1_048_576),
+            max_output_tokens: Some(384_000),
+            max_context_window: Some(1_048_576),
+            ..test_model(/*spec*/ None)
+        };
+
+        assert_eq!(model.reserved_output_tokens(), 384_000);
+        assert_eq!(model.auto_compact_context_limit(), Some(664_576));
+        assert_eq!(model.auto_compact_token_limit(), Some(664_576));
+        assert_eq!(model.clamp_output_tokens(384_000, Some(664_939)), 383_637);
+        assert_eq!(
+            model.clamped_max_output_tokens(Some(664_939)),
+            Some(383_637)
+        );
+        assert_eq!(model.clamp_output_tokens(384_000, Some(1_048_576)), 1);
+        assert_eq!(
+            ModelInfo {
+                context_window: Some(128_000),
+                max_output_tokens: Some(200_000),
+                ..test_model(/*spec*/ None)
+            }
+            .auto_compact_context_limit(),
+            Some(115_200)
+        );
     }
 
     #[test]

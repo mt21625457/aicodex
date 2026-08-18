@@ -703,6 +703,24 @@ pub(crate) fn estimate_item_token_count(item: &ResponseItem) -> i64 {
     approx_tokens_from_byte_count_i64(model_visible_bytes)
 }
 
+pub(crate) fn estimate_request_input_tokens(instructions: &str, items: &[ResponseItem]) -> i64 {
+    items
+        .iter()
+        .map(estimate_item_token_count)
+        .fold(estimate_text_tokens(instructions), i64::saturating_add)
+}
+
+pub(crate) fn estimate_text_tokens(text: &str) -> i64 {
+    i64::try_from(approx_token_count(text)).unwrap_or(i64::MAX)
+}
+
+pub(crate) fn estimate_serialized_tokens<T: serde::Serialize>(value: &T) -> i64 {
+    serde_json::to_string(value)
+        .ok()
+        .map(|serialized| estimate_text_tokens(&serialized))
+        .unwrap_or(0)
+}
+
 /// Approximate model-visible byte cost for one image input.
 ///
 /// The estimator later converts bytes to tokens using a 4-bytes/token heuristic

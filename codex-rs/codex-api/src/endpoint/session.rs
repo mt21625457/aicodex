@@ -29,6 +29,7 @@ async fn apply_auth_with_product_user_agent(
         USER_AGENT,
         http::HeaderValue::from_static(crate::AICODEX_USER_AGENT),
     );
+    crate::aicodex_app_proof::apply_to_request(&mut request);
     Ok(request)
 }
 
