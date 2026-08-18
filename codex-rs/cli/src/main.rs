@@ -1,3 +1,7 @@
+// Deep cli_main async graph overflows the default rustc query depth when
+// computing future layout in release builds (same pattern as mcp-server).
+#![recursion_limit = "256"]
+
 use clap::Args;
 use clap::CommandFactory;
 use clap::Parser;

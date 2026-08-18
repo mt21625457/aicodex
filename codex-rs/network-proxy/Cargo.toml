@@ -36,6 +36,11 @@ rama-net = { version = "=0.3.0-alpha.4", features = ["http", "tls"] }
 rama-socks5 = { version = "=0.3.0-alpha.4" }
 rama-tcp = { version = "=0.3.0-alpha.4", features = ["http"] }
 rama-tls-rustls = { version = "=0.3.0-alpha.4", features = ["http"] }
+# Cargo treats 0.3.0 as compatible with ^0.3.0-alpha.4. rama-utils 0.3.0
+# changed enum_builder Unknown from String to Box<str>, which breaks
+# rama-http 0.3.0-alpha.4. Keep these transitive crates on the same alpha.
+rama-macros = { version = "=0.3.0-alpha.4" }
+rama-utils = { version = "=0.3.0-alpha.4" }
 rustls-native-certs = { workspace = true }
 sha2 = { workspace = true }
 
@@ -62,3 +67,6 @@ windows-sys = { version = "0.52", features = [
 
 [target.'cfg(windows)'.dev-dependencies]
 codex-windows-sandbox = { path = "../windows-sandbox-rs" }
+
+[package.metadata.cargo-shear]
+ignored = ["rama-macros", "rama-utils"]
