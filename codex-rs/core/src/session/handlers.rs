@@ -10,25 +10,19 @@ use tracing::Instrument;
 use tracing::debug_span;
 use tracing::info_span;
 
-use crate::session::SteerInputError;
-use crate::session::TurnInput;
 use crate::session::session::Session;
-use crate::session::session::SessionSettingsUpdate;
+use crate::session::thread_settings;
+use crate::session::turn_input;
 
 use crate::config::Config;
+use crate::context::NodeReplReviewEvidence;
 use crate::review_prompts::resolve_review_request;
 use crate::session::spawn_review_thread;
 use crate::tasks::CompactTask;
 use crate::tasks::UserShellCommandMode;
 use crate::tasks::UserShellCommandTask;
 use crate::tasks::execute_user_shell_command;
-use crate::user_message_admission::UserMessageAdmission;
 use codex_history::RolloutItem;
-use codex_protocol::config_types::CollaborationMode;
-use codex_protocol::config_types::ModeKind;
-use codex_protocol::config_types::Settings;
-use codex_protocol::error::CodexErr;
-use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
@@ -46,10 +40,8 @@ use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::ThreadMemoryMode;
 use codex_protocol::protocol::ThreadRolledBackEvent;
-use codex_protocol::protocol::ThreadSettingsAppliedEvent;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::TurnAbortReason;
-use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::protocol::WarningEvent;
 use codex_protocol::request_permissions::RequestPermissionsResponse;
 use codex_protocol::request_user_input::RequestUserInputResponse;
@@ -87,7 +79,8 @@ pub async fn realtime_conversation_list_voices(sess: &Session, sub_id: String) {
     .await;
 }
 
-pub async fn user_input_or_turn(
+#[cfg(any())]
+async fn legacy_user_input_or_turn(
     sess: &Arc<Session>,
     sub_id: String,
     op: Op,
@@ -106,6 +99,7 @@ pub async fn user_input_or_turn(
         .complete(&sub_id, admission);
 }
 
+#[cfg(any())]
 pub async fn update_thread_settings(
     sess: &Arc<Session>,
     sub_id: String,
@@ -133,6 +127,7 @@ pub async fn update_thread_settings(
     }
 }
 
+#[cfg(any())]
 async fn thread_settings_update(
     sess: &Session,
     thread_settings: ThreadSettingsOverrides,
@@ -184,6 +179,7 @@ async fn thread_settings_update(
     }
 }
 
+#[cfg(any())]
 pub(super) async fn thread_settings_applied_event(sess: &Session) -> EventMsg {
     let snapshot = {
         let state = sess.state.lock().await;
@@ -194,6 +190,7 @@ pub(super) async fn thread_settings_applied_event(sess: &Session) -> EventMsg {
     })
 }
 
+#[cfg(any())]
 pub(super) async fn user_input_or_turn_inner(
     sess: &Arc<Session>,
     sub_id: String,
@@ -364,6 +361,108 @@ pub(super) async fn user_input_or_turn_inner(
     }
 }
 
+/// Adapts the legacy user-input operations to the reply-bearing turn-input router.
+pub async fn user_input_or_turn(
+    sess: &Arc<Session>,
+    sub_id: String,
+    op: Op,
+    client_user_message_id: Option<String>,
+    parent_turn_id: Option<String>,
+) {
+    let (request, mode) = match op {
+        Op::UserInput {
+            items,
+            final_output_json_schema,
+            responsesapi_client_metadata,
+            additional_context,
+            thread_settings,
+        } => {
+            let mut request = codex_protocol::turn_input::TurnInputRequest::new(
+                codex_protocol::turn_input::TurnInput::UserInput {
+                    content: items,
+                    client_id: client_user_message_id,
+                },
+            )
+            .with_thread_settings(thread_settings)
+            .with_additional_context(additional_context)
+            .with_responses_metadata(responsesapi_client_metadata);
+            request.start.final_output_json_schema = final_output_json_schema;
+            (
+                request,
+                codex_protocol::turn_input::TurnInputMode::StartOrSteer,
+            )
+        }
+        Op::UserTurn {
+            cwd,
+            approval_policy,
+            approvals_reviewer,
+            sandbox_policy,
+            permission_profile,
+            model,
+            effort,
+            summary,
+            service_tier,
+            final_output_json_schema,
+            items,
+            collaboration_mode,
+            personality,
+            environments,
+        } => {
+            let Ok(legacy_fallback_cwd) = AbsolutePathBuf::try_from(cwd) else {
+                return;
+            };
+            let settings = codex_protocol::config_types::CollaborationMode {
+                mode: codex_protocol::config_types::ModeKind::Default,
+                settings: codex_protocol::config_types::Settings {
+                    model,
+                    reasoning_effort: effort,
+                    developer_instructions: None,
+                },
+            };
+            let thread_settings = ThreadSettingsOverrides {
+                environments: Some(codex_protocol::protocol::TurnEnvironmentSelections::new(
+                    legacy_fallback_cwd,
+                    environments.unwrap_or_default(),
+                )),
+                approval_policy: Some(approval_policy),
+                approvals_reviewer,
+                sandbox_policy: Some(sandbox_policy),
+                permission_profile,
+                collaboration_mode: Some(collaboration_mode.unwrap_or(settings)),
+                summary,
+                service_tier,
+                personality,
+                ..Default::default()
+            };
+            let mut request = codex_protocol::turn_input::TurnInputRequest::new(
+                codex_protocol::turn_input::TurnInput::UserInput {
+                    content: items,
+                    client_id: client_user_message_id,
+                },
+            )
+            .with_thread_settings(thread_settings);
+            request.start.final_output_json_schema = final_output_json_schema;
+            request.start.parent_turn_id = parent_turn_id;
+            (
+                request,
+                codex_protocol::turn_input::TurnInputMode::StartOrSteer,
+            )
+        }
+        _ => return,
+    };
+
+    if let Err(error) = turn_input::handle(sess, request, mode, sub_id.clone()).await {
+        sess.send_event_raw(Event {
+            id: sub_id,
+            msg: EventMsg::Error(ErrorEvent {
+                message: error.to_string(),
+                codex_error_info: Some(CodexErrorInfo::BadRequest),
+            }),
+        })
+        .await;
+    }
+}
+
 /// Queues an inter-agent message, then lets the shared pending-work scheduler
 /// decide whether an idle session should start a regular turn.
 pub async fn inter_agent_communication(
@@ -371,10 +470,15 @@ pub async fn inter_agent_communication(
     sub_id: String,
     communication: InterAgentCommunication,
     parent_turn_id: Option<String>,
+    root_turn_id: Option<String>,
 ) {
     let trigger_turn = communication.trigger_turn;
     sess.input_queue
-        .enqueue_mailbox_communication(communication, parent_turn_id.filter(|_| trigger_turn))
+        .enqueue_mailbox_communication(
+            communication,
+            parent_turn_id.filter(|_| trigger_turn),
+            root_turn_id.filter(|_| trigger_turn),
+        )
         .await;
     crate::agent_communication::emit_agent_communication_receive(&sub_id);
     if trigger_turn || sess.has_outstanding_durable_sleep() {
@@ -607,6 +711,16 @@ pub async fn thread_rollback(sess: &Arc<Session>, sub_id: String, num_turns: u32
         .collect::<Vec<_>>();
     sess.apply_rollout_reconstruction(turn_context.as_ref(), replay_items.as_slice())
         .await;
+    if sess
+        .services
+        .thread_extension_data
+        .remove::<NodeReplReviewEvidence>()
+        .is_some()
+    {
+        sess.guardian_review_session
+            .invalidate_for_node_repl_evidence()
+            .await;
+    }
     sess.services
         .agent_control
         .rollout_budget()
@@ -840,18 +954,29 @@ pub(super) async fn submission_loop(
                     false
                 }
                 op @ (Op::UserInput { .. } | Op::UserTurn { .. }) => {
-                    user_input_or_turn(
-                        &sess,
-                        sub.id.clone(),
-                        op,
-                        sub.client_user_message_id,
-                        sub.parent_turn_id,
-                    )
-                    .await;
+                    user_input_or_turn(&sess, sub.id.clone(), op, None, sub.parent_turn_id).await;
+                    false
+                }
+                Op::TurnInput {
+                    request,
+                    mode,
+                    reply,
+                } => {
+                    let result = turn_input::handle(&sess, *request, mode, sub.id.clone()).await;
+                    let _ = reply.send(result);
+                    false
+                }
+                Op::RecoverTurn {
+                    thread_settings,
+                    reply,
+                } => {
+                    let result =
+                        turn_input::handle_recovery(&sess, thread_settings, sub.id.clone()).await;
+                    let _ = reply.send(result);
                     false
                 }
                 Op::ThreadSettings { thread_settings } => {
-                    update_thread_settings(&sess, sub.id.clone(), thread_settings).await;
+                    thread_settings::update(&sess, sub.id.clone(), thread_settings).await;
                     false
                 }
                 Op::InterAgentCommunication { communication } => {
@@ -860,6 +985,7 @@ pub(super) async fn submission_loop(
                         sub.id.clone(),
                         communication,
                         sub.parent_turn_id,
+                        sub.root_turn_id,
                     )
                     .await;
                     false

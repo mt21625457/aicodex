@@ -635,7 +635,7 @@ fn spawn_agent_common_properties_v1(agent_type_description: &str) -> BTreeMap<St
 
 fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<String, JsonSchema> {
     let agent_type_description = bounded_agent_type_description(
-        "Agent type override for the new agent. Omit unless explicitly asked. Set `fork_turns` to `none` or a positive integer when an explicit override is needed.",
+        "Agent type override for the new agent. Omit unless explicitly asked. Set `fork_turns` to `none` or a positive integer when an explicit override is needed. The selected role applies regardless of how much parent history is inherited.",
         agent_type_description,
     );
     BTreeMap::from([
@@ -648,9 +648,7 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
         ),
         (
             "agent_type".to_string(),
-            JsonSchema::string(Some(format!(
-                "Agent type override for the new agent. Omit unless explicitly asked. The selected role applies regardless of how much parent history is inherited.\n{agent_type_description}"
-            ))),
+            JsonSchema::string(Some(agent_type_description)),
         ),
         (
             "fork_turns".to_string(),

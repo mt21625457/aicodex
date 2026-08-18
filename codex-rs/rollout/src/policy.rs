@@ -38,6 +38,7 @@ pub fn is_persisted_rollout_item_with_mode(
         RolloutItem::Compacted(_)
         | RolloutItem::TurnContext(_)
         | RolloutItem::WorldState(_)
+        | RolloutItem::SecurityRiskScore(_)
         | RolloutItem::SessionMeta(_) => true,
     }
 }

@@ -7,6 +7,7 @@
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use codex_exec_server_protocol::JSONRPCMessage;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tracing::warn;
@@ -76,7 +77,7 @@ impl NoiseVirtualStream {
             };
             for message in self.inbound_decoder.push(&plaintext)? {
                 self.incoming_tx
-                    .try_send(JsonRpcConnectionEvent::Message(message))
+                    .try_send(JsonRpcConnectionEvent::message(message))
                     .map_err(|_| {
                         ExecServerError::Protocol(
                             "Noise virtual stream inbound queue is full or closed".to_string(),
@@ -119,6 +120,12 @@ pub(crate) fn spawn_noise_virtual_stream(
                     break;
                 }
             };
+            let mut trace = match message {
+                JSONRPCMessage::Request(request) => request.trace,
+                JSONRPCMessage::Notification(_)
+                | JSONRPCMessage::Response(_)
+                | JSONRPCMessage::Error(_) => None,
+            };
             for plaintext_record in framed.chunks(NOISE_RECORD_PLAINTEXT_LEN) {
                 let seq = match take_next_sequence(&mut next_seq) {
                     Ok(seq) => seq,
@@ -140,7 +147,12 @@ pub(crate) fn spawn_noise_virtual_stream(
                         break 'writer;
                     }
                 };
-                let frame = RelayMessageFrame::data(writer_stream_id.clone(), seq, ciphertext);
+                let frame = RelayMessageFrame::data(
+                    writer_stream_id.clone(),
+                    seq,
+                    ciphertext,
+                    trace.take(),
+                );
                 if physical_outgoing_tx
                     .send(encode_relay_message_frame(&frame))
                     .await

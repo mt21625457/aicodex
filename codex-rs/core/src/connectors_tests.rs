@@ -8,6 +8,7 @@ use codex_connectors::merge::plugin_connector_to_app_info;
 use codex_connectors::metadata::connector_install_url;
 use codex_connectors::metadata::sanitize_name;
 use codex_features::Feature;
+use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_mcp::ToolInfo;
@@ -345,8 +346,9 @@ approvals_reviewer = "{app}"
             .expect("config should build");
 
         assert_eq!(
-            mcp_approvals_reviewer(
-                &config,
+            mcp_approvals_reviewer_from_layers(
+                &config.config_layer_stack,
+                config.approvals_reviewer,
                 config.model.as_deref(),
                 CODEX_APPS_MCP_SERVER_NAME,
                 Some("calendar")
@@ -354,8 +356,9 @@ approvals_reviewer = "{app}"
             expected_app
         );
         assert_eq!(
-            mcp_approvals_reviewer(
-                &config,
+            mcp_approvals_reviewer_from_layers(
+                &config.config_layer_stack,
+                config.approvals_reviewer,
                 config.model.as_deref(),
                 CODEX_APPS_MCP_SERVER_NAME,
                 Some("drive")
@@ -363,8 +366,9 @@ approvals_reviewer = "{app}"
             expected_default
         );
         assert_eq!(
-            mcp_approvals_reviewer(
-                &config,
+            mcp_approvals_reviewer_from_layers(
+                &config.config_layer_stack,
+                config.approvals_reviewer,
                 config.model.as_deref(),
                 CODEX_APPS_MCP_SERVER_NAME,
                 /*connector_id*/ None
@@ -372,8 +376,9 @@ approvals_reviewer = "{app}"
             expected_default
         );
         assert_eq!(
-            mcp_approvals_reviewer(
-                &config,
+            mcp_approvals_reviewer_from_layers(
+                &config.config_layer_stack,
+                config.approvals_reviewer,
                 config.model.as_deref(),
                 "custom_server",
                 Some("calendar")
@@ -408,8 +413,9 @@ approvals_reviewer = "user"
         .expect("config should build");
 
     assert_eq!(
-        mcp_approvals_reviewer(
-            &config,
+        mcp_approvals_reviewer_from_layers(
+            &config.config_layer_stack,
+            config.approvals_reviewer,
             config.model.as_deref(),
             CODEX_APPS_MCP_SERVER_NAME,
             Some("calendar")
@@ -443,8 +449,9 @@ approvals_reviewer = "user"
         .expect("config should build");
 
     assert_eq!(
-        mcp_approvals_reviewer(
-            &config,
+        mcp_approvals_reviewer_from_layers(
+            &config.config_layer_stack,
+            config.approvals_reviewer,
             config.model.as_deref(),
             CODEX_APPS_MCP_SERVER_NAME,
             Some("calendar")
@@ -531,7 +538,8 @@ discoverables = [
         .await
         .expect("config should load");
     let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
-    let plugins_manager = plugins_manager_for_config(&config);
+    let plugins_manager =
+        plugins_manager_for_config(&config, AuthManager::from_auth_for_testing(auth.clone()));
 
     let discoverable_tools = list_tool_suggest_discoverable_tools_with_auth(
         &config,
@@ -569,7 +577,8 @@ apps = true
         .expect("config should load");
     let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
     let loaded_plugin_app_connector_ids = vec!["asdk_app_databricks_workspace".to_string()];
-    let plugins_manager = plugins_manager_for_config(&config);
+    let plugins_manager =
+        plugins_manager_for_config(&config, AuthManager::from_auth_for_testing(auth.clone()));
 
     let discoverable_tools = list_tool_suggest_discoverable_tools_with_auth(
         &config,

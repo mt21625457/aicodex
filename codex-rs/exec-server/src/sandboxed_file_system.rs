@@ -42,6 +42,22 @@ pub struct SandboxedFileSystem {
 }
 
 impl SandboxedFileSystem {
+    pub(crate) async fn open_file_for_read(
+        &self,
+        path: &PathUri,
+        sandbox: Option<&FileSystemSandboxContext>,
+    ) -> FileSystemResult<tokio::fs::File> {
+        let sandbox = require_platform_sandbox(sandbox)?;
+        validate_native_path(path)?;
+        let command = self
+            .sandbox_runner
+            .sandbox_command(sandbox)
+            .map_err(map_sandbox_error)?;
+        crate::sandboxed_file_open::open(command, path.clone())
+            .await
+            .map_err(map_sandbox_error)
+    }
+
     pub fn new(runtime_paths: ExecServerRuntimePaths) -> Self {
         Self {
             sandbox_runner: FileSystemSandboxRunner::new(runtime_paths),
@@ -249,6 +265,7 @@ impl SandboxedFileSystem {
                 path: path.clone(),
                 recursive: Some(options.recursive),
                 sandbox: None,
+                private: None,
             }),
         )
         .await?

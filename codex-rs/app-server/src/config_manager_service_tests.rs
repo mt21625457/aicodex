@@ -175,6 +175,29 @@ async fn clear_missing_nested_config_is_noop() -> Result<()> {
 }
 
 #[tokio::test]
+async fn clearing_user_setting_falls_back_to_packaged_default_without_override() -> Result<()> {
+    let tmp = tempdir()?;
+    let path = tmp.path().join(CONFIG_TOML_FILE);
+    std::fs::write(&path, "hide_agent_reasoning = true\n")?;
+
+    let service = ConfigManager::without_managed_config_for_tests(tmp.path().to_path_buf());
+    let response = service
+        .write_value(ConfigValueWriteParams {
+            file_path: Some(path.display().to_string()),
+            key_path: "hide_agent_reasoning".to_string(),
+            value: serde_json::Value::Null,
+            merge_strategy: MergeStrategy::Replace,
+            expected_version: None,
+        })
+        .await?;
+
+    assert_eq!(response.status, WriteStatus::Ok);
+    assert_eq!(response.overridden_metadata, None);
+    assert_eq!(std::fs::read_to_string(&path)?, "");
+    Ok(())
+}
+
+#[tokio::test]
 async fn clear_user_value_if_matches_clears_matching_value() -> Result<()> {
     let tmp = tempdir().expect("tempdir");
     let path = tmp.path().join(CONFIG_TOML_FILE);
@@ -748,7 +771,7 @@ async fn managed_auth_policy_survives_unusable_requirements_file_changes() -> Re
     let auth_manager = codex_login::AuthManager::shared_from_config(
         &startup, /*enable_codex_api_key_env*/ false,
     )
-    .await;
+    .await?;
     std::fs::write(
         &requirements_path,
         "allowed_login_methods = [\"chatgpt\"]\nallowed_chatgpt_workspaces = []\n",
@@ -835,6 +858,33 @@ async fn reserved_builtin_provider_override_rejected() {
 
     let contents = std::fs::read_to_string(tmp.path().join(CONFIG_TOML_FILE)).expect("read config");
     assert_eq!(contents, "model = \"user\"\n");
+}
+
+#[tokio::test]
+async fn write_value_rejects_invalid_guardian_review_threshold() -> Result<()> {
+    let tmp = tempdir()?;
+    let path = tmp.path().join(CONFIG_TOML_FILE);
+    let initial = "[features.guardianv2]\nenabled = true\nreview_threshold = 0.8\n";
+    std::fs::write(&path, initial)?;
+    let service = ConfigManager::without_managed_config_for_tests(tmp.path().to_path_buf());
+
+    let error = service
+        .write_value(ConfigValueWriteParams {
+            file_path: Some(path.display().to_string()),
+            key_path: "features.guardianv2.review_threshold".to_string(),
+            value: serde_json::json!(2.0),
+            merge_strategy: MergeStrategy::Replace,
+            expected_version: None,
+        })
+        .await
+        .expect_err("Guardian review thresholds above 1.0 must be rejected");
+
+    assert_eq!(
+        error.write_error_code(),
+        Some(ConfigWriteErrorCode::ConfigValidationError)
+    );
+    assert_eq!(std::fs::read_to_string(&path)?, initial);
+    Ok(())
 }
 
 #[tokio::test]

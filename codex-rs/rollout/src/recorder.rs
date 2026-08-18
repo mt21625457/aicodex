@@ -57,7 +57,6 @@ use super::session_index::find_thread_names_by_ids;
 use crate::InitialHistory;
 use crate::ResumedHistory;
 use crate::RolloutItem;
-use crate::RolloutLine;
 use crate::config::RolloutConfigView;
 use crate::state_db;
 use crate::state_db::StateDbHandle;
@@ -497,6 +496,7 @@ impl RolloutRecorder {
                 /*relation_filter*/ None,
                 archived,
                 /*section*/ None,
+                /*project_id*/ None,
                 search_term,
             )
             .await
@@ -607,6 +607,7 @@ impl RolloutRecorder {
             /*relation_filter*/ None,
             archived,
             /*section*/ None,
+            /*project_id*/ None,
             search_term,
         )
         .await;
@@ -637,6 +638,7 @@ impl RolloutRecorder {
                     /*relation_filter*/ None,
                     archived,
                     /*section*/ None,
+                    /*project_id*/ None,
                     search_term,
                 )
                 .await
@@ -678,6 +680,7 @@ impl RolloutRecorder {
                         /*relation_filter*/ None,
                         archived,
                         /*section*/ None,
+                        /*project_id*/ None,
                         search_term,
                     )
                     .await
@@ -758,6 +761,7 @@ impl RolloutRecorder {
                     /*relation_filter*/ None,
                     /*archived*/ false,
                     /*section*/ None,
+                    /*project_id*/ None,
                     /*search_term*/ None,
                 )
                 .await
@@ -1035,7 +1039,7 @@ impl RolloutRecorder {
                 reject_unknown_thread_history_mode(&value)?;
             }
 
-            let rollout_line = match serde_json::from_value::<RolloutLine>(value) {
+            let rollout_line = match crate::decode_rollout_line(value) {
                 Ok(rollout_line) => rollout_line,
                 Err(e) => {
                     trace!("failed to parse rollout line: {e}");
@@ -1266,6 +1270,7 @@ fn fill_missing_thread_item_metadata(item: &mut ThreadItem, state_item: ThreadIt
         first_user_message,
         preview,
         section,
+        project_id,
         cwd,
         git_branch,
         git_sha,
@@ -1289,6 +1294,7 @@ fn fill_missing_thread_item_metadata(item: &mut ThreadItem, state_item: ThreadIt
         item.preview = preview;
     }
     item.section = section;
+    item.project_id = project_id;
     if item.cwd.is_none() {
         item.cwd = cwd;
     }
@@ -2002,6 +2008,7 @@ fn thread_item_from_state_metadata(
         first_user_message: item.first_user_message,
         preview: item.preview,
         section: item.section,
+        project_id: item.project_id,
         cwd: Some(item.cwd),
         git_branch: item.git_branch,
         git_sha: item.git_sha,
@@ -2067,6 +2074,7 @@ async fn resume_candidate_matches_cwd(
             | RolloutItem::InterAgentCommunicationMetadata { .. }
             | RolloutItem::Compacted(_)
             | RolloutItem::WorldState(_)
+            | RolloutItem::SecurityRiskScore(_)
             | RolloutItem::EventMsg(_) => None,
         })
     {

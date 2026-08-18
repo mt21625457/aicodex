@@ -51,7 +51,7 @@ pub(super) async fn commit_reviewable_mutation(
     let emitter = ToolEmitter::apply_patch_for_environment(
         changes,
         /*auto_approved*/ false,
-        environment.environment_id.clone(),
+        environment.selection.environment_id.clone(),
     );
     let event_ctx = ToolEventCtx::new(
         invocation.session.as_ref(),

@@ -185,7 +185,7 @@ fn resolve_tool_environment<'a>(
         |environment_id| {
             environments
                 .turn_environments()
-                .find(|environment| environment.environment_id == environment_id)
+                .find(|environment| environment.selection.environment_id == environment_id)
                 .map(Some)
                 .ok_or_else(|| {
                     FunctionCallError::RespondToModel(format!(

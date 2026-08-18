@@ -265,6 +265,7 @@ async fn deleting_custom_sections_unassigns_active_and_archived_members() -> Res
             params: ThreadReadParams {
                 thread_id: first_thread.clone(),
                 include_turns: false,
+                items_view: None,
             },
         })
         .await?;
@@ -284,6 +285,7 @@ async fn deleting_custom_sections_unassigns_active_and_archived_members() -> Res
             params: ThreadReadParams {
                 thread_id: first_thread,
                 include_turns: false,
+                items_view: None,
             },
         })
         .await?;
@@ -318,6 +320,7 @@ async fn deleting_custom_sections_unassigns_active_and_archived_members() -> Res
             params: ThreadReadParams {
                 thread_id: archived_thread,
                 include_turns: false,
+                items_view: None,
             },
         })
         .await?;

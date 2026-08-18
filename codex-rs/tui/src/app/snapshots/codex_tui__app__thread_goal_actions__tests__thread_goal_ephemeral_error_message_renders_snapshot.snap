@@ -5,5 +5,5 @@ expression: terminal.backend()
 
 
 ■ Goals need a saved session. This session is temporary.
-Run `aicodex` to start a saved session, or `aicodex resume` / `/resume` to
-reopen one.
+Run `aicodex` to start a saved session, or `aicodex resume` / `/resume`
+to reopen one.

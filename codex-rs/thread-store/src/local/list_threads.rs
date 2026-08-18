@@ -113,6 +113,10 @@ pub(super) async fn list_threads(
         }
     }
 
+    if let Some(project_id) = params.project_id.as_ref() {
+        items.retain(|thread| &thread.project_id == project_id);
+    }
+
     Ok(ThreadPage { items, next_cursor })
 }
 
@@ -183,6 +187,10 @@ async fn list_section_threads(
         model_providers: params.model_providers.as_deref(),
         cwd_filters: normalized_cwd_filters.as_deref(),
         section: Some(Some(section)),
+        project_id: params
+            .project_id
+            .as_ref()
+            .map(|project_id| project_id.as_deref()),
         anchor: anchor.as_ref(),
         sort_key: codex_state::SortKey::SectionPosition,
         sort_direction: match params.sort_direction {
@@ -247,7 +255,7 @@ pub(super) async fn list_rollout_threads(
     sort_key: codex_rollout::ThreadSortKey,
     sort_direction: codex_rollout::SortDirection,
 ) -> ThreadStoreResult<codex_rollout::ThreadsPage> {
-    if params.relation_filter.is_some() || params.section.is_some() {
+    if params.relation_filter.is_some() || params.section.is_some() || params.project_id.is_some() {
         let relation_filter = params
             .relation_filter
             .map(|relation_filter| match relation_filter {
@@ -271,6 +279,7 @@ pub(super) async fn list_rollout_threads(
             relation_filter,
             params.archived,
             params.section.as_ref().map(Option::as_deref),
+            params.project_id.as_ref().map(Option::as_deref),
             params.search_term.as_deref(),
         )
         .await
@@ -393,6 +402,7 @@ mod tests {
                 model_providers: None,
                 cwd_filters: None,
                 section: None,
+                project_id: None,
                 archived: false,
                 search_term: None,
                 relation_filter: None,
@@ -454,6 +464,7 @@ mod tests {
                 model_providers: None,
                 cwd_filters: None,
                 section: None,
+                project_id: None,
                 archived: false,
                 search_term: Some("needle".to_string()),
                 relation_filter: None,
@@ -527,6 +538,7 @@ mod tests {
                 model_providers: None,
                 cwd_filters: None,
                 section: None,
+                project_id: None,
                 archived: false,
                 search_term: Some("canonical".to_string()),
                 relation_filter: None,
@@ -564,6 +576,7 @@ mod tests {
                 model_providers: None,
                 cwd_filters: None,
                 section: None,
+                project_id: None,
                 archived: false,
                 search_term: None,
                 relation_filter: None,
@@ -581,6 +594,7 @@ mod tests {
                 model_providers: None,
                 cwd_filters: None,
                 section: None,
+                project_id: None,
                 archived: true,
                 search_term: None,
                 relation_filter: None,
@@ -634,6 +648,7 @@ mod tests {
                 model_providers: Some(vec!["test-provider".to_string()]),
                 cwd_filters: None,
                 section: None,
+                project_id: None,
                 archived: false,
                 search_term: None,
                 relation_filter: None,
@@ -712,6 +727,7 @@ mod tests {
             model_providers: None,
             cwd_filters: None,
             section: Some(Some(PINNED_THREAD_SECTION_ID.to_owned())),
+            project_id: None,
             archived: false,
             search_term: None,
             relation_filter: None,
@@ -765,6 +781,7 @@ mod tests {
                 model_providers: None,
                 cwd_filters: None,
                 section: None,
+                project_id: None,
                 archived: false,
                 search_term: None,
                 relation_filter: None,

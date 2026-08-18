@@ -353,6 +353,9 @@ impl App {
             ThreadInteractiveRequest::Approval(request) => {
                 self.render_inactive_patch_preview(&request);
                 self.chat_widget.push_approval_request(request);
+                if self.startup_protected_input_boundary && !self.chat_widget.has_active_view() {
+                    self.startup_pending_protected_request = true;
+                }
             }
             ThreadInteractiveRequest::McpServerElicitation(request) => {
                 self.chat_widget
@@ -825,7 +828,7 @@ impl App {
         }
     }
 
-    fn turn_permissions_override_from_config(
+    pub(super) fn turn_permissions_override_from_config(
         config: &Config,
         active_permission_profile: Option<&ActivePermissionProfile>,
         runtime_permission_profile_override: Option<&PermissionProfile>,
@@ -979,13 +982,14 @@ impl App {
             let channel = self.ensure_thread_channel(thread_id);
             (channel.sender.clone(), Arc::clone(&channel.store))
         };
-        let (notification, pending_status, turn_stopped) = {
+        let (notification, previous_pending_status, pending_status, turn_stopped) = {
             let mut guard = store.lock().await;
             if guard.session.is_none()
                 && let Some(session) = inferred_session
             {
                 guard.session = Some(session);
             }
+            let previous_pending_status = guard.side_parent_pending_status();
             let turn_stopped = match &notification {
                 ServerNotification::TurnCompleted(notification) => {
                     guard.active_turn_id() == Some(notification.turn.id.as_str())
@@ -1002,6 +1006,7 @@ impl App {
             };
             (
                 notification,
+                previous_pending_status,
                 guard.side_parent_pending_status(),
                 turn_stopped,
             )
@@ -1031,6 +1036,8 @@ impl App {
             self.set_side_parent_status(thread_id, Some(status));
         } else if let Some(change) = notification_status_change {
             self.apply_side_parent_status_change(thread_id, change);
+        } else if previous_pending_status.is_some() {
+            self.clear_side_parent_action_status(thread_id);
         }
         self.refresh_pending_thread_approvals().await;
         Ok(())
@@ -1181,17 +1188,7 @@ impl App {
             // retaining another deep copy for thread replay only accumulates already-delivered
             // history data. Inactive responses still need the buffer because they are not sent.
             if !should_send || !matches!(&event, HistoryLookupResponse::Batch { .. }) {
-                guard
-                    .buffer
-                    .push_back(ThreadBufferedEvent::HistoryEntryResponse(event.clone()));
-                if guard.buffer.len() > guard.capacity
-                    && let Some(removed) = guard.buffer.pop_front()
-                    && let ThreadBufferedEvent::Request(request) = &removed
-                {
-                    guard
-                        .pending_interactive_replay
-                        .note_evicted_server_request(request.as_ref());
-                }
+                guard.push_buffered_event(ThreadBufferedEvent::HistoryEntryResponse(event.clone()));
             }
             should_send
         };
@@ -1358,7 +1355,11 @@ impl App {
         }
 
         match app_server
-            .resume_thread(self.config.clone(), thread_id, self.resume_model_settings())
+            .resume_thread(
+                self.config.clone(),
+                thread_id,
+                crate::app_server_session::ResumeModelSettings::PreserveExistingThread,
+            )
             .await
         {
             Ok(started) => {
@@ -1410,7 +1411,7 @@ impl App {
             .retain(ThreadEventStore::event_survives_session_refresh);
     }
 
-    /// Opens the `/agent` picker after refreshing cached labels for known threads.
+    /// Opens the `/subagents` picker after refreshing cached labels for known threads.
     ///
     /// The picker state is derived from long-lived thread channels plus best-effort metadata
     /// refreshes from the backend. Refresh failures are treated as "thread is only inspectable by
@@ -1570,6 +1571,28 @@ impl App {
         self.chat_widget.handle_skills_list_response(response);
     }
 
+    fn startup_request_may_open_protected_view(&self, request: &ServerRequest) -> bool {
+        let ServerRequest::McpServerElicitationRequest { request_id, params } = request else {
+            return true;
+        };
+
+        match &params.request {
+            codex_app_server_protocol::McpServerElicitationRequest::Form { .. } => true,
+            codex_app_server_protocol::McpServerElicitationRequest::OpenAiForm { .. } => false,
+            request @ codex_app_server_protocol::McpServerElicitationRequest::Url { .. } => {
+                let thread_id = ThreadId::from_string(&params.thread_id)
+                    .unwrap_or_else(|_| self.chat_widget.thread_id().unwrap_or_default());
+                AppLinkViewParams::from_url_app_server_request(
+                    thread_id,
+                    &params.server_name,
+                    request_id.clone(),
+                    request,
+                )
+                .is_some()
+            }
+        }
+    }
+
     pub(super) fn handle_thread_event_now(&mut self, event: ThreadBufferedEvent) {
         let needs_refresh = matches!(
             &event,
@@ -1591,8 +1614,16 @@ impl App {
                     .pending_app_server_requests
                     .contains_server_request(request.as_ref())
                 {
+                    let may_open_protected_view =
+                        self.startup_request_may_open_protected_view(request.as_ref());
                     self.chat_widget
                         .handle_server_request(*request, /*replay_kind*/ None);
+                    if may_open_protected_view
+                        && self.startup_protected_input_boundary
+                        && !self.chat_widget.has_active_view()
+                    {
+                        self.startup_pending_protected_request = true;
+                    }
                 }
             }
             ThreadBufferedEvent::HistoryEntryResponse(event) => {
@@ -1612,9 +1643,18 @@ impl App {
             ThreadBufferedEvent::Notification(notification) => self
                 .chat_widget
                 .handle_server_notification(*notification, Some(ReplayKind::ThreadSnapshot)),
-            ThreadBufferedEvent::Request(request) => self
-                .chat_widget
-                .handle_server_request(*request, Some(ReplayKind::ThreadSnapshot)),
+            ThreadBufferedEvent::Request(request) => {
+                let may_open_protected_view =
+                    self.startup_request_may_open_protected_view(request.as_ref());
+                self.chat_widget
+                    .handle_server_request(*request, Some(ReplayKind::ThreadSnapshot));
+                if may_open_protected_view
+                    && self.startup_protected_input_boundary
+                    && !self.chat_widget.has_active_view()
+                {
+                    self.startup_pending_protected_request = true;
+                }
+            }
             ThreadBufferedEvent::HistoryEntryResponse(event) => {
                 self.chat_widget.handle_history_entry_response(event)
             }
@@ -1686,7 +1726,17 @@ impl App {
             // thread, so unrelated shutdowns cannot consume this marker.
             self.pending_shutdown_exit_thread_id = None;
         }
+        let had_active_view = self.chat_widget.has_active_view();
         self.handle_thread_event_now(event);
+        if !had_active_view
+            && self.chat_widget.has_active_view()
+            && self.startup_protected_input_boundary
+        {
+            self.chat_widget.pre_draw_tick();
+            self.render_chat_widget_frame(tui, tui.terminal.last_known_screen_size)?;
+            tui.discard_pending_input_before_interactive_screen()?;
+            self.startup_pending_protected_request = false;
+        }
         if self.backtrack_render_pending {
             tui.frame_requester().schedule_frame();
         }

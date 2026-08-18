@@ -3,13 +3,17 @@
 use anyhow::Context;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use codex_core::TurnInputRequest;
 use codex_exec_server::CreateDirectoryOptions;
 use codex_exec_server::LOCAL_ENVIRONMENT_ID;
 use codex_exec_server::REMOTE_ENVIRONMENT_ID;
 use codex_exec_server::RemoveOptions;
 use codex_features::Feature;
 use codex_login::CodexAuth;
+use codex_protocol::config_types::CollaborationMode;
+use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::ReasoningSummary;
+use codex_protocol::config_types::Settings;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::InputModality;
@@ -25,8 +29,9 @@ use codex_protocol::permissions::FileSystemSandboxEntry;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::Op;
+use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::user_input::UserInput;
 use codex_utils_path_uri::PathUri;
@@ -80,29 +85,23 @@ enum ImageBudgetPolicy {
     UnifiedResponsesLiteWithoutOriginalSupport,
 }
 
-fn disabled_user_turn(test: &TestCodex, items: Vec<UserInput>, model: String) -> Op {
+fn disabled_user_turn(test: &TestCodex, items: Vec<UserInput>, model: String) -> TurnInputRequest {
     let (sandbox_policy, permission_profile) =
         turn_permission_fields(PermissionProfile::Disabled, test.config.cwd.as_path());
-    Op::UserInput {
-        items,
-        final_output_json_schema: None,
-        responsesapi_client_metadata: None,
-        additional_context: Default::default(),
-        thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
-            approval_policy: Some(AskForApproval::Never),
-            sandbox_policy: Some(sandbox_policy),
-            permission_profile,
-            collaboration_mode: Some(codex_protocol::config_types::CollaborationMode {
-                mode: codex_protocol::config_types::ModeKind::Default,
-                settings: codex_protocol::config_types::Settings {
-                    model,
-                    reasoning_effort: None,
-                    developer_instructions: None,
-                },
-            }),
-            ..Default::default()
-        },
-    }
+    TurnInputRequest::user_input(items).with_thread_settings(ThreadSettingsOverrides {
+        approval_policy: Some(AskForApproval::Never),
+        sandbox_policy: Some(sandbox_policy),
+        permission_profile,
+        collaboration_mode: Some(CollaborationMode {
+            mode: ModeKind::Default,
+            settings: Settings {
+                model,
+                reasoning_effort: None,
+                developer_instructions: None,
+            },
+        }),
+        ..Default::default()
+    })
 }
 
 fn image_messages(body: &Value) -> Vec<&Value> {
@@ -162,9 +161,8 @@ fn png_bytes(width: u32, height: u32, rgba: [u8; 4]) -> anyhow::Result<Vec<u8>> 
     Ok(cursor.into_inner())
 }
 
-async fn create_workspace_directory(test: &TestCodex, rel_path: &str) -> anyhow::Result<PathBuf> {
-    let abs_path = test.config.cwd.join(rel_path);
-    let abs_path_uri = PathUri::from_host_native_path(&abs_path)?;
+async fn create_workspace_directory(test: &TestCodex, rel_path: &str) -> anyhow::Result<PathUri> {
+    let abs_path_uri = test.workspace_path_uri(rel_path)?;
     test.fs()
         .create_directory(
             &abs_path_uri,
@@ -172,7 +170,7 @@ async fn create_workspace_directory(test: &TestCodex, rel_path: &str) -> anyhow:
             /*sandbox*/ None,
         )
         .await?;
-    Ok(abs_path.into_path_buf())
+    Ok(abs_path_uri)
 }
 
 async fn write_workspace_file(
@@ -180,9 +178,8 @@ async fn write_workspace_file(
     rel_path: &str,
     contents: Vec<u8>,
 ) -> anyhow::Result<PathBuf> {
-    let abs_path = test.config.cwd.join(rel_path);
-    if let Some(parent) = abs_path.parent() {
-        let parent_uri = PathUri::from_host_native_path(&parent)?;
+    let abs_path_uri = test.workspace_path_uri(rel_path)?;
+    if let Some(parent_uri) = abs_path_uri.parent() {
         test.fs()
             .create_directory(
                 &parent_uri,
@@ -191,11 +188,10 @@ async fn write_workspace_file(
             )
             .await?;
     }
-    let abs_path_uri = PathUri::from_host_native_path(&abs_path)?;
     test.fs()
         .write_file(&abs_path_uri, contents, /*sandbox*/ None)
         .await?;
-    Ok(abs_path.into_path_buf())
+    Ok(abs_path_uri.to_path_buf())
 }
 
 async fn write_workspace_png(
@@ -255,7 +251,7 @@ async fn assert_user_turn_local_image_resizes_to(
     let session_model = session_configured.model.clone();
 
     codex
-        .submit(disabled_user_turn(
+        .start_or_steer_turn(disabled_user_turn(
             &test,
             vec![UserInput::LocalImage {
                 path: abs_path.clone(),
@@ -425,14 +421,10 @@ async fn view_image_tool_attaches_local_image() -> anyhow::Result<()> {
     let TestCodex {
         codex,
         session_configured,
-        config,
         ..
     } = &test;
-    let cwd = config.cwd.clone();
-
     let rel_path = "assets/example.png";
-    let abs_path = cwd.join(rel_path);
-    let path_uri = PathUri::from_abs_path(&abs_path);
+    let path_uri = test.workspace_path_uri(rel_path)?;
     let original_width = 2304;
     let original_height = 864;
     write_workspace_png(
@@ -463,7 +455,7 @@ async fn view_image_tool_attaches_local_image() -> anyhow::Result<()> {
     let session_model = session_configured.model.clone();
 
     codex
-        .submit(disabled_user_turn(
+        .start_or_steer_turn(disabled_user_turn(
             &test,
             vec![UserInput::Text {
                 text: "please add the screenshot".into(),
@@ -691,7 +683,7 @@ async fn view_image_tool_applies_local_sandbox_read_denies() -> anyhow::Result<(
         .entries
         .push(FileSystemSandboxEntry {
             path: FileSystemPath::Path {
-                path: denied_path.clone(),
+                path: denied_path.clone().into(),
             },
             access: FileSystemAccessMode::Deny,
             missing_path_behavior: None,
@@ -739,7 +731,7 @@ async fn view_image_routes_to_selected_remote_environment() -> anyhow::Result<()
     let local_cwd = TempDir::new()?;
     fs::write(local_cwd.path().join("remote.png"), b"not a remote image")?;
     let local_selection = local(local_cwd.path().abs());
-    let remote_cwd_uri = PathUri::from_abs_path(test.executor_environment().cwd());
+    let remote_cwd_uri = test.executor_environment().selection().cwd.clone();
     let image_path_uri = remote_cwd_uri.join("remote.png")?;
     let png = png_bytes(/*width*/ 1, /*height*/ 1, [0, 255, 0, 255])?;
     test.fs()
@@ -750,6 +742,7 @@ async fn view_image_routes_to_selected_remote_environment() -> anyhow::Result<()
         environment_id: REMOTE_ENVIRONMENT_ID.to_string(),
         cwd: remote_cwd_uri.clone(),
         workspace_roots: vec![remote_cwd_uri],
+        config: EnvironmentConfigState::FromThread,
     };
     let relative_call_id = "call-view-image-relative-multi-env";
     let absolute_call_id = "call-view-image-absolute-multi-env";
@@ -877,7 +870,7 @@ async fn view_image_tool_can_preserve_original_resolution_when_requested_on_gpt5
     let session_model = session_configured.model.clone();
 
     codex
-        .submit(disabled_user_turn(
+        .start_or_steer_turn(disabled_user_turn(
             &test,
             vec![UserInput::Text {
                 text: "please add the original screenshot".into(),
@@ -1042,7 +1035,7 @@ async fn view_image_tool_errors_clearly_for_unsupported_detail_values() -> anyho
     let session_model = session_configured.model.clone();
 
     codex
-        .submit(disabled_user_turn(
+        .start_or_steer_turn(disabled_user_turn(
             &test,
             vec![UserInput::Text {
                 text: "please attach the image at low detail".into(),
@@ -1122,7 +1115,7 @@ async fn view_image_tool_treats_null_detail_as_omitted() -> anyhow::Result<()> {
     let session_model = session_configured.model.clone();
 
     codex
-        .submit(disabled_user_turn(
+        .start_or_steer_turn(disabled_user_turn(
             &test,
             vec![UserInput::Text {
                 text: "please attach the image with a null detail".into(),
@@ -1231,7 +1224,7 @@ async fn assert_view_image_tool_resizes_without_original_support(
     let session_model = session_configured.model.clone();
 
     codex
-        .submit(disabled_user_turn(
+        .start_or_steer_turn(disabled_user_turn(
             &test,
             vec![UserInput::Text {
                 text: "please add the screenshot".into(),
@@ -1325,7 +1318,7 @@ async fn view_image_tool_does_not_force_original_resolution_with_capability_only
     let session_model = session_configured.model.clone();
 
     codex
-        .submit(disabled_user_turn(
+        .start_or_steer_turn(disabled_user_turn(
             &test,
             vec![UserInput::Text {
                 text: "please add the screenshot".into(),
@@ -1407,7 +1400,7 @@ async fn view_image_tool_errors_when_path_is_directory() -> anyhow::Result<()> {
     let session_model = session_configured.model.clone();
 
     codex
-        .submit(disabled_user_turn(
+        .start_or_steer_turn(disabled_user_turn(
             &test,
             vec![UserInput::Text {
                 text: "please attach the folder".into(),
@@ -1430,7 +1423,7 @@ async fn view_image_tool_errors_when_path_is_directory() -> anyhow::Result<()> {
         .function_call_output_content_and_success(call_id)
         .and_then(|(content, _)| content)
         .expect("output text present");
-    let expected_path = PathUri::from_host_native_path(&abs_path)?.inferred_native_path_string();
+    let expected_path = abs_path.inferred_native_path_string();
     let expected_message = format!("image path `{expected_path}` is not a file");
     assert_eq!(output_text, expected_message);
 
@@ -1479,7 +1472,7 @@ async fn view_image_tool_rejects_invalid_image_before_tool_output() -> anyhow::R
     .await;
 
     codex
-        .submit(disabled_user_turn(
+        .start_or_steer_turn(disabled_user_turn(
             &test,
             vec![UserInput::Text {
                 text: "please inspect the image".into(),
@@ -1528,11 +1521,8 @@ async fn view_image_tool_errors_when_file_missing() -> anyhow::Result<()> {
     } = &test;
 
     let rel_path = "missing/example.png";
-    // Under wine-exec, the executor cwd is stored as a host-compatible `/C:/...`
-    // projection. Reconstruct its `PathUri` so the expected error uses the selected
-    // environment's native Windows spelling, matching the handler.
-    let expected_path = PathUri::from_abs_path(test.executor_environment().cwd())
-        .join(rel_path)?
+    let expected_path = test
+        .workspace_path_uri(rel_path)?
         .inferred_native_path_string();
 
     let call_id = "view-image-missing";
@@ -1554,7 +1544,7 @@ async fn view_image_tool_errors_when_file_missing() -> anyhow::Result<()> {
     let session_model = session_configured.model.clone();
 
     codex
-        .submit(disabled_user_turn(
+        .start_or_steer_turn(disabled_user_turn(
             &test,
             vec![UserInput::Text {
                 text: "please attach the missing image".into(),
@@ -1620,6 +1610,8 @@ async fn view_image_tool_returns_unsupported_message_for_text_only_model() -> an
         used_fallback_model_metadata: false,
         supports_search_tool: false,
         use_responses_lite: false,
+        node_repl_auto_review_required: false,
+        node_repl_disabled: false,
         auto_review_model_override: None,
         model_specialty: None,
         tool_mode: None,
@@ -1641,7 +1633,6 @@ async fn view_image_tool_returns_unsupported_message_for_text_only_model() -> an
         apply_patch_tool_type: None,
         web_search_tool_type: Default::default(),
         truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
-        supports_parallel_tool_calls: false,
         supports_image_detail_original: false,
         context_window: Some(272_000),
         max_output_tokens: None,
@@ -1693,7 +1684,7 @@ async fn view_image_tool_returns_unsupported_message_for_text_only_model() -> an
     let mock = responses::mount_sse_once(&server, second_response).await;
 
     codex
-        .submit(disabled_user_turn(
+        .start_or_steer_turn(disabled_user_turn(
             &test,
             vec![UserInput::Text {
                 text: "please attach the image".into(),

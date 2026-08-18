@@ -66,6 +66,7 @@ fn transcript_export_excludes_hidden_review_prompts_and_nested_duplicates() {
             text: text.to_string(),
             text_elements: Vec::new(),
         }],
+        transcript_metadata: None,
     };
     let entered_review = ThreadItem::EnteredReviewMode {
         id: "review-enter".to_string(),

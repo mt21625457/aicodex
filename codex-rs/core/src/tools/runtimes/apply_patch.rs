@@ -89,7 +89,7 @@ impl ApplyPatchRuntime {
     fn build_approval_action(req: &ApplyPatchRequest, call_id: &str) -> ApprovalAction {
         ApprovalAction::ApplyPatch {
             id: call_id.to_string(),
-            environment_id: req.turn_environment.environment_id.clone(),
+            environment_id: req.turn_environment.selection.environment_id.clone(),
             cwd: req.action.cwd.clone(),
             files: req.file_paths.clone(),
             patch: req.action.patch.clone(),
@@ -196,7 +196,7 @@ impl ToolRuntime<ApplyPatchRequest, ApplyPatchRuntimeOutput> for ApplyPatchRunti
             .step_context
             .turn
             .file_mutation_locks
-            .lock_paths(&req.turn_environment.environment_id, &lock_paths)
+            .lock_paths(&req.turn_environment.selection.environment_id, &lock_paths)
             .await;
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
@@ -259,7 +259,7 @@ impl Approvable<ConditionalWriteRequest> for ApplyPatchRuntime {
     ) -> std::io::Result<ApprovalAction> {
         Ok(ApprovalAction::ApplyPatch {
             id: call_id.to_string(),
-            environment_id: req.turn_environment.environment_id.clone(),
+            environment_id: req.turn_environment.selection.environment_id.clone(),
             cwd: req.turn_environment.cwd().clone(),
             files: vec![req.path.clone()],
             patch: req.patch.clone(),
@@ -312,7 +312,7 @@ impl ToolRuntime<ConditionalWriteRequest, ApplyPatchRuntimeOutput> for ApplyPatc
             .turn
             .file_mutation_locks
             .lock_paths(
-                &req.turn_environment.environment_id,
+                &req.turn_environment.selection.environment_id,
                 std::slice::from_ref(&req.canonical_path),
             )
             .await;

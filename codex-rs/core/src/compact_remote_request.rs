@@ -70,7 +70,7 @@ pub(super) async fn run_remote_compact_attempt(
             .config
             .features
             .enabled(codex_features::Feature::DedicatedFileTools),
-        parallel_tool_calls: turn_context.model_info.supports_parallel_tool_calls,
+        parallel_tool_calls: true,
         base_instructions,
         output_schema: None,
         output_schema_strict: true,

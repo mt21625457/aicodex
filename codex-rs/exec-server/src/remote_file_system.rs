@@ -176,6 +176,7 @@ impl RemoteFileSystem {
                 path: path.clone(),
                 recursive: Some(options.recursive),
                 sandbox: remote_sandbox_context(sandbox),
+                private: None,
             })
             .await;
         self.metadata_requests.lock().await.clear();
@@ -511,7 +512,7 @@ mod tests {
     fn remote_sandbox_context_drops_unused_cwd() {
         let policy = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
             path: FileSystemPath::Path {
-                path: absolute_test_path("remote-root"),
+                path: absolute_test_path("remote-root").into(),
             },
             access: FileSystemAccessMode::Read,
             missing_path_behavior: None,

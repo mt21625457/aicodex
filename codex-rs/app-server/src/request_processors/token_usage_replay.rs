@@ -120,6 +120,7 @@ pub(super) fn restored_token_usage_turn_id(
 struct TokenUsageTurnOwner {
     id: String,
     position: Option<usize>,
+    has_explicit_id: bool,
 }
 
 pub(super) fn latest_token_usage_turn_id_from_rollout_items(
@@ -128,8 +129,12 @@ pub(super) fn latest_token_usage_turn_id_from_rollout_items(
 ) -> Option<String> {
     let mut builder = ThreadHistoryBuilder::new();
     let mut token_usage_turn_owner = None;
+    let mut explicit_turn_id = None;
 
     for item in rollout_items {
+        if let RolloutItem::EventMsg(EventMsg::TurnStarted(event)) = item {
+            explicit_turn_id = Some(event.turn_id.as_str());
+        }
         if matches!(
             item,
             RolloutItem::EventMsg(EventMsg::TokenCount(event)) if event.info.is_some()
@@ -138,6 +143,7 @@ pub(super) fn latest_token_usage_turn_id_from_rollout_items(
                 builder
                     .active_turn_snapshot()
                     .map(|turn| TokenUsageTurnOwner {
+                        has_explicit_id: explicit_turn_id == Some(turn.id.as_str()),
                         id: turn.id,
                         position: builder.active_turn_position(),
                     });
@@ -145,10 +151,8 @@ pub(super) fn latest_token_usage_turn_id_from_rollout_items(
         builder.handle_rollout_item(item);
     }
 
-    let Some(owner) = token_usage_turn_owner else {
-        return None;
-    };
-    if turns.iter().any(|turn| turn.id == owner.id) {
+    let owner = token_usage_turn_owner?;
+    if owner.has_explicit_id || turns.iter().any(|turn| turn.id == owner.id) {
         Some(owner.id)
     } else {
         owner
@@ -240,6 +244,30 @@ mod tests {
         assert_eq!(
             latest_token_usage_turn_id_from_rollout_items(&rollout_items, /*turns*/ &[]),
             None
+        );
+    }
+
+    #[test]
+    fn replay_attribution_uses_explicit_turn_id_without_loaded_turns() {
+        let rollout_items = vec![
+            RolloutItem::EventMsg(EventMsg::TurnStarted(
+                codex_protocol::protocol::TurnStartedEvent {
+                    turn_id: "persisted-turn-id".to_string(),
+                    trace_id: None,
+                    started_at: None,
+                    model_context_window: None,
+                    collaboration_mode_kind: Default::default(),
+                },
+            )),
+            RolloutItem::EventMsg(EventMsg::TokenCount(TokenCountEvent {
+                info: Some(TokenUsageInfo::empty(None)),
+                rate_limits: None,
+            })),
+        ];
+
+        assert_eq!(
+            latest_token_usage_turn_id_from_rollout_items(&rollout_items, /*turns*/ &[]),
+            Some("persisted-turn-id".to_string())
         );
     }
 

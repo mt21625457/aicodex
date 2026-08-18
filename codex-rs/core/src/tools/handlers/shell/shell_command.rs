@@ -125,12 +125,14 @@ impl ShellCommandHandler {
             .shell
             .as_ref()
             .unwrap_or(session_shell.as_ref());
-        let use_login_shell =
-            Self::resolve_use_login_shell(params.login, turn_environment.config.allow_login_shell)?;
+        let use_login_shell = Self::resolve_use_login_shell(
+            params.login,
+            turn_environment.config().allow_login_shell,
+        )?;
         let command = Self::base_command(shell, &params.command, use_login_shell);
 
         let mut env = create_env(
-            &turn_context.config.permissions.shell_environment_policy,
+            turn_environment.shell_environment_policy(),
             Some(session.thread_id),
         );
         inject_session_id_env(&mut env, session.session_id());
@@ -149,7 +151,7 @@ impl ShellCommandHandler {
             capture_policy: ExecCapturePolicy::ShellTool,
             env,
             network: turn_context.network.clone(),
-            network_environment_id: Some(turn_environment.environment_id.clone()),
+            network_environment_id: Some(turn_environment.selection.environment_id.clone()),
             sandbox_permissions,
             windows_sandbox_level: turn_context.windows_sandbox_level,
             windows_sandbox_private_desktop: turn_context
@@ -342,7 +344,7 @@ impl ToolExecutor<ToolInvocation> for ClaudeBashHandler {
                 &shell_params.command,
                 &PathUri::from_abs_path(&cwd),
                 Some(&cwd),
-                &turn_environment.environment_id,
+                &turn_environment.selection.environment_id,
             )
             .await;
             let exec_params = ShellCommandHandler::to_exec_params(

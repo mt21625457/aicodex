@@ -5,7 +5,6 @@ use codex_exec_server::Environment;
 use codex_exec_server::ExecServerClient;
 use codex_exec_server::ExecServerError;
 use codex_exec_server::ExecutorFileSystem;
-use codex_exec_server::FileSystemSandboxContext;
 use codex_exec_server::FsCloseParams;
 use codex_exec_server::FsOpenParams;
 use codex_exec_server::FsReadBlockParams;
@@ -13,13 +12,6 @@ use codex_exec_server::FsReadBlockResponse;
 use codex_exec_server::RemoteExecServerConnectArgs;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
-use codex_protocol::models::PermissionProfile;
-use codex_protocol::permissions::FileSystemAccessMode;
-use codex_protocol::permissions::FileSystemPath;
-use codex_protocol::permissions::FileSystemSandboxEntry;
-use codex_protocol::permissions::FileSystemSandboxPolicy;
-use codex_protocol::permissions::NetworkSandboxPolicy;
-use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use futures::TryStreamExt;
 use pretty_assertions::assert_eq;
@@ -103,7 +95,6 @@ async fn stream_supports_platform_sandbox() -> Result<()> {
     assert_eq!(chunks, vec![bytes::Bytes::from_static(b"sandboxed hello")]);
     Ok(())
 }
-
 #[cfg(unix)]
 #[tokio::test]
 async fn file_reads_reject_fifo_without_waiting_for_a_writer() -> Result<()> {
@@ -201,11 +192,9 @@ async fn stream_keeps_reading_the_open_file_after_path_replacement() -> Result<(
     let tmp = TempDir::new()?;
     let path = tmp.path().join("replaceable.bin");
     std::fs::write(&path, vec![b'a'; BLOCK_SIZE + 1])?;
+    let sandbox = read_only_sandbox(tmp.path().to_path_buf());
     let mut stream = file_system
-        .read_file_stream(
-            &PathUri::from_host_native_path(&path)?,
-            /*sandbox*/ None,
-        )
+        .read_file_stream(&PathUri::from_host_native_path(&path)?, Some(&sandbox))
         .await?;
 
     assert_eq!(
@@ -389,12 +378,22 @@ fn connect_file_system(websocket_url: &str) -> Result<Arc<dyn ExecutorFileSystem
     Ok(environment.get_filesystem())
 }
 
-fn read_only_sandbox(path: std::path::PathBuf) -> FileSystemSandboxContext {
+// Only the Unix stream tests above need this sandbox builder.
+#[cfg(unix)]
+fn read_only_sandbox(path: std::path::PathBuf) -> codex_exec_server::FileSystemSandboxContext {
+    use codex_exec_server::FileSystemSandboxContext;
+    use codex_protocol::models::PermissionProfile;
+    use codex_protocol::permissions::FileSystemAccessMode;
+    use codex_protocol::permissions::FileSystemSandboxEntry;
+    use codex_protocol::permissions::FileSystemSandboxPolicy;
+    use codex_protocol::permissions::NetworkSandboxPolicy;
+    use codex_utils_absolute_path::AbsolutePathBuf;
+
     let path = AbsolutePathBuf::from_absolute_path(&path)
         .unwrap_or_else(|err| panic!("sandbox path should be absolute: {err}"));
     FileSystemSandboxContext::from_permission_profile(PermissionProfile::from_runtime_permissions(
         &FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
-            path: FileSystemPath::Path { path },
+            path: path.into(),
             access: FileSystemAccessMode::Read,
             missing_path_behavior: None,
         }]),

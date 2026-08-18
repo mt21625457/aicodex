@@ -279,8 +279,7 @@ async fn thread_read_with_turns_replays_persisted_token_usage() -> Result<()> {
 }
 
 #[tokio::test]
-async fn paginated_stored_thread_routes_projected_turns_and_rejects_legacy_history_paths()
--> Result<()> {
+async fn paginated_stored_thread_routes_projected_turns() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
@@ -322,6 +321,7 @@ async fn paginated_stored_thread_routes_projected_turns_and_rejects_legacy_histo
             source_kinds: None,
             archived: None,
             section_id: None,
+            project_id: None,
             cwd: None,
             use_state_db_only: false,
             search_term: None,
@@ -344,16 +344,10 @@ async fn paginated_stored_thread_routes_projected_turns_and_rejects_legacy_histo
             items_view: None,
         })
         .await?;
-    let read_err: JSONRPCError = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_error_message(RequestId::Integer(read_id)),
-    )
-    .await??;
-    assert_eq!(read_err.error.code, -32600);
-    assert_eq!(
-        read_err.error.message,
-        "paginated threads do not support thread/read(includeTurns=true)"
-    );
+    let ThreadReadResponse { thread } =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(read_id)).await??;
+    assert_eq!(thread.history_mode, ThreadHistoryMode::Paginated);
+    assert!(thread.turns.is_empty());
     let turns_list_id = mcp
         .send_thread_turns_list_request(ThreadTurnsListParams {
             thread_id: conversation_id.clone(),
@@ -1026,6 +1020,7 @@ async fn thread_list_includes_store_thread_without_rollout_path() -> Result<()> 
                 source_kinds: None,
                 archived: None,
                 section_id: None,
+                project_id: None,
                 cwd: None,
                 use_state_db_only: false,
                 search_term: None,
@@ -1409,6 +1404,7 @@ async fn paginated_thread_name_set_is_reflected_in_read_list_and_metadata_resume
             source_kinds: None,
             archived: None,
             section_id: None,
+            project_id: None,
             cwd: None,
             use_state_db_only: true,
             search_term: None,
@@ -1587,6 +1583,7 @@ async fn thread_read_and_list_surface_recorded_model_metadata() -> Result<()> {
             search_term: None,
             parent_thread_id: None,
             ancestor_thread_id: None,
+            project_id: None,
         })
         .await?;
     let list_resp: JSONRPCResponse = timeout(
@@ -1895,6 +1892,7 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
         .send_thread_read_request(ThreadReadParams {
             thread_id: thread_id.to_string(),
             include_turns: true,
+            items_view: None,
         })
         .await?;
     let ThreadReadResponse {
@@ -2160,6 +2158,7 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
         .send_thread_read_request(ThreadReadParams {
             thread_id: thread_id.to_string(),
             include_turns: true,
+            items_view: None,
         })
         .await?;
     let ThreadReadResponse {

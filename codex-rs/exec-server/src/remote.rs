@@ -44,6 +44,7 @@ use crate::relay::HarnessKeyValidator;
 use crate::relay::run_multiplexed_environment;
 use crate::server::ConnectionProcessor;
 use crate::server::RequestDispatchMode;
+use crate::trace_context::current_rendezvous_headers;
 use crate::trace_context::current_trace_context_headers;
 
 const ERROR_BODY_PREVIEW_BYTES: usize = 4096;
@@ -129,18 +130,20 @@ impl EnvironmentRegistryClient {
         environment_id: &str,
         executor_public_key: &NoiseChannelPublicKey,
     ) -> Result<EnvironmentRegistryRegistrationResponse, ExecServerError> {
+        let url = endpoint_url(
+            &self.base_url,
+            &format!("/cloud/environment/{environment_id}/register"),
+        );
+        let body = EnvironmentRegistryRegistrationRequest {
+            security_profile: NOISE_RELAY_SECURITY_PROFILE.to_string(),
+            executor_public_key: executor_public_key.clone(),
+        };
         let response = self
             .http
-            .post(endpoint_url(
-                &self.base_url,
-                &format!("/cloud/environment/{environment_id}/register"),
-            ))
-            .headers(self.auth_provider.to_auth_headers())
+            .post(url)
+            .headers(self.resolve_auth_headers().await?)
             .headers(current_trace_context_headers())
-            .json(&EnvironmentRegistryRegistrationRequest {
-                security_profile: NOISE_RELAY_SECURITY_PROFILE.to_string(),
-                executor_public_key: executor_public_key.clone(),
-            })
+            .json(&body)
             .send()
             .await?;
         let response: EnvironmentRegistryRegistrationResponse =
@@ -185,15 +188,17 @@ impl EnvironmentRegistryClient {
         environment_id: &str,
         harness_public_key: NoiseChannelPublicKey,
     ) -> Result<NoiseRendezvousConnectBundle, ExecServerError> {
+        let url = endpoint_url(
+            &self.base_url,
+            &format!("/cloud/environment/{environment_id}/connect"),
+        );
+        let body = EnvironmentRegistryConnectRequest { harness_public_key };
         let response = self
             .http
-            .post(endpoint_url(
-                &self.base_url,
-                &format!("/cloud/environment/{environment_id}/connect"),
-            ))
-            .headers(self.auth_provider.to_auth_headers())
+            .post(url)
+            .headers(self.resolve_auth_headers().await?)
             .headers(current_trace_context_headers())
-            .json(&EnvironmentRegistryConnectRequest { harness_public_key })
+            .json(&body)
             .timeout(self.connect_timeout)
             .send()
             .await?;
@@ -225,6 +230,17 @@ impl EnvironmentRegistryClient {
             executor_public_key: response.executor_public_key,
             harness_key_authorization: response.harness_key_authorization,
         })
+    }
+
+    async fn resolve_auth_headers(&self) -> Result<HeaderMap, ExecServerError> {
+        self.auth_provider
+            .resolve_auth_headers()
+            .await
+            .map_err(|error| {
+                ExecServerError::EnvironmentRegistryAuth(format!(
+                    "failed to resolve environment registry authentication: {error}"
+                ))
+            })
     }
 
     async fn parse_json_response<R>(&self, response: HttpResponse) -> Result<R, ExecServerError>
@@ -275,20 +291,22 @@ impl HarnessKeyValidator for RegistryHarnessKeyValidator {
         authorization: &str,
     ) -> Result<(), ExecServerError> {
         let environment_id = &self.environment_id;
+        let url = endpoint_url(
+            &self.client.base_url,
+            &format!("/cloud/environment/{environment_id}/validate"),
+        );
+        let body = EnvironmentRegistryHarnessKeyValidationRequest {
+            executor_registration_id: self.executor_registration_id.clone(),
+            harness_public_key: harness_public_key.clone(),
+            harness_key_authorization: authorization.to_string(),
+        };
         let response = self
             .client
             .http
-            .post(endpoint_url(
-                &self.client.base_url,
-                &format!("/cloud/environment/{environment_id}/validate"),
-            ))
-            .headers(self.client.auth_provider.to_auth_headers())
+            .post(url)
+            .headers(self.client.resolve_auth_headers().await?)
             .headers(current_trace_context_headers())
-            .json(&EnvironmentRegistryHarnessKeyValidationRequest {
-                executor_registration_id: self.executor_registration_id.clone(),
-                harness_public_key: harness_public_key.clone(),
-                harness_key_authorization: authorization.to_string(),
-            })
+            .json(&body)
             .send()
             .await?;
         let status = response.status();
@@ -656,9 +674,7 @@ async fn connect_rendezvous(
     let started_at = Instant::now();
     let result = async {
         let mut request = url.into_client_request()?;
-        request
-            .headers_mut()
-            .extend(current_trace_context_headers());
+        request.headers_mut().extend(current_rendezvous_headers());
         let connector = WebSocketConnector::new_with_tls_mode(
             http_client_factory,
             WebSocketTlsMode::TungsteniteDefault,
@@ -791,15 +807,21 @@ mod tests {
     struct StaticRegistryAuthProvider;
 
     impl AuthProvider for StaticRegistryAuthProvider {
-        fn add_auth_headers(&self, headers: &mut HeaderMap) {
-            let _ = headers.insert(
-                http::header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer registry-token"),
-            );
-            let _ = headers.insert(
-                "ChatGPT-Account-ID",
-                HeaderValue::from_static("workspace-123"),
-            );
+        fn add_auth_headers(&self, _headers: &mut HeaderMap) {}
+
+        fn resolve_auth_headers(&self) -> codex_api::AuthHeadersFuture<'_> {
+            Box::pin(async {
+                let mut headers = HeaderMap::new();
+                let _ = headers.insert(
+                    http::header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer registry-token"),
+                );
+                let _ = headers.insert(
+                    "ChatGPT-Account-ID",
+                    HeaderValue::from_static("workspace-123"),
+                );
+                Ok(headers)
+            })
         }
     }
 

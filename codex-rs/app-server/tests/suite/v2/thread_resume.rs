@@ -1105,6 +1105,7 @@ async fn thread_resume_preserves_acknowledged_model_effort_and_approvals_reviewe
             .send_thread_read_request(ThreadReadParams {
                 thread_id: thread.id.clone(),
                 include_turns: false,
+                items_view: None,
             })
             .await?;
         let ThreadReadResponse { thread: read } =
@@ -2777,6 +2778,8 @@ async fn cold_paginated_resume_restores_usage_without_loading_turns() -> Result<
                     ..Default::default()
                 },
                 model_context_window: Some(200_000),
+                context_tokens: None,
+                context_source: None,
             }),
             rate_limits: None,
         })),
@@ -2854,6 +2857,8 @@ async fn cold_paginated_resume_omits_usage_when_its_turn_is_ambiguous() -> Resul
                     ..Default::default()
                 },
                 model_context_window: Some(200_000),
+                context_tokens: None,
+                context_source: None,
             }),
             rate_limits: None,
         })),
@@ -3342,6 +3347,7 @@ async fn thread_resume_prefers_persisted_git_metadata_for_local_threads() -> Res
     let update_id = mcp
         .send_thread_metadata_update_request(ThreadMetadataUpdateParams {
             thread_id: thread_id.clone(),
+            project_id: None,
             git_info: Some(ThreadMetadataGitInfoUpdateParams {
                 sha: None,
                 branch: Some(Some("feature/pr-branch".to_string())),

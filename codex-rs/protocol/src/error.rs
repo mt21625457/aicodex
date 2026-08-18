@@ -136,6 +136,8 @@ pub enum CodexErrorDetails {
     ServerOverloaded,
     #[error("{message}")]
     CyberPolicy { message: String },
+    #[error("{message}")]
+    MisalignmentPolicyViolation { message: String },
     #[error("{0}")]
     ResponseStreamFailed(ResponseStreamFailed),
     #[error("{0}")]
@@ -394,7 +396,8 @@ impl CodexErr {
             | CodexErrorDetails::SessionConfiguredNotFirstEvent
             | CodexErrorDetails::UsageLimitReached(_)
             | CodexErrorDetails::ServerOverloaded
-            | CodexErrorDetails::CyberPolicy { .. } => false,
+            | CodexErrorDetails::CyberPolicy { .. }
+            | CodexErrorDetails::MisalignmentPolicyViolation { .. } => false,
             CodexErrorDetails::Stream(..)
             | CodexErrorDetails::Timeout
             | CodexErrorDetails::RequestTimeout
@@ -443,6 +446,9 @@ impl CodexErr {
             | CodexErrorDetails::UsageNotIncluded => CodexErrorInfo::UsageLimitExceeded,
             CodexErrorDetails::ServerOverloaded => CodexErrorInfo::ServerOverloaded,
             CodexErrorDetails::CyberPolicy { .. } => CodexErrorInfo::CyberPolicy,
+            CodexErrorDetails::MisalignmentPolicyViolation { .. } => {
+                CodexErrorInfo::MisalignmentPolicyViolation
+            }
             CodexErrorDetails::RetryLimit(_) => CodexErrorInfo::ResponseTooManyFailedAttempts {
                 http_status_code: self.http_status_code_value(),
             },

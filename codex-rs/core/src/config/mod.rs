@@ -1,5 +1,6 @@
 use crate::config::edit::ConfigEdit;
 use crate::config::edit::ConfigEditsBuilder;
+use crate::guardian::BUNDLED_GUARDIAN_POLICY;
 use crate::path_utils::normalize_for_native_workdir;
 use crate::unified_exec::DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS;
 use crate::unified_exec::MIN_EMPTY_YIELD_TIME_MS;
@@ -109,7 +110,9 @@ use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::models::PermissionProfile;
+pub use codex_protocol::models::PermissionProfileSnapshot;
 use codex_protocol::models::SandboxEnforcement;
+use codex_protocol::openai_models::ModelMessages;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
@@ -134,6 +137,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::ErrorKind;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -184,7 +188,6 @@ use permission_profile_catalog::permission_profile_catalog_from_permissions;
 use permission_profile_catalog::permission_profile_is_allowed;
 use permission_profile_catalog::validate_permission_profile_for_deny_read;
 pub(crate) use permissions::is_builtin_permission_profile_name;
-pub use resolved_permission_profile::PermissionProfileSnapshot;
 pub(crate) use resolved_permission_profile::PermissionProfileState;
 
 const DEFAULT_IGNORE_LARGE_UNTRACKED_DIRS: i64 = 200;
@@ -264,27 +267,27 @@ pub(crate) const MULTI_AGENT_USAGE_HINT_MAX_TOKENS: usize = 1_000;
 const DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE: &str = "collaboration";
 const DEFAULT_MULTI_AGENT_V2_WAIT_AGENT_USAGE_HINT_TEXT: &str =
     "When calling `wait_agent`, prefer longer waits (minutes) to avoid busy polling.";
-const DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT: &str = r#"Note that collaboration tools cannot be called from inside `functions.exec`. Call `spawn_agent`, `send_message`, `followup_task`, `wait_agent`, `interrupt_agent`, and `list_agents` only as direct tool calls using the recipient shown in their tool definitions, such as `to=functions.collaboration.spawn_agent`, since they are intentionally absent from the `functions.exec` `tools.*` namespace. Available tools in `functions.exec` are explicitly described with a `tools` namespace in the developer message.
+const DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT: &str = r#"Note that collaboration tools cannot be called from inside `functions.exec`. Call `spawn_agent`, `send_message`, `followup_task`, `wait_agent`, `interrupt_agent`, and `list_agents` only as direct tool calls using the recipient shown in their tool definitions, such as `to=functions.collaboration.spawn_agent`, since they are intentionally absent from the `functions.exec` `tools` namespace. Available tools in `functions.exec` are explicitly described with a `tools` namespace in the developer message.
 
 All agents share the same directory. In detail:
 - All agents have access to the same container and filesystem as you.
 - All agents use the same current working directory.
 - As a result, edits made by one agent are immediately visible to all other agents.
 "#;
+
 fn default_multi_agent_v2_usage_hint_text(
     usage_hint_text: &str,
     max_concurrency: usize,
     wait_agent_usage_hint_text: Option<&str>,
 ) -> String {
     let wait_agent_usage_hint_text = match wait_agent_usage_hint_text {
-        Some(wait_agent_usage_hint_text) => format!("{wait_agent_usage_hint_text}\n\n"),
+        Some(text) => format!("{text}\n\n"),
         None => String::new(),
     };
     format!(
         "{usage_hint_text}\n{DEFAULT_MULTI_AGENT_V2_SHARED_USAGE_HINT_TEXT}\n{wait_agent_usage_hint_text}There are {max_concurrency} available concurrency slots, meaning that up to {max_concurrency} agents can be active at once, including you."
     )
 }
-
 pub(crate) const HARD_MIN_MULTI_AGENT_V2_TIMEOUT_MS: i64 = 0;
 pub(crate) const HARD_MAX_MULTI_AGENT_V2_TIMEOUT_MS: i64 =
     DEFAULT_MULTI_AGENT_V2_MAX_WAIT_TIMEOUT_MS;
@@ -431,10 +434,8 @@ impl Permissions {
         snapshot: PermissionProfileSnapshot,
     ) -> ConstraintResult<()> {
         let permission_profile = Constrained::allow_only(snapshot.permission_profile().clone());
-        self.permission_profile_state = PermissionProfileState::from_constrained_resolved(
-            permission_profile,
-            snapshot.into_resolved_permission_profile(),
-        )?;
+        self.permission_profile_state =
+            PermissionProfileState::from_constrained_snapshot(permission_profile, snapshot)?;
         Ok(())
     }
 
@@ -729,6 +730,9 @@ pub struct Config {
 
     /// Whether to inject the `<skills_instructions>` developer block.
     pub include_skill_instructions: bool,
+
+    /// Optional token budget override for the available-skills catalog.
+    pub skill_max_context_tokens: Option<NonZeroUsize>,
 
     /// Whether orchestrator-owned skills are exposed to the model.
     pub orchestrator_skills_enabled: bool,
@@ -1032,10 +1036,6 @@ pub struct Config {
     /// instructions inserted into developer messages when realtime becomes
     /// active.
     pub experimental_realtime_start_instructions: Option<String>,
-    /// Experimental / do not use. When set, app-server fetches thread-scoped
-    /// config from a remote service at this endpoint.
-    pub experimental_thread_config_endpoint: Option<String>,
-
     /// Experimental / do not use. Selects the thread persistence backend.
     pub experimental_thread_store: ThreadStoreConfig,
     /// When set, restricts ChatGPT login to one or more workspace identifiers.
@@ -1316,16 +1316,8 @@ impl MultiAgentV2Config {
             max_wait_timeout_ms: DEFAULT_MULTI_AGENT_V2_MAX_WAIT_TIMEOUT_MS,
             default_wait_timeout_ms: DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS,
             usage_hint_text: None,
-            root_agent_usage_hint_text: Some(default_multi_agent_v2_usage_hint_text(
-                DEFAULT_MULTI_AGENT_V2_ROOT_AGENT_USAGE_HINT_TEXT,
-                max_concurrent_threads_per_session,
-                Some(DEFAULT_MULTI_AGENT_V2_WAIT_AGENT_USAGE_HINT_TEXT),
-            )),
-            subagent_usage_hint_text: Some(default_multi_agent_v2_usage_hint_text(
-                DEFAULT_MULTI_AGENT_V2_SUBAGENT_USAGE_HINT_TEXT,
-                max_concurrent_threads_per_session,
-                Some(DEFAULT_MULTI_AGENT_V2_WAIT_AGENT_USAGE_HINT_TEXT),
-            )),
+            root_agent_usage_hint_text: None,
+            subagent_usage_hint_text: None,
             subagent_developer_instructions: None,
             multi_agent_mode_hint_text: None,
             tool_namespace: Some(DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE.to_string()),
@@ -1583,6 +1575,20 @@ impl Config {
         candidates
     }
 
+    /// Resolves the configured, reviewer-catalog, or bundled Guardian policy.
+    pub fn resolve_guardian_policy<'a>(
+        &'a self,
+        model_messages: Option<&'a ModelMessages>,
+    ) -> &'a str {
+        self.guardian_policy_config
+            .as_deref()
+            .or_else(|| {
+                model_messages
+                    .and_then(|messages| messages.auto_review.as_ref())
+                    .and_then(|messages| messages.policy.as_deref())
+            })
+            .unwrap_or(BUNDLED_GUARDIAN_POLICY)
+    }
     pub(crate) fn multi_agent_version_override(&self) -> Option<MultiAgentVersion> {
         if self.features.enabled(Feature::MultiAgentV2) {
             Some(MultiAgentVersion::V2)
@@ -2132,7 +2138,7 @@ fn filter_mcp_servers_by_requirements(
         let allowed = allowlist
             .value
             .get(name)
-            .is_some_and(|requirement| requirement.matches(server));
+            .is_some_and(|requirement| server.matches_requirement(requirement));
         if allowed {
             server.disabled_reason = None;
         } else {
@@ -2168,7 +2174,7 @@ fn filter_plugin_mcp_servers_by_requirements(
     for (name, server) in mcp_servers.iter_mut() {
         let allowed = plugin_mcp_requirements
             .and_then(|mcp_requirements| mcp_requirements.get(name))
-            .is_some_and(|requirement| requirement.matches(server));
+            .is_some_and(|requirement| server.matches_requirement(requirement));
         if allowed {
             server.disabled_reason = None;
         } else {
@@ -2598,7 +2604,7 @@ fn apply_managed_filesystem_constraints(
                 continue;
             };
             codex_protocol::permissions::FileSystemSandboxEntry {
-                path: codex_protocol::permissions::FileSystemPath::Path { path },
+                path: path.into(),
                 access: codex_protocol::permissions::FileSystemAccessMode::Deny,
                 missing_path_behavior: None,
             }
@@ -3032,7 +3038,6 @@ pub(crate) fn truncate_text_to_token_budget(text: &str, budget_tokens: usize) ->
         truncation_budget = next_budget;
     }
 }
-
 fn code_mode_toml_config(features: Option<&FeaturesToml>) -> Option<&CodeModeConfigToml> {
     match features?.code_mode.as_ref()? {
         FeatureToml::Enabled(_) => None,
@@ -3315,6 +3320,8 @@ impl Config {
         let ConfigRequirements {
             allowed_login_methods: _,
             allowed_chatgpt_workspaces: _,
+            cli_auth_credentials_store,
+            chatgpt_base_url: _,
             sqlite_home: _,
             log_dir: _,
             model_catalog_json: _,
@@ -4003,6 +4010,10 @@ impl Config {
             .as_ref()
             .and_then(|skills| skills.include_instructions)
             .unwrap_or(true);
+        let skill_max_context_tokens = cfg
+            .skills
+            .as_ref()
+            .and_then(|skills| skills.max_context_tokens);
         let include_environment_context = cfg.include_environment_context.unwrap_or(true);
         let guardian_policy_config =
             guardian_policy_config_from_requirements(config_layer_stack.requirements_toml())
@@ -4210,15 +4221,19 @@ impl Config {
             include_apps_instructions,
             include_collaboration_mode_instructions,
             include_skill_instructions,
+            skill_max_context_tokens,
             orchestrator_skills_enabled,
             orchestrator_mcp_enabled,
             include_environment_context,
             // The config.toml omits "_mode" because it's a config file. However, "_mode"
             // is important in code to differentiate the mode from the store implementation.
-            cli_auth_credentials_store_mode: resolve_cli_auth_credentials_store_mode(
-                cfg.cli_auth_credentials_store.unwrap_or_default(),
-                env!("CARGO_PKG_VERSION"),
-            ),
+            cli_auth_credentials_store_mode: match cli_auth_credentials_store {
+                Some(required) => required.value,
+                None => resolve_cli_auth_credentials_store_mode(
+                    cfg.cli_auth_credentials_store.unwrap_or_default(),
+                    env!("CARGO_PKG_VERSION"),
+                ),
+            },
             mcp_servers,
             non_prefixed_mcp_tool_servers,
             // The config.toml omits "_mode" because it's a config file. However, "_mode"
@@ -4321,7 +4336,6 @@ impl Config {
             experimental_realtime_ws_backend_prompt: cfg.experimental_realtime_ws_backend_prompt,
             experimental_realtime_ws_startup_context: cfg.experimental_realtime_ws_startup_context,
             experimental_realtime_start_instructions: cfg.experimental_realtime_start_instructions,
-            experimental_thread_config_endpoint: cfg.experimental_thread_config_endpoint,
             experimental_thread_store: thread_store_config(cfg.experimental_thread_store),
             forced_chatgpt_workspace_id,
             forced_login_method,

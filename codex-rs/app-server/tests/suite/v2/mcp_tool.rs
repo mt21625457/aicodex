@@ -262,8 +262,12 @@ async fn model_mcp_tool_call_uses_session_client_extensions() -> Result<()> {
     let responses_server = create_mock_responses_server_sequence(responses).await;
     let (mcp_server_url, mcp_server_handle) = start_mcp_server().await?;
     let codex_home = TempDir::new()?;
-    mcp_tool_config(&responses_server.uri(), &mcp_server_url, AUTO_COMPACT_LIMIT)
-        .write(codex_home.path())?;
+    mcp_tool_config(
+        &responses_server.uri(),
+        &mcp_server_url,
+        LARGE_OUTPUT_AUTO_COMPACT_LIMIT,
+    )
+    .write(codex_home.path())?;
 
     let app_ui = json!({
         "mimeTypes": [
@@ -1058,8 +1062,12 @@ async fn mcp_tool_call_hint_survives_mid_call_thread_read_and_resume() -> Result
     let responses_server = create_mock_responses_server_sequence(responses).await;
     let (mcp_server_url, mcp_server_handle) = start_mcp_server().await?;
     let codex_home = TempDir::new()?;
-    mcp_tool_config(&responses_server.uri(), &mcp_server_url, AUTO_COMPACT_LIMIT)
-        .write(codex_home.path())?;
+    mcp_tool_config(
+        &responses_server.uri(),
+        &mcp_server_url,
+        LARGE_OUTPUT_AUTO_COMPACT_LIMIT,
+    )
+    .write(codex_home.path())?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
@@ -1100,6 +1108,7 @@ async fn mcp_tool_call_hint_survives_mid_call_thread_read_and_resume() -> Result
         .send_thread_read_request(ThreadReadParams {
             thread_id: thread.id.clone(),
             include_turns: true,
+            items_view: None,
         })
         .await?;
     let ThreadReadResponse {
@@ -1174,6 +1183,7 @@ async fn mcp_tool_call_hint_survives_mid_call_thread_read_and_resume() -> Result
         .send_thread_read_request(ThreadReadParams {
             thread_id: thread.id,
             include_turns: true,
+            items_view: None,
         })
         .await?;
     let ThreadReadResponse {

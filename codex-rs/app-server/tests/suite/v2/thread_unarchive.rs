@@ -120,6 +120,7 @@ async fn thread_unarchive_moves_rollout_back_into_sessions_directory() -> Result
         .send_thread_read_request(ThreadReadParams {
             thread_id: thread.id.clone(),
             include_turns: false,
+            items_view: None,
         })
         .await?;
     let ThreadReadResponse {

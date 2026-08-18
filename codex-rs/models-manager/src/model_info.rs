@@ -65,7 +65,9 @@ pub fn with_config_overrides(mut model: ModelInfo, config: &ModelsManagerConfig)
             collaboration_modes: None,
             auto_review: None,
             permissions: None,
+            multi_agent: None,
             token_budget: None,
+            guardian_v2: None,
         });
         model_messages.instructions_template = Some(base_instructions.clone());
         model_messages.instructions_variables = None;
@@ -174,7 +176,6 @@ pub fn model_info_from_slug(slug: &str) -> ModelInfo {
         apply_patch_tool_type: None,
         web_search_tool_type: WebSearchToolType::Text,
         truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
-        supports_parallel_tool_calls: false,
         supports_image_detail_original: false,
         context_window: Some(fallback_context_window),
         max_output_tokens: None,
@@ -187,6 +188,8 @@ pub fn model_info_from_slug(slug: &str) -> ModelInfo {
         used_fallback_model_metadata: true, // this is the fallback model metadata
         supports_search_tool: false,
         use_responses_lite: false,
+        node_repl_auto_review_required: false,
+        node_repl_disabled: false,
         auto_review_model_override: None,
         model_specialty: None,
         tool_mode: None,
@@ -277,7 +280,9 @@ fn local_model_messages_for_slug(slug: &str) -> ModelMessages {
             collaboration_modes: None,
             auto_review: None,
             permissions: None,
+            multi_agent: None,
             token_budget: None,
+            guardian_v2: None,
         },
         _ => ModelMessages {
             instructions_template: Some(BASE_INSTRUCTIONS.to_string()),
@@ -286,7 +291,9 @@ fn local_model_messages_for_slug(slug: &str) -> ModelMessages {
             collaboration_modes: None,
             auto_review: None,
             permissions: None,
+            multi_agent: None,
             token_budget: None,
+            guardian_v2: None,
         },
     }
 }

@@ -2062,7 +2062,14 @@
               "type": "string"
             },
             "params": {
-              "type": "null"
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/v2/GetAccountTokenUsageParams"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -4474,6 +4481,26 @@
           "properties": {
             "method": {
               "enum": [
+                "thread/reverted"
+              ],
+              "title": "Thread/revertedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadRevertedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/revertedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "skills/changed"
               ],
               "title": "Skills/changedNotificationMethod",
@@ -4548,6 +4575,66 @@
             "params"
           ],
           "title": "Thread/goal/clearedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "thread/queue/changed"
+              ],
+              "title": "Thread/queue/changedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadQueueChangedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/queue/changedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "project/changed"
+              ],
+              "title": "Project/changedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ProjectChangedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Project/changedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "thread/project/updated"
+              ],
+              "title": "Thread/project/updatedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadProjectUpdatedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/project/updatedNotification",
           "type": "object"
         },
         {
@@ -7601,6 +7688,15 @@
         ],
         "type": "object"
       },
+      "CliAuthCredentialsStoreMode": {
+        "enum": [
+          "file",
+          "keyring",
+          "auto",
+          "ephemeral"
+        ],
+        "type": "string"
+      },
       "CodexErrorInfo": {
         "description": "This translation layer make sure that we expose codex error code in camel case.\n\nWhen an upstream HTTP status is available (for example, from the Responses API or a provider), it is forwarded in `httpStatusCode` on the relevant `codexErrorInfo` variant.",
         "oneOf": [
@@ -7611,6 +7707,7 @@
               "usageLimitExceeded",
               "serverOverloaded",
               "cyberPolicy",
+              "misalignmentPolicyViolation",
               "internalServerError",
               "unauthorized",
               "badRequest",
@@ -8959,10 +9056,26 @@
               }
             ]
           },
+          "chatgptBaseUrl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "checkForUpdateOnStartup": {
             "type": [
               "boolean",
               "null"
+            ]
+          },
+          "cliAuthCredentialsStore": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/CliAuthCredentialsStoreMode"
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "computerUse": {
@@ -11501,6 +11614,18 @@
         "title": "GetAccountResponse",
         "type": "object"
       },
+      "GetAccountTokenUsageParams": {
+        "properties": {
+          "threadId": {
+            "description": "When present, read estimated usage for this thread instead of account-wide token activity.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "GetAccountTokenUsageResponse": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
@@ -11515,6 +11640,18 @@
           },
           "summary": {
             "$ref": "#/definitions/v2/AccountTokenUsageSummary"
+          },
+          "threadUsage": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/ThreadUsage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Estimated usage when a thread was requested and its billing route is available."
           }
         },
         "required": [
@@ -11923,12 +12060,89 @@
       "HookHandlerType": {
         "enum": [
           "command",
+          "mcpTool",
           "prompt",
           "agent"
         ],
         "type": "string"
       },
       "HookMetadata": {
+        "oneOf": [
+          {
+            "properties": {
+              "async": {
+                "default": false,
+                "type": "boolean"
+              },
+              "command": {
+                "type": "string"
+              },
+              "handlerType": {
+                "enum": [
+                  "command"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "command",
+              "handlerType"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "handlerType": {
+                "enum": [
+                  "mcpTool"
+                ],
+                "type": "string"
+              },
+              "server": {
+                "type": "string"
+              },
+              "tool": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "handlerType",
+              "server",
+              "tool"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "handlerType": {
+                "enum": [
+                  "prompt"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "handlerType"
+            ],
+            "title": "PromptHookMetadata",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "handlerType": {
+                "enum": [
+                  "agent"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "handlerType"
+            ],
+            "title": "AgentHookMetadata",
+            "type": "object"
+          }
+        ],
         "properties": {
           "additionalContextLimit": {
             "description": "Configured `additionalContext` spill threshold. `null` uses 2,500 tokens; `0` disables spilling.",
@@ -11936,12 +12150,6 @@
             "minimum": 0.0,
             "type": [
               "integer",
-              "null"
-            ]
-          },
-          "command": {
-            "type": [
-              "string",
               "null"
             ]
           },
@@ -11957,17 +12165,6 @@
           },
           "eventName": {
             "$ref": "#/definitions/v2/HookEventName"
-          },
-          "executionMode": {
-            "allOf": [
-              {
-                "$ref": "#/definitions/v2/HookExecutionMode"
-              }
-            ],
-            "default": "sync"
-          },
-          "handlerType": {
-            "$ref": "#/definitions/v2/HookHandlerType"
           },
           "isManaged": {
             "type": "boolean"
@@ -12013,7 +12210,6 @@
           "displayOrder",
           "enabled",
           "eventName",
-          "handlerType",
           "isManaged",
           "key",
           "source",
@@ -14114,6 +14310,14 @@
               "null"
             ]
           },
+          "retirementAt": {
+            "description": "Informational Unix timestamp for this upgrade's scheduled retirement, if known.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "upgradeCopy": {
             "type": [
               "string",
@@ -14376,6 +14580,18 @@
           "compact"
         ],
         "type": "string"
+      },
+      "NullableGetAccountTokenUsageParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "anyOf": [
+          {
+            "$ref": "#/definitions/v2/GetAccountTokenUsageParams"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Nullable_GetAccountTokenUsageParams"
       },
       "OverriddenMetadata": {
         "properties": {
@@ -15980,6 +16196,108 @@
         "required": [
           "cols",
           "rows"
+        ],
+        "type": "object"
+      },
+      "Project": {
+        "properties": {
+          "createdAt": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "name": {
+            "type": "string"
+          },
+          "position": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "roots": {
+            "items": {
+              "$ref": "#/definitions/v2/ProjectRoot"
+            },
+            "type": "array"
+          },
+          "updatedAt": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "createdAt",
+          "id",
+          "metadata",
+          "name",
+          "position",
+          "roots",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "ProjectChangeType": {
+        "enum": [
+          "created",
+          "updated",
+          "deleted"
+        ],
+        "type": "string"
+      },
+      "ProjectChangedNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "changeType": {
+            "$ref": "#/definitions/v2/ProjectChangeType"
+          },
+          "projectId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "changeType",
+          "projectId"
+        ],
+        "title": "ProjectChangedNotification",
+        "type": "object"
+      },
+      "ProjectRoot": {
+        "properties": {
+          "path": {
+            "$ref": "#/definitions/v2/AbsolutePathBuf"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "QueuedSubmission": {
+        "properties": {
+          "clientUserMessageId": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "input": {
+            "items": {
+              "$ref": "#/definitions/v2/UserInput"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "clientUserMessageId",
+          "id",
+          "input"
         ],
         "type": "object"
       },
@@ -18860,6 +19178,13 @@
             "description": "Usually the first user message in the thread, if available.",
             "type": "string"
           },
+          "projectId": {
+            "description": "Canonical project assignment owned by app-server, if any.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "recencyAt": {
             "description": "Unix timestamp (in seconds) used for thread recency ordering.",
             "format": "int64",
@@ -18948,6 +19273,7 @@
           "id",
           "modelProvider",
           "preview",
+          "projectId",
           "sessionId",
           "source",
           "status",
@@ -20626,6 +20952,39 @@
         "title": "ThreadNameUpdatedNotification",
         "type": "object"
       },
+      "ThreadProjectUpdatedNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "projectId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "projectId",
+          "threadId"
+        ],
+        "title": "ThreadProjectUpdatedNotification",
+        "type": "object"
+      },
+      "ThreadQueueChangedNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "title": "ThreadQueueChangedNotification",
+        "type": "object"
+      },
       "ThreadReadParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
@@ -21127,6 +21486,19 @@
           "thread"
         ],
         "title": "ThreadResumeResponse",
+        "type": "object"
+      },
+      "ThreadRevertedNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "title": "ThreadRevertedNotification",
         "type": "object"
       },
       "ThreadRollbackParams": {
@@ -22037,6 +22409,101 @@
           "unsubscribed"
         ],
         "type": "string"
+      },
+      "ThreadUsage": {
+        "properties": {
+          "estimatedUsageCreditsMicros": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "estimatedUsageUsdMicros": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "groups": {
+            "items": {
+              "$ref": "#/definitions/v2/ThreadUsageBreakdownGroup"
+            },
+            "type": "array"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "estimatedUsageCreditsMicros",
+          "groups",
+          "threadId"
+        ],
+        "type": "object"
+      },
+      "ThreadUsageBreakdownGroup": {
+        "properties": {
+          "cachedInputTokens": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "estimatedUsageCreditsMicros": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "inputTokens": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "netNewInputTokens": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "outputTokens": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reasoningEffort": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "speed": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "totalTokens": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "estimatedUsageCreditsMicros"
+        ],
+        "type": "object"
       },
       "TokenUsageBreakdown": {
         "properties": {

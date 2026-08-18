@@ -204,6 +204,7 @@ mod tests {
             ephemeral: false,
             section: None,
             section_entered_at: None,
+            project_id: None,
             history_mode: Default::default(),
             model_provider: "mock_provider".to_string(),
             model_id: None,

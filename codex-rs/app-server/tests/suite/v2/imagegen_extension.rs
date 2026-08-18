@@ -260,6 +260,7 @@ async fn transparent_image_preserves_output_metadata_and_persisted_history() -> 
         .send_thread_read_request(ThreadReadParams {
             thread_id: thread_id.clone(),
             include_turns: true,
+            items_view: None,
         })
         .await?;
     let ThreadReadResponse { thread, .. } =
@@ -529,6 +530,7 @@ async fn image_generation_usage_limit_preserves_correlated_failure_metadata() ->
         .send_thread_read_request(ThreadReadParams {
             thread_id: thread_id.clone(),
             include_turns: true,
+            items_view: None,
         })
         .await?;
     let ThreadReadResponse { thread, .. } =

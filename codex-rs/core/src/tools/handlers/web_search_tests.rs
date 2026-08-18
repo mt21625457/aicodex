@@ -231,7 +231,7 @@ async fn kimi_handler_calls_moonshot_and_returns_bounded_external_context() {
     config.moonshot_search.base_url = Some(format!("{}/v1/search", server.uri()));
     config.moonshot_search.api_key = Some("moonshot-test-token".to_string());
     turn.config = Arc::new(config);
-    turn.model_info.slug = "gateway:k3".to_string();
+    Arc::make_mut(&mut turn.model_info).slug = "gateway:k3".to_string();
     let mut provider =
         create_oss_provider_with_base_url(&format!("{}/v1", server.uri()), WireApi::Claude);
     provider.experimental_bearer_token = Some("provider-token".to_string());

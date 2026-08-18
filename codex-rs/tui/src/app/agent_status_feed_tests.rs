@@ -56,7 +56,7 @@ fn agent_status_uses_bounded_buffered_activity() {
         .join("\n");
 
     insta::assert_snapshot!(rendered, @r###"
-    /agent
+    /subagents
     Sub-agents running
 
       • `/root/reviewer`
@@ -106,7 +106,7 @@ fn agent_status_uses_reasoning_summaries_only() {
         .join("\n");
 
     insta::assert_snapshot!(rendered, @r###"
-    /agent
+    /subagents
     Sub-agents running
 
       • `/root/reviewer`

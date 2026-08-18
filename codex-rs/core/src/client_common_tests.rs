@@ -150,7 +150,8 @@ fn serializes_text_verbosity_when_set() {
         Some("low")
     );
     assert_eq!(
-        v.get("max_output_tokens").and_then(serde_json::Value::as_u64),
+        v.get("max_output_tokens")
+            .and_then(serde_json::Value::as_u64),
         Some(123)
     );
 }

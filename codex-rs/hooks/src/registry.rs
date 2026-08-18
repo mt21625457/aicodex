@@ -20,6 +20,7 @@ use crate::events::stop::StopOutcome;
 use crate::events::stop::StopRequest;
 use crate::events::user_prompt_submit::UserPromptSubmitOutcome;
 use crate::events::user_prompt_submit::UserPromptSubmitRequest;
+use crate::mcp::HookMcpExecutor;
 use crate::types::Hook;
 use crate::types::HookEvent;
 use crate::types::HookPayload;
@@ -29,6 +30,7 @@ use codex_config::ConfigLayerStack;
 use codex_plugin::PluginHookSource;
 use codex_protocol::ThreadId;
 use codex_protocol::shell_environment::scrub_non_inheritable_env_vars;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Command;
 
@@ -42,6 +44,7 @@ pub struct HooksConfig {
     pub plugin_hook_load_warnings: Vec<String>,
     pub shell_program: Option<String>,
     pub shell_args: Vec<String>,
+    pub mcp_executor: Option<Arc<dyn HookMcpExecutor>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -57,16 +60,24 @@ pub struct Hooks {
 }
 
 impl Hooks {
-    /// Bind this session's hook runtime and output files to its thread.
+    /// Bind this session's hook runtime and output files to its thread, rejecting unloadable
+    /// required managed hooks.
     pub fn new(
         config: HooksConfig,
         thread_id: ThreadId,
-    ) -> (Self, Receiver<codex_protocol::protocol::HookCompletedEvent>) {
+    ) -> anyhow::Result<(Self, Receiver<codex_protocol::protocol::HookCompletedEvent>)> {
         let (result_sender, result_receiver) = async_channel::unbounded();
         let hooks = Self::from_config(config, |shell| {
             CommandHookRuntime::new(shell, thread_id, result_sender)
         });
-        (hooks, result_receiver)
+        let required_load_errors = hooks.engine.required_load_errors();
+        if !required_load_errors.is_empty() {
+            anyhow::bail!(
+                "failed to load required managed hooks: {}",
+                required_load_errors.join("; ")
+            );
+        }
+        Ok((hooks, result_receiver))
     }
 
     /// Preserve in-flight background hooks while applying a refreshed configuration.
@@ -97,6 +108,7 @@ impl Hooks {
             config.plugin_hook_sources,
             config.plugin_hook_load_warnings,
             command_runtime,
+            config.mcp_executor,
         );
         Self {
             after_agent,

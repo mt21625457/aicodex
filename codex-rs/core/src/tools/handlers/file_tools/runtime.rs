@@ -141,7 +141,7 @@ pub(super) async fn read_file(
         output.push_str(OUTPUT_TRUNCATION_MARKER);
     }
     let key = FileReceiptKey {
-        environment_id: environment.environment_id.clone(),
+        environment_id: environment.selection.environment_id.clone(),
         path: canonical_path,
     };
     let mut receipt = FileReceipt {
@@ -223,7 +223,7 @@ pub(super) async fn edit_file(
     let (bytes, metadata) = read_editable_file(fs.as_ref(), &path, &sandbox, "edit_file").await?;
     let original_fingerprint = fingerprint(&bytes);
     let key = FileReceiptKey {
-        environment_id: environment.environment_id.clone(),
+        environment_id: environment.selection.environment_id.clone(),
         path: canonical_path,
     };
     validate_receipt(
@@ -343,7 +343,7 @@ pub(super) async fn write_file(
     .await?;
     let fs = environment.environment.get_filesystem();
     let key = FileReceiptKey {
-        environment_id: environment.environment_id.clone(),
+        environment_id: environment.selection.environment_id.clone(),
         path: canonical_path,
     };
     let existing = match fs.get_metadata(&path, Some(&sandbox)).await {
