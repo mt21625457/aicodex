@@ -7,38 +7,50 @@ use std::pin::Pin;
 use crate::AppendThreadItemsParams;
 use crate::ArchiveThreadParams;
 use crate::ArchiveThreadsParams;
+use crate::CreateProjectParams;
 use crate::CreateThreadParams;
 use crate::CreateThreadSectionParams;
+use crate::CreatedProject;
 use crate::DeleteThreadParams;
 use crate::DeleteThreadSectionParams;
 use crate::DeleteThreadsParams;
+use crate::DeletedProject;
 use crate::ItemPage;
 use crate::ListItemsParams;
+use crate::ListProjectsParams;
 use crate::ListThreadSectionsParams;
 use crate::ListThreadsParams;
 use crate::ListTurnsParams;
 use crate::LoadThreadHistoryParams;
+use crate::MoveProjectParams;
 use crate::MoveThreadToSectionParams;
 use crate::PrepareForkParams;
 use crate::PreparedFork;
+use crate::ProjectMoveOutcome;
 use crate::ReadThreadByRolloutPathParams;
 use crate::ReadThreadParams;
 use crate::RenameThreadSectionParams;
 use crate::ResumeThreadParams;
+use crate::RevertThreadParams;
 use crate::SearchThreadOccurrencesParams;
 use crate::SearchThreadsParams;
 use crate::StoredModelContext;
+use crate::StoredProject;
+use crate::StoredProjectsPage;
 use crate::StoredThread;
 use crate::StoredThreadHistory;
 use crate::StoredThreadSection;
 use crate::StoredThreadSectionsPage;
+use crate::ThreadMetadataPatch;
 use crate::ThreadOccurrenceSearchPage;
 use crate::ThreadPage;
 use crate::ThreadSearchPage;
 use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
 use crate::TurnPage;
+use crate::UpdateProjectParams;
 use crate::UpdateThreadMetadataParams;
+use crate::UpdatedProject;
 
 /// Future returned by [`ThreadStore`] operations.
 pub type ThreadStoreFuture<'a, T> = Pin<Box<dyn Future<Output = ThreadStoreResult<T>> + Send + 'a>>;
@@ -67,6 +79,31 @@ pub trait ThreadStore: Any + Send + Sync {
 
     /// Creates a new live thread.
     fn create_thread(&self, params: CreateThreadParams) -> ThreadStoreFuture<'_, ()>;
+
+    /// Stages host-owned metadata for a thread ID reserved before Core starts the thread.
+    ///
+    /// The entry remains in memory until the first successful metadata update for that thread.
+    /// Callers must remove it if startup fails before the store opens a live thread.
+    fn stage_pending_thread_metadata(
+        &self,
+        _thread_id: ThreadId,
+        _patch: ThreadMetadataPatch,
+    ) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "stage_pending_thread_metadata",
+            })
+        })
+    }
+
+    /// Removes host-owned metadata staged for a reserved thread ID.
+    fn remove_pending_thread_metadata(&self, _thread_id: ThreadId) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "remove_pending_thread_metadata",
+            })
+        })
+    }
 
     /// Reopens an existing thread for live appends.
     fn resume_thread(&self, params: ResumeThreadParams) -> ThreadStoreFuture<'_, ()>;
@@ -128,6 +165,21 @@ pub trait ThreadStore: Any + Send + Sync {
         Box::pin(async {
             Err(ThreadStoreError::Unsupported {
                 operation: "prepare_fork",
+            })
+        })
+    }
+
+    /// Reverts a paginated thread's durable history so it ends immediately before
+    /// `before_turn_id`.
+    ///
+    /// Callers must close the thread's live writer first. The logical thread id and semantic
+    /// metadata stay unchanged.
+    ///
+    /// Stores without paginated revert support can retain this default implementation.
+    fn revert_thread(&self, _params: RevertThreadParams) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "revert_thread",
             })
         })
     }
@@ -199,6 +251,71 @@ pub trait ThreadStore: Any + Send + Sync {
         })
     }
 
+    /// Whether this store supports durable host-owned projects.
+    fn supports_projects(&self) -> bool {
+        false
+    }
+
+    fn list_projects(
+        &self,
+        _params: ListProjectsParams,
+    ) -> ThreadStoreFuture<'_, StoredProjectsPage> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "project/list",
+            })
+        })
+    }
+
+    fn read_project(&self, _project_id: String) -> ThreadStoreFuture<'_, Option<StoredProject>> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "project/read",
+            })
+        })
+    }
+
+    fn create_project(
+        &self,
+        _params: CreateProjectParams,
+    ) -> ThreadStoreFuture<'_, CreatedProject> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "project/create",
+            })
+        })
+    }
+
+    fn update_project(
+        &self,
+        _params: UpdateProjectParams,
+    ) -> ThreadStoreFuture<'_, Option<UpdatedProject>> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "project/update",
+            })
+        })
+    }
+
+    fn move_project(
+        &self,
+        _params: MoveProjectParams,
+    ) -> ThreadStoreFuture<'_, Option<ProjectMoveOutcome>> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "project/move",
+            })
+        })
+    }
+
+    fn delete_project(&self, _project_id: String) -> ThreadStoreFuture<'_, Option<DeletedProject>> {
+        Box::pin(async {
+            Err(ThreadStoreError::Unsupported {
+                operation: "project/delete",
+            })
+        })
+    }
+
     /// Whether paginated threads can hydrate durable history through turn and item lists.
     fn supports_paginated_history_lists(&self) -> bool {
         false
@@ -246,14 +363,18 @@ pub trait ThreadStore: Any + Send + Sync {
         })
     }
 
-    /// Applies a literal metadata patch and returns the updated thread.
+    /// Applies a literal metadata patch and returns the updated thread when one was materialized.
+    ///
+    /// `None` means the update succeeded without materializing a thread, for example because the
+    /// implementation filtered the patch to a no-op. Callers that require a `StoredThread` must
+    /// perform a fallback read.
     ///
     /// Implementations should apply the supplied fields directly. Policy such as deciding whether
     /// an append-derived preview should be emitted belongs above the store.
     fn update_thread_metadata(
         &self,
         params: UpdateThreadMetadataParams,
-    ) -> ThreadStoreFuture<'_, StoredThread>;
+    ) -> ThreadStoreFuture<'_, Option<StoredThread>>;
 
     /// Moves a thread to, within, or out of a server-ordered section.
     fn move_thread_to_section(

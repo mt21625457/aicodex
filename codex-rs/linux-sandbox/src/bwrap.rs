@@ -290,6 +290,8 @@ fn create_bwrap_flags_full_filesystem(command: Vec<String>, options: BwrapOption
         args.push("--proc".to_string());
         args.push("/proc".to_string());
     }
+    args.push("--cap-drop".to_string());
+    args.push("ALL".to_string());
     args.push("--".to_string());
     args.extend(command);
     BwrapArgs {
@@ -345,6 +347,8 @@ fn create_bwrap_flags(
         args.push("--chdir".to_string());
         args.push(path_to_string(normalized_command_cwd.as_path()));
     }
+    args.push("--cap-drop".to_string());
+    args.push("ALL".to_string());
     args.push("--".to_string());
     args.extend(command);
     Ok(BwrapArgs {
@@ -1421,6 +1425,8 @@ mod tests {
                 "--unshare-net".to_string(),
                 "--proc".to_string(),
                 "/proc".to_string(),
+                "--cap-drop".to_string(),
+                "ALL".to_string(),
                 "--".to_string(),
                 "/bin/true".to_string(),
             ]
@@ -1561,12 +1567,12 @@ mod tests {
         let real_blocked_str = path_to_string(&blocked);
         let policy = FileSystemSandboxPolicy::restricted(vec![
             FileSystemSandboxEntry {
-                path: FileSystemPath::Path { path: link_root },
+                path: link_root.into(),
                 access: FileSystemAccessMode::Write,
                 missing_path_behavior: None,
             },
             FileSystemSandboxEntry {
-                path: FileSystemPath::Path { path: link_blocked },
+                path: link_blocked.into(),
                 access: FileSystemAccessMode::Deny,
                 missing_path_behavior: None,
             },
@@ -1611,9 +1617,7 @@ mod tests {
         let real_memories_str = path_to_string(&real_memories);
         let logical_memories_str = path_to_string(&logical_memories);
         let policy = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
-            path: FileSystemPath::Path {
-                path: logical_memories_root,
-            },
+            path: logical_memories_root.into(),
             access: FileSystemAccessMode::Write,
             missing_path_behavior: None,
         }]);
@@ -1653,7 +1657,7 @@ mod tests {
         let root = AbsolutePathBuf::from_absolute_path(&root).expect("absolute root");
         let agents_link_str = path_to_string(&agents_link);
         let policy = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
-            path: FileSystemPath::Path { path: root },
+            path: root.into(),
             access: FileSystemAccessMode::Write,
             missing_path_behavior: None,
         }]);
@@ -1690,12 +1694,12 @@ mod tests {
         let real_linked_private_str = path_to_string(&linked_private);
         let policy = FileSystemSandboxPolicy::restricted(vec![
             FileSystemSandboxEntry {
-                path: FileSystemPath::Path { path: link_root },
+                path: link_root.into(),
                 access: FileSystemAccessMode::Write,
                 missing_path_behavior: None,
             },
             FileSystemSandboxEntry {
-                path: FileSystemPath::Path { path: link_private },
+                path: link_private.into(),
                 access: FileSystemAccessMode::Deny,
                 missing_path_behavior: None,
             },
@@ -1725,14 +1729,12 @@ mod tests {
         let blocked_root = AbsolutePathBuf::from_absolute_path(&blocked).expect("absolute blocked");
         let policy = FileSystemSandboxPolicy::restricted(vec![
             FileSystemSandboxEntry {
-                path: FileSystemPath::Path {
-                    path: workspace_root,
-                },
+                path: workspace_root.into(),
                 access: FileSystemAccessMode::Write,
                 missing_path_behavior: None,
             },
             FileSystemSandboxEntry {
-                path: FileSystemPath::Path { path: blocked_root },
+                path: blocked_root.into(),
                 access: FileSystemAccessMode::Read,
                 missing_path_behavior: None,
             },
@@ -1773,9 +1775,7 @@ mod tests {
         let workspace_root =
             AbsolutePathBuf::from_absolute_path(&workspace).expect("absolute workspace");
         let policy = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
-            path: FileSystemPath::Path {
-                path: workspace_root,
-            },
+            path: workspace_root.into(),
             access: FileSystemAccessMode::Write,
             missing_path_behavior: None,
         }]);
@@ -1823,9 +1823,7 @@ mod tests {
         let workspace_root =
             AbsolutePathBuf::from_absolute_path(&workspace).expect("absolute workspace");
         let policy = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
-            path: FileSystemPath::Path {
-                path: workspace_root,
-            },
+            path: workspace_root.into(),
             access: FileSystemAccessMode::Write,
             missing_path_behavior: None,
         }]);
@@ -1870,9 +1868,7 @@ mod tests {
         let link_workspace_root = AbsolutePathBuf::from_absolute_path(&link_workspace)
             .expect("absolute symlinked workspace");
         let policy = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
-            path: FileSystemPath::Path {
-                path: link_workspace_root,
-            },
+            path: link_workspace_root.into(),
             access: FileSystemAccessMode::Write,
             missing_path_behavior: None,
         }]);
@@ -2139,10 +2135,9 @@ mod tests {
         std::fs::create_dir(&readable_root).expect("create readable root");
 
         let policy = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
-            path: FileSystemPath::Path {
-                path: AbsolutePathBuf::try_from(readable_root.as_path())
-                    .expect("absolute readable root"),
-            },
+            path: AbsolutePathBuf::try_from(readable_root.as_path())
+                .expect("absolute readable root")
+                .into(),
             access: FileSystemAccessMode::Read,
             missing_path_behavior: None,
         }]);
@@ -2206,14 +2201,12 @@ mod tests {
         let blocked_str = path_to_string(blocked.as_path());
         let policy = FileSystemSandboxPolicy::restricted(vec![
             FileSystemSandboxEntry {
-                path: FileSystemPath::Path {
-                    path: writable_root,
-                },
+                path: writable_root.into(),
                 access: FileSystemAccessMode::Write,
                 missing_path_behavior: None,
             },
             FileSystemSandboxEntry {
-                path: FileSystemPath::Path { path: blocked },
+                path: blocked.into(),
                 access: FileSystemAccessMode::Deny,
                 missing_path_behavior: None,
             },
@@ -2281,21 +2274,17 @@ mod tests {
             AbsolutePathBuf::from_absolute_path(&docs_public).expect("absolute docs/public");
         let policy = FileSystemSandboxPolicy::restricted(vec![
             FileSystemSandboxEntry {
-                path: FileSystemPath::Path {
-                    path: writable_root,
-                },
+                path: writable_root.into(),
                 access: FileSystemAccessMode::Write,
                 missing_path_behavior: None,
             },
             FileSystemSandboxEntry {
-                path: FileSystemPath::Path { path: docs.clone() },
+                path: docs.clone().into(),
                 access: FileSystemAccessMode::Read,
                 missing_path_behavior: None,
             },
             FileSystemSandboxEntry {
-                path: FileSystemPath::Path {
-                    path: docs_public.clone(),
-                },
+                path: docs_public.clone().into(),
                 access: FileSystemAccessMode::Write,
                 missing_path_behavior: None,
             },
@@ -2343,16 +2332,12 @@ mod tests {
                 missing_path_behavior: None,
             },
             FileSystemSandboxEntry {
-                path: FileSystemPath::Path {
-                    path: blocked.clone(),
-                },
+                path: blocked.clone().into(),
                 access: FileSystemAccessMode::Deny,
                 missing_path_behavior: None,
             },
             FileSystemSandboxEntry {
-                path: FileSystemPath::Path {
-                    path: allowed.clone(),
-                },
+                path: allowed.clone().into(),
                 access: FileSystemAccessMode::Write,
                 missing_path_behavior: None,
             },
@@ -2415,16 +2400,12 @@ mod tests {
                 missing_path_behavior: None,
             },
             FileSystemSandboxEntry {
-                path: FileSystemPath::Path {
-                    path: blocked.clone(),
-                },
+                path: blocked.clone().into(),
                 access: FileSystemAccessMode::Deny,
                 missing_path_behavior: None,
             },
             FileSystemSandboxEntry {
-                path: FileSystemPath::Path {
-                    path: allowed_file.clone(),
-                },
+                path: allowed_file.clone().into(),
                 access: FileSystemAccessMode::Write,
                 missing_path_behavior: None,
             },
@@ -2492,19 +2473,17 @@ mod tests {
         let allowed_str = path_to_string(allowed.as_path());
         let policy = FileSystemSandboxPolicy::restricted(vec![
             FileSystemSandboxEntry {
-                path: FileSystemPath::Path {
-                    path: writable_root,
-                },
+                path: writable_root.into(),
                 access: FileSystemAccessMode::Write,
                 missing_path_behavior: None,
             },
             FileSystemSandboxEntry {
-                path: FileSystemPath::Path { path: blocked },
+                path: blocked.into(),
                 access: FileSystemAccessMode::Deny,
                 missing_path_behavior: None,
             },
             FileSystemSandboxEntry {
-                path: FileSystemPath::Path { path: allowed },
+                path: allowed.into(),
                 access: FileSystemAccessMode::Write,
                 missing_path_behavior: None,
             },
@@ -2551,9 +2530,7 @@ mod tests {
                 missing_path_behavior: None,
             },
             FileSystemSandboxEntry {
-                path: FileSystemPath::Path {
-                    path: blocked.clone(),
-                },
+                path: blocked.clone().into(),
                 access: FileSystemAccessMode::Deny,
                 missing_path_behavior: None,
             },
@@ -2597,9 +2574,7 @@ mod tests {
                 missing_path_behavior: None,
             },
             FileSystemSandboxEntry {
-                path: FileSystemPath::Path {
-                    path: blocked_file.clone(),
-                },
+                path: blocked_file.clone().into(),
                 access: FileSystemAccessMode::Deny,
                 missing_path_behavior: None,
             },

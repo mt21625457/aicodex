@@ -8,6 +8,8 @@ use codex_config::ConfigLayerEntry;
 use codex_config::ConfigLayerSource;
 use codex_config::ConfigLayerStack;
 use codex_config::ConfigRequirementsToml;
+use codex_exec_server::CapabilityRootDiscovery;
+use codex_exec_server::ExecutorCapabilityDiscoverySnapshot;
 use codex_exec_server::LOCAL_FS;
 use codex_extension_api::ConversationHistory;
 use codex_extension_api::ExtensionData;
@@ -18,6 +20,8 @@ use codex_extension_api::ExtensionWarning;
 use codex_extension_api::NoopTurnItemEmitter;
 use codex_extension_api::PreviousWorldStateSection;
 use codex_extension_api::RenderedWorldStateFragment;
+use codex_extension_api::SkillInvocationInput;
+use codex_extension_api::SkillInvocationKind;
 use codex_extension_api::ThreadStartInput;
 use codex_extension_api::ToolCall;
 use codex_extension_api::ToolPayload;
@@ -33,6 +37,7 @@ use codex_otel::THREAD_SKILLS_KEPT_TOTAL_METRIC;
 use codex_otel::THREAD_SKILLS_TRUNCATED_METRIC;
 use codex_protocol::capabilities::CapabilityRootLocation;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
+use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::SKILLS_INSTRUCTIONS_CLOSE_TAG;
 use codex_protocol::protocol::SKILLS_INSTRUCTIONS_OPEN_TAG;
@@ -75,6 +80,9 @@ use opentelemetry_sdk::metrics::data::MetricData;
 use pretty_assertions::assert_eq;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+#[path = "skills_extension/shadow_task_context_tests.rs"]
+mod shadow_task_context_tests;
 
 static NEXT_CODEX_HOME_ID: AtomicUsize = AtomicUsize::new(0);
 const SKILLS_INTRO_WITH_ABSOLUTE_PATHS: &str = "A skill is a set of instructions provided through a `SKILL.md` source. Below is the list of skills that can be used. Each entry includes a name, description, and source locator. `file` locators are on the host filesystem, `executor package` locators are owned by their execution environment, `orchestrator package` locators are opaque package identifiers, and `custom resource` locators use their provider's access mechanism.";
@@ -843,6 +851,146 @@ async fn shadow_selection_uses_host_catalog_when_instructions_are_disabled() -> 
 }
 
 #[tokio::test]
+async fn shadow_lru_selector_recovers_a_skill_invoked_on_an_earlier_turn() -> TestResult {
+    let provider = Arc::new(StaticSkillProvider {
+        catalog: SkillCatalog {
+            entries: vec![test_entry(
+                SkillSourceKind::Host,
+                "host",
+                "host/lint-fix",
+                "lint-fix/SKILL.md",
+            )],
+            warnings: Vec::new(),
+        },
+        read_requests: Arc::new(Mutex::new(Vec::new())),
+        list_calls: None,
+        fail_first_list: false,
+    });
+    let metrics = MetricsClient::new(
+        MetricsConfig::in_memory(
+            "test",
+            "codex-skills-extension",
+            env!("CARGO_PKG_VERSION"),
+            InMemoryMetricExporter::default(),
+        )
+        .with_runtime_reader(),
+    )?;
+    let mut builder = ExtensionRegistryBuilder::new();
+    install_with_providers_and_metrics(
+        &mut builder,
+        SkillProviders::new().with_host_provider(provider),
+        Some(metrics.clone()),
+        skills_extension_config,
+    );
+    let registry = builder.build();
+    let session_store = ExtensionData::new("session");
+    let thread_store = ExtensionData::new("thread");
+    let mut config = default_config();
+    config.include_instructions = false;
+    config.shadow_selection_enabled = true;
+    registry.thread_lifecycle_contributors()[0]
+        .on_thread_start(ThreadStartInput {
+            config: &config,
+            session_source: &SessionSource::Cli,
+            persistent_thread_state_available: true,
+            environments: &[],
+            mcp_resource_client: None,
+            extension_metrics: None,
+            session_store: &session_store,
+            thread_store: &thread_store,
+        })
+        .await;
+
+    for (turn_id, text) in [("turn-1", "Fix lint errors."), ("turn-2", "continue")] {
+        let turn_store = ExtensionData::new(turn_id);
+        let fragments = registry.turn_input_contributors()[0]
+            .contribute(
+                TurnInputContext {
+                    turn_id: turn_id.to_string(),
+                    user_input: vec![UserInput::Text {
+                        text: text.to_string(),
+                        text_elements: Vec::new(),
+                    }],
+                    environments: Vec::new(),
+                },
+                /*extension_metrics*/ None,
+                &session_store,
+                &thread_store,
+                &turn_store,
+            )
+            .await;
+        assert!(fragments.is_empty());
+        registry.skill_invocation_contributors()[0]
+            .on_skill_invocation(SkillInvocationInput {
+                session_store: &session_store,
+                thread_store: &thread_store,
+                turn_store: &turn_store,
+                turn_id,
+                skill_resource: "lint-fix/SKILL.md",
+                kind: SkillInvocationKind::Implicit,
+            })
+            .await;
+    }
+
+    let snapshot = metrics.snapshot()?;
+    let metric = snapshot
+        .scope_metrics()
+        .flat_map(opentelemetry_sdk::metrics::data::ScopeMetrics::metrics)
+        .find(|metric| metric.name() == "codex.skills.shadow_selection.invocation")
+        .ok_or("shadow invocation metric should be recorded")?;
+    let mut selector_hits = match metric.data() {
+        AggregatedMetrics::U64(MetricData::Sum(sum)) => sum
+            .data_points()
+            .filter_map(|point| {
+                let method = point
+                    .attributes()
+                    .find(|attribute| attribute.key.as_str() == "method")?
+                    .value
+                    .as_str();
+                if !matches!(
+                    method.as_ref(),
+                    "lru_v1"
+                        | "lru_plus_lexical_v1"
+                        | "lru_plus_character_routing_v1"
+                        | "lru_plus_lexical_character_routing_v1"
+                ) {
+                    return None;
+                }
+                let hit = point
+                    .attributes()
+                    .find(|attribute| attribute.key.as_str() == "hit")?
+                    .value
+                    .as_str()
+                    .to_string();
+                Some((method.to_string(), hit, point.value()))
+            })
+            .collect::<Vec<_>>(),
+        data => panic!("unexpected shadow invocation metric data: {data:?}"),
+    };
+    selector_hits.sort();
+
+    assert_eq!(
+        vec![
+            (
+                "lru_plus_character_routing_v1".to_string(),
+                "true".to_string(),
+                2,
+            ),
+            (
+                "lru_plus_lexical_character_routing_v1".to_string(),
+                "true".to_string(),
+                2,
+            ),
+            ("lru_plus_lexical_v1".to_string(), "true".to_string(), 2),
+            ("lru_v1".to_string(), "false".to_string(), 1),
+            ("lru_v1".to_string(), "true".to_string(), 1),
+        ],
+        selector_hits
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn selected_executor_catalog_follows_step_availability_and_reuses_its_cache() -> TestResult {
     let read_requests = Arc::new(Mutex::new(Vec::new()));
     let list_calls = Arc::new(AtomicUsize::new(0));
@@ -899,6 +1047,7 @@ async fn selected_executor_catalog_follows_step_availability_and_reuses_its_cach
         environment_id: "turn-env".to_string(),
         cwd: PathUri::parse("file:///workspace").expect("cwd URI"),
         workspace_roots: Vec::new(),
+        config: EnvironmentConfigState::FromThread,
     };
     let available_sections = registry.context_contributors()[0]
         .contribute_world_state(WorldStateContributionInput {
@@ -998,6 +1147,45 @@ async fn selected_executor_catalog_follows_step_availability_and_reuses_its_cach
         .ok_or("restored skills should render")?;
     assert!(restored_fragment.body().contains("lint-fix"));
     assert_eq!(1, list_calls.load(Ordering::Relaxed));
+
+    let failed_discovery = ExecutorCapabilityDiscoverySnapshot::new(
+        &selected_roots,
+        vec![Err("exec-server transport disconnected".to_string())],
+        Default::default(),
+    );
+    let recovered_discovery = ExecutorCapabilityDiscoverySnapshot::new(
+        &selected_roots,
+        vec![Ok(Arc::new(CapabilityRootDiscovery {
+            id: "lint-fix".to_string(),
+            path: PathUri::parse("file:///skills/lint-fix")?,
+            plugin: None,
+            skills: Vec::new(),
+            namespace_manifests: Vec::new(),
+            warnings: Vec::new(),
+            error: None,
+        }))],
+        Default::default(),
+    );
+    for (turn_id, discovery, expected_list_calls) in [
+        ("failed-discovery", &failed_discovery, 2),
+        ("recovered-discovery", &recovered_discovery, 3),
+        ("cached-discovery", &recovered_discovery, 3),
+    ] {
+        registry.context_contributors()[0]
+            .contribute_world_state(WorldStateContributionInput {
+                thread_id: codex_protocol::ThreadId::new(),
+                turn_id,
+                environments: &[],
+                ready_selected_capability_roots: &selected_roots,
+                executor_capability_discovery: Some(discovery),
+                extension_metrics: None,
+                session_store: &session_store,
+                thread_store: &thread_store,
+                turn_store: &ExtensionData::new(turn_id),
+            })
+            .await;
+        assert_eq!(expected_list_calls, list_calls.load(Ordering::Relaxed));
+    }
 
     let mut listing_disabled_config = config.clone();
     listing_disabled_config.include_instructions = false;
@@ -1581,6 +1769,7 @@ async fn root_qualified_locator_selects_only_the_matching_executor_skill() -> Te
                 environment_id: "env-1".to_string(),
                 cwd: PathUri::parse("file:///workspace").expect("cwd URI"),
                 workspace_roots: Vec::new(),
+                config: EnvironmentConfigState::FromThread,
             }],
             ready_selected_capability_roots: &selected_roots,
             executor_capability_discovery: None,
@@ -2219,6 +2408,7 @@ fn default_config() -> TestConfig {
 fn skills_extension_config(config: &TestConfig) -> SkillsExtensionConfig {
     SkillsExtensionConfig {
         include_instructions: config.include_instructions,
+        max_context_tokens: None,
         bundled_skills_enabled: config.bundled_skills_enabled,
         orchestrator_skills_enabled: config.orchestrator_skills_enabled,
         shadow_selection_enabled: config.shadow_selection_enabled,

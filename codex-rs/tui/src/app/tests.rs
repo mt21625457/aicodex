@@ -2,6 +2,10 @@
 
 #[path = "tests/advanced_reasoning_tests.rs"]
 mod advanced_reasoning_tests;
+#[path = "tests/background_exit_tests.rs"]
+mod background_exit_tests;
+#[path = "tests/connector_policy.rs"]
+mod connector_policy;
 #[path = "tests/key_chords.rs"]
 mod key_chords;
 #[path = "tests/mcp_startup.rs"]
@@ -14,6 +18,8 @@ mod safety_buffering;
 mod session_lifecycle_requests;
 mod session_summary;
 mod startup;
+#[path = "tests/thread_usage.rs"]
+mod thread_usage;
 #[path = "tests/turn_submission.rs"]
 mod turn_submission;
 
@@ -147,6 +153,29 @@ macro_rules! assert_app_snapshot {
 
 fn test_absolute_path(path: &str) -> AbsolutePathBuf {
     AbsolutePathBuf::try_from(PathBuf::from(path)).expect("absolute test path")
+}
+
+#[tokio::test]
+async fn pasted_text_normalizes_mixed_line_endings_at_app_boundary() -> Result<()> {
+    let mut app = make_test_app().await;
+    let mut app_server = start_config_write_test_app_server(&app).await?;
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+
+    app.handle_tui_event(
+        &mut tui,
+        &mut app_server,
+        TuiEvent::Paste("line1\r\nline2\rline3\nline4".to_string()),
+    )
+    .await?;
+
+    assert_snapshot!(app.chat_widget.composer_text_with_pending(), @r"
+    line1
+    line2
+    line3
+    line4
+    ");
+
+    Ok(())
 }
 
 #[tokio::test]
@@ -286,6 +315,53 @@ async fn cyber_model_auto_review_notice_snapshot() -> Result<()> {
     };
     let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 80));
     assert_app_snapshot!("cyber_model_auto_review_notice", rendered);
+    Ok(())
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn external_editor_writable_directory_rejected_snapshot() -> Result<()> {
+    struct RestoreVisual(Option<std::ffi::OsString>);
+
+    impl Drop for RestoreVisual {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => unsafe { std::env::set_var("VISUAL", value) },
+                None => unsafe { std::env::remove_var("VISUAL") },
+            }
+        }
+    }
+
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let codex_home = app.chat_widget.config_ref().codex_home.clone();
+    let fallback_home = dirs::home_dir()
+        .expect("home directory")
+        .join(".codex")
+        .abs();
+    let workspace_codex_home = app.chat_widget.config_ref().cwd.join(".codex");
+    let permission_profile = PermissionProfile::workspace_write_with(
+        &[codex_home, fallback_home, workspace_codex_home],
+        codex_protocol::permissions::NetworkSandboxPolicy::Restricted,
+        /*exclude_tmpdir_env_var*/ true,
+        /*exclude_slash_tmp*/ true,
+    );
+    app.chat_widget
+        .set_permission_profile_from_session_snapshot(PermissionProfileSnapshot::legacy(
+            permission_profile,
+        ))?;
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    let restore_visual = RestoreVisual(std::env::var_os("VISUAL"));
+    unsafe { std::env::set_var("VISUAL", "editor") };
+
+    app.launch_external_editor(&mut tui).await;
+    drop(restore_visual);
+
+    let cell = match app_event_rx.try_recv() {
+        Ok(AppEvent::InsertHistoryCell(cell)) => cell,
+        other => panic!("expected InsertHistoryCell event, got {other:?}"),
+    };
+    let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 80));
+    assert_app_snapshot!("external_editor_writable_directory_rejected", rendered);
     Ok(())
 }
 
@@ -665,6 +741,81 @@ async fn active_history_batch_is_delivered_without_replay_buffering() -> Result<
     assert_eq!(delivered, event);
 
     Ok(())
+}
+
+#[tokio::test]
+async fn replay_thread_snapshot_renders_only_retained_agent_message_deltas() {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let thread_id = ThreadId::new();
+    let session = test_thread_session(thread_id, test_path_buf("/tmp/project"));
+    app.thread_event_channels.insert(
+        thread_id,
+        ThreadEventChannel::new_with_session(
+            THREAD_EVENT_CHANNEL_CAPACITY,
+            session.clone(),
+            Vec::new(),
+        ),
+    );
+    app.activate_thread_channel(thread_id).await;
+    app.chat_widget.handle_thread_session(session);
+
+    {
+        let channel = app
+            .thread_event_channels
+            .get(&thread_id)
+            .expect("thread channel should exist");
+        let mut store = channel.store.lock().await;
+        for chunk in 0..65 {
+            let marker = format!("chunk {chunk:02}");
+            let text = format!("{marker}\n{}\n", "x".repeat(4096 - marker.len() - 2));
+            store.push_notification(agent_message_delta_notification(
+                thread_id,
+                "turn-budget",
+                "item-budget",
+                &text,
+            ));
+        }
+    }
+
+    app.store_active_thread_receiver().await;
+    let (_receiver, snapshot) = app
+        .activate_thread_for_replay(thread_id)
+        .await
+        .expect("detached thread should reactivate for replay");
+    app.replay_thread_snapshot(snapshot, /*resume_restored_queue*/ false);
+
+    let mut rendered = Vec::new();
+    loop {
+        app.chat_widget.on_commit_tick();
+        let mut inserted = false;
+        while let Ok(event) = app_event_rx.try_recv() {
+            if let AppEvent::InsertHistoryCell(cell) = event {
+                rendered.push(lines_to_single_string(&cell.display_lines(/*width*/ 80)));
+                inserted = true;
+            }
+        }
+        if !inserted {
+            break;
+        }
+    }
+    if let Some(lines) = app.chat_widget.active_cell_transcript_lines(/*width*/ 80) {
+        rendered.push(lines_to_single_string(&lines));
+    }
+    let markers = rendered
+        .iter()
+        .flat_map(|text| text.lines())
+        .filter_map(|line| line.split_once("chunk "))
+        .map(|(_, marker)| format!("chunk {}", marker.trim()))
+        .collect::<Vec<_>>();
+
+    assert_eq!(markers.len(), 64);
+    assert_snapshot!(
+        format!("{}\n{}", markers.first().expect("first marker"), markers.last().expect("last marker")),
+        @r"
+        chunk 01
+        chunk 64
+        "
+    );
 }
 
 #[tokio::test]
@@ -1572,13 +1723,13 @@ async fn open_agent_picker_preserves_running_hints_until_observed_completion() -
         let event = app_event_rx.try_recv().expect("agent status history cell");
         if let AppEvent::InsertHistoryCell(cell) = event {
             let rendered = lines_to_single_string(&cell.display_lines(/*width*/ 80));
-            if rendered.contains("/agent") {
+            if rendered.contains("/subagents") {
                 break rendered;
             }
         }
     };
     assert_snapshot!(status, @r###"
-    /agent
+    /subagents
     Sub-agents running
 
       • `/root/child`
@@ -3531,6 +3682,7 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
                 ephemeral: false,
                 section: None,
                 section_entered_at: None,
+                project_id: None,
                 history_mode: Default::default(),
                 model_provider: "agent-provider".to_string(),
                 created_at: 1,
@@ -3629,6 +3781,7 @@ async fn inactive_thread_started_notification_preserves_primary_model_when_path_
                 ephemeral: false,
                 section: None,
                 section_entered_at: None,
+                project_id: None,
                 history_mode: Default::default(),
                 model_provider: "agent-provider".to_string(),
                 created_at: 1,
@@ -3694,6 +3847,7 @@ async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
         ephemeral: false,
         section: None,
         section_entered_at: None,
+        project_id: None,
         history_mode: Default::default(),
         model_provider: "read-provider".to_string(),
         created_at: 1,
@@ -4030,6 +4184,114 @@ async fn side_parent_status_prioritizes_input_over_approval() -> Result<()> {
             .get(&side_thread_id)
             .and_then(|state| state.parent_status),
         None
+    );
+
+    app.enqueue_thread_request(
+        parent_thread_id,
+        request_user_input_request(parent_thread_id, "turn-eviction", "input-eviction"),
+    )
+    .await?;
+    let chunk = "x".repeat(4 * 1024);
+    app.enqueue_thread_notification(
+        parent_thread_id,
+        agent_message_delta_notification(
+            parent_thread_id,
+            "turn-eviction",
+            "item-eviction",
+            &chunk,
+        ),
+    )
+    .await?;
+    app.enqueue_thread_request(
+        parent_thread_id,
+        exec_approval_request(
+            parent_thread_id,
+            "turn-eviction",
+            "approval-eviction",
+            /*approval_id*/ None,
+        ),
+    )
+    .await?;
+
+    let side_footer = |app: &App| {
+        render_bottom_popup(&app.chat_widget, /*width*/ 120)
+            .lines()
+            .find_map(|line| {
+                line.find("Side from main thread")
+                    .map(|start| line[start..].trim().to_string())
+            })
+            .expect("side conversation footer should be rendered")
+    };
+    assert_eq!(
+        app.side_threads
+            .get(&side_thread_id)
+            .and_then(|state| state.parent_status),
+        Some(SideParentStatus::NeedsInput)
+    );
+    let input_footer = side_footer(&app);
+
+    for _ in 0..64 {
+        app.enqueue_thread_notification(
+            parent_thread_id,
+            agent_message_delta_notification(
+                parent_thread_id,
+                "turn-eviction",
+                "item-eviction",
+                &chunk,
+            ),
+        )
+        .await?;
+    }
+    assert_eq!(
+        app.side_threads
+            .get(&side_thread_id)
+            .and_then(|state| state.parent_status),
+        Some(SideParentStatus::NeedsApproval)
+    );
+    let approval_footer = side_footer(&app);
+    assert!(
+        app.thread_event_channels
+            .get(&parent_thread_id)
+            .expect("parent thread channel should exist")
+            .store
+            .lock()
+            .await
+            .has_pending_thread_approvals()
+    );
+
+    app.enqueue_thread_notification(
+        parent_thread_id,
+        agent_message_delta_notification(
+            parent_thread_id,
+            "turn-eviction",
+            "item-eviction",
+            &chunk,
+        ),
+    )
+    .await?;
+    assert_eq!(
+        app.side_threads
+            .get(&side_thread_id)
+            .and_then(|state| state.parent_status),
+        None
+    );
+    let cleared_footer = side_footer(&app);
+    assert!(
+        !app.thread_event_channels
+            .get(&parent_thread_id)
+            .expect("parent thread channel should exist")
+            .store
+            .lock()
+            .await
+            .has_pending_thread_approvals()
+    );
+    assert_snapshot!(
+        format!("{input_footer}\n{approval_footer}\n{cleared_footer}"),
+        @r"
+        Side from main thread · main needs input · ctrl + / to switch · ctrl + c to close
+        Side from main thread · main needs approval · ctrl + / to switch · ctrl + c to close
+        Side from main thread · ctrl + / to switch · ctrl + c to close
+        "
     );
 
     Ok(())
@@ -4791,6 +5053,7 @@ async fn make_test_app() -> App {
         chat_widget,
         workspace_command_runner: None,
         launch_cwd: config.cwd.to_path_buf(),
+        runtime_working_directory_override: None,
         config,
         state_db: None,
         cli_kv_overrides: Vec::new(),
@@ -4801,6 +5064,9 @@ async fn make_test_app() -> App {
         runtime_permission_profile_override: None,
         file_search,
         transcript_cells: Vec::new(),
+        last_rendered_history_tail: None,
+        last_thread_usage_status_cell: None,
+        pending_thread_usage_history_refresh: false,
         overlay: None,
         deferred_history_lines: Vec::new(),
         has_emitted_history_lines: false,
@@ -4826,6 +5092,7 @@ async fn make_test_app() -> App {
         thread_event_channels: HashMap::new(),
         thread_event_listener_tasks: HashMap::new(),
         agent_navigation: AgentNavigationState::default(),
+        agents_overview: Default::default(),
         side_threads: HashMap::new(),
         abandoned_side_threads: HashSet::new(),
         active_thread_id: None,
@@ -4836,6 +5103,8 @@ async fn make_test_app() -> App {
         pending_primary_events: VecDeque::new(),
         pending_app_server_requests: PendingAppServerRequests::default(),
         pending_startup_thread_start: false,
+        startup_protected_input_boundary: false,
+        startup_pending_protected_request: false,
         rate_limit_hard_stop_generation: 0,
         pending_plugin_enabled_writes: HashMap::new(),
         pending_hook_enabled_writes: HashMap::new(),
@@ -4861,6 +5130,7 @@ async fn make_test_app_with_channels() -> (
             chat_widget,
             workspace_command_runner: None,
             launch_cwd: config.cwd.to_path_buf(),
+            runtime_working_directory_override: None,
             config,
             state_db: None,
             cli_kv_overrides: Vec::new(),
@@ -4871,6 +5141,9 @@ async fn make_test_app_with_channels() -> (
             runtime_permission_profile_override: None,
             file_search,
             transcript_cells: Vec::new(),
+            last_rendered_history_tail: None,
+            last_thread_usage_status_cell: None,
+            pending_thread_usage_history_refresh: false,
             overlay: None,
             deferred_history_lines: Vec::new(),
             has_emitted_history_lines: false,
@@ -4896,6 +5169,7 @@ async fn make_test_app_with_channels() -> (
             thread_event_channels: HashMap::new(),
             thread_event_listener_tasks: HashMap::new(),
             agent_navigation: AgentNavigationState::default(),
+            agents_overview: Default::default(),
             side_threads: HashMap::new(),
             abandoned_side_threads: HashSet::new(),
             active_thread_id: None,
@@ -4906,6 +5180,8 @@ async fn make_test_app_with_channels() -> (
             pending_primary_events: VecDeque::new(),
             pending_app_server_requests: PendingAppServerRequests::default(),
             pending_startup_thread_start: false,
+            startup_protected_input_boundary: false,
+            startup_pending_protected_request: false,
             rate_limit_hard_stop_generation: 0,
             pending_plugin_enabled_writes: HashMap::new(),
             pending_hook_enabled_writes: HashMap::new(),
@@ -5810,6 +6086,7 @@ fn session_start_error_surfaces_archived_guidance_without_rollout_path() {
             "/Users/me/.codex/archived_sessions/rollout.jsonl",
         )),
         thread_id,
+        history_mode: None,
     };
     let expected = format!(
         "session {thread_id} is archived. Run `codex unarchive {thread_id}` to unarchive it first."
@@ -6113,6 +6390,7 @@ async fn remote_resume_current_cwd_rejection_snapshot() -> Result<()> {
             crate::resume_picker::SessionTarget {
                 path: None,
                 thread_id: ThreadId::new(),
+                history_mode: None,
             },
         )
         .await?;
@@ -6155,6 +6433,7 @@ async fn remote_exec_resume_current_cwd_is_rejected() -> Result<()> {
             crate::resume_picker::SessionTarget {
                 path: None,
                 thread_id: ThreadId::new(),
+                history_mode: None,
             },
         )
         .await?;
@@ -6192,6 +6471,7 @@ async fn in_app_resume_session_cwd_without_metadata_is_non_fatal() -> Result<()>
             crate::resume_picker::SessionTarget {
                 path: None,
                 thread_id: ThreadId::new(),
+                history_mode: None,
             },
         )
         .await?;
@@ -6254,6 +6534,7 @@ async fn remote_resume_keeps_server_only_cwd_out_of_local_config() -> Result<()>
             crate::resume_picker::SessionTarget {
                 path: Some(rollout_path),
                 thread_id: ThreadId::from_string(&thread_id)?,
+                history_mode: None,
             },
         )
         .await?;
@@ -6269,26 +6550,39 @@ async fn remote_resume_keeps_server_only_cwd_out_of_local_config() -> Result<()>
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn in_app_resume_uses_configured_or_explicit_cwd() -> Result<()> {
-    for (configured_mode, has_explicit_cwd, has_remote_exec, expected_directory) in [
-        ("current", false, false, "launch"),
-        ("session", false, false, "session"),
-        ("session", true, false, "explicit"),
-        ("session", false, true, "session"),
-        ("session", true, true, "explicit"),
+    let temp_dir = tempdir()?;
+    let codex_home = temp_dir.path().join("codex-home");
+    let launch_cwd = temp_dir.path().join("launch");
+    let active_cwd = temp_dir.path().join("active");
+    let session_cwd = temp_dir.path().join("session");
+    let explicit_cwd = temp_dir.path().join("explicit");
+    let runtime_cwd = temp_dir.path().join("runtime");
+    for directory in [
+        &codex_home,
+        &launch_cwd,
+        &active_cwd,
+        &session_cwd,
+        &explicit_cwd,
+        &runtime_cwd,
     ] {
-        let temp_dir = tempdir()?;
-        let codex_home = temp_dir.path().join("codex-home");
-        let launch_cwd = temp_dir.path().join("launch");
-        let active_cwd = temp_dir.path().join("active");
-        let session_cwd = temp_dir.path().join("session");
-        let explicit_cwd = temp_dir.path().join("explicit");
-        std::fs::create_dir_all(&codex_home)?;
-        std::fs::create_dir_all(&launch_cwd)?;
-        std::fs::create_dir_all(&active_cwd)?;
-        std::fs::create_dir_all(&session_cwd)?;
-        std::fs::create_dir_all(&explicit_cwd)?;
+        std::fs::create_dir_all(directory)?;
+    }
+    let mut local_app_server = None;
+    let mut remote_app_server = None;
+
+    for (configured_mode, has_explicit_cwd, has_remote_exec, has_runtime_cwd, expected_directory) in [
+        ("current", false, false, false, "launch"),
+        ("session", false, false, false, "session"),
+        ("session", true, false, false, "explicit"),
+        ("session", false, true, false, "session"),
+        ("session", true, true, false, "explicit"),
+        ("current", false, false, true, "runtime"),
+        ("current", true, false, true, "runtime"),
+        ("session", false, false, true, "runtime"),
+        ("session", true, false, true, "runtime"),
+    ] {
         std::fs::write(
             codex_home.join("config.toml"),
             format!("[tui]\nresume_cwd = \"{configured_mode}\"\n"),
@@ -6331,9 +6625,6 @@ async fn in_app_resume_uses_configured_or_explicit_cwd() -> Result<()> {
             ),
         )?;
         let thread_id = ThreadId::from_string(&thread_id)?;
-        let state_db =
-            crate::init_state_db_for_app_server_target(&config, &crate::AppServerTarget::Embedded)
-                .await?;
         let environment_manager = if has_remote_exec {
             Arc::new(
                 EnvironmentManager::create_for_tests(
@@ -6348,30 +6639,41 @@ async fn in_app_resume_uses_configured_or_explicit_cwd() -> Result<()> {
         } else {
             Arc::new(EnvironmentManager::default_for_tests())
         };
-        let mut app_server = crate::start_app_server_for_picker(
-            &config,
-            &crate::AppServerTarget::Embedded,
-            state_db.clone(),
-            Arc::clone(&environment_manager),
-        )
-        .await?;
+        let server = if has_remote_exec {
+            &mut remote_app_server
+        } else {
+            &mut local_app_server
+        };
+        let app_server = match server {
+            Some(server) => server,
+            slot @ None => slot.insert(
+                crate::start_app_server_for_picker(
+                    &config,
+                    &crate::AppServerTarget::Embedded,
+                    /*state_db*/ None,
+                    Arc::clone(&environment_manager),
+                )
+                .await?,
+            ),
+        };
         let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
         app.config = config;
-        app.launch_cwd = launch_cwd;
-        app.state_db = state_db;
+        app.launch_cwd = launch_cwd.clone();
         app.environment_manager = environment_manager;
-        app.harness_overrides.cwd = has_explicit_cwd.then_some(explicit_cwd);
+        app.harness_overrides.cwd = has_explicit_cwd.then_some(explicit_cwd.clone());
+        app.runtime_working_directory_override = has_runtime_cwd.then_some(runtime_cwd.clone());
         app.chat_widget
-            .handle_thread_session_quiet(test_thread_session(ThreadId::new(), active_cwd));
+            .handle_thread_session_quiet(test_thread_session(ThreadId::new(), active_cwd.clone()));
         let mut tui = crate::tui::test_support::make_test_tui()?;
 
         let control = app
             .resume_target_session(
                 &mut tui,
-                &mut app_server,
+                app_server,
                 crate::resume_picker::SessionTarget {
                     path: Some(rollout_path),
                     thread_id,
+                    history_mode: None,
                 },
             )
             .await?;
@@ -6387,20 +6689,12 @@ async fn in_app_resume_uses_configured_or_explicit_cwd() -> Result<()> {
             &expected_cwd,
         ));
         assert_eq!(app.chat_widget.thread_id(), Some(thread_id));
+    }
 
-        let control = Box::pin(app.handle_event(
-            &mut tui,
-            &mut app_server,
-            AppEvent::ForkCurrentSession { name: None },
-        ))
-        .await?;
-
-        assert!(matches!(control, AppRunControl::Continue));
-        assert!(!crate::session_resume::cwds_differ(
-            app.chat_widget.config_ref().cwd.as_path(),
-            &expected_cwd,
-        ));
-        assert_ne!(app.chat_widget.thread_id(), Some(thread_id));
+    if let Some(app_server) = local_app_server {
+        app_server.shutdown().await?;
+    }
+    if let Some(app_server) = remote_app_server {
         app_server.shutdown().await?;
     }
 
@@ -6484,6 +6778,7 @@ async fn remembered_current_cwd_stays_at_launch_across_in_app_resumes() -> Resul
         targets.push(crate::resume_picker::SessionTarget {
             path: Some(rollout_path),
             thread_id: ThreadId::from_string(&thread_id)?,
+            history_mode: None,
         });
     }
     let state_db =
