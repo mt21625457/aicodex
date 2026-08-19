@@ -815,7 +815,6 @@ impl MessageProcessor {
 
     /// Handle a standalone JSON-RPC response originating from the peer.
     pub(crate) async fn process_response(&self, response: JSONRPCResponse) {
-        tracing::info!("<- response: {:?}", response);
         let JSONRPCResponse { id, result, .. } = response;
         self.outgoing.notify_client_response(id, result).await
     }
@@ -1502,6 +1501,9 @@ impl MessageProcessor {
                     .login_account(request_id.clone(), params)
                     .await
             }
+            ClientRequest::BedrockDiscover { .. } | ClientRequest::BedrockSetup { .. } => Err(
+                crate::error_code::method_not_found("Amazon Bedrock setup is not implemented"),
+            ),
             ClientRequest::LogoutAccount { .. } => {
                 self.account_processor
                     .logout_account(request_id.clone())

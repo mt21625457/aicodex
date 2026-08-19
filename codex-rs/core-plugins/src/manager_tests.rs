@@ -5618,7 +5618,7 @@ plugins = true
 
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/ps/plugins/suggested"))
+        .and(path("/ps/plugins/suggested/codex"))
         .and(query_param("scope", "GLOBAL"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "enabled": true,
@@ -5678,7 +5678,7 @@ plugins = true
 
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/ps/plugins/suggested"))
+        .and(path("/ps/plugins/suggested/codex"))
         .and(query_param("scope", "GLOBAL"))
         .and(header("authorization", "Bearer Access Token"))
         .and(header("chatgpt-account-id", "account_id"))
@@ -5691,15 +5691,12 @@ plugins = true
                         {
                             "id": "plugin_slack",
                             "name": "slack",
-                            "release": {
-                                "display_name": "Slack",
-                                "app_ids": ["connector_slack"]
-                            }
+                            "display_name": "Slack"
                         },
                         {
                             "id": "plugin_github",
                             "name": "github",
-                            "release": {"display_name": "GitHub"}
+                            "display_name": "GitHub"
                         }
                     ]
                 }))
@@ -5719,13 +5716,11 @@ plugins = true
                 config_id: "github@openai-curated-remote".to_string(),
                 remote_plugin_id: "plugin_github".to_string(),
                 display_name: "GitHub".to_string(),
-                app_connector_ids: Vec::new(),
             },
             RecommendedPlugin {
                 config_id: "slack@openai-curated-remote".to_string(),
                 remote_plugin_id: "plugin_slack".to_string(),
                 display_name: "Slack".to_string(),
-                app_connector_ids: vec!["connector_slack".to_string()],
             },
         ],
     };
@@ -5754,24 +5749,24 @@ plugins = true
     );
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/ps/plugins/suggested"))
+        .and(path("/ps/plugins/suggested/codex"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "enabled": true,
             "plugins": [
                 {
                     "id": "plugin_linear",
                     "name": "linear",
-                    "release": {"display_name": "Linear"}
+                    "display_name": "Linear"
                 },
                 {
                     "id": "plugin_github",
                     "name": "github",
-                    "release": {"display_name": "GitHub"}
+                    "display_name": "GitHub"
                 },
                 {
                     "id": "plugin_slack",
                     "name": "slack",
-                    "release": {"display_name": "Slack"}
+                    "display_name": "Slack"
                 }
             ]
         })))
@@ -5827,7 +5822,7 @@ plugins = true
 
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/ps/plugins/suggested"))
+        .and(path("/ps/plugins/suggested/codex"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "enabled": false,
             "plugins": []
@@ -5866,7 +5861,7 @@ plugins = true
 
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/ps/plugins/suggested"))
+        .and(path("/ps/plugins/suggested/codex"))
         .respond_with(ResponseTemplate::new(500).set_body_string("unavailable"))
         .expect(1)
         .mount(&server)
@@ -5885,7 +5880,7 @@ plugins = true
 
     server.reset().await;
     Mock::given(method("GET"))
-        .and(path("/ps/plugins/suggested"))
+        .and(path("/ps/plugins/suggested/codex"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "enabled": true,
             "plugins": []
@@ -6779,6 +6774,61 @@ fn remote_installed_plugins_cache_refresh_coalesces_materializations() {
         unrelated_callback_count.load(std::sync::atomic::Ordering::Relaxed),
         0
     );
+}
+
+#[tokio::test]
+async fn background_remote_installed_bundle_sync_stays_deduped() {
+    let codex_home = TempDir::new().unwrap();
+    write_file(
+        &codex_home.path().join(CONFIG_TOML_FILE),
+        r#"[features]
+plugins = true
+remote_plugin = true
+"#,
+    );
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/backend-api/ps/plugins/installed"))
+        .and(query_param("includeDownloadUrls", "true"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(200))
+                .set_body_json(serde_json::json!({
+                    "plugins": [],
+                    "pagination": {"next_page_token": null},
+                })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut config = load_config(codex_home.path(), codex_home.path()).await;
+    config.chatgpt_base_url = format!("{}/backend-api", server.uri());
+    let first_manager = std::sync::Arc::new(test_plugins_manager_with_options(
+        codex_home.path().to_path_buf(),
+        Some(Product::Codex),
+        Some(AuthMode::Chatgpt),
+    ));
+    let second_manager = std::sync::Arc::new(test_plugins_manager_with_options(
+        codex_home.path().to_path_buf(),
+        Some(Product::Codex),
+        Some(AuthMode::Chatgpt),
+    ));
+    let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
+
+    first_manager.maybe_start_remote_installed_plugin_bundle_sync(
+        &config,
+        Some(auth.clone()),
+        /*on_effective_plugins_changed*/ None,
+    );
+    second_manager.maybe_start_remote_installed_plugin_bundle_sync(
+        &config,
+        Some(auth),
+        /*on_effective_plugins_changed*/ None,
+    );
+
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    server.verify().await;
 }
 
 #[test]

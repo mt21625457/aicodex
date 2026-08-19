@@ -18,6 +18,7 @@ use codex_api::ResponsesWsRequest;
 use codex_api::TransportError;
 use codex_api::build_session_headers;
 use codex_api::create_text_param_for_request;
+use codex_extension_api::ExtensionMetrics;
 use codex_http_client::HttpClientFactory;
 use codex_login::AgentIdentityAuthPolicy;
 use codex_login::CodexAuth;
@@ -27,20 +28,25 @@ use codex_login::default_client::default_headers;
 use codex_model_provider::AgentIdentitySessionFallback;
 use codex_model_provider::ProviderAuthScope;
 use codex_model_provider::SharedModelProvider;
+use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::TokenUsage;
 use http::HeaderValue;
 use http::StatusCode;
 use serde_json::Value;
+use serde_json::json;
 use thiserror::Error;
 use tokio::sync::OwnedSemaphorePermit;
 use tokio::sync::Semaphore;
 use tokio::sync::oneshot;
 
 pub(crate) const MODEL: &str = "gpt-5.6-luna";
+pub(crate) const CLASSIFICATION_TOKEN_USAGE_METRIC: &str =
+    "codex.guardian_v2.classification.token_usage";
 const MAX_OUTPUT_BYTES: usize = 8 * 1024;
 const INITIAL_WEBSOCKET_CONNECTIONS: usize = 2;
 const MAX_WEBSOCKET_CONNECTIONS: usize = 16;
@@ -49,6 +55,7 @@ const MAX_WEBSOCKET_AGE: Duration = Duration::from_secs(55 * 60);
 const RESPONSES_WEBSOCKETS_BETA: &str = "responses_websockets=2026-02-06";
 const RESPONSES_LITE_METADATA_KEY: &str =
     "ws_request_header_x_openai_internal_codex_responses_lite";
+const TURN_METADATA_KEY: &str = "x-codex-turn-metadata";
 
 /// Host-owned provider, authentication, and attribution for one Luna connection.
 pub struct LunaSamplerConfig {
@@ -70,6 +77,8 @@ pub struct LunaSamplerConfig {
     pub service_tier: Option<String>,
     /// Luna model's host-resolved encrypted-compaction compatibility hash.
     pub luna_compaction_hash: Option<String>,
+    /// Host-provided metrics capability with the owning session's attribution.
+    pub metrics: Option<Arc<dyn ExtensionMetrics>>,
 }
 
 /// One tool-less structured Luna request over an already-open connection.
@@ -117,7 +126,10 @@ pub enum LunaSamplerError {
 
 struct PooledConnection {
     connection: ResponsesWebsocketConnection,
-    connected_at: Instant,
+    // The bridge routes by thread ID, so each socket needs its own identity.
+    thread_id: String,
+    expires_at: Instant,
+    auth_changes: Option<tokio::sync::watch::Receiver<u64>>,
 }
 
 struct ConnectionLease {
@@ -138,6 +150,34 @@ impl ConnectionLease {
 struct ActiveRequest {
     supersede: oneshot::Sender<()>,
     scored: Arc<AtomicBool>,
+}
+
+fn record_token_usage(metrics: Option<&dyn ExtensionMetrics>, token_usage: Option<&TokenUsage>) {
+    let (Some(metrics), Some(token_usage)) = (metrics, token_usage) else {
+        return;
+    };
+
+    for (token_type, value) in [
+        ("total", token_usage.total_tokens.max(0)),
+        ("input", token_usage.input_tokens.max(0)),
+        ("cached_input", token_usage.cached_input()),
+        (
+            "cache_write_input",
+            token_usage.cache_write_input_tokens.max(0),
+        ),
+        ("non_cached_input", token_usage.non_cached_input()),
+        ("output", token_usage.output_tokens.max(0)),
+        (
+            "reasoning_output",
+            token_usage.reasoning_output_tokens.max(0),
+        ),
+    ] {
+        metrics.histogram(
+            CLASSIFICATION_TOKEN_USAGE_METRIC,
+            value,
+            &[("token_type", token_type)],
+        );
+    }
 }
 
 /// A bounded pool of authenticated Responses WebSockets dedicated to Luna sampling.
@@ -178,6 +218,8 @@ impl LunaSampler {
             .api_provider()
             .await
             .map_err(LunaSamplerError::Provider)?;
+        let auth_manager = self.config.provider.auth_manager();
+        let auth_changes = auth_manager.map(|manager| manager.auth_change_receiver());
         let auth = self
             .config
             .provider
@@ -189,9 +231,19 @@ impl LunaSampler {
             .await
             .map_err(LunaSamplerError::Provider)?
             .auth;
+        let thread_id = ThreadId::new().to_string();
         let mut headers = build_session_headers(
             Some(self.config.session_id.clone()),
-            Some(self.config.thread_id.clone()),
+            Some(thread_id.clone()),
+        );
+        headers.insert("x-openai-subagent", HeaderValue::from_static("guardian"));
+        headers.insert(
+            "x-codex-window-id",
+            HeaderValue::from_str(&format!("{thread_id}:0")).map_err(|error| {
+                LunaSamplerError::Api(ApiError::Stream(format!(
+                    "invalid classifier window ID: {error}"
+                )))
+            })?,
         );
         headers.insert(
             "openai-beta",
@@ -204,7 +256,7 @@ impl LunaSampler {
         if let Some(originator) = self.config.originator.as_deref() {
             add_originator_header(&mut headers, originator);
         }
-        if let Ok(request_id) = HeaderValue::from_str(&self.config.thread_id) {
+        if let Ok(request_id) = HeaderValue::from_str(&thread_id) {
             headers.insert("x-client-request-id", request_id);
         }
 
@@ -244,10 +296,20 @@ impl LunaSampler {
             .await
             .map_err(|_| LunaSamplerError::ConnectionTimeout)?
             .map_err(LunaSamplerError::Api)?;
+        if auth_changes
+            .as_ref()
+            .is_some_and(|auth| auth.has_changed().unwrap_or(true))
+        {
+            return Err(LunaSamplerError::Api(ApiError::Stream(
+                "authentication changed while connecting".into(),
+            )));
+        }
 
         Ok(PooledConnection {
             connection,
-            connected_at: Instant::now(),
+            thread_id,
+            expires_at: Instant::now() + MAX_WEBSOCKET_AGE,
+            auth_changes,
         })
     }
 
@@ -264,7 +326,11 @@ impl LunaSampler {
                 .pop();
             match idle {
                 Some(connection)
-                    if connection.connected_at.elapsed() < MAX_WEBSOCKET_AGE
+                    if connection
+                        .auth_changes
+                        .as_ref()
+                        .is_none_or(|auth| !auth.has_changed().unwrap_or(true))
+                        && Instant::now() < connection.expires_at
                         && !connection.connection.is_closed().await =>
                 {
                     break connection;
@@ -339,12 +405,7 @@ impl LunaSampler {
 
     /// Sends one structured, tool-less request on an exclusively leased WebSocket.
     pub async fn sample(&self, request: LunaSamplingRequest) -> Result<String, LunaSamplerError> {
-        let metadata = HashMap::from([
-            ("session_id".to_owned(), self.config.session_id.clone()),
-            ("thread_id".to_owned(), self.config.thread_id.clone()),
-            ("turn_id".to_owned(), request.turn_id),
-            (RESPONSES_LITE_METADATA_KEY.to_owned(), "true".to_owned()),
-        ]);
+        let turn_id = request.turn_id;
         let mut input = vec![
             ResponseItem::AdditionalTools {
                 id: None,
@@ -389,7 +450,7 @@ impl LunaSampler {
             phase: None,
             internal_chat_message_metadata_passthrough: None,
         });
-        let request = ResponsesApiRequest {
+        let mut request = ResponsesApiRequest {
             model: MODEL.to_owned(),
             instructions: String::new(),
             input,
@@ -412,7 +473,7 @@ impl LunaSampler {
                 &Some(request.output_schema),
                 /*output_schema_strict*/ true,
             ),
-            client_metadata: Some(metadata),
+            client_metadata: None,
         };
         let (supersede, mut superseded) = oneshot::channel();
         let scored = Arc::new(AtomicBool::new(false));
@@ -459,6 +520,26 @@ impl LunaSampler {
                     return Err(error);
                 }
             };
+            let thread_id = &lease.connection.thread_id;
+            let turn_metadata = json!({
+                "session_id": self.config.session_id,
+                "thread_id": thread_id,
+                "guardian_classifier_source_thread_id": self.config.thread_id,
+                "turn_id": turn_id,
+                "request_kind": "guardian_classifier",
+                "is_guardian_mode": true,
+            })
+            .to_string();
+            request.client_metadata = Some(HashMap::from([
+                ("session_id".to_owned(), self.config.session_id.clone()),
+                ("thread_id".to_owned(), thread_id.clone()),
+                ("turn_id".to_owned(), turn_id.clone()),
+                ("x-openai-subagent".to_owned(), "guardian".to_owned()),
+                // Classifier requests do not advance their own context window.
+                ("x-codex-window-id".to_owned(), format!("{thread_id}:0")),
+                (RESPONSES_LITE_METADATA_KEY.to_owned(), "true".to_owned()),
+                (TURN_METADATA_KEY.to_owned(), turn_metadata),
+            ]));
             let mut stream = match lease
                 .connection
                 .connection
@@ -521,7 +602,8 @@ impl LunaSampler {
                             }
                         }
                     }
-                    ResponseEvent::Completed { .. } => {
+                    ResponseEvent::Completed { token_usage, .. } => {
+                        record_token_usage(self.config.metrics.as_deref(), token_usage.as_ref());
                         lease.reuse();
                         if !output.is_empty() {
                             return Ok(output);
@@ -545,6 +627,7 @@ impl LunaSampler {
                 if serde_json::from_str::<serde_json::Map<String, Value>>(&deltas).is_ok() {
                     scored.store(true, Ordering::Relaxed);
                     let mut remaining_events = stream.rx_event;
+                    let metrics = self.config.metrics.clone();
                     tokio::spawn(async move {
                         while let Some(event) = tokio::select! {
                             biased;
@@ -552,7 +635,8 @@ impl LunaSampler {
                             event = remaining_events.recv() => event,
                         } {
                             match event {
-                                Ok(ResponseEvent::Completed { .. }) => {
+                                Ok(ResponseEvent::Completed { token_usage, .. }) => {
+                                    record_token_usage(metrics.as_deref(), token_usage.as_ref());
                                     lease.reuse();
                                     break;
                                 }

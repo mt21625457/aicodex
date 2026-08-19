@@ -2053,10 +2053,10 @@ dependencies = [
  "flate2",
  "futures",
  "hmac 0.12.1",
+ "http 1.4.0",
  "opentelemetry",
  "opentelemetry_sdk",
  "pretty_assertions",
- "reqwest 0.12.28",
  "rmcp",
  "serde",
  "serde_json",
@@ -3179,14 +3179,17 @@ name = "codex-feedback"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "codex-http-client",
  "codex-login",
  "codex-protocol",
  "log",
  "mime_guess",
  "pretty_assertions",
  "sentry",
+ "tokio",
  "tracing",
  "tracing-subscriber",
+ "wiremock",
 ]
 
 [[package]]
@@ -3309,7 +3312,6 @@ dependencies = [
  "codex-core",
  "codex-extension-api",
  "codex-features",
- "codex-history",
  "codex-http-client",
  "codex-login",
  "codex-model-provider",
@@ -4143,6 +4145,7 @@ dependencies = [
  "shlex",
  "tree-sitter",
  "tree-sitter-bash",
+ "tree-sitter-powershell",
  "url",
  "which 8.0.0",
 ]
@@ -7687,9 +7690,9 @@ dependencies = [
 
 [[package]]
 name = "h2"
-version = "0.4.13"
+version = "0.4.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f44da3a8150a6703ed5d34e164b875fd14c2cdab9af1252a9a1020bde2bdc54"
+checksum = "a9f37a958b41b3b19ee2707c06439c0e9e547e847223eb791ecb0cb821c65e27"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -14521,6 +14524,16 @@ name = "tree-sitter-language"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "009994f150cc0cd50ff54917d5bc8bffe8cad10ca10d81c34da2ec421ae61782"
+
+[[package]]
+name = "tree-sitter-powershell"
+version = "0.26.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3faf304d44b9ddd4a7d97804bb8de7daf564336dd5a526dc6de5b39238243022"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
 
 [[package]]
 name = "tree_magic_mini"

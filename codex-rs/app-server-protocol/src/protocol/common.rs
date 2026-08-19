@@ -1168,6 +1168,20 @@ client_request_definitions! {
         response: v2::LoginAccountResponse,
     },
 
+    #[experimental("account/bedrock/discover")]
+    BedrockDiscover => "account/bedrock/discover" {
+        params: v2::BedrockDiscoverParams,
+        serialization: global_shared_read("account-auth"),
+        response: v2::BedrockDiscoverResponse,
+    },
+
+    #[experimental("account/bedrock/setup")]
+    BedrockSetup => "account/bedrock/setup" {
+        params: v2::BedrockSetupParams,
+        serialization: global("account-auth"),
+        response: v2::BedrockSetupResponse,
+    },
+
     CancelLoginAccount => "account/login/cancel" {
         params: v2::CancelLoginAccountParams,
         serialization: global("account-auth"),
@@ -1824,6 +1838,8 @@ server_notification_definitions! {
     ItemStarted => "item/started" (v2::ItemStartedNotification),
     ItemGuardianApprovalReviewStarted => "item/autoApprovalReview/started" (v2::ItemGuardianApprovalReviewStartedNotification),
     ItemGuardianApprovalReviewCompleted => "item/autoApprovalReview/completed" (v2::ItemGuardianApprovalReviewCompletedNotification),
+    #[experimental("autoApprovalReview/strictReviewRequired")]
+    StrictReviewRequired => "autoApprovalReview/strictReviewRequired" (v2::StrictReviewRequiredNotification),
     ItemCompleted => "item/completed" (v2::ItemCompletedNotification),
     /// This event is internal-only. Used by Codex Cloud.
     RawResponseItemCompleted => "rawResponseItem/completed" (v2::RawResponseItemCompletedNotification),
@@ -2326,8 +2342,10 @@ mod tests {
             request_id: request_id(),
             params: v2::McpResourceReadParams {
                 thread_id: Some("thread-1".to_string()),
+                origin_call_id: None,
                 server: "server-a".to_string(),
                 uri: "file:///tmp/resource".to_string(),
+                connector_id: None,
             },
         };
         assert_eq!(
@@ -2513,8 +2531,10 @@ mod tests {
             request_id: request_id(),
             params: v2::McpResourceReadParams {
                 thread_id: None,
+                origin_call_id: None,
                 server: "server-a".to_string(),
                 uri: "file:///tmp/resource".to_string(),
+                connector_id: None,
             },
         };
         assert_eq!(mcp_resource_read.serialization_scope(), None);

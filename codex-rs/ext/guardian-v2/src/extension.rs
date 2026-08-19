@@ -3,14 +3,18 @@ use std::sync::Arc;
 use std::sync::Weak;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
+use std::time::Instant;
 use std::time::SystemTime;
 
 use codex_core::ThreadManager;
 use codex_core::config::Config;
+use codex_core::context::NodeReplReviewEvidence;
 use codex_extension_api::ApprovalReviewContributor;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionEventSink;
 use codex_extension_api::ExtensionFuture;
+use codex_extension_api::ExtensionMetrics;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::ExtensionWarning;
 use codex_extension_api::ResponseItem;
@@ -23,7 +27,6 @@ use codex_extension_api::ToolName;
 use codex_extension_api::ToolPayload;
 use codex_extension_api::ToolStartInput;
 use codex_features::Feature;
-use codex_history::RolloutItem;
 use codex_login::AgentIdentityAuthPolicy;
 use codex_login::AuthManager;
 use codex_model_provider::create_model_provider;
@@ -40,7 +43,6 @@ use crate::LunaSamplerError;
 use crate::LunaSamplingRequest;
 use crate::config::GuardianV2Config;
 use crate::sampler::MODEL;
-use crate::transcript::truncate_entry;
 
 struct GuardianAction {
     tool_name: ToolName,
@@ -181,12 +183,44 @@ fn truncate_action_value(value: &mut serde_json::Value, max_tokens: usize) {
         serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
     }
 }
+/// Explains why Guardian v2 requires synchronous approval review.
+#[derive(Debug, Eq, PartialEq)]
+pub enum StrictReviewReason {
+    ElevatedRisk,
+    StaleScore,
+}
+
 struct GuardianV2Enabled;
+
+// Sampled when the approval contributor evaluates the cached Luna score.
+const TOOL_CALL_LAG_METRIC: &str = "codex.guardian_v2.tool_call_lag";
+const REVIEW_FALLBACK_METRIC: &str = "codex.guardian_v2.review_fallback";
+const CLASSIFICATION_METRIC: &str = "codex.guardian_v2.classification";
+const CLASSIFICATION_DURATION_METRIC: &str = "codex.guardian_v2.classification.duration_ms";
 
 #[derive(Default)]
 struct GuardianV2ScoreProgress {
     latest_tool_call: AtomicUsize,
     latest_scored_tool_call: AtomicUsize,
+    latest_failed_tool_call: AtomicUsize,
+    metrics: Option<Arc<dyn ExtensionMetrics>>,
+}
+
+fn record_classification(
+    metrics: Option<&dyn ExtensionMetrics>,
+    duration: Duration,
+    outcome: &str,
+) {
+    let Some(metrics) = metrics else {
+        return;
+    };
+    let tags = [("outcome", outcome)];
+    metrics.counter(CLASSIFICATION_METRIC, /*inc*/ 1, &tags);
+    metrics.histogram(
+        CLASSIFICATION_DURATION_METRIC,
+        i64::try_from(duration.as_millis()).unwrap_or(i64::MAX),
+        &tags,
+    );
 }
 
 #[derive(Clone)]
@@ -249,16 +283,24 @@ impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
                     .map(|originator| originator.0.clone()),
                 service_tier: input.config.service_tier.clone(),
                 luna_compaction_hash,
+                metrics: input.extension_metrics.clone(),
             })
             .await;
 
             match sampler {
                 Ok(sampler) => {
+                    if guardian_config.transcript.include_images {
+                        input
+                            .thread_store
+                            .get_or_init(NodeReplReviewEvidence::default)
+                            .enable_image_capture();
+                    }
                     input.thread_store.insert(sampler);
                     input.thread_store.insert(guardian_config);
-                    input
-                        .thread_store
-                        .insert(GuardianV2ScoreProgress::default());
+                    input.thread_store.insert(GuardianV2ScoreProgress {
+                        metrics: input.extension_metrics.clone(),
+                        ..Default::default()
+                    });
                     input.thread_store.insert(GuardianV2Enabled);
                 }
                 Err(error) => self.event_sink.emit_warning(ExtensionWarning {
@@ -277,40 +319,90 @@ impl ApprovalReviewContributor for GuardianV2Extension {
         _session_store: &'a ExtensionData,
         thread_store: &'a ExtensionData,
         _prompt: &'a str,
+        extension_metrics: Option<Arc<dyn ExtensionMetrics>>,
     ) -> ExtensionFuture<'a, Option<ReviewDecision>> {
         Box::pin(async move {
             thread_store.get::<GuardianV2Enabled>()?;
             let guardian_config = thread_store.get::<GuardianV2Config>()?;
             let score_progress = thread_store.get::<GuardianV2ScoreProgress>()?;
+            let latest_scored_tool_call = score_progress
+                .latest_scored_tool_call
+                .load(Ordering::Acquire);
             let tool_call_lag = score_progress
                 .latest_tool_call
                 .load(Ordering::Acquire)
-                .saturating_sub(
-                    score_progress
-                        .latest_scored_tool_call
-                        .load(Ordering::Acquire),
+                .saturating_sub(latest_scored_tool_call);
+            if let Some(metrics) = &extension_metrics {
+                metrics.histogram(
+                    TOOL_CALL_LAG_METRIC,
+                    i64::try_from(tool_call_lag).unwrap_or(i64::MAX),
+                    &[],
                 );
+            }
             if tool_call_lag > guardian_config.max_tool_call_lag {
+                thread_store.insert(StrictReviewReason::StaleScore);
+                if let Some(metrics) = &extension_metrics {
+                    metrics.counter(
+                        REVIEW_FALLBACK_METRIC,
+                        /*inc*/ 1,
+                        &[("fallback_reason", "score_lag")],
+                    );
+                }
+                return None;
+            }
+            if score_progress
+                .latest_failed_tool_call
+                .load(Ordering::Acquire)
+                > latest_scored_tool_call
+            {
+                thread_store.insert(StrictReviewReason::ElevatedRisk);
                 return None;
             }
 
-            thread_store
+            let score = thread_store
                 .get::<SecurityRiskScore>()
-                .and_then(|score| score.scores.get("action_risk").copied())
-                .filter(|score| *score < guardian_config.review_threshold)
-                .map(|_| ReviewDecision::Approved)
+                .and_then(|score| score.scores.get("action_risk").copied())?;
+            if score < guardian_config.review_threshold {
+                return Some(ReviewDecision::Approved);
+            }
+            if score >= guardian_config.review_threshold {
+                thread_store.insert(StrictReviewReason::ElevatedRisk);
+            }
+            None
         })
     }
 }
 
 impl ToolLifecycleContributor for GuardianV2Extension {
     fn on_tool_start<'a>(&'a self, input: ToolStartInput<'a>) -> ToolLifecycleFuture<'a> {
+        Box::pin(self.score_tool(input))
+    }
+}
+
+impl GuardianV2Extension {
+    fn record_fail_closed_score(thread_store: &ExtensionData, sampled_at: SystemTime) {
+        let score = SecurityRiskScore {
+            scores: BTreeMap::from([("action_risk".to_owned(), 1.0)]),
+            sampled_at: Some(sampled_at.into()),
+        };
+        thread_store.insert_if(score.clone(), |previous| {
+            previous.is_none_or(|previous| previous.sampled_at <= score.sampled_at)
+        });
+    }
+
+    async fn score_tool(&self, input: ToolStartInput<'_>) {
+        let classification_started_at = Instant::now();
         let Some(sampler) = input.thread_store.get::<LunaSampler>() else {
-            return Box::pin(std::future::ready(()));
+            return;
         };
         let Some(guardian_config) = input.thread_store.get::<GuardianV2Config>() else {
-            return Box::pin(std::future::ready(()));
+            return;
         };
+        let Some(score_progress) = input.thread_store.get::<GuardianV2ScoreProgress>() else {
+            return;
+        };
+        let metrics = score_progress.metrics.clone();
+        let sampled_at = SystemTime::now();
         let parent_model = input.thread_store.get::<ModelInfo>();
         let model_defaults = parent_model
             .as_ref()
@@ -319,23 +411,25 @@ impl ToolLifecycleContributor for GuardianV2Extension {
         let guardian_config = match guardian_config.with_model_defaults(model_defaults) {
             Ok(config) => config,
             Err(error) => {
+                Self::record_fail_closed_score(input.thread_store, sampled_at);
+                record_classification(
+                    metrics.as_deref(),
+                    classification_started_at.elapsed(),
+                    "failure",
+                );
                 self.event_sink.emit_warning(ExtensionWarning {
                     thread_id: input.thread_store.level_id().to_owned(),
                     turn_id: Some(input.turn_id.to_owned()),
                     message: error,
                 });
-                return Box::pin(std::future::ready(()));
+                return;
             }
         };
         input.thread_store.insert(guardian_config.clone());
-        let Some(score_progress) = input.thread_store.get::<GuardianV2ScoreProgress>() else {
-            return Box::pin(std::future::ready(()));
-        };
         let tool_call_index = score_progress
             .latest_tool_call
             .fetch_add(/*val*/ 1, Ordering::Relaxed)
             .saturating_add(1);
-        let sampled_at = SystemTime::now();
         let latest_parent_compaction = input
             .conversation_history
             .items()
@@ -367,14 +461,13 @@ impl ToolLifecycleContributor for GuardianV2Extension {
                 _ => false,
             })
         {
-            let score = SecurityRiskScore {
-                scores: BTreeMap::from([("action_risk".to_owned(), 1.0)]),
-                sampled_at: Some(sampled_at.into()),
-            };
-            input.thread_store.insert_if(score.clone(), |previous| {
-                previous.is_none_or(|previous| previous.sampled_at <= score.sampled_at)
-            });
-            return Box::pin(std::future::ready(()));
+            Self::record_fail_closed_score(input.thread_store, sampled_at);
+            record_classification(
+                metrics.as_deref(),
+                classification_started_at.elapsed(),
+                "failure",
+            );
+            return;
         }
         let event_sink = Arc::clone(&self.event_sink);
         let thread_manager = self.thread_manager.clone();
@@ -391,18 +484,65 @@ impl ToolLifecycleContributor for GuardianV2Extension {
             .as_ref()
             .and_then(|model| model.auto_review_model_override.clone());
         let conversation_history = Arc::clone(&input.conversation_history);
+        let node_repl_images = if guardian_config.transcript.include_images {
+            input
+                .thread_store
+                .get::<NodeReplReviewEvidence>()
+                .map(|evidence| evidence.images())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
 
         tokio::spawn(async move {
+            let thread_context: Result<_, String> = async {
+                let parsed_thread_id =
+                    ThreadId::from_string(&thread_id).map_err(|error| error.to_string())?;
+                let manager = thread_manager
+                    .upgrade()
+                    .ok_or_else(|| "thread manager is unavailable".to_string())?;
+                let thread = manager
+                    .get_thread(parsed_thread_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok((manager, thread))
+            }
+            .await;
+            let (manager, thread) = match thread_context {
+                Ok(context) => context,
+                Err(error) => {
+                    score_progress
+                        .latest_failed_tool_call
+                        .fetch_max(tool_call_index, Ordering::Release);
+                    record_classification(
+                        metrics.as_deref(),
+                        classification_started_at.elapsed(),
+                        "failure",
+                    );
+                    event_sink.emit_warning(ExtensionWarning {
+                        thread_id,
+                        turn_id: Some(turn_id),
+                        message: format!("Guardian V2 risk scoring failed: {error}"),
+                    });
+                    return;
+                }
+            };
             let transcript = guardian_config
                 .transcript
                 .build(conversation_history.items());
             let images = guardian_config
                 .transcript
-                .images(conversation_history.items());
+                .images(conversation_history.items(), node_repl_images);
             drop(conversation_history);
             let planned_action = match action.render(guardian_config.max_action_tokens) {
                 Ok(planned_action) => planned_action,
                 Err(error) => {
+                    Self::record_fail_closed_score(thread.thread_extension_data(), sampled_at);
+                    record_classification(
+                        metrics.as_deref(),
+                        classification_started_at.elapsed(),
+                        "failure",
+                    );
                     event_sink.emit_warning(ExtensionWarning {
                         thread_id,
                         turn_id: Some(turn_id),
@@ -421,16 +561,8 @@ impl ToolLifecycleContributor for GuardianV2Extension {
                 format!("{planned_action}\n"),
                 ">>> APPROVAL REQUEST END\n".to_owned(),
             ]);
-            let result: Result<(), String> = async {
-                let parsed_thread_id =
-                    ThreadId::from_string(&thread_id).map_err(|error| error.to_string())?;
-                let manager = thread_manager
-                    .upgrade()
-                    .ok_or_else(|| "thread manager is unavailable".to_string())?;
-                let thread = manager
-                    .get_thread(parsed_thread_id)
-                    .await
-                    .map_err(|error| error.to_string())?;
+            let mut classification_finished_at = None;
+            let result: Result<&str, String> = async {
                 let config = thread.config().await;
                 let review_model_messages = if config.guardian_policy_config.is_none() {
                     let review_model_id = review_model_override.as_deref().unwrap_or_else(|| {
@@ -456,13 +588,7 @@ impl ToolLifecycleContributor for GuardianV2Extension {
                     None
                 };
                 let policy = config.resolve_guardian_policy(review_model_messages.as_ref());
-                let instructions = truncate_entry(
-                    &format!(
-                        "{}\n\n# Security Policy\n{policy}",
-                        guardian_config.classifier_instructions
-                    ),
-                    guardian_config.max_classifier_instruction_tokens,
-                );
+                let instructions = guardian_config.render_classifier_instructions(policy);
                 let output = match sampler
                     .sample(LunaSamplingRequest {
                         instructions,
@@ -495,7 +621,7 @@ impl ToolLifecycleContributor for GuardianV2Extension {
                     .await
                 {
                     Ok(output) => output,
-                    Err(LunaSamplerError::Superseded) => return Ok(()),
+                    Err(LunaSamplerError::Superseded) => return Ok("superseded"),
                     Err(error) => return Err(error.to_string()),
                 };
                 let output: serde_json::Value =
@@ -524,20 +650,27 @@ impl ToolLifecycleContributor for GuardianV2Extension {
                         previous.is_none_or(|previous| previous.sampled_at < score.sampled_at)
                     })
                 {
-                    return Ok(());
+                    return Ok("superseded");
                 }
                 score_progress
                     .latest_scored_tool_call
                     .fetch_max(tool_call_index, Ordering::Release);
-                if !config.ephemeral {
-                    thread
-                        .append_rollout_items(&[RolloutItem::SecurityRiskScore(score)])
-                        .await
-                        .map_err(|error| error.to_string())?;
-                }
-                Ok(())
+                classification_finished_at = Some(Instant::now());
+                Ok("success")
             }
             .await;
+            if result.is_err() {
+                Self::record_fail_closed_score(thread.thread_extension_data(), sampled_at);
+            }
+            record_classification(
+                metrics.as_deref(),
+                classification_finished_at
+                    .map(|finished_at: Instant| {
+                        finished_at.duration_since(classification_started_at)
+                    })
+                    .unwrap_or_else(|| classification_started_at.elapsed()),
+                result.as_deref().unwrap_or("failure"),
+            );
             if let Err(error) = result {
                 event_sink.emit_warning(ExtensionWarning {
                     thread_id,
@@ -546,8 +679,6 @@ impl ToolLifecycleContributor for GuardianV2Extension {
                 });
             }
         });
-
-        Box::pin(std::future::ready(()))
     }
 }
 
