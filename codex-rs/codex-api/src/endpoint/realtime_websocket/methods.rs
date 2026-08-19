@@ -945,6 +945,8 @@ impl RealtimeWebsocketClient {
         );
         request.headers_mut().extend(headers);
 
+        crate::aicodex_app_proof::apply_to_headers(request.headers_mut(), "GET", ws_url.as_str());
+
         info!("connecting realtime websocket: {ws_url}");
         // Realtime websocket TLS should honor the same custom-CA env vars as the rest of Codex's
         // outbound HTTPS and websocket traffic.

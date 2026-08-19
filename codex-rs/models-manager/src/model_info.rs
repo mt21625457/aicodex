@@ -24,7 +24,7 @@ const LOCAL_FRIENDLY_TEMPLATE: &str =
 const LOCAL_PRAGMATIC_TEMPLATE: &str = "You are a deeply pragmatic, effective software engineer.";
 const PERSONALITY_PLACEHOLDER: &str = "{{ personality }}";
 const DEFAULT_FALLBACK_CONTEXT_WINDOW: i64 = 272_000;
-const DEEPSEEK_FALLBACK_CONTEXT_WINDOW: i64 = 1_000_000;
+const DEEPSEEK_FALLBACK_CONTEXT_WINDOW: i64 = 1_048_576;
 const PERSONALITY_SECTION_HEADER: &str = "# Personality";
 
 pub fn with_config_overrides(mut model: ModelInfo, config: &ModelsManagerConfig) -> ModelInfo {

@@ -565,3 +565,67 @@ fn map_api_error_extracts_identity_auth_details_from_headers() {
     );
     assert_eq!(err.identity_error_code.as_deref(), Some("token_expired"));
 }
+
+#[test]
+fn map_api_error_maps_openai_compat_context_length_http_400() {
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::BAD_REQUEST,
+        url: Some("https://example.com/v1/chat/completions".to_string()),
+        headers: None,
+        body: Some(
+            "This model's maximum context length is 1048576 tokens. However, you requested 1048939 tokens (664939 in the messages, 384000 in the completion)"
+                .to_string(),
+        ),
+    }));
+
+    assert!(matches!(
+        err.details(),
+        CodexErrorDetails::ContextWindowExceeded
+    ));
+}
+
+#[test]
+fn map_api_error_maps_json_context_length_exceeded_code() {
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::BAD_REQUEST,
+        url: Some("https://example.com/v1/responses".to_string()),
+        headers: None,
+        body: Some(
+            r#"{"error":{"code":"context_length_exceeded","message":"Your input exceeds the context window of this model."}}"#
+                .to_string(),
+        ),
+    }));
+
+    assert!(matches!(
+        err.details(),
+        CodexErrorDetails::ContextWindowExceeded
+    ));
+}
+
+#[test]
+fn map_api_error_maps_api_wrapper_context_length_message() {
+    let err = map_api_error(ApiError::Api {
+        status: http::StatusCode::BAD_REQUEST,
+        message: "status_code=400, This model's maximum context length is 1048576 tokens. However, you requested 1048939 tokens".to_string(),
+    });
+
+    assert!(matches!(
+        err.details(),
+        CodexErrorDetails::ContextWindowExceeded
+    ));
+}
+
+#[test]
+fn map_api_error_does_not_treat_unrelated_400_as_context_window() {
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        status: http::StatusCode::BAD_REQUEST,
+        url: Some("https://example.com/v1/chat/completions".to_string()),
+        headers: None,
+        body: Some(r#"{"error":{"message":"invalid tool schema"}}"#.to_string()),
+    }));
+
+    assert!(matches!(
+        err.details(),
+        CodexErrorDetails::InvalidRequest(_)
+    ));
+}

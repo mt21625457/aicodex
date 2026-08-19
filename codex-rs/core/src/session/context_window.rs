@@ -31,10 +31,7 @@ pub(crate) async fn context_window_token_status(
     let active_context_tokens =
         recorded_context_tokens_for_context_window(sess, turn_context).await;
 
-    let auto_compact_context_limit = turn_context
-        .model_info
-        .resolved_context_window()
-        .map(|context_window| (context_window * 9) / 10);
+    let auto_compact_context_limit = turn_context.model_info.auto_compact_context_limit();
     let clamp_to_auto_compact_context = |limit: i64| {
         auto_compact_context_limit
             .map(|context_limit| limit.min(context_limit))
@@ -52,7 +49,11 @@ pub(crate) async fn context_window_token_status(
                 }
             });
     let model_auto_compact_token_limit = if turn_context.config.model_context_window.is_some() {
-        turn_context.model_info.auto_compact_token_limit
+        turn_context
+            .model_info
+            .auto_compact_token_limit
+            .map(clamp_to_auto_compact_context)
+            .or_else(|| turn_context.model_info.auto_compact_context_limit())
     } else {
         turn_context.model_info.auto_compact_token_limit()
     };

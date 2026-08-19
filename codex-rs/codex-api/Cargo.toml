@@ -15,11 +15,13 @@ codex-protocol = { workspace = true }
 codex-utils-rustls-provider = { workspace = true }
 codex-websocket-client = { workspace = true }
 futures = { workspace = true }
+hmac = { workspace = true }
 http = { workspace = true }
 reqwest = { workspace = true, features = ["json", "stream"] }
 schemars = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["raw_value"] }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["fs", "macros", "net", "rt", "sync", "time"] }
 tokio-tungstenite = { workspace = true }
@@ -29,7 +31,7 @@ eventsource-stream = { workspace = true }
 regex-lite = { workspace = true }
 tokio-util = { workspace = true, features = ["codec", "io"] }
 url = { workspace = true }
-uuid = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
 anyhow = { workspace = true }

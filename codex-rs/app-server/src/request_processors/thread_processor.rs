@@ -235,7 +235,11 @@ fn merge_persisted_resume_metadata(
     }
 
     typesafe_overrides.model = persisted_metadata.model.clone();
-    typesafe_overrides.model_provider = Some(persisted_metadata.model_provider.clone());
+    typesafe_overrides.model_provider = remap_oauth_gateway_provider_for_deepseek(
+        persisted_metadata.model.as_deref(),
+        Some(persisted_metadata.model_provider.clone()),
+        persisted_metadata.model_provider.as_str(),
+    );
 
     if let Some(reasoning_effort) = persisted_metadata.reasoning_effort.as_ref() {
         request_overrides.get_or_insert_with(HashMap::new).insert(
@@ -1609,6 +1613,11 @@ impl ThreadRequestProcessor {
         developer_instructions: Option<String>,
         personality: Option<Personality>,
     ) -> ConfigOverrides {
+        let model_provider = remap_oauth_gateway_provider_for_deepseek(
+            model.as_deref(),
+            model_provider,
+            self.config.model_provider_id.as_str(),
+        );
         ConfigOverrides {
             model,
             model_provider,
@@ -5812,10 +5821,61 @@ fn set_thread_name_from_title(thread: &mut Thread, title: String) {
     thread.name = Some(title);
 }
 
+fn unprefixed_model_slug(model: Option<&str>) -> String {
+    model
+        .unwrap_or_default()
+        .trim()
+        .rsplit(':')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn is_aicodex_gateway_provider(provider: &str) -> bool {
+    matches!(
+        provider,
+        "aicodex_gateway" | "aicodex_gateway_claude" | "aicodex_gateway_responses"
+    )
+}
+
+fn is_deepseek_model_slug(model: &str) -> bool {
+    model.starts_with("deepseek-")
+}
+
+/// OAuth / AICodex Gateway DeepSeek models speak OpenAI Responses, even when a
+/// stale profile is still parked on `aicodex_gateway_claude`.
+pub(super) fn remap_oauth_gateway_provider_for_deepseek(
+    model: Option<&str>,
+    model_provider: Option<String>,
+    fallback_provider: &str,
+) -> Option<String> {
+    let model = unprefixed_model_slug(model);
+    if !is_deepseek_model_slug(&model) {
+        return model_provider;
+    }
+    let effective = model_provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback_provider)
+        .to_ascii_lowercase();
+    if is_aicodex_gateway_provider(&effective) && effective != "aicodex_gateway_responses" {
+        return Some("aicodex_gateway_responses".to_string());
+    }
+    model_provider
+}
+
 fn infer_thread_wire_api(model: Option<&str>, model_provider: &str) -> Option<String> {
     let provider = model_provider.trim().to_ascii_lowercase();
     if provider_indicates_chat_wire_api(&provider) {
         return Some("chat".to_string());
+    }
+    let model = unprefixed_model_slug(model);
+    if is_deepseek_model_slug(&model)
+        && (provider.is_empty() || is_aicodex_gateway_provider(&provider))
+    {
+        return Some("responses".to_string());
     }
     if provider == "aicodex_gateway_claude"
         || provider == "claude"
@@ -5836,22 +5896,11 @@ fn infer_thread_wire_api(model: Option<&str>, model_provider: &str) -> Option<St
         return Some("responses".to_string());
     }
 
-    let model = model
-        .unwrap_or_default()
-        .trim()
-        .rsplit(':')
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    if model == "k3"
-        || model.starts_with("claude-")
-        || model.starts_with("deepseek-")
-        || model.starts_with("kimi-")
-    {
+    if model == "k3" || model.starts_with("claude-") || model.starts_with("kimi-") {
         return Some("claude".to_string());
     }
-    if model.starts_with("gpt-") || model.starts_with("chatgpt-") {
+    if model.starts_with("gpt-") || model.starts_with("chatgpt-") || is_deepseek_model_slug(&model)
+    {
         return Some("responses".to_string());
     }
     None
@@ -5875,11 +5924,22 @@ pub(crate) fn thread_from_stored_thread_with_config(
     thread: StoredThread,
     config: &Config,
 ) -> (Thread, Option<codex_thread_store::StoredThreadHistory>) {
-    let provider_id = if thread.model_provider.is_empty() {
-        config.model_provider_id.as_str()
-    } else {
-        thread.model_provider.as_str()
-    };
+    let remapped_provider = remap_oauth_gateway_provider_for_deepseek(
+        thread.model.as_deref(),
+        if thread.model_provider.is_empty() {
+            None
+        } else {
+            Some(thread.model_provider.clone())
+        },
+        config.model_provider_id.as_str(),
+    );
+    let provider_id = remapped_provider.as_deref().unwrap_or_else(|| {
+        if thread.model_provider.is_empty() {
+            config.model_provider_id.as_str()
+        } else {
+            thread.model_provider.as_str()
+        }
+    });
     let wire_api = config
         .model_providers
         .get(provider_id)
@@ -5918,11 +5978,16 @@ pub(crate) fn thread_from_stored_thread_with_wire_api(
     );
     let history = thread.history;
     let thread_id = thread.thread_id.to_string();
-    let model_provider = if thread.model_provider.is_empty() {
-        fallback_provider.to_string()
-    } else {
-        thread.model_provider
-    };
+    let model_provider = remap_oauth_gateway_provider_for_deepseek(
+        thread.model.as_deref(),
+        if thread.model_provider.is_empty() {
+            None
+        } else {
+            Some(thread.model_provider)
+        },
+        fallback_provider,
+    )
+    .unwrap_or_else(|| fallback_provider.to_string());
     let wire_api = wire_api
         .or_else(|| infer_thread_wire_api(thread.model.as_deref(), model_provider.as_str()));
     let thread = Thread {

@@ -518,19 +518,62 @@ fn uses_model_defaults_for_chat_reasoning_and_output_limits() {
     };
     let mut model = model_info();
     model.default_reasoning_level = Some(ReasoningEffort::High);
-    model.max_output_tokens = Some(384_000);
+    model.context_window = Some(1_048_576);
+    model.max_context_window = Some(1_048_576);
+    model.max_output_tokens = Some(131_072);
 
     let request =
         build_chat_completions_request(&prompt, &model, None, None).expect("build Chat request");
     let payload = serde_json::to_value(&request).expect("serialize Chat request");
 
     assert_eq!(request.reasoning_effort, Some(ReasoningEffort::High));
-    assert_eq!(payload["max_tokens"], 384_000);
+    assert_eq!(payload["max_tokens"], 131_072);
 
     let explicit_none =
         build_chat_completions_request(&prompt, &model, Some(ReasoningEffort::None), None)
             .expect("build Chat request with an explicit reasoning setting");
     assert_eq!(explicit_none.reasoning_effort, Some(ReasoningEffort::None));
+}
+
+#[test]
+fn clamps_chat_max_tokens_to_remaining_shared_window() {
+    let prompt = Prompt {
+        input: vec![message(
+            "user",
+            vec![ContentItem::InputText {
+                text: "x".repeat(1_200),
+            }],
+        )],
+        base_instructions: BaseInstructions {
+            text: String::new(),
+            provenance: None,
+        },
+        ..Default::default()
+    };
+    let mut model = model_info();
+    model.context_window = Some(1_000);
+    model.max_context_window = Some(1_000);
+    model.max_output_tokens = Some(800);
+    let request =
+        build_chat_completions_request(&prompt, &model, None, None).expect("build Chat request");
+    let estimated_input = {
+        let mut total = 0i64;
+        for message in &request.messages {
+            total =
+                total.saturating_add(crate::context_manager::estimate_serialized_tokens(message));
+        }
+        for tool in &request.tools {
+            total = total.saturating_add(crate::context_manager::estimate_serialized_tokens(tool));
+        }
+        total
+    };
+
+    assert!(estimated_input > 0, "fixture should produce input tokens");
+    assert_eq!(
+        request.max_output_tokens,
+        Some(model.clamp_output_tokens(800, Some(estimated_input)))
+    );
+    assert!(request.max_output_tokens.is_some_and(|tokens| tokens < 800));
 }
 
 #[test]
