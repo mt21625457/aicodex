@@ -40,8 +40,6 @@ use codex_thread_store::ThreadStoreError;
 use super::TurnRequestProcessor;
 use super::thread_processor::THREAD_LIST_DEFAULT_LIMIT;
 use super::thread_processor::THREAD_LIST_MAX_LIMIT;
-use super::turn_processor::DIRECT_INPUT_TO_MULTI_AGENT_V2_SUBAGENT_ERROR;
-use super::turn_processor::can_accept_direct_input;
 use super::turn_processor::validate_user_input_image_urls;
 
 const DIRECT_INPUT_TO_UNLOADED_SUBAGENT_ERROR: &str =
@@ -281,19 +279,15 @@ fn ensure_direct_input_allowed(
     loaded_thread: Option<&CodexThread>,
     source: &SessionSource,
 ) -> Result<(), JSONRPCErrorError> {
-    match loaded_thread {
-        Some(thread) if !can_accept_direct_input(thread.multi_agent_version(), source) => Err(
-            invalid_request(DIRECT_INPUT_TO_MULTI_AGENT_V2_SUBAGENT_ERROR),
-        ),
-        None if matches!(
+    if loaded_thread.is_none()
+        && matches!(
             source,
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
-        ) =>
-        {
-            Err(invalid_request(DIRECT_INPUT_TO_UNLOADED_SUBAGENT_ERROR))
-        }
-        _ => Ok(()),
+        )
+    {
+        return Err(invalid_request(DIRECT_INPUT_TO_UNLOADED_SUBAGENT_ERROR));
     }
+    Ok(())
 }
 
 fn submission_into_turn_input(

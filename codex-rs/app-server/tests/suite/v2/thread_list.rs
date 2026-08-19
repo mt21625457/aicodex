@@ -1325,7 +1325,7 @@ async fn thread_list_reports_loaded_subagent_direct_input_capability() -> Result
             "2025-02-01T11-00-00",
             "2025-02-01T11:00:00Z",
             MultiAgentVersion::V2,
-            Some(false),
+            Some(true),
             true,
         ),
         (

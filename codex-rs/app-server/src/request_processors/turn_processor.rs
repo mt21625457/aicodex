@@ -8,27 +8,19 @@ use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AdditionalContextEntry as CoreAdditionalContextEntry;
 use codex_protocol::protocol::AdditionalContextKind as CoreAdditionalContextKind;
-use codex_protocol::protocol::MultiAgentVersion;
-use codex_protocol::protocol::SessionSource;
-use codex_protocol::protocol::SubAgentSource;
 use codex_skills::system_cache_root_dir;
 
 use crate::image_url::REMOTE_IMAGE_URL_ERROR;
 use crate::image_url::is_remote_image_url;
 
-pub(super) const DIRECT_INPUT_TO_MULTI_AGENT_V2_SUBAGENT_ERROR: &str =
-    "direct app-server input is not allowed for multi-agent v2 sub-agents";
-
-/// Mirrors the direct-input policy in both request validation and thread capability responses.
-pub(super) fn can_accept_direct_input(
-    multi_agent_version: Option<MultiAgentVersion>,
-    session_source: &SessionSource,
-) -> bool {
-    multi_agent_version != Some(MultiAgentVersion::V2)
-        || !matches!(
-            session_source,
-            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
-        )
+/// Capability reported for a loaded thread.
+///
+/// Every loaded thread accepts targeted `turn/start` and `turn/steer`
+/// requests, including multi-agent v2 spawned children. Unloaded stored
+/// threads keep this capability unavailable at the API boundary. Choosing to
+/// keep ordinary conversation input on a parent is a client navigation policy.
+pub(super) const fn loaded_thread_can_accept_direct_input() -> bool {
+    true
 }
 
 pub(super) fn validate_user_input_image_urls(
@@ -340,24 +332,6 @@ impl TurnRequestProcessor {
         Ok((thread_id, thread))
     }
 
-    async fn ensure_direct_input_allowed(
-        &self,
-        request_id: &ConnectionRequestId,
-        thread: &CodexThread,
-    ) -> Result<(), JSONRPCErrorError> {
-        let config_snapshot = thread.config_snapshot().await;
-        if !can_accept_direct_input(
-            thread.multi_agent_version(),
-            &config_snapshot.session_source,
-        ) {
-            let error = invalid_request(DIRECT_INPUT_TO_MULTI_AGENT_V2_SUBAGENT_ERROR);
-            self.track_error_response(request_id, &error, /*error_type*/ None);
-            return Err(error);
-        }
-
-        Ok(())
-    }
-
     fn normalize_collaboration_mode(
         &self,
         mut collaboration_mode: CollaborationMode,
@@ -490,8 +464,6 @@ impl TurnRequestProcessor {
                 .inspect_err(|error| {
                     self.track_error_response(&request_id, error, /*error_type*/ None);
                 })?;
-        self.ensure_direct_input_allowed(&request_id, thread.as_ref())
-            .await?;
         if let Err(error) = Self::validate_v2_input_limit(&params.input) {
             self.track_error_response(
                 &request_id,
@@ -956,9 +928,6 @@ impl TurnRequestProcessor {
             .inspect_err(|error| {
                 self.track_error_response(request_id, error, /*error_type*/ None);
             })?;
-        self.ensure_direct_input_allowed(request_id, thread.as_ref())
-            .await?;
-
         if params.expected_turn_id.is_empty() {
             return Err(invalid_request("expectedTurnId must not be empty"));
         }

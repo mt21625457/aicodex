@@ -49,6 +49,8 @@ use codex_app_server_protocol::ThreadDeletedNotification;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadLoadedListResponse;
+use codex_app_server_protocol::ThreadReadParams;
+use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadSettingsUpdatedNotification;
 use codex_app_server_protocol::ThreadSource;
 use codex_app_server_protocol::ThreadStartParams;
@@ -3773,12 +3775,11 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
 }
 
 #[tokio::test]
-async fn direct_input_to_multi_agent_v2_subagent_is_rejected() -> Result<()> {
+async fn direct_input_to_multi_agent_v2_subagent_starts_follow_up_turn() -> Result<()> {
     const CHILD_PROMPT: &str = "child: do work";
     const PARENT_PROMPT: &str = "spawn a child and continue";
-    const SPAWN_CALL_ID: &str = "spawn-call-direct-input-rejection";
-    const ERROR_MESSAGE: &str =
-        "direct app-server input is not allowed for multi-agent v2 sub-agents";
+    const FOLLOW_UP: &str = "direct app-server turn";
+    const SPAWN_CALL_ID: &str = "spawn-call-direct-input-follow-up";
 
     let server = responses::start_mock_server().await;
     let spawn_args = serde_json::to_string(&json!({
@@ -3797,6 +3798,28 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected() -> Result<()> {
                 &spawn_args,
             ),
             responses::ev_completed("resp-parent-1"),
+        ]),
+    )
+    .await;
+    let _child_turn = responses::mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            body_contains(req, CHILD_PROMPT) && !body_contains(req, SPAWN_CALL_ID)
+        },
+        responses::sse(vec![
+            responses::ev_response_created("resp-child-1"),
+            responses::ev_assistant_message("msg-child-1", "child done"),
+            responses::ev_completed("resp-child-1"),
+        ]),
+    )
+    .await;
+    let _child_follow_up = responses::mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, FOLLOW_UP),
+        responses::sse(vec![
+            responses::ev_response_created("resp-child-2"),
+            responses::ev_assistant_message("msg-child-2", "follow-up done"),
+            responses::ev_completed("resp-child-2"),
         ]),
     )
     .await;
@@ -3850,6 +3873,17 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected() -> Result<()> {
     })
     .await??;
 
+    timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            let completed: TurnCompletedNotification =
+                mcp.read_notification("turn/completed").await?;
+            if completed.thread_id == child_thread_id {
+                return Ok::<(), anyhow::Error>(());
+            }
+        }
+    })
+    .await??;
+
     let listed: codex_app_server_protocol::ThreadListResponse = mcp
         .request(|request_id| ClientRequest::ThreadList {
             request_id,
@@ -3887,29 +3921,38 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected() -> Result<()> {
             }
         )
     ));
-    assert_eq!(listed_child.can_accept_direct_input, Some(false));
+    assert_eq!(listed_child.can_accept_direct_input, Some(true));
 
-    let direct_turn_req = mcp
-        .send_turn_start_request(TurnStartParams {
-            thread_id: child_thread_id.clone(),
-            input: vec![V2UserInput::Text {
-                text: "direct app-server turn".to_string(),
-                text_elements: Vec::new(),
-            }],
-            ..Default::default()
+    let ThreadReadResponse { thread: read_child } = mcp
+        .request(|request_id| ClientRequest::ThreadRead {
+            request_id,
+            params: ThreadReadParams {
+                thread_id: child_thread_id.clone(),
+                include_turns: false,
+                items_view: None,
+            },
         })
         .await?;
-    let direct_turn_error: JSONRPCError = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_error_message(RequestId::Integer(direct_turn_req)),
-    )
-    .await??;
-    assert_eq!(direct_turn_error.error.code, INVALID_REQUEST_ERROR_CODE);
-    assert_eq!(direct_turn_error.error.message, ERROR_MESSAGE);
+    assert_eq!(read_child.can_accept_direct_input, Some(true));
 
-    let direct_steer_req = mcp
+    let TurnStartResponse { turn } = mcp
+        .request(|request_id| ClientRequest::TurnStart {
+            request_id,
+            params: TurnStartParams {
+                thread_id: child_thread_id.clone(),
+                input: vec![V2UserInput::Text {
+                    text: FOLLOW_UP.to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+        })
+        .await?;
+    assert!(!turn.id.is_empty());
+
+    let steer_req = mcp
         .send_turn_steer_request(TurnSteerParams {
-            thread_id: child_thread_id,
+            thread_id: child_thread_id.clone(),
             client_user_message_id: None,
             input: vec![V2UserInput::Text {
                 text: "direct app-server steer".to_string(),
@@ -3917,16 +3960,36 @@ async fn direct_input_to_multi_agent_v2_subagent_is_rejected() -> Result<()> {
             }],
             responsesapi_client_metadata: None,
             additional_context: None,
-            expected_turn_id: "any-active-turn".to_string(),
+            expected_turn_id: "stale-turn".to_string(),
         })
         .await?;
-    let direct_steer_error: JSONRPCError = timeout(
+    let steer_error: JSONRPCError = timeout(
         DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_error_message(RequestId::Integer(direct_steer_req)),
+        mcp.read_stream_until_error_message(RequestId::Integer(steer_req)),
     )
     .await??;
-    assert_eq!(direct_steer_error.error.code, INVALID_REQUEST_ERROR_CODE);
-    assert_eq!(direct_steer_error.error.message, ERROR_MESSAGE);
+    assert_eq!(steer_error.error.code, INVALID_REQUEST_ERROR_CODE);
+    assert!(
+        steer_error.error.message == "no active turn to steer"
+            || steer_error
+                .error
+                .message
+                .starts_with("expected active turn id `stale-turn`"),
+        "steer on a writable v2 child should fail for turn targeting, not source policy: {}",
+        steer_error.error.message
+    );
+
+    let completed = timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            let completed: TurnCompletedNotification =
+                mcp.read_notification("turn/completed").await?;
+            if completed.thread_id == child_thread_id && completed.turn.id == turn.id {
+                return Ok::<TurnCompletedNotification, anyhow::Error>(completed);
+            }
+        }
+    })
+    .await??;
+    assert_eq!(completed.turn.status, TurnStatus::Completed);
 
     Ok(())
 }

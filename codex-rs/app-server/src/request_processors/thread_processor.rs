@@ -2,7 +2,7 @@ use super::persisted_resume_settings::PersistedResumeSettings;
 use super::persisted_resume_settings::latest_persisted_resume_settings;
 use super::thread_enrichment::enrich_loaded_threads;
 use super::thread_fork_goal::inherit_thread_goal_snapshot;
-use super::turn_processor::can_accept_direct_input;
+use super::turn_processor::loaded_thread_can_accept_direct_input;
 use super::*;
 use crate::error_code::method_not_found;
 use codex_app_server_protocol::SelectedCapabilityRoot;
@@ -1504,7 +1504,6 @@ impl ThreadRequestProcessor {
         let mut thread = build_thread_from_snapshot(
             thread_id,
             session_configured.session_id.to_string(),
-            thread.multi_agent_version(),
             &config_snapshot,
             session_configured.rollout_path.clone(),
         );
@@ -4223,10 +4222,7 @@ impl ThreadRequestProcessor {
             );
             thread_summary.session_id = existing_thread.session_configured().session_id.to_string();
             thread_summary.thread_source = config_snapshot.thread_source.clone().map(Into::into);
-            thread_summary.can_accept_direct_input = Some(can_accept_direct_input(
-                existing_thread.multi_agent_version(),
-                &config_snapshot.session_source,
-            ));
+            thread_summary.can_accept_direct_input = Some(loaded_thread_can_accept_direct_input());
             let instruction_sources = existing_thread.legacy_instruction_sources().await;
 
             let listener_command_tx = {
@@ -4503,10 +4499,7 @@ impl ThreadRequestProcessor {
     ) -> std::result::Result<Thread, String> {
         let config_snapshot = thread.config_snapshot().await;
         let session_id = thread.session_configured().session_id.to_string();
-        let can_accept_direct_input = can_accept_direct_input(
-            thread.multi_agent_version(),
-            &config_snapshot.session_source,
-        );
+        let can_accept_direct_input = loaded_thread_can_accept_direct_input();
         let thread = match thread_history {
             InitialHistory::Resumed(resumed) => {
                 if let Some(stored_thread) = resume_source_thread {
@@ -4570,7 +4563,6 @@ impl ThreadRequestProcessor {
                 let mut thread = build_thread_from_snapshot(
                     thread_id,
                     session_id.clone(),
-                    thread.multi_agent_version(),
                     &config_snapshot,
                     Some(rollout_path.into()),
                 );
@@ -5050,7 +5042,6 @@ impl ThreadRequestProcessor {
             let mut thread = build_thread_from_snapshot(
                 thread_id,
                 session_configured.session_id.to_string(),
-                forked_thread.multi_agent_version(),
                 &config_snapshot,
                 /*path*/ None,
             );
@@ -5071,10 +5062,7 @@ impl ThreadRequestProcessor {
         if let Some(name) = source_thread_name {
             set_thread_name_from_title(&mut thread, name);
         }
-        thread.can_accept_direct_input = Some(can_accept_direct_input(
-            forked_thread.multi_agent_version(),
-            &config_snapshot.session_source,
-        ));
+        thread.can_accept_direct_input = Some(loaded_thread_can_accept_direct_input());
         thread.session_id = session_configured.session_id.to_string();
         thread.thread_source = config_snapshot.thread_source.clone().map(Into::into);
         if thread.path.is_none() {
@@ -6170,7 +6158,6 @@ fn preview_from_rollout_items(items: &[RolloutItem]) -> String {
 fn build_thread_from_snapshot(
     thread_id: ThreadId,
     session_id: String,
-    multi_agent_version: Option<codex_protocol::protocol::MultiAgentVersion>,
     config_snapshot: &ThreadConfigSnapshot,
     path: Option<PathBuf>,
 ) -> Thread {
@@ -6204,10 +6191,7 @@ fn build_thread_from_snapshot(
         agent_nickname: config_snapshot.session_source.get_nickname(),
         agent_role: config_snapshot.session_source.get_agent_role(),
         source: config_snapshot.session_source.clone().into(),
-        can_accept_direct_input: Some(can_accept_direct_input(
-            multi_agent_version,
-            &config_snapshot.session_source,
-        )),
+        can_accept_direct_input: Some(loaded_thread_can_accept_direct_input()),
         thread_source: config_snapshot.thread_source.clone().map(Into::into),
         git_info: None,
         name: None,
@@ -6251,7 +6235,6 @@ fn build_thread_from_loaded_snapshot(
     build_thread_from_snapshot(
         thread_id,
         loaded_thread.session_configured().session_id.to_string(),
-        loaded_thread.multi_agent_version(),
         config_snapshot,
         loaded_thread.rollout_path(),
     )
