@@ -176,6 +176,7 @@ fn parse_agent_message(
         content,
         phase,
         memory_citation: None,
+        delivery: None,
     }
 }
 

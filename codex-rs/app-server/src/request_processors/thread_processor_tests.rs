@@ -80,7 +80,7 @@ mod thread_wire_api_tests {
 }
 
 mod persisted_resume_approval_policy_tests {
-    use super::super::latest_persisted_approval_policy;
+    use super::super::persisted_resume_settings::latest_persisted_resume_settings;
     use codex_protocol::config_types::ApprovalsReviewer;
     use codex_protocol::config_types::CollaborationMode;
     use codex_protocol::config_types::ModeKind;
@@ -151,6 +151,7 @@ mod persisted_resume_approval_policy_tests {
             approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             permission_profile: None,
+            active_permission_profile: None,
             network: None,
             file_system_sandbox_policy: None,
             model: "gpt-5".to_string(),
@@ -173,7 +174,7 @@ mod persisted_resume_approval_policy_tests {
         ];
 
         assert_eq!(
-            latest_persisted_approval_policy(&history),
+            latest_persisted_resume_settings(&history).map(|settings| settings.approval_policy),
             Some(AskForApproval::OnRequest)
         );
     }
@@ -187,7 +188,7 @@ mod persisted_resume_approval_policy_tests {
         ];
 
         assert_eq!(
-            latest_persisted_approval_policy(&history),
+            latest_persisted_resume_settings(&history).map(|settings| settings.approval_policy),
             Some(AskForApproval::Never)
         );
     }
@@ -203,7 +204,7 @@ mod persisted_resume_approval_policy_tests {
         ];
 
         assert_eq!(
-            latest_persisted_approval_policy(&history),
+            latest_persisted_resume_settings(&history).map(|settings| settings.approval_policy),
             Some(AskForApproval::OnRequest)
         );
     }

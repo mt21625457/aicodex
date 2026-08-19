@@ -6340,6 +6340,7 @@ session_picker_view = "dense"
                         phase: None,
                         memory_citation: None,
                         transcript_metadata: None,
+                        delivery: None,
                     },
                     ThreadItem::Plan {
                         id: String::from("plan-1"),

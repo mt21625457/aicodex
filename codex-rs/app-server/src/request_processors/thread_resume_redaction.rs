@@ -74,6 +74,7 @@ mod tests {
                 phase: None,
                 memory_citation: None,
                 transcript_metadata: None,
+                delivery: None,
             },
             ThreadItem::McpToolCall {
                 id: "mcp-1".to_string(),
@@ -124,6 +125,7 @@ mod tests {
                 phase: None,
                 memory_citation: None,
                 transcript_metadata: None,
+                delivery: None,
             }
         );
         assert_eq!(

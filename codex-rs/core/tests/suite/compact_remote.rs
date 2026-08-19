@@ -1430,6 +1430,10 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
                 responses::ev_completed("resp-agent"),
             ]),
             responses::sse(vec![
+                responses::ev_assistant_message("m-descendant", "DESCENDANT_FOLLOWUP_REPLY"),
+                responses::ev_completed("resp-descendant"),
+            ]),
+            responses::sse(vec![
                 serde_json::json!({
                     "type": "response.output_item.done",
                     "item": {
@@ -1461,6 +1465,18 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
                 AgentPath::root().join("child").expect("valid child path"),
                 AgentPath::root(),
                 Vec::new(),
+                "Message Type: MESSAGE\nTask name: /root\nSender: /root/child\nPayload:\nchild progress"
+                    .to_string(),
+                /*trigger_turn*/ false,
+            ),
+        })
+        .await?;
+    codex
+        .submit(Op::InterAgentCommunication {
+            communication: InterAgentCommunication::new(
+                AgentPath::root().join("child").expect("valid child path"),
+                AgentPath::root(),
+                Vec::new(),
                 "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/child\nPayload:\nchild completion".to_string(),
                 /*trigger_turn*/ false,
             ),
@@ -1480,6 +1496,21 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
         .await?;
     wait_for_turn_complete(&codex).await;
 
+    let descendant_followup_ciphertext = "descendant follow-up task";
+    let worker_path = AgentPath::root().join("worker").expect("valid worker path");
+    codex
+        .submit(Op::InterAgentCommunication {
+            communication: InterAgentCommunication::new_encrypted(
+                worker_path.join("child").expect("valid grandchild path"),
+                worker_path,
+                Vec::new(),
+                descendant_followup_ciphertext.to_string(),
+                /*trigger_turn*/ true,
+            ),
+        })
+        .await?;
+    wait_for_turn_complete(&codex).await;
+
     codex.submit(Op::Compact).await?;
     wait_for_turn_complete(&codex).await;
 
@@ -1492,7 +1523,7 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
     wait_for_turn_complete(&codex).await;
 
     let response_requests = responses_mock.requests();
-    let compact_request = &response_requests[2];
+    let compact_request = &response_requests[3];
     let item_create_time = |request: &responses::ResponsesRequest, text: &str| {
         request
             .input()
@@ -1521,6 +1552,21 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
             .any(|item| item["content"][1]["encrypted_content"].as_str()
                 == Some(delegated_task_ciphertext.as_str())),
         "expected v2 compaction input to include the encrypted delegated task"
+    );
+    assert!(
+        compact_request
+            .inputs_of_type("agent_message")
+            .iter()
+            .any(|item| item["content"][1]["encrypted_content"].as_str()
+                == Some(descendant_followup_ciphertext)),
+        "expected v2 compaction input to include the descendant-authored follow-up task"
+    );
+    assert!(
+        compact_request
+            .inputs_of_type("agent_message")
+            .iter()
+            .any(|item| item.to_string().contains("child progress")),
+        "expected v2 compaction input to include the child progress update"
     );
     assert!(
         compact_request
@@ -1598,6 +1644,21 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
             .any(|item| item["content"][1]["encrypted_content"].as_str()
                 == Some(delegated_task_ciphertext.as_str())),
         "expected v2 follow-up request to retain the encrypted delegated task"
+    );
+    assert!(
+        follow_up_request
+            .inputs_of_type("agent_message")
+            .iter()
+            .any(|item| item["content"][1]["encrypted_content"].as_str()
+                == Some(descendant_followup_ciphertext)),
+        "expected v2 follow-up request to retain the descendant-authored follow-up task"
+    );
+    assert!(
+        follow_up_request
+            .inputs_of_type("agent_message")
+            .iter()
+            .all(|item| !item.to_string().contains("child progress")),
+        "expected v2 follow-up request to omit the child progress update"
     );
     assert!(
         follow_up_request

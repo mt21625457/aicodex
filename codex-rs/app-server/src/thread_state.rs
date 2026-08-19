@@ -357,6 +357,7 @@ mod tests {
                 message: "I'll run that.".to_string(),
                 phase: None,
                 memory_citation: None,
+                delivery: None,
             }),
         );
         state.track_current_turn_event(

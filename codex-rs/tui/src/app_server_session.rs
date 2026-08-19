@@ -3368,6 +3368,7 @@ mod tests {
                             phase: None,
                             memory_citation: None,
                             transcript_metadata: None,
+                            delivery: None,
                         },
                     ],
                     status: TurnStatus::Completed,

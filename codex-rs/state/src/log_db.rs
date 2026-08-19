@@ -47,9 +47,9 @@ use crate::LogEntry;
 use crate::StateRuntime;
 use crate::model::truncate_persisted_log_body;
 
-const LOG_QUEUE_CAPACITY: usize = 512;
-const LOG_BATCH_SIZE: usize = 128;
-const LOG_FLUSH_INTERVAL: Duration = Duration::from_secs(2);
+const LOG_QUEUE_CAPACITY: usize = 2048;
+const LOG_BATCH_SIZE: usize = 512;
+const LOG_FLUSH_INTERVAL: Duration = Duration::from_secs(10);
 
 pub fn default_filter() -> Targets {
     Targets::new()

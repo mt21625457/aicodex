@@ -1053,6 +1053,7 @@ mod tests {
                 phase: None,
                 memory_citation: None,
                 transcript_metadata: None,
+                delivery: None,
             },
         })
     }
@@ -1979,85 +1980,6 @@ mod tests {
         client.shutdown().await.expect("shutdown should complete");
     }
 
-    #[test]
-    fn event_requires_delivery_marks_transcript_and_terminal_events() {
-        assert!(event_requires_delivery(
-            &InProcessServerEvent::ServerNotification(Box::new(
-                codex_app_server_protocol::ServerNotification::TurnCompleted(
-                    codex_app_server_protocol::TurnCompletedNotification {
-                        thread_id: "thread".to_string(),
-                        turn: codex_app_server_protocol::Turn {
-                            id: "turn".to_string(),
-                            items_view: codex_app_server_protocol::TurnItemsView::Full,
-                            items: Vec::new(),
-                            status: codex_app_server_protocol::TurnStatus::Completed,
-                            error: None,
-                            started_at: None,
-                            completed_at: Some(0),
-                            duration_ms: None,
-                        },
-                    }
-                )
-            ))
-        ));
-        assert!(event_requires_delivery(
-            &InProcessServerEvent::ServerNotification(Box::new(
-                codex_app_server_protocol::ServerNotification::AgentMessageDelta(
-                    codex_app_server_protocol::AgentMessageDeltaNotification {
-                        thread_id: "thread".to_string(),
-                        turn_id: "turn".to_string(),
-                        item_id: "item".to_string(),
-                        delta: "hello".to_string(),
-                        phase: None,
-                    }
-                )
-            ))
-        ));
-        assert!(event_requires_delivery(
-            &InProcessServerEvent::ServerNotification(Box::new(
-                codex_app_server_protocol::ServerNotification::ItemCompleted(
-                    codex_app_server_protocol::ItemCompletedNotification {
-                        thread_id: "thread".to_string(),
-                        turn_id: "turn".to_string(),
-                        completed_at_ms: 0,
-                        item: codex_app_server_protocol::ThreadItem::AgentMessage {
-                            id: "item".to_string(),
-                            text: "hello".to_string(),
-                            phase: None,
-                            memory_citation: None,
-                            transcript_metadata: None,
-                        },
-                    }
-                )
-            ))
-        ));
-        assert!(event_requires_delivery(
-            &InProcessServerEvent::ServerNotification(Box::new(
-                codex_app_server_protocol::ServerNotification::ExternalAgentConfigImportCompleted(
-                    codex_app_server_protocol::ExternalAgentConfigImportCompletedNotification {
-                        import_id: "import".to_string(),
-                        item_type_results: Vec::new(),
-                    },
-                )
-            ))
-        ));
-        assert!(!event_requires_delivery(&InProcessServerEvent::Lagged {
-            skipped: 1
-        }));
-        assert!(!event_requires_delivery(
-            &InProcessServerEvent::ServerNotification(Box::new(
-                codex_app_server_protocol::ServerNotification::CommandExecutionOutputDelta(
-                    codex_app_server_protocol::CommandExecutionOutputDeltaNotification {
-                        thread_id: "thread".to_string(),
-                        turn_id: "turn".to_string(),
-                        item_id: "item".to_string(),
-                        delta: "stdout".to_string(),
-                    }
-                )
-            ))
-        ));
-    }
-
     #[tokio::test]
     async fn runtime_start_args_forward_environment_manager_and_openai_form_capability() {
         let config = Arc::new(build_test_config().await);
@@ -2116,45 +2038,6 @@ mod tests {
                 .default_environment()
                 .expect("default environment")
                 .is_remote()
-        );
-    }
-
-    #[tokio::test]
-    async fn runtime_start_args_use_remote_thread_config_loader_when_configured() {
-        let mut config = build_test_config().await;
-        config.experimental_thread_config_endpoint = Some("not-a-valid-endpoint".to_string());
-
-        let runtime_args = InProcessClientStartArgs {
-            arg0_paths: Arg0DispatchPaths::default(),
-            config: Arc::new(config),
-            cli_overrides: Vec::new(),
-            loader_overrides: LoaderOverrides::default(),
-            strict_config: false,
-            cloud_config_bundle: CloudConfigBundleLoader::default(),
-            feedback: CodexFeedback::new(),
-            log_db: None,
-            state_db: None,
-            environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
-            config_warnings: Vec::new(),
-            session_source: SessionSource::Exec,
-            enable_codex_api_key_env: false,
-            client_name: "codex-app-server-client-test".to_string(),
-            client_version: "0.0.0-test".to_string(),
-            experimental_api: true,
-            mcp_server_openai_form_elicitation: false,
-            opt_out_notification_methods: Vec::new(),
-            channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
-        }
-        .into_runtime_start_args();
-
-        let err = runtime_args
-            .thread_config_loader
-            .load(Default::default())
-            .await
-            .expect_err("configured remote loader should try to connect");
-        assert_eq!(
-            err.code(),
-            codex_config::ThreadConfigLoadErrorCode::RequestFailed
         );
     }
 

@@ -434,6 +434,7 @@ mod tests {
                 namespace_tools: true,
                 image_generation: false,
                 web_search: false,
+                default_apply_patch_tool_type: None,
                 external_web_access: false,
                 remote_compaction: RemoteCompactionSupport::V1,
             }
