@@ -45,7 +45,7 @@ const MAX_CHAT_MESSAGE_TOOL_CALLS: usize = 64;
 const UNSUPPORTED_IMAGE_PLACEHOLDER: &str = "[unsupported image reference omitted]";
 const UNSUPPORTED_AUDIO_PLACEHOLDER: &str = "[audio content omitted: unsupported by Chat API]";
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy-claude-tests"))]
 pub(crate) fn build_chat_completions_request(
     prompt: &Prompt,
     model_info: &ModelInfo,

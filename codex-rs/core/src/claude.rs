@@ -2624,7 +2624,9 @@ mod tests {
                 },
                 ResponseItem::FunctionCallOutput {
                     id: None,
-                    call_id: "call_1".to_string(),
+                    name: None,
+                    namespace: None,
+                    call_id: Some("call_1".to_string()),
                     output: FunctionCallOutputPayload::from_text("ok".to_string()),
 
                     internal_chat_message_metadata_passthrough: None,
@@ -2676,7 +2678,9 @@ mod tests {
                 },
                 ResponseItem::FunctionCallOutput {
                     id: None,
-                    call_id: "call_1".to_string(),
+                    name: None,
+                    namespace: None,
+                    call_id: Some("call_1".to_string()),
                     output: FunctionCallOutputPayload {
                         body: FunctionCallOutputBody::Text("city not found".to_string()),
                         success: Some(false),
@@ -2746,7 +2750,9 @@ mod tests {
                 },
                 ResponseItem::FunctionCallOutput {
                     id: None,
-                    call_id: "call_1".to_string(),
+                    name: None,
+                    namespace: None,
+                    call_id: Some("call_1".to_string()),
                     output: FunctionCallOutputPayload {
                         body: FunctionCallOutputBody::ContentItems(vec![
                             FunctionCallOutputContentItem::InputText {
@@ -2803,7 +2809,9 @@ mod tests {
                 },
                 ResponseItem::FunctionCallOutput {
                     id: None,
-                    call_id: "call_1".to_string(),
+                    name: None,
+                    namespace: None,
+                    call_id: Some("call_1".to_string()),
                     output: FunctionCallOutputPayload {
                         body: FunctionCallOutputBody::ContentItems(vec![
                             FunctionCallOutputContentItem::InputImage {
@@ -2867,7 +2875,9 @@ mod tests {
                 },
                 ResponseItem::FunctionCallOutput {
                     id: None,
-                    call_id: "call_1".to_string(),
+                    name: None,
+                    namespace: None,
+                    call_id: Some("call_1".to_string()),
                     output: FunctionCallOutputPayload::from_content_items(vec![
                         FunctionCallOutputContentItem::InputText {
                             text: "see image".to_string(),
@@ -3066,7 +3076,9 @@ mod tests {
                 },
                 ResponseItem::FunctionCallOutput {
                     id: None,
-                    call_id: "call_1".to_string(),
+                    name: None,
+                    namespace: None,
+                    call_id: Some("call_1".to_string()),
                     output: FunctionCallOutputPayload::from_content_items(vec![
                         FunctionCallOutputContentItem::InputImage {
                             image_url: "data:image/png;base64,Zm9v".to_string(),
@@ -3693,13 +3705,17 @@ mod tests {
                 },
                 ResponseItem::FunctionCallOutput {
                     id: None,
-                    call_id: "call_2".to_string(),
+                    name: None,
+                    namespace: None,
+                    call_id: Some("call_2".to_string()),
                     output: FunctionCallOutputPayload::from_text("beta result".to_string()),
                     internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
                     id: None,
-                    call_id: "call_1".to_string(),
+                    name: None,
+                    namespace: None,
+                    call_id: Some("call_1".to_string()),
                     output: FunctionCallOutputPayload::from_text("alpha result".to_string()),
                     internal_chat_message_metadata_passthrough: None,
                 },
@@ -3876,7 +3892,9 @@ mod tests {
                 },
                 ResponseItem::FunctionCallOutput {
                     id: None,
-                    call_id: "call_1".to_string(),
+                    name: None,
+                    namespace: None,
+                    call_id: Some("call_1".to_string()),
                     output: FunctionCallOutputPayload::from_text("ok".to_string()),
 
                     internal_chat_message_metadata_passthrough: None,
@@ -4180,7 +4198,9 @@ mod tests {
         let prompt = Prompt {
             input: vec![ResponseItem::FunctionCallOutput {
                 id: None,
-                call_id: "call_1".to_string(),
+                name: None,
+                namespace: None,
+                call_id: Some("call_1".to_string()),
                 output: FunctionCallOutputPayload::from_text("ok".to_string()),
 
                 internal_chat_message_metadata_passthrough: None,
@@ -4233,7 +4253,9 @@ mod tests {
                 },
                 ResponseItem::FunctionCallOutput {
                     id: None,
-                    call_id: "call_1".to_string(),
+                    name: None,
+                    namespace: None,
+                    call_id: Some("call_1".to_string()),
                     output: FunctionCallOutputPayload::from_text("ok".to_string()),
 
                     internal_chat_message_metadata_passthrough: None,
@@ -4304,14 +4326,18 @@ mod tests {
                 },
                 ResponseItem::FunctionCallOutput {
                     id: None,
-                    call_id: "call_2".to_string(),
+                    name: None,
+                    namespace: None,
+                    call_id: Some("call_2".to_string()),
                     output: FunctionCallOutputPayload::from_text("second first".to_string()),
 
                     internal_chat_message_metadata_passthrough: None,
                 },
                 ResponseItem::FunctionCallOutput {
                     id: None,
-                    call_id: "call_1".to_string(),
+                    name: None,
+                    namespace: None,
+                    call_id: Some("call_1".to_string()),
                     output: FunctionCallOutputPayload::from_text("first second".to_string()),
 
                     internal_chat_message_metadata_passthrough: None,
@@ -4440,7 +4466,9 @@ mod tests {
                 },
                 ResponseItem::FunctionCallOutput {
                     id: None,
-                    call_id: "call_1".to_string(),
+                    name: None,
+                    namespace: None,
+                    call_id: Some("call_1".to_string()),
                     output: FunctionCallOutputPayload::from_text("ok".to_string()),
 
                     internal_chat_message_metadata_passthrough: None,
@@ -4620,7 +4648,9 @@ mod tests {
                 },
                 ResponseItem::FunctionCallOutput {
                     id: None,
-                    call_id: "call_1".to_string(),
+                    name: None,
+                    namespace: None,
+                    call_id: Some("call_1".to_string()),
                     output: FunctionCallOutputPayload::from_text("ok".to_string()),
 
                     internal_chat_message_metadata_passthrough: None,
@@ -4747,7 +4777,9 @@ mod tests {
                 },
                 ResponseItem::FunctionCallOutput {
                     id: None,
-                    call_id: "call_1".to_string(),
+                    name: None,
+                    namespace: None,
+                    call_id: Some("call_1".to_string()),
                     output: FunctionCallOutputPayload::from_text("ok".to_string()),
 
                     internal_chat_message_metadata_passthrough: None,
@@ -4866,7 +4898,9 @@ mod tests {
                 },
                 ResponseItem::FunctionCallOutput {
                     id: None,
-                    call_id: "call_1".to_string(),
+                    name: None,
+                    namespace: None,
+                    call_id: Some("call_1".to_string()),
                     output: FunctionCallOutputPayload::from_text("ok".to_string()),
 
                     internal_chat_message_metadata_passthrough: None,

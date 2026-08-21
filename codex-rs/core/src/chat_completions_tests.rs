@@ -206,7 +206,9 @@ fn merges_assistant_text_and_tool_calls_into_one_message() {
             },
             ResponseItem::FunctionCallOutput {
                 id: None,
-                call_id: "call_1".to_string(),
+                name: None,
+                namespace: None,
+                call_id: Some("call_1".to_string()),
                 output: FunctionCallOutputPayload::from_text("value".to_string()),
                 internal_chat_message_metadata_passthrough: None,
             },
@@ -277,7 +279,9 @@ fn serializes_complete_tool_history_request() {
             },
             ResponseItem::FunctionCallOutput {
                 id: None,
-                call_id: "call_1".to_string(),
+                name: None,
+                namespace: None,
+                call_id: Some("call_1".to_string()),
                 output: FunctionCallOutputPayload::from_text("value".to_string()),
                 internal_chat_message_metadata_passthrough: None,
             },

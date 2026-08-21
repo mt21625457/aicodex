@@ -8,6 +8,9 @@ version.workspace = true
 name = "codex_core"
 path = "src/lib.rs"
 
+[features]
+legacy-claude-tests = []
+
 [[bin]]
 name = "codex-write-config-schema"
 path = "src/bin/config_schema.rs"

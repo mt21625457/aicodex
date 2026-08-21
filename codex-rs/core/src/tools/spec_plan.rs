@@ -6,8 +6,8 @@ use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::code_mode::execute_spec::create_code_mode_tool;
 use crate::tools::context::ToolInvocation;
+use crate::tools::dedicated_file_tool_plan;
 use crate::tools::effective_tool_mode;
-use crate::tools::handlers::ApplyPatchHandler;
 use crate::tools::handlers::CodeModeExecuteHandler;
 use crate::tools::handlers::CodeModeWaitHandler;
 use crate::tools::handlers::CurrentTimeHandler;
@@ -982,7 +982,10 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistr
             turn_context,
             context.environments,
         ),
-        prefer_dedicated_file_tools: false,
+        prefer_dedicated_file_tools: dedicated_file_tool_plan::model_visible(
+            turn_context,
+            environment_mode,
+        ),
     }));
     registry.add(WriteStdinHandler);
 }
@@ -1086,10 +1089,15 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
         ));
     }
 
-    if environment_mode.has_environment() && turn_context.model_info.apply_patch_tool_type.is_some()
-    {
-        let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
-        registry.add(ApplyPatchHandler::new(include_environment_id));
+    if environment_mode.has_environment() {
+        let apply_patch_available = turn_context.model_info.apply_patch_tool_type.is_some();
+        for (runtime, exposure) in dedicated_file_tool_plan::planned_runtimes(
+            turn_context,
+            environment_mode,
+            apply_patch_available,
+        ) {
+            registry.register_trusted_with_exposure(runtime, exposure);
+        }
     }
 
     if turn_context
