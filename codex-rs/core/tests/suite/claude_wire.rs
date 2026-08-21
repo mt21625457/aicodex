@@ -1542,7 +1542,7 @@ async fn compatible_claude_dedicated_read_then_edit_succeeds() -> anyhow::Result
         .join("dedicated-claude.txt");
     let target_uri = codex_utils_path_uri::PathUri::from_abs_path(&target_path);
     test.fs()
-        .write_file(&target_uri, b"before\n".to_vec(), None)
+        .write_file(&target_uri, b"before\n".to_vec(), Default::default(), None)
         .await?;
 
     test.submit_turn("read and edit through compatible Claude")
@@ -1577,7 +1577,12 @@ async fn compatible_claude_dedicated_read_then_edit_succeeds() -> anyhow::Result
     let edit_result = tool_result_block(&requests[2].body_json(), "toolu_dedicated_edit");
     assert_ne!(edit_result["is_error"].as_bool(), Some(true));
     assert!(tool_result_text(&edit_result).contains("completed"));
-    assert_eq!(test.fs().read_file(&target_uri, None).await?, b"after\n");
+    assert_eq!(
+        test.fs()
+            .read_file(&target_uri, Default::default(), None)
+            .await?,
+        b"after\n"
+    );
 
     Ok(())
 }

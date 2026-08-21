@@ -156,7 +156,7 @@ pub fn model_info_from_slug(slug: &str) -> ModelInfo {
         description: None,
         default_reasoning_level,
         supported_reasoning_levels,
-        shell_type: ConfigShellToolType::Default,
+        shell_type: ConfigShellToolType::UnifiedExec,
         visibility: ModelVisibility::None,
         supported_in_api: true,
         priority: 99,

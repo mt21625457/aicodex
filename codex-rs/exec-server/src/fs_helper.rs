@@ -11,7 +11,10 @@ use crate::ConditionalWritePrecondition;
 use crate::CopyOptions;
 use crate::CreateDirectoryOptions;
 use crate::ExecutorFileSystem;
+use crate::GetMetadataOptions;
+use crate::ReadFileOptions;
 use crate::RemoveOptions;
+use crate::WriteFileOptions;
 use crate::local_file_system::DirectFileSystem;
 use crate::protocol::FS_CANONICALIZE_METHOD;
 use crate::protocol::FS_CONDITIONAL_WRITE_FILE_METHOD;
@@ -270,7 +273,13 @@ pub(crate) async fn run_direct_request(
         )),
         FsHelperRequest::ReadFile(params) => {
             let data = file_system
-                .read_file(&params.path, /*sandbox*/ None)
+                .read_file(
+                    &params.path,
+                    ReadFileOptions {
+                        follow_symlinks: params.follow_symlinks.unwrap_or(true),
+                    },
+                    /*sandbox*/ None,
+                )
                 .await
                 .map_err(map_fs_error)?;
             Ok(FsHelperPayload::ReadFile(FsReadFileResponse {
@@ -309,7 +318,14 @@ pub(crate) async fn run_direct_request(
                 ))
             })?;
             file_system
-                .write_file(&params.path, bytes, /*sandbox*/ None)
+                .write_file(
+                    &params.path,
+                    bytes,
+                    WriteFileOptions {
+                        follow_symlinks: params.follow_symlinks.unwrap_or(true),
+                    },
+                    /*sandbox*/ None,
+                )
                 .await
                 .map_err(map_fs_error)?;
             Ok(FsHelperPayload::WriteFile(FsWriteFileResponse {}))
@@ -342,6 +358,7 @@ pub(crate) async fn run_direct_request(
                     &params.path,
                     CreateDirectoryOptions {
                         recursive: params.recursive.unwrap_or(true),
+                        follow_symlinks: params.follow_symlinks.unwrap_or(true),
                     },
                     /*sandbox*/ None,
                 )
@@ -353,7 +370,13 @@ pub(crate) async fn run_direct_request(
         }
         FsHelperRequest::GetMetadata(params) => {
             let metadata = file_system
-                .get_metadata(&params.path, /*sandbox*/ None)
+                .get_metadata(
+                    &params.path,
+                    GetMetadataOptions {
+                        follow_symlinks: params.follow_symlinks.unwrap_or(true),
+                    },
+                    /*sandbox*/ None,
+                )
                 .await
                 .map_err(map_fs_error)?;
             Ok(FsHelperPayload::GetMetadata(FsGetMetadataResponse {
@@ -404,6 +427,7 @@ pub(crate) async fn run_direct_request(
                     RemoveOptions {
                         recursive: params.recursive.unwrap_or(true),
                         force: params.force.unwrap_or(true),
+                        follow_symlinks: params.follow_symlinks.unwrap_or(true),
                     },
                     /*sandbox*/ None,
                 )
@@ -480,6 +504,7 @@ mod tests {
             let request = serde_json::to_value(FsHelperRequest::WriteFile(FsWriteFileParams {
                 path: path.clone(),
                 data_base64: String::new(),
+                follow_symlinks: None,
                 sandbox: None,
             }))?;
             assert_eq!(

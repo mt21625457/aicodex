@@ -14,6 +14,7 @@ use codex_exec_server::ExecutorFileSystem;
 use codex_exec_server::SelectedCapabilityRootsStatus;
 use codex_protocol::capabilities::CapabilityRootLocation;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::EnvironmentConfig;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::EnvironmentConnectionEvent;
@@ -53,6 +54,59 @@ impl EnvironmentConfigOrigin {
         }
         selection
     }
+
+    pub(crate) fn selected_capability_roots(
+        self,
+        environment: &Environment,
+        config: &EnvironmentConfig,
+    ) -> Vec<SelectedCapabilityRoot> {
+        match self {
+            Self::Thread => environment.selected_capability_roots(),
+            Self::Owner => config.selected_capability_roots.clone(),
+        }
+    }
+}
+
+/// Combines persisted thread roots with attachment roots in selection order.
+///
+/// Thread-owned attachments still rely on roots reported by legacy executors. A matching live root
+/// refreshes the persisted location while explicit owner configuration retains the existing
+/// thread-first collision behavior.
+pub(crate) fn combine_selected_capability_roots(
+    thread_roots: &[SelectedCapabilityRoot],
+    sources: impl IntoIterator<Item = (EnvironmentConfigOrigin, Vec<SelectedCapabilityRoot>)>,
+) -> Vec<SelectedCapabilityRoot> {
+    let attachment_roots = sources
+        .into_iter()
+        .flat_map(|(config_origin, roots)| roots.into_iter().map(move |root| (config_origin, root)))
+        .collect::<Vec<_>>();
+    let mut combined_roots = thread_roots
+        .iter()
+        .map(|thread_root| {
+            let CapabilityRootLocation::Environment {
+                environment_id: thread_environment_id,
+                ..
+            } = &thread_root.location;
+            attachment_roots
+                .iter()
+                .find_map(|(origin, attachment_root)| {
+                    if *origin != EnvironmentConfigOrigin::Thread
+                        || attachment_root.id != thread_root.id
+                    {
+                        return None;
+                    }
+                    let CapabilityRootLocation::Environment {
+                        environment_id: attachment_environment_id,
+                        ..
+                    } = &attachment_root.location;
+                    (attachment_environment_id == thread_environment_id).then_some(attachment_root)
+                })
+                .unwrap_or(thread_root)
+                .clone()
+        })
+        .collect::<Vec<_>>();
+    combined_roots.extend(attachment_roots.into_iter().map(|(_, root)| root));
+    combined_roots
 }
 
 pub(crate) fn default_thread_environment_selections(
@@ -360,6 +414,18 @@ impl ThreadEnvironments {
             })
     }
 
+    /// Returns installed owner configuration without treating pending attachments as ready.
+    pub(crate) fn primary_config_for(
+        selections: &[TurnEnvironmentSelection],
+    ) -> Option<&EnvironmentConfig> {
+        match &selections.first()?.config {
+            EnvironmentConfigState::Ready(config) => Some(config),
+            EnvironmentConfigState::FromThread
+            | EnvironmentConfigState::Pending
+            | EnvironmentConfigState::Failed(_) => None,
+        }
+    }
+
     pub(crate) fn primary_workspace_roots_for(
         selections: &[TurnEnvironmentSelection],
     ) -> Vec<AbsolutePathBuf> {
@@ -397,13 +463,20 @@ impl ThreadEnvironments {
         thread_selected_capability_roots: &[SelectedCapabilityRoot],
     ) -> SelectedCapabilityRootsStatus {
         let environments = self.environments.load();
-        let mut selected_capability_roots = thread_selected_capability_roots.to_vec();
-        for environment in environments.iter() {
-            let EnvironmentConfigState::Ready(config) = &environment.selection.config else {
-                continue;
-            };
-            selected_capability_roots.extend(config.selected_capability_roots.iter().cloned());
-        }
+        let mut selected_capability_roots = combine_selected_capability_roots(
+            thread_selected_capability_roots,
+            environments.iter().filter_map(|environment| {
+                let EnvironmentConfigState::Ready(config) = &environment.selection.config else {
+                    return None;
+                };
+                Some((
+                    environment.config_origin,
+                    environment
+                        .config_origin
+                        .selected_capability_roots(&environment.environment, config),
+                ))
+            }),
+        );
         let mut seen_root_ids = HashSet::with_capacity(selected_capability_roots.len());
         selected_capability_roots.retain(|root| seen_root_ids.insert(root.id.clone()));
 
@@ -713,6 +786,16 @@ impl TurnEnvironmentSnapshot {
         self.turn_environments().next()
     }
 
+    /// Returns the primary environment's resolved permissions, or the provided fallback.
+    pub(crate) fn permission_profile_or_else(
+        &self,
+        fallback: impl FnOnce() -> PermissionProfile,
+    ) -> PermissionProfile {
+        self.primary()
+            .map(TurnEnvironment::permission_profile_with_workspace_roots)
+            .unwrap_or_else(fallback)
+    }
+
     pub(crate) fn local(&self) -> Option<&TurnEnvironment> {
         self.turn_environments()
             .find(|environment| !environment.environment.is_remote())
@@ -814,6 +897,7 @@ mod tests {
             permission_profile: PermissionProfileSnapshot::legacy(PermissionProfile::read_only()),
             shell_environment_policy: Default::default(),
             exec_policy: None,
+            mcp_policy: None,
             network_policy: None,
             selected_capability_roots: Vec::new(),
         }
@@ -988,6 +1072,7 @@ url = "ws://127.0.0.1:8765"
             ),
             shell_environment_policy: Default::default(),
             exec_policy: None,
+            mcp_policy: None,
             network_policy: None,
             selected_capability_roots: Vec::new(),
         };
@@ -1223,6 +1308,7 @@ url = "ws://127.0.0.1:8765"
             ),
             shell_environment_policy: Default::default(),
             exec_policy: None,
+            mcp_policy: None,
             network_policy: None,
             selected_capability_roots: Vec::new(),
         };
@@ -1559,6 +1645,7 @@ url = "ws://127.0.0.1:8765"
             ),
             shell_environment_policy: Default::default(),
             exec_policy: None,
+            mcp_policy: None,
             network_policy: None,
             selected_capability_roots: Vec::new(),
         };
@@ -1605,6 +1692,7 @@ url = "ws://127.0.0.1:8765"
             permission_profile: PermissionProfileSnapshot::legacy(PermissionProfile::read_only()),
             shell_environment_policy: Default::default(),
             exec_policy: None,
+            mcp_policy: None,
             network_policy: None,
             selected_capability_roots: vec![root("parent-root")],
         };

@@ -3,6 +3,7 @@ use std::io;
 use chardetng::EncodingDetector;
 use codex_exec_server::ExecutorFileSystem;
 use codex_exec_server::FileSystemSandboxContext;
+use codex_exec_server::ReadFileOptions;
 use codex_utils_path_uri::PathUri;
 use encoding_rs::EUC_KR;
 use encoding_rs::Encoding;
@@ -14,8 +15,6 @@ use encoding_rs::UTF_8;
 use encoding_rs::UTF_16BE;
 use encoding_rs::UTF_16LE;
 use encoding_rs::WINDOWS_1252;
-use sha2::Digest;
-use sha2::Sha256;
 
 /// Decoded text plus the encoding required to write it back without format drift.
 #[derive(Clone, Debug, PartialEq)]
@@ -56,20 +55,13 @@ impl PatchableTextEncoding {
 pub(crate) async fn read_patchable_text_file(
     path: &PathUri,
     fs: &dyn ExecutorFileSystem,
+    follow_symlinks: bool,
     sandbox: Option<&FileSystemSandboxContext>,
 ) -> io::Result<PatchableTextFile> {
-    let bytes = fs.read_file(path, sandbox).await?;
+    let bytes = fs
+        .read_file(path, ReadFileOptions { follow_symlinks }, sandbox)
+        .await?;
     decode_patchable_text(bytes)
-}
-
-pub(crate) async fn read_patchable_text_file_with_fingerprint(
-    path: &PathUri,
-    fs: &dyn ExecutorFileSystem,
-    sandbox: Option<&FileSystemSandboxContext>,
-) -> io::Result<(PatchableTextFile, [u8; 32])> {
-    let bytes = fs.read_file(path, sandbox).await?;
-    let fingerprint = Sha256::digest(&bytes).into();
-    decode_patchable_text(bytes).map(|file| (file, fingerprint))
 }
 
 /// Decodes UTF-8 or a supported round-trippable legacy text encoding.

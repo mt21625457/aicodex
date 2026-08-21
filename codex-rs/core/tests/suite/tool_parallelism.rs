@@ -16,9 +16,9 @@ use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
+use core_test_support::responses::ev_exec_command_call_with_args;
 use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_response_created;
-use core_test_support::responses::ev_shell_command_call_with_args;
 use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
@@ -165,7 +165,6 @@ async fn shell_tools_run_in_parallel() -> anyhow::Result<()> {
     );
     let args_one = serde_json::to_string(&json!({
         "cmd": first_command,
-        // Avoid user-specific shell startup cost (e.g. zsh profile scripts).
         "login": false,
         "yield_time_ms": 25_000,
     }))?;
@@ -187,7 +186,7 @@ async fn shell_tools_run_in_parallel() -> anyhow::Result<()> {
     ]);
     let responses = mount_sse_sequence(&server, vec![first_response, second_response]).await;
 
-    run_turn(&test, "run shell_command twice").await?;
+    run_turn(&test, "run exec_command twice").await?;
     let request = responses
         .last_request()
         .expect("tool outputs should be posted");
@@ -268,17 +267,17 @@ async fn tool_results_grouped() -> anyhow::Result<()> {
     let test = build_codex_with_test_tool(&server).await?;
 
     let shell_args = serde_json::to_string(&json!({
-        "command": "echo 'shell output'",
-        "timeout_ms": 1_000,
+        "cmd": "echo 'shell output'",
+        "yield_time_ms": 1_000,
     }))?;
 
     mount_sse_once(
         &server,
         sse(vec![
             json!({"type": "response.created", "response": {"id": "resp-1"}}),
-            ev_function_call("call-1", "shell_command", &shell_args),
-            ev_function_call("call-2", "shell_command", &shell_args),
-            ev_function_call("call-3", "shell_command", &shell_args),
+            ev_function_call("call-1", "exec_command", &shell_args),
+            ev_function_call("call-2", "exec_command", &shell_args),
+            ev_function_call("call-3", "exec_command", &shell_args),
             ev_completed("resp-1"),
         ]),
     )
@@ -354,17 +353,17 @@ async fn shell_tools_start_before_response_completed_when_stream_delayed() -> an
     // Use a non-login shell to avoid slow, user-specific shell init (e.g. zsh profiles)
     // from making this timing-based test flaky.
     let args = json!({
-        "command": command,
+        "cmd": command,
         "login": false,
-        "timeout_ms": 5_000,
+        "yield_time_ms": 5_000,
     });
 
     let first_chunk = sse(vec![
         ev_response_created(first_response_id),
-        ev_shell_command_call_with_args("call-1", &args),
-        ev_shell_command_call_with_args("call-2", &args),
-        ev_shell_command_call_with_args("call-3", &args),
-        ev_shell_command_call_with_args("call-4", &args),
+        ev_exec_command_call_with_args("call-1", &args),
+        ev_exec_command_call_with_args("call-2", &args),
+        ev_exec_command_call_with_args("call-3", &args),
+        ev_exec_command_call_with_args("call-4", &args),
     ]);
     let second_chunk = sse(vec![ev_completed(first_response_id)]);
     let follow_up = sse(vec![

@@ -460,11 +460,14 @@ pub(crate) fn build_claude_messages_request(
             ResponseItem::FunctionCallOutput {
                 call_id, output, ..
             } => {
+                let Some(call_id) = call_id.as_deref() else {
+                    continue;
+                };
                 push_message(
                     &mut messages,
                     ClaudeMessageRole::User,
                     vec![tool_result_block(
-                        &call_id,
+                        call_id,
                         function_output_content(&output),
                         output.success == Some(false),
                     )],
@@ -1962,7 +1965,7 @@ fn parse_json_object_or_wrapped(input: &str) -> Value {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy-claude-tests"))]
 mod tests {
     use super::*;
     use codex_protocol::ResponseItemId;

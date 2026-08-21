@@ -388,6 +388,7 @@ async fn chat_dedicated_missing_receipt_is_correctable_after_read() -> anyhow::R
         .write_file(
             &codex_utils_path_uri::PathUri::from_abs_path(&target_path),
             b"before\n".to_vec(),
+            Default::default(),
             None,
         )
         .await?;
@@ -398,6 +399,7 @@ async fn chat_dedicated_missing_receipt_is_correctable_after_read() -> anyhow::R
         test.fs()
             .read_file(
                 &codex_utils_path_uri::PathUri::from_abs_path(&target_path),
+                Default::default(),
                 None,
             )
             .await?,

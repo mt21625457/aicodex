@@ -33,9 +33,9 @@ use core_test_support::responses::ResponsesRequest;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_completed_with_tokens;
+use core_test_support::responses::ev_exec_command_call;
 use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_response_created;
-use core_test_support::responses::ev_shell_command_call;
 use core_test_support::responses::mount_compact_json_once;
 use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::mount_sse_sequence;
@@ -294,7 +294,7 @@ async fn token_budget_uses_model_message_defaults() -> Result<()> {
         .with_pre_build_hook(|home| {
             std::fs::write(
                 home.join("config.toml"),
-                "[features.token_budget]\nenabled = true\n",
+                "[features.token_budget]\nenabled = true\nuse_history_notes_extension = true\n",
             )
             .expect("write token-budget configuration");
         })
@@ -1273,7 +1273,7 @@ async fn token_budget_auto_compact_fallback_uses_buffer_until_new_context() -> R
             ]),
             sse(vec![
                 ev_response_created("fallback-tool-resp"),
-                ev_shell_command_call(fallback_call_id, "echo fallback-note > fallback-note.txt"),
+                ev_exec_command_call(fallback_call_id, "echo fallback-note > fallback-note.txt"),
                 ev_completed_with_tokens("fallback-tool-resp", /*total_tokens*/ 10_000),
             ]),
             sse(vec![

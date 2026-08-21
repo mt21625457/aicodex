@@ -11,7 +11,10 @@ use crate::CopyOptions;
 use crate::CreateDirectoryOptions;
 use crate::ExecServerRuntimePaths;
 use crate::ExecutorFileSystem;
+use crate::GetMetadataOptions;
+use crate::ReadFileOptions;
 use crate::RemoveOptions;
+use crate::WriteFileOptions;
 use crate::file_read::FileReadHandleManager;
 use crate::local_file_system::LocalFileSystem;
 use crate::protocol::FS_READ_DIRECTORY_METHOD;
@@ -152,7 +155,13 @@ impl FileSystemHandler {
     ) -> Result<FsReadFileResponse, JSONRPCErrorError> {
         let bytes = self
             .file_system
-            .read_file(&params.path, params.sandbox.as_ref())
+            .read_file(
+                &params.path,
+                ReadFileOptions {
+                    follow_symlinks: params.follow_symlinks.unwrap_or(true),
+                },
+                params.sandbox.as_ref(),
+            )
             .await
             .map_err(map_fs_error)?;
         Ok(FsReadFileResponse {
@@ -170,7 +179,14 @@ impl FileSystemHandler {
             ))
         })?;
         self.file_system
-            .write_file(&params.path, bytes, params.sandbox.as_ref())
+            .write_file(
+                &params.path,
+                bytes,
+                WriteFileOptions {
+                    follow_symlinks: params.follow_symlinks.unwrap_or(true),
+                },
+                params.sandbox.as_ref(),
+            )
             .await
             .map_err(map_fs_error)?;
         Ok(FsWriteFileResponse {})
@@ -204,32 +220,14 @@ impl FileSystemHandler {
         &self,
         params: FsCreateDirectoryParams,
     ) -> Result<FsCreateDirectoryResponse, JSONRPCErrorError> {
-        if params.private.unwrap_or(false) {
-            if params.recursive.unwrap_or(false) || params.sandbox.is_some() {
-                return Err(invalid_request(
-                    "private directories must be non-recursive and unsandboxed".to_string(),
-                ));
-            }
-            #[cfg(unix)]
-            {
-                let path = params.path.to_abs_path().map_err(map_fs_error)?;
-                let mut builder = tokio::fs::DirBuilder::new();
-                builder.mode(0o700);
-                builder.create(path.as_path()).await.map_err(map_fs_error)?;
-                return Ok(FsCreateDirectoryResponse {});
-            }
-            #[cfg(not(unix))]
-            {
-                return Err(invalid_request(
-                    "owner-private directories are unsupported on this platform".to_string(),
-                ));
-            }
-        }
         let recursive = params.recursive.unwrap_or(true);
         self.file_system
             .create_directory(
                 &params.path,
-                CreateDirectoryOptions { recursive },
+                CreateDirectoryOptions {
+                    recursive,
+                    follow_symlinks: params.follow_symlinks.unwrap_or(true),
+                },
                 params.sandbox.as_ref(),
             )
             .await
@@ -243,7 +241,13 @@ impl FileSystemHandler {
     ) -> Result<FsGetMetadataResponse, JSONRPCErrorError> {
         let metadata = self
             .file_system
-            .get_metadata(&params.path, params.sandbox.as_ref())
+            .get_metadata(
+                &params.path,
+                GetMetadataOptions {
+                    follow_symlinks: params.follow_symlinks.unwrap_or(true),
+                },
+                params.sandbox.as_ref(),
+            )
             .await
             .map_err(map_fs_error)?;
         Ok(FsGetMetadataResponse {
@@ -313,7 +317,11 @@ impl FileSystemHandler {
         self.file_system
             .remove(
                 &params.path,
-                RemoveOptions { recursive, force },
+                RemoveOptions {
+                    recursive,
+                    force,
+                    follow_symlinks: params.follow_symlinks.unwrap_or(true),
+                },
                 params.sandbox.as_ref(),
             )
             .await
@@ -368,9 +376,6 @@ fn map_conditional_write_error(err: io::Error) -> JSONRPCErrorError {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
-
     use codex_protocol::protocol::NetworkAccess;
     use codex_protocol::protocol::SandboxPolicy;
     use codex_utils_path_uri::PathUri;
@@ -390,62 +395,6 @@ mod tests {
 
         assert_eq!(legacy.code, -32603);
         assert_eq!(conditional.code, FILE_CONFLICT_ERROR_CODE);
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn private_directories_are_created_with_owner_only_permissions() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let runtime_paths = ExecServerRuntimePaths::new(
-            std::env::current_exe().expect("current exe"),
-            /*codex_linux_sandbox_exe*/ None,
-        )
-        .expect("runtime paths");
-        let handler = FileSystemHandler::new(runtime_paths);
-        let directory = temp_dir.path().join("private-metrics");
-        handler
-            .create_directory(FsCreateDirectoryParams {
-                path: PathUri::from_host_native_path(&directory).expect("directory URI"),
-                recursive: Some(false),
-                sandbox: None,
-                private: Some(true),
-            })
-            .await
-            .expect("create private directory");
-
-        assert_eq!(
-            std::fs::metadata(directory)
-                .expect("directory metadata")
-                .permissions()
-                .mode()
-                & 0o777,
-            0o700
-        );
-    }
-
-    #[cfg(windows)]
-    #[tokio::test]
-    async fn private_directories_are_rejected_when_owner_only_permissions_are_unsupported() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let runtime_paths = ExecServerRuntimePaths::new(
-            std::env::current_exe().expect("current exe"),
-            /*codex_linux_sandbox_exe*/ None,
-        )
-        .expect("runtime paths");
-        let handler = FileSystemHandler::new(runtime_paths);
-        let directory = temp_dir.path().join("private-metrics");
-        let error = handler
-            .create_directory(FsCreateDirectoryParams {
-                path: PathUri::from_host_native_path(&directory).expect("directory URI"),
-                recursive: Some(false),
-                sandbox: None,
-                private: Some(true),
-            })
-            .await
-            .expect_err("private directories must fail closed");
-
-        assert!(error.message.contains("owner-private directories"));
-        assert!(!directory.exists());
     }
 
     #[tokio::test]
@@ -481,6 +430,7 @@ mod tests {
             handler
                 .write_file(FsWriteFileParams {
                     path: path.clone(),
+                    follow_symlinks: None,
                     data_base64: STANDARD.encode("ok"),
                     sandbox: Some(sandbox_context(sandbox_policy.clone())),
                 })
@@ -505,6 +455,7 @@ mod tests {
             let response = handler
                 .read_file(FsReadFileParams {
                     path,
+                    follow_symlinks: None,
                     sandbox: Some(sandbox_context(sandbox_policy)),
                 })
                 .await

@@ -98,7 +98,6 @@ use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::handlers::ExecCommandHandler;
 use crate::tools::handlers::RequestPermissionsHandler;
-use crate::tools::handlers::ShellCommandHandler;
 use crate::tools::registry::ToolExecutor;
 use crate::tools::router::ToolCallSource;
 use crate::turn_diff_tracker::TurnDiffTracker;
@@ -1270,7 +1269,7 @@ async fn danger_full_access_tool_attempts_do_not_enforce_managed_network() -> an
             _req: &TurnEnvironment,
             call_id: &str,
         ) -> std::io::Result<crate::tools::sandboxing::ApprovalAction> {
-            Ok(crate::tools::sandboxing::ApprovalAction::Shell {
+            Ok(crate::tools::sandboxing::ApprovalAction::ExecCommand {
                 id: call_id.to_string(),
                 environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),
                 command: Vec::new(),
@@ -1279,6 +1278,7 @@ async fn danger_full_access_tool_attempts_do_not_enforce_managed_network() -> an
                 sandbox_permissions: crate::sandboxing::SandboxPermissions::UseDefault,
                 additional_permissions: None,
                 justification: None,
+                tty: false,
                 proposed_execpolicy_amendment: None,
             })
         }
@@ -2403,7 +2403,9 @@ async fn prepares_image_failures_before_history_insertion() {
     .await;
     let item = ResponseItem::FunctionCallOutput {
         id: None,
-        call_id: "call-1".to_string(),
+        call_id: Some("call-1".to_string()),
+        name: None,
+        namespace: None,
         output: FunctionCallOutputPayload {
             body: FunctionCallOutputBody::ContentItems(vec![
                 FunctionCallOutputContentItem::InputText {
@@ -2441,7 +2443,9 @@ async fn prepares_image_failures_before_history_insertion() {
     assert_eq!(parsed_id.get_version(), Some(uuid::Version::SortRand));
     let expected = vec![ResponseItem::FunctionCallOutput {
         id: Some(id.clone()),
-        call_id: "call-1".to_string(),
+        call_id: Some("call-1".to_string()),
+        name: None,
+        namespace: None,
         output: FunctionCallOutputPayload {
             body: FunctionCallOutputBody::ContentItems(vec![
                 FunctionCallOutputContentItem::InputText {
@@ -8903,6 +8907,9 @@ async fn deferred_environment_roots_refresh_plugin_availability() {
             crate::mcp::McpThreadIdentity {
                 session_source: &SessionSource::Exec,
                 originator: &originator,
+                environments: crate::mcp::McpEnvironmentScope::Live(
+                    &session.services.turn_environments,
+                ),
             },
             std::slice::from_ref(&selected_root),
             /*executor_capability_discovery*/ None,
@@ -9969,14 +9976,15 @@ async fn turn_context_item_omits_legacy_equivalent_file_system_sandbox_policy() 
 async fn turn_context_item_stores_active_permission_profile() {
     let (_session, mut turn_context) = make_session_and_context().await;
     let active_permission_profile = ActivePermissionProfile::read_only();
-    let config = Arc::make_mut(&mut turn_context.config);
-    config
-        .permissions
-        .set_permission_profile_from_session_snapshot(PermissionProfileSnapshot::active(
-            PermissionProfile::read_only(),
-            active_permission_profile.clone(),
-        ))
-        .expect("test setup should allow updating permission profile");
+    let TurnEnvironmentState::Ready(environment) = &mut turn_context.environments.environments[0]
+    else {
+        panic!("turn environment should be ready");
+    };
+    environment.config_origin = EnvironmentConfigOrigin::Owner;
+    environment.config_mut().permission_profile = PermissionProfileSnapshot::active(
+        PermissionProfile::read_only(),
+        active_permission_profile.clone(),
+    );
 
     assert_eq!(
         turn_context
@@ -9995,10 +10003,12 @@ async fn turn_context_item_stores_split_file_system_sandbox_policy_when_differen
         &file_system_sandbox_policy,
         turn_context.network_sandbox_policy(),
     );
-    Arc::make_mut(&mut turn_context.config)
-        .permissions
-        .set_permission_profile(permission_profile)
-        .expect("test setup should allow updating permission profile");
+    let TurnEnvironmentState::Ready(environment) = &mut turn_context.environments.environments[0]
+    else {
+        panic!("turn environment should be ready");
+    };
+    environment.config_mut().permission_profile =
+        PermissionProfileSnapshot::legacy(permission_profile);
 
     let item = turn_context.to_turn_context_item();
 
@@ -10168,10 +10178,12 @@ async fn record_context_updates_and_set_reference_context_item_persists_split_fi
         &file_system_sandbox_policy,
         turn_context.network_sandbox_policy(),
     );
-    Arc::make_mut(&mut turn_context.config)
-        .permissions
-        .set_permission_profile(permission_profile)
-        .expect("test setup should allow updating permission profile");
+    let TurnEnvironmentState::Ready(environment) = &mut turn_context.environments.environments[0]
+    else {
+        panic!("turn environment should be ready");
+    };
+    environment.config_mut().permission_profile =
+        PermissionProfileSnapshot::legacy(permission_profile);
     let rollout_path = attach_thread_persistence(&mut session).await;
 
     let turn_context = Arc::new(turn_context);
@@ -11464,7 +11476,7 @@ async fn fatal_tool_error_stops_turn_and_reports_error() {
         id: None,
         status: None,
         call_id: "call-1".to_string(),
-        name: "shell_command".to_string(),
+        name: "exec_command".to_string(),
         namespace: None,
         input: "{}".to_string(),
         internal_chat_message_metadata_passthrough: None,
@@ -11491,7 +11503,7 @@ async fn fatal_tool_error_stops_turn_and_reports_error() {
         FunctionCallError::Fatal(message) => {
             assert_eq!(
                 message,
-                "tool shell_command invoked with incompatible payload"
+                "tool exec_command invoked with incompatible payload"
             );
         }
         other => panic!("expected FunctionCallError::Fatal, got {other:?}"),
@@ -11673,182 +11685,6 @@ async fn sample_rollout(
         rollout_items,
         live_history.for_prompt(&reconstruction_turn.model_info.input_modalities),
     )
-}
-
-#[tokio::test]
-async fn rejects_escalated_permissions_when_policy_not_on_request() {
-    use crate::exec_policy::ExecApprovalRequest;
-    use crate::sandboxing::SandboxPermissions;
-    use crate::tools::sandboxing::ExecApprovalRequirement;
-    use crate::turn_diff_tracker::TurnDiffTracker;
-    use codex_protocol::protocol::AskForApproval;
-    use codex_tools::ShellCommandBackendConfig;
-
-    let (session, mut turn_context_raw) = make_session_and_context().await;
-    // Ensure policy is NOT OnRequest so the early rejection path triggers
-    Arc::make_mut(&mut turn_context_raw.config)
-        .permissions
-        .approval_policy
-        .set(AskForApproval::Never)
-        .expect("test setup should allow updating approval policy");
-    let session = Arc::new(session);
-    let mut turn_context = Arc::new(turn_context_raw);
-    let step_context = StepContext::for_test(Arc::clone(&turn_context));
-
-    let command_script = "echo hi";
-    let timeout_ms = 1000;
-    let sandbox_permissions = SandboxPermissions::RequireEscalated;
-
-    let turn_diff_tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
-
-    let tool_name = "shell_command";
-    let call_id = "test-call".to_string();
-
-    let handler = ShellCommandHandler::from(ShellCommandBackendConfig::Classic);
-    #[allow(deprecated)]
-    let workdir = Some(turn_context.cwd.to_string_lossy().to_string());
-    let resp = handler
-        .handle(ToolInvocation {
-            session: Arc::clone(&session),
-            turn: Arc::clone(&turn_context),
-            step_context,
-            cancellation_token: CancellationToken::new(),
-            tracker: Arc::clone(&turn_diff_tracker),
-            call_id,
-            tool_name: codex_tools::ToolName::plain(tool_name),
-            source: crate::tools::context::ToolCallSource::Direct,
-            payload: ToolPayload::Function {
-                arguments: serde_json::json!({
-                    "command": command_script,
-                    "workdir": workdir,
-                    "timeout_ms": timeout_ms,
-                    "sandbox_permissions": sandbox_permissions,
-                    "justification": Some("test"),
-                })
-                .to_string(),
-            },
-        })
-        .await;
-
-    let Err(FunctionCallError::RespondToModel(output)) = resp else {
-        panic!("expected error result");
-    };
-
-    let expected = format!(
-        "approval policy is {policy:?}; reject command — you should not ask for escalated permissions if the approval policy is {policy:?}",
-        policy = turn_context.approval_policy()
-    );
-
-    pretty_assertions::assert_eq!(output, expected);
-    pretty_assertions::assert_eq!(
-        session
-            .granted_turn_permissions(codex_exec_server::LOCAL_ENVIRONMENT_ID)
-            .await,
-        None
-    );
-
-    // The rejection should not poison the non-escalated path for the same
-    // command. Force DangerFullAccess so this check stays focused on approval
-    // policy rather than platform-specific sandbox behavior.
-    let turn_context_mut = Arc::get_mut(&mut turn_context).expect("unique thread settings Arc");
-    Arc::make_mut(&mut turn_context_mut.config)
-        .permissions
-        .set_permission_profile(PermissionProfile::Disabled)
-        .expect("test setup should allow updating permission profile");
-
-    let command = session.user_shell().derive_exec_args(
-        command_script,
-        turn_context.config.permissions.allow_login_shell,
-    );
-    let exec_approval_requirement = session
-        .services
-        .exec_policy
-        .create_exec_approval_requirement_for_command(ExecApprovalRequest {
-            command: &command,
-            approval_policy: turn_context.approval_policy(),
-            permission_profile: turn_context.permission_profile(),
-            environment_policy: None,
-            windows_sandbox_level: turn_context.windows_sandbox_level,
-            sandbox_permissions: SandboxPermissions::UseDefault,
-            prefix_rule: None,
-            allow_prefix_rules: turn_context.allow_prefix_rules(),
-        })
-        .await;
-    assert!(matches!(
-        exec_approval_requirement,
-        ExecApprovalRequirement::Skip { .. }
-    ));
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn shell_tool_cancellation_waits_for_runtime_cleanup() -> anyhow::Result<()> {
-    let session = make_session_with_config(|config| {
-        let cwd = config.cwd.clone();
-        config
-            .permissions
-            .set_legacy_sandbox_policy(SandboxPolicy::DangerFullAccess, cwd.as_path())
-            .expect("test setup should allow sandbox policy");
-    })
-    .await?;
-    let turn_context = session.new_default_turn().await;
-    let session = Arc::new(session);
-    let turn_context = Arc::new(turn_context);
-    let temp_dir = tempfile::TempDir::new()?;
-    let ready_marker = temp_dir.path().join("ready");
-    let cleanup_marker = temp_dir.path().join("cleanup");
-    // Interrupt after the shell starts, then verify dispatch waits for its TERM cleanup trap.
-    let command = format!(
-        r#"trap 'printf cleaned > "{}"; exit 0' TERM
-printf ready > "{}"
-while :; do sleep 1; done"#,
-        cleanup_marker.display(),
-        ready_marker.display(),
-    );
-    let item = ResponseItem::FunctionCall {
-        id: None,
-        name: "shell_command".to_string(),
-        namespace: None,
-        arguments: serde_json::json!({
-            "command": command,
-            "timeout_ms": 60_000,
-        })
-        .to_string(),
-        call_id: "shell-cleanup-call".to_string(),
-        encrypted_function_args: None,
-        internal_chat_message_metadata_passthrough: None,
-    };
-    let call = ToolRouter::build_tool_call(item)?
-        .expect("shell command response item should build a tool call");
-    let cancellation_token = CancellationToken::new();
-    let cancellation_tx = cancellation_token.clone();
-    let handle = tokio::spawn(
-        test_tool_runtime(Arc::clone(&session), Arc::clone(&turn_context))
-            .handle_tool_call(call, cancellation_token),
-    );
-
-    let mut ready = false;
-    for _ in 0..50 {
-        if ready_marker.exists() {
-            ready = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    if !ready {
-        cancellation_tx.cancel();
-        let _ = timeout(Duration::from_secs(5), handle).await;
-        anyhow::bail!("shell command should reach the ready marker");
-    }
-
-    cancellation_tx.cancel();
-    timeout(Duration::from_secs(5), handle)
-        .await
-        .expect("cancelled shell tool should finish promptly")
-        .expect("shell tool task should join")
-        .expect("cancelled shell tool should return a response item");
-    assert_eq!(std::fs::read_to_string(cleanup_marker)?, "cleaned");
-    Ok(())
 }
 
 #[tokio::test]

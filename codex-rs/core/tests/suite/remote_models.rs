@@ -79,10 +79,20 @@ async fn unknown_model_sends_builtin_instructions() -> Result<()> {
         .build_with_auto_env(&server)
         .await?;
     test.submit_turn("use fallback model metadata").await?;
-    assert_eq!(
-        response.single_request().instructions_text(),
-        BASE_INSTRUCTIONS
-    );
+    let request = response.single_request();
+    assert_eq!(request.instructions_text(), BASE_INSTRUCTIONS);
+    let body = request.body_json();
+    let tools = body["tools"]
+        .as_array()
+        .expect("fallback model tools should be present");
+    for tool_name in ["exec_command", "write_stdin"] {
+        assert!(
+            tools
+                .iter()
+                .any(|tool| tool["name"].as_str() == Some(tool_name)),
+            "fallback model should expose {tool_name}: {tools:?}"
+        );
+    }
     Ok(())
 }
 
@@ -697,13 +707,17 @@ async fn remote_models_remote_model_uses_unified_exec() -> Result<()> {
         experimental_supported_tools: Vec::new(),
     };
 
-    let models_mock = mount_models_once(
-        &server,
-        ModelsResponse {
-            models: vec![remote_model],
-        },
-    )
-    .await;
+    let mut models_response = serde_json::to_value(ModelsResponse {
+        models: vec![remote_model],
+    })?;
+    models_response["models"][0]["shell_type"] = json!("shell_command");
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(models_response))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
 
     let mut builder = test_codex()
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
@@ -722,14 +736,6 @@ async fn remote_models_remote_model_uses_unified_exec() -> Result<()> {
     let available_model = wait_for_model_available(&models_manager, REMOTE_MODEL_SLUG).await;
 
     assert_eq!(available_model.model, REMOTE_MODEL_SLUG);
-
-    let requests = models_mock.requests();
-    assert_eq!(
-        requests.len(),
-        1,
-        "expected a single /models refresh request for the remote models feature"
-    );
-    assert_eq!(requests[0].url.path(), "/v1/models");
 
     let model_info = models_manager
         .get_model_info(REMOTE_MODEL_SLUG, &config.to_models_manager_config())
@@ -762,7 +768,7 @@ async fn remote_models_remote_model_uses_unified_exec() -> Result<()> {
             ev_completed("resp-2"),
         ]),
     ];
-    mount_sse_sequence(&server, responses).await;
+    let response_mock = mount_sse_sequence(&server, responses).await;
 
     let cwd_path = cwd.abs();
     let (sandbox_policy, permission_profile) =
@@ -793,6 +799,24 @@ async fn remote_models_remote_model_uses_unified_exec() -> Result<()> {
     assert_eq!(begin_event.source, ExecCommandSource::UnifiedExecStartup);
 
     wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    let request = response_mock
+        .requests()
+        .into_iter()
+        .next()
+        .expect("remote model should receive an inference request");
+    let body = request.body_json();
+    let tools = body["tools"]
+        .as_array()
+        .expect("remote model tools should be present");
+    for tool_name in ["exec_command", "write_stdin"] {
+        assert!(
+            tools
+                .iter()
+                .any(|tool| tool["name"].as_str() == Some(tool_name)),
+            "legacy remote model metadata should expose {tool_name}: {tools:?}"
+        );
+    }
 
     Ok(())
 }
@@ -912,7 +936,7 @@ async fn remote_models_apply_legacy_instructions() -> Result<()> {
             effort: ReasoningEffort::Medium,
             description: ReasoningEffort::Medium.to_string(),
         }],
-        shell_type: ConfigShellToolType::ShellCommand,
+        shell_type: ConfigShellToolType::UnifiedExec,
         visibility: ModelVisibility::List,
         supported_in_api: true,
         input_modalities: default_input_modalities(),
@@ -1495,7 +1519,7 @@ fn test_remote_model_with_policy(
             effort: ReasoningEffort::Medium,
             description: ReasoningEffort::Medium.to_string(),
         }],
-        shell_type: ConfigShellToolType::ShellCommand,
+        shell_type: ConfigShellToolType::UnifiedExec,
         visibility,
         supported_in_api: true,
         input_modalities: default_input_modalities(),

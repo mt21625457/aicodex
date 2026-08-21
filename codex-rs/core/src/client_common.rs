@@ -167,8 +167,17 @@ fn reserialize_shell_outputs(items: &mut [ResponseItem]) {
         }
         ResponseItem::FunctionCallOutput {
             call_id, output, ..
+        } => {
+            if let Some(call_id) = call_id
+                && shell_call_ids.remove(call_id)
+                && let Some(structured) = output
+                    .text_content()
+                    .and_then(parse_structured_shell_output)
+            {
+                output.body = FunctionCallOutputBody::Text(structured);
+            }
         }
-        | ResponseItem::CustomToolCallOutput {
+        ResponseItem::CustomToolCallOutput {
             call_id, output, ..
         } => {
             if shell_call_ids.remove(call_id)

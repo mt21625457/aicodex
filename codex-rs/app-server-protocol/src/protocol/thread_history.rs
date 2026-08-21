@@ -532,6 +532,9 @@ impl ThreadHistoryBuilder {
                 internal_chat_message_metadata_passthrough,
                 ..
             } => {
+                let Some(call_id) = call_id.as_deref() else {
+                    return;
+                };
                 self.handle_exec_command_function_call_output(
                     call_id,
                     output,
@@ -2191,7 +2194,9 @@ mod tests {
             RolloutItem::ResponseItem(
                 ResponseItem::FunctionCallOutput {
                     id: None,
-                    call_id: "call-exec-1".into(),
+                    call_id: Some("call-exec-1".into()),
+                    name: Some("exec_command".into()),
+                    namespace: None,
                     output: FunctionCallOutputPayload::from_text(
                         "Chunk ID: chunk-1\n\
                      Wall time: 0.0123 seconds\n\
@@ -2280,7 +2285,9 @@ mod tests {
             RolloutItem::ResponseItem(
                 ResponseItem::FunctionCallOutput {
                     id: None,
-                    call_id: "call-exec-1".into(),
+                    call_id: Some("call-exec-1".into()),
+                    name: Some("exec_command".into()),
+                    namespace: None,
                     output: FunctionCallOutputPayload::from_text("Output:\n/tmp\n".into()),
                     internal_chat_message_metadata_passthrough: None,
                 }
@@ -2347,7 +2354,9 @@ mod tests {
             RolloutItem::ResponseItem(
                 ResponseItem::FunctionCallOutput {
                     id: None,
-                    call_id: "call-exec-1".into(),
+                    call_id: Some("call-exec-1".into()),
+                    name: Some("exec_command".into()),
+                    namespace: None,
                     output: FunctionCallOutputPayload::from_text("Output:\n/tmp\n".into()),
                     internal_chat_message_metadata_passthrough: None,
                 }
