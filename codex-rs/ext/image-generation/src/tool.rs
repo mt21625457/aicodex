@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::io;
 
 use base64::Engine;
@@ -278,13 +277,21 @@ async fn save_image_generation_result(
                     LOCAL_FS
                         .create_directory(
                             &PathUri::from_abs_path(&parent),
-                            CreateDirectoryOptions { recursive: true },
+                            CreateDirectoryOptions {
+                                recursive: true,
+                                follow_symlinks: true,
+                            },
                             /*sandbox*/ None,
                         )
                         .await?;
                 }
                 LOCAL_FS
-                    .write_file(&PathUri::from_abs_path(&path), bytes, /*sandbox*/ None)
+                    .write_file(
+                        &PathUri::from_abs_path(&path),
+                        bytes,
+                        Default::default(),
+                        /*sandbox*/ None,
+                    )
                     .await?;
                 Ok(path)
             }
@@ -322,7 +329,10 @@ async fn save_image_generation_result(
                         .file_system
                         .create_directory(
                             &parent_uri,
-                            CreateDirectoryOptions { recursive: true },
+                            CreateDirectoryOptions {
+                                recursive: true,
+                                follow_symlinks: true,
+                            },
                             sandbox,
                         )
                         .await?;
@@ -330,7 +340,7 @@ async fn save_image_generation_result(
                     // Full-access executor contexts do not prevent symlinked output directories.
                     let metadata = environment
                         .file_system
-                        .get_metadata(&parent_uri, sandbox)
+                        .get_metadata(&parent_uri, Default::default(), sandbox)
                         .await?;
                     if metadata.is_symlink || !metadata.is_directory {
                         return Err(io::Error::new(
@@ -344,7 +354,7 @@ async fn save_image_generation_result(
                 let path_uri = PathUri::from_abs_path(&path);
                 match environment
                     .file_system
-                    .get_metadata(&path_uri, sandbox)
+                    .get_metadata(&path_uri, Default::default(), sandbox)
                     .await
                 {
                     Ok(_) => {
@@ -359,7 +369,7 @@ async fn save_image_generation_result(
 
                 environment
                     .file_system
-                    .write_file(&path_uri, bytes, sandbox)
+                    .write_file(&path_uri, bytes, Default::default(), sandbox)
                     .await?;
                 Ok(path)
             }
@@ -459,34 +469,6 @@ async fn request_for_call_args(
 }
 
 fn recent_images(history: &[ResponseItem], count: usize) -> Vec<ImageUrl> {
-    let mut function_call_ids = HashSet::new();
-    let mut custom_tool_call_ids = HashSet::new();
-    for item in history {
-        match item {
-            ResponseItem::FunctionCall { call_id, .. } => {
-                function_call_ids.insert(call_id.as_str());
-            }
-            ResponseItem::CustomToolCall { call_id, .. } => {
-                custom_tool_call_ids.insert(call_id.as_str());
-            }
-            ResponseItem::AdditionalTools { .. }
-            | ResponseItem::Message { .. }
-            | ResponseItem::AgentMessage { .. }
-            | ResponseItem::Reasoning { .. }
-            | ResponseItem::LocalShellCall { .. }
-            | ResponseItem::ToolSearchCall { .. }
-            | ResponseItem::FunctionCallOutput { .. }
-            | ResponseItem::CustomToolCallOutput { .. }
-            | ResponseItem::ToolSearchOutput { .. }
-            | ResponseItem::WebSearchCall { .. }
-            | ResponseItem::ImageGenerationCall { .. }
-            | ResponseItem::Compaction { .. }
-            | ResponseItem::CompactionTrigger { .. }
-            | ResponseItem::ContextCompaction { .. }
-            | ResponseItem::Other => {}
-        }
-    }
-
     let mut images = Vec::with_capacity(count);
     'history: for item in history.iter().rev() {
         let mut image_urls = Vec::new();
@@ -499,14 +481,8 @@ fn recent_images(history: &[ResponseItem], count: usize) -> Vec<ImageUrl> {
                     | ContentItem::OutputText { .. } => None,
                 }));
             }
-            ResponseItem::FunctionCallOutput {
-                call_id, output, ..
-            } if function_call_ids.contains(call_id.as_str()) => {
-                image_urls.extend(output_image_urls(output));
-            }
-            ResponseItem::CustomToolCallOutput {
-                call_id, output, ..
-            } if custom_tool_call_ids.contains(call_id.as_str()) => {
+            ResponseItem::FunctionCallOutput { output, .. }
+            | ResponseItem::CustomToolCallOutput { output, .. } => {
                 image_urls.extend(output_image_urls(output));
             }
             ResponseItem::ImageGenerationCall { result, .. } if !result.is_empty() => {
@@ -519,8 +495,6 @@ fn recent_images(history: &[ResponseItem], count: usize) -> Vec<ImageUrl> {
             | ResponseItem::FunctionCall { .. }
             | ResponseItem::ToolSearchCall { .. }
             | ResponseItem::CustomToolCall { .. }
-            | ResponseItem::FunctionCallOutput { .. }
-            | ResponseItem::CustomToolCallOutput { .. }
             | ResponseItem::ToolSearchOutput { .. }
             | ResponseItem::WebSearchCall { .. }
             | ResponseItem::ImageGenerationCall { .. }
@@ -563,7 +537,7 @@ async fn image_url(
     let sandbox = environment.file_system_sandbox_context.clone();
     let bytes = environment
         .file_system
-        .read_file(&path_uri, Some(&sandbox))
+        .read_file(&path_uri, Default::default(), Some(&sandbox))
         .await
         .map_err(|error| {
             FunctionCallError::RespondToModel(format!(
@@ -630,7 +604,7 @@ struct GeneratedImageOutput {
 
 impl ToolOutput for GeneratedImageOutput {
     /// Avoids copying image bytes into tool-call telemetry.
-    fn log_preview(&self) -> String {
+    fn log_output(&self) -> String {
         "[generated image]".to_string()
     }
 

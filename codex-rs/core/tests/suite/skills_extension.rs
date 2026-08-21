@@ -548,7 +548,7 @@ async fn capability_sections_render_in_order_with_host_repo_and_plugin_skills() 
             let skill_dir = cwd.join(".agents/skills/repo-search");
             fs.create_directory(
                 &PathUri::from_host_native_path(&skill_dir)?,
-                CreateDirectoryOptions { recursive: true },
+                CreateDirectoryOptions { recursive: true, follow_symlinks: true },
                 /*sandbox*/ None,
             )
             .await?;
@@ -558,7 +558,7 @@ async fn capability_sections_render_in_order_with_host_repo_and_plugin_skills() 
                     "---\nname: repo-search\ndescription: inspect repo data\n---\n\n{REPO_SKILL_BODY}\n"
                 )
                 .into_bytes(),
-                /*sandbox*/ None,
+                Default::default(), /*sandbox*/ None,
             )
             .await?;
             Ok(())
@@ -1315,11 +1315,6 @@ async fn executor_skill_invocation_is_environment_scoped_and_deduplicated() -> R
         .with_config(move |config| {
             configure_catalog_test(config);
             config.chatgpt_base_url = chatgpt_base_url;
-            config.use_experimental_unified_exec_tool = true;
-            config
-                .features
-                .enable(Feature::UnifiedExec)
-                .expect("unified exec should be configurable in tests");
         });
     let test = builder.build_with_auto_env(&server).await?;
     test.submit_turn("Read the executor skill twice.").await?;

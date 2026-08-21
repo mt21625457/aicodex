@@ -11,6 +11,8 @@ use crate::events::CodexCollabAgentToolCallEventRequest;
 use crate::events::CodexCommandExecutionEventParams;
 use crate::events::CodexCommandExecutionEventRequest;
 use crate::events::CodexCompactionEventRequest;
+use crate::events::CodexControlToolCallEventParams;
+use crate::events::CodexControlToolCallEventRequest;
 use crate::events::CodexDynamicToolCallEventParams;
 use crate::events::CodexDynamicToolCallEventRequest;
 use crate::events::CodexFileChangeEventParams;
@@ -82,6 +84,8 @@ use crate::facts::CodeModeToolCallFact;
 use crate::facts::CodeModeToolCallStatus;
 use crate::facts::CodexCompactionEvent;
 use crate::facts::CodexGoalEvent;
+use crate::facts::ControlToolCallFact;
+use crate::facts::ControlToolCallStatus;
 use crate::facts::CustomAnalyticsFact;
 use crate::facts::ExternalAgentConfigImportCompletedInput;
 use crate::facts::ExternalAgentConfigImportFailureInput;
@@ -460,6 +464,7 @@ struct TurnToolCounts {
     mcp_tool_call: usize,
     dynamic_tool_call: usize,
     subagent_tool_call: usize,
+    subagent_tool_call_ids: HashSet<String>,
     web_search: usize,
     image_generation: usize,
 }
@@ -471,7 +476,11 @@ impl TurnToolCounts {
             ThreadItem::FileChange { .. } => self.file_change += 1,
             ThreadItem::McpToolCall { .. } => self.mcp_tool_call += 1,
             ThreadItem::DynamicToolCall { .. } => self.dynamic_tool_call += 1,
-            ThreadItem::CollabAgentToolCall { .. } | ThreadItem::SubAgentActivity { .. } => {
+            ThreadItem::CollabAgentToolCall { id, .. }
+            | ThreadItem::SubAgentActivity { id, .. } => {
+                if !self.subagent_tool_call_ids.insert(id.clone()) {
+                    return;
+                }
                 self.subagent_tool_call += 1;
             }
             ThreadItem::WebSearch(_) => self.web_search += 1,
@@ -588,6 +597,9 @@ impl AnalyticsReducer {
                 }
                 CustomAnalyticsFact::CodeModeToolCall(input) => {
                     self.ingest_code_mode_tool_call(input, out);
+                }
+                CustomAnalyticsFact::ControlToolCall(input) => {
+                    self.ingest_control_tool_call(input, out);
                 }
                 CustomAnalyticsFact::SubAgentThreadStarted(input) => {
                     self.ingest_subagent_thread_started(input, out);
@@ -831,6 +843,83 @@ impl AnalyticsReducer {
                 );
             }
         }
+    }
+
+    fn ingest_control_tool_call(
+        &mut self,
+        input: ControlToolCallFact,
+        out: &mut Vec<TrackEventRequest>,
+    ) {
+        let ControlToolCallFact {
+            thread_id,
+            turn_id,
+            call_id,
+            cell_id,
+            tool_name,
+            started_at_ms,
+            completed_at_ms,
+            status,
+        } = input;
+        let drop_site = AnalyticsDropSite {
+            event_name: "control tool",
+            thread_id: &thread_id,
+            turn_id: Some(&turn_id),
+            review_id: None,
+            item_id: Some(&call_id),
+        };
+        let Some((connection_state, thread_state, thread_metadata)) =
+            self.thread_context_or_warn(drop_site)
+        else {
+            return;
+        };
+        let mut base = tool_item_base(
+            &thread_id,
+            &turn_id,
+            call_id,
+            tool_name,
+            ToolItemOutcome {
+                terminal_status: match status {
+                    ControlToolCallStatus::Completed => ToolItemTerminalStatus::Completed,
+                    ControlToolCallStatus::Failed => ToolItemTerminalStatus::Failed,
+                    ControlToolCallStatus::Rejected => ToolItemTerminalStatus::Rejected,
+                    ControlToolCallStatus::Interrupted => ToolItemTerminalStatus::Interrupted,
+                },
+                failure_kind: match status {
+                    ControlToolCallStatus::Failed => Some(ToolItemFailureKind::ToolError),
+                    ControlToolCallStatus::Rejected => Some(ToolItemFailureKind::PolicyForbidden),
+                    ControlToolCallStatus::Completed | ControlToolCallStatus::Interrupted => None,
+                },
+                execution_duration_ms: observed_duration_ms(started_at_ms, completed_at_ms),
+            },
+            ToolItemContext {
+                started_at_ms,
+                completed_at_ms,
+                connection_state,
+                thread_state,
+                thread_metadata,
+                review_summary: None,
+            },
+        );
+        base.cell_id = cell_id;
+        let event = TrackEventRequest::ControlToolCall(CodexControlToolCallEventRequest {
+            event_type: "codex_control_tool_call_event",
+            event_params: CodexControlToolCallEventParams {
+                base,
+                success: status == ControlToolCallStatus::Completed,
+            },
+        });
+        self.turns
+            .entry(turn_id.clone())
+            .or_default()
+            .tool_counts
+            .total += 1;
+        self.record_tool_event(
+            &thread_id,
+            &turn_id,
+            event,
+            ToolEventEmission::AwaitResponse,
+            out,
+        );
     }
 
     fn ingest_sampling_response_completed(
@@ -1646,6 +1735,38 @@ impl AnalyticsReducer {
         );
     }
 
+    fn thread_archive_event_params(
+        &self,
+        thread_id: String,
+        action: ThreadArchiveAction,
+    ) -> ThreadArchiveEventParams {
+        let thread_state = self.threads.get(&thread_id);
+        let connection_state = self
+            .thread_connection_id(&thread_id)
+            .and_then(|connection_id| self.connections.get(&connection_id));
+        let thread_metadata = thread_state.and_then(|thread_state| thread_state.metadata.as_ref());
+
+        ThreadArchiveEventParams {
+            thread_id,
+            action,
+            occurred_at_ms: now_unix_millis(),
+            app_server_client: thread_state
+                .zip(connection_state)
+                .map(|(thread_state, connection_state)| {
+                    thread_state.app_server_client(connection_state)
+                }),
+            runtime: connection_state.map(|connection_state| connection_state.runtime.clone()),
+            thread_source: thread_metadata
+                .and_then(|thread_metadata| thread_metadata.thread_source.as_ref())
+                .filter(|thread_source| {
+                    !matches!(thread_source, ThreadSource::Feature(feature) if feature != "automation")
+                })
+                .cloned(),
+            parent_thread_id: thread_metadata
+                .and_then(|thread_metadata| thread_metadata.parent_thread_id.clone()),
+        }
+    }
+
     async fn ingest_notification(
         &mut self,
         notification: ServerNotification,
@@ -1655,21 +1776,19 @@ impl AnalyticsReducer {
             ServerNotification::ThreadArchived(notification) => {
                 out.push(TrackEventRequest::ThreadArchive(ThreadArchiveEvent {
                     event_type: "codex_thread_archive_event",
-                    event_params: ThreadArchiveEventParams {
-                        thread_id: notification.thread_id,
-                        action: ThreadArchiveAction::Archived,
-                        occurred_at_ms: now_unix_millis(),
-                    },
+                    event_params: self.thread_archive_event_params(
+                        notification.thread_id,
+                        ThreadArchiveAction::Archived,
+                    ),
                 }));
             }
             ServerNotification::ThreadUnarchived(notification) => {
                 out.push(TrackEventRequest::ThreadArchive(ThreadArchiveEvent {
                     event_type: "codex_thread_archive_event",
-                    event_params: ThreadArchiveEventParams {
-                        thread_id: notification.thread_id,
-                        action: ThreadArchiveAction::Unarchived,
-                        occurred_at_ms: now_unix_millis(),
-                    },
+                    event_params: self.thread_archive_event_params(
+                        notification.thread_id,
+                        ThreadArchiveAction::Unarchived,
+                    ),
                 }));
             }
             ServerNotification::ItemStarted(notification) => {
@@ -2307,6 +2426,7 @@ fn tool_event_base_mut(event: &mut TrackEventRequest) -> Option<&mut CodexToolIt
         TrackEventRequest::FileChange(event) => Some(&mut event.event_params.base),
         TrackEventRequest::McpToolCall(event) => Some(&mut event.event_params.base),
         TrackEventRequest::DynamicToolCall(event) => Some(&mut event.event_params.base),
+        TrackEventRequest::ControlToolCall(event) => Some(&mut event.event_params.base),
         TrackEventRequest::CollabAgentToolCall(event) => Some(&mut event.event_params.base),
         TrackEventRequest::WebSearch(event) => Some(&mut event.event_params.base),
         TrackEventRequest::ImageGeneration(event) => Some(&mut event.event_params.base),
@@ -2587,7 +2707,7 @@ fn tool_item_event(input: ToolItemEventInput<'_>) -> Option<TrackEventRequest> {
                 ToolItemOutcome {
                     terminal_status,
                     failure_kind,
-                    execution_duration_ms: None,
+                    execution_duration_ms: observed_duration_ms(started_at_ms, completed_at_ms),
                 },
                 ToolItemContext {
                     started_at_ms,
