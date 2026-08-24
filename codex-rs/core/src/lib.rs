@@ -19,6 +19,7 @@ mod realtime_context;
 mod realtime_conversation;
 mod realtime_prompt;
 mod responses_metadata;
+mod responses_reasoning_replay;
 mod responses_retry;
 pub(crate) mod session;
 pub use codex_protocol::turn_input::NotSubmittedReason;

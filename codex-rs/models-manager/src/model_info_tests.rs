@@ -360,6 +360,21 @@ fn openai_gpt_model_slug_recognizes_official_gpt_families() {
 }
 
 #[test]
+fn deepseek_model_slug_recognizes_plain_and_prefixed_slugs() {
+    assert!(is_deepseek_model_slug("deepseek-v4-pro"));
+    assert!(is_deepseek_model_slug("deepseek-reasoner"));
+    assert!(is_deepseek_model_slug(
+        "aicodex_gateway_responses:deepseek-v4-flash"
+    ));
+    assert!(is_deepseek_model_slug("openai/deepseek-chat"));
+    assert!(is_deepseek_model_slug("deepseek/deepseek-r1:free"));
+    assert!(!is_deepseek_model_slug("deepseek-proxy:gpt-5.4"));
+    assert!(!is_deepseek_model_slug("gpt-5.4"));
+    assert!(!is_deepseek_model_slug("grok-4.5"));
+    assert!(!is_deepseek_model_slug("k3"));
+}
+
+#[test]
 fn grok_models_use_multi_agent_v2_metadata() {
     use codex_protocol::protocol::MultiAgentVersion;
 

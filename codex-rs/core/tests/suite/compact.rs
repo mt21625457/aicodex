@@ -5083,6 +5083,111 @@ async fn snapshot_request_shape_manual_compact_without_previous_user_messages() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mid_turn_compact_replays_deepseek_raw_reasoning_on_continuation() -> Result<()> {
+    let server = start_mock_server().await;
+    let provider = local_compaction_provider(&server);
+    let response_mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_reasoning_item(
+                    "think-1",
+                    &["plan"],
+                    &["keep this deepseek chain of thought"],
+                ),
+                ev_function_call(DUMMY_CALL_ID, DUMMY_FUNCTION_NAME, "{}"),
+                ev_completed_with_tokens("first-response", /*total_tokens*/ 96),
+            ]),
+            sse(vec![
+                ev_assistant_message("compact-message", SUMMARY_TEXT),
+                ev_completed("compact-response"),
+            ]),
+            sse(vec![
+                ev_assistant_message("m2", FINAL_REPLY),
+                ev_completed("follow-up-response"),
+            ]),
+        ],
+    )
+    .await;
+
+    let mut builder = test_codex()
+        .with_model("deepseek-v4-pro")
+        .with_config(move |config| {
+            config.model_provider = provider;
+            set_test_compact_prompt(config);
+            config.model_context_window = Some(100);
+            config.model_auto_compact_token_limit = Some(90);
+        });
+    let test = builder.build_with_auto_env(&server).await?;
+
+    test.submit_turn("trigger mid-turn compaction").await?;
+
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 3);
+    let request_inputs = requests[1..]
+        .iter()
+        .map(|request| {
+            request
+                .body_json()
+                .get("input")
+                .and_then(Value::as_array)
+                .cloned()
+                .expect("request should include input")
+        })
+        .collect::<Vec<_>>();
+    let mut replayed_indexes = Vec::new();
+    for input in &request_inputs {
+        let replayed_index = input
+            .iter()
+            .position(|item| {
+                item.get("type").and_then(Value::as_str) == Some("reasoning")
+                    && item
+                        .get("content")
+                        .and_then(Value::as_array)
+                        .is_some_and(|content| {
+                            content.iter().any(|part| {
+                                part.get("type").and_then(Value::as_str) == Some("reasoning_text")
+                                    && part.get("text").and_then(Value::as_str)
+                                        == Some("keep this deepseek chain of thought")
+                            })
+                        })
+            })
+            .expect("DeepSeek request should replay last-turn reasoning_text");
+        let replayed = &input[replayed_index];
+        assert!(replayed.get("id").is_none());
+        assert!(replayed.get("encrypted_content").is_none());
+        assert!(
+            replayed
+                .get("summary")
+                .and_then(Value::as_array)
+                .is_some_and(Vec::is_empty)
+        );
+        replayed_indexes.push(replayed_index);
+    }
+    let follow_up_input = &request_inputs[1];
+    let replayed_index = replayed_indexes[1];
+    let summary_index = follow_up_input
+        .iter()
+        .position(|item| {
+            item.get("type").and_then(Value::as_str) == Some("message")
+                && item
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .is_some_and(|content| {
+                        content.iter().any(|part| {
+                            part.get("text")
+                                .and_then(Value::as_str)
+                                .is_some_and(|text| text.starts_with(SUMMARY_PREFIX))
+                        })
+                    })
+        })
+        .expect("follow-up request should include compaction summary");
+    assert!(replayed_index < summary_index);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn manual_compaction_keeps_the_creation_time_global_instructions() -> Result<()> {
     // Set up an initial turn, a manual compaction response, and a post-compaction turn.
     let server = responses::start_mock_server().await;

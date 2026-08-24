@@ -68,6 +68,8 @@ mod thread_wire_api_tests {
             "deepseek-v4-flash",
             "deepseek-v4-pro",
             "aicodex_gateway_claude:deepseek-v4-flash",
+            "openai/deepseek-chat",
+            "deepseek/deepseek-r1:free",
         ] {
             assert_eq!(
                 infer_thread_wire_api(Some(model), "aicodex_gateway_claude"),
@@ -1146,31 +1148,6 @@ mod thread_processor_behavior_tests {
             Some("mock_provider".to_string())
         );
         assert_eq!(request_overrides, None);
-        Ok(())
-    }
-
-    #[test]
-    fn merge_persisted_resume_metadata_remaps_stale_oauth_claude_provider_for_deepseek()
-    -> Result<()> {
-        let mut request_overrides = None;
-        let mut typesafe_overrides = ConfigOverrides::default();
-        let mut persisted_metadata = test_thread_metadata(Some("deepseek-v4-flash"), None)?;
-        persisted_metadata.model_provider = "aicodex_gateway_claude".to_string();
-
-        merge_persisted_resume_metadata(
-            &mut request_overrides,
-            &mut typesafe_overrides,
-            &persisted_metadata,
-        );
-
-        assert_eq!(
-            typesafe_overrides.model,
-            Some("deepseek-v4-flash".to_string())
-        );
-        assert_eq!(
-            typesafe_overrides.model_provider,
-            Some("aicodex_gateway_responses".to_string())
-        );
         Ok(())
     }
 

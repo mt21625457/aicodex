@@ -203,6 +203,16 @@ pub fn is_grok_model_slug(model: &str) -> bool {
     normalized.starts_with("grok-") || normalized.starts_with("grok_")
 }
 
+/// Returns whether a model slug identifies DeepSeek, including gateway-prefixed slugs.
+pub fn is_deepseek_model_slug(model: &str) -> bool {
+    let model = model.trim();
+    let model = match model.rsplit_once('/') {
+        Some((_, model)) => model.split(':').next().unwrap_or(model),
+        None => model.rsplit(':').next().unwrap_or(model),
+    };
+    model.trim().to_ascii_lowercase().starts_with("deepseek-")
+}
+
 /// Returns whether a model slug identifies an official OpenAI GPT model.
 ///
 /// These are the only models allowed to use Responses WebSocket on shared

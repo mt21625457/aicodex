@@ -15,6 +15,7 @@ use codex_app_server_protocol::ThreadSectionMoveParams;
 use codex_app_server_protocol::ThreadSectionMoveResponse;
 use codex_extension_api::ExtensionDataInit;
 use codex_extension_api::ThreadIdleCause;
+use codex_models_manager::model_info::is_deepseek_model_slug;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::mcp::ClientMcpExtensions;
@@ -4582,6 +4583,7 @@ impl ThreadRequestProcessor {
             )),
         };
         let mut thread = thread?;
+        thread.model_provider = config_snapshot.model_provider_id.clone();
         thread.can_accept_direct_input = Some(can_accept_direct_input);
         thread.id = thread_id.to_string();
         thread.session_id = session_id;
@@ -5839,10 +5841,6 @@ fn is_aicodex_gateway_provider(provider: &str) -> bool {
     )
 }
 
-fn is_deepseek_model_slug(model: &str) -> bool {
-    model.starts_with("deepseek-")
-}
-
 /// OAuth / AICodex Gateway DeepSeek models speak OpenAI Responses, even when a
 /// stale profile is still parked on `aicodex_gateway_claude`.
 pub(super) fn remap_oauth_gateway_provider_for_deepseek(
@@ -5850,8 +5848,7 @@ pub(super) fn remap_oauth_gateway_provider_for_deepseek(
     model_provider: Option<String>,
     fallback_provider: &str,
 ) -> Option<String> {
-    let model = unprefixed_model_slug(model);
-    if !is_deepseek_model_slug(&model) {
+    if !model.is_some_and(is_deepseek_model_slug) {
         return model_provider;
     }
     let effective = model_provider
@@ -5871,10 +5868,9 @@ fn infer_thread_wire_api(model: Option<&str>, model_provider: &str) -> Option<St
     if provider_indicates_chat_wire_api(&provider) {
         return Some("chat".to_string());
     }
+    let model_is_deepseek = model.is_some_and(is_deepseek_model_slug);
     let model = unprefixed_model_slug(model);
-    if is_deepseek_model_slug(&model)
-        && (provider.is_empty() || is_aicodex_gateway_provider(&provider))
-    {
+    if model_is_deepseek && (provider.is_empty() || is_aicodex_gateway_provider(&provider)) {
         return Some("responses".to_string());
     }
     if provider == "aicodex_gateway_claude"
@@ -5899,8 +5895,7 @@ fn infer_thread_wire_api(model: Option<&str>, model_provider: &str) -> Option<St
     if model == "k3" || model.starts_with("claude-") || model.starts_with("kimi-") {
         return Some("claude".to_string());
     }
-    if model.starts_with("gpt-") || model.starts_with("chatgpt-") || is_deepseek_model_slug(&model)
-    {
+    if model.starts_with("gpt-") || model.starts_with("chatgpt-") || model_is_deepseek {
         return Some("responses".to_string());
     }
     None
@@ -5933,7 +5928,7 @@ pub(crate) fn thread_from_stored_thread_with_config(
         },
         config.model_provider_id.as_str(),
     );
-    let provider_id = remapped_provider.as_deref().unwrap_or_else(|| {
+    let provider_id = remapped_provider.as_deref().unwrap_or({
         if thread.model_provider.is_empty() {
             config.model_provider_id.as_str()
         } else {

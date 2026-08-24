@@ -12,6 +12,7 @@ use crate::hook_runtime::run_pre_compact_hooks;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::responses_metadata::CompactionTurnMetadata;
+use crate::responses_reasoning_replay::last_turn_reasoning_for_raw_replay;
 #[cfg(test)]
 use crate::session::PreviousTurnSettings;
 use crate::session::session::Session;
@@ -256,6 +257,11 @@ async fn run_compact_task_inner_impl(
     let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input);
 
     let mut history = sess.clone_history().await;
+    let retained_reasoning = last_turn_reasoning_for_raw_replay(
+        history.annotated_items(),
+        &turn_context.model_info.slug,
+        turn_context.provider.info().is_openai(),
+    );
     history.record_items(
         &[initial_input_for_turn.into()],
         turn_context.model_info.truncation_policy.into(),
@@ -376,6 +382,8 @@ async fn run_compact_task_inner_impl(
         new_history =
             insert_initial_context_before_last_real_user_or_summary(new_history, initial_context);
     }
+    let summary_index = new_history.len() - 1;
+    new_history.splice(summary_index..summary_index, retained_reasoning);
     let reference_context_item = match initial_context_injection {
         InitialContextInjection::DoNotInject => None,
         InitialContextInjection::BeforeLastUserMessage { .. } => {
