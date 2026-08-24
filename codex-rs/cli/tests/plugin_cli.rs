@@ -38,8 +38,6 @@ fn codex_command_in(codex_home: &Path, current_dir: &Path) -> Result<assert_cmd:
 
 fn configured_local_marketplace(source: &str) -> MarketplaceConfigUpdate<'_> {
     MarketplaceConfigUpdate {
-        last_updated: "2026-05-06T00:00:00Z",
-        last_revision: None,
         source_type: "local",
         source,
         ref_name: None,
@@ -383,8 +381,6 @@ async fn marketplace_list_json_includes_configured_git_marketplace_source() -> R
     write_plugins_enabled_config(codex_home.path())?;
     write_marketplace_source(&marketplace_root)?;
     let update = MarketplaceConfigUpdate {
-        last_updated: "2026-06-04T08:39:49Z",
-        last_revision: Some("abc123"),
         source_type: "git",
         source: "https://example.com/acme/agent-skills.git",
         ref_name: None,
@@ -432,8 +428,6 @@ async fn marketplace_list_json_keys_configured_source_by_root() -> Result<()> {
     write_marketplace_source(home.path())?;
     write_marketplace_source(&marketplace_root)?;
     let update = MarketplaceConfigUpdate {
-        last_updated: "2026-06-04T08:39:49Z",
-        last_revision: Some("abc123"),
         source_type: "git",
         source: "https://example.com/acme/agent-skills.git",
         ref_name: None,
@@ -681,8 +675,6 @@ async fn plugin_list_json_includes_configured_git_marketplace_source() -> Result
     write_plugins_enabled_config(codex_home.path())?;
     write_marketplace_source(&marketplace_root)?;
     let update = MarketplaceConfigUpdate {
-        last_updated: "2026-06-04T08:39:49Z",
-        last_revision: Some("abc123"),
         source_type: "git",
         source: "https://example.com/acme/agent-skills.git",
         ref_name: None,

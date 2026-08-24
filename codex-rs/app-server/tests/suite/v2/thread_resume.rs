@@ -3,6 +3,7 @@ use app_test_support::ChatGptAuthFixture;
 use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
 use app_test_support::create_apply_patch_sse_response;
+use app_test_support::create_command_execution_sse_response;
 use app_test_support::create_fake_paginated_rollout;
 use app_test_support::create_fake_rollout;
 use app_test_support::create_fake_rollout_with_text_elements;
@@ -10,7 +11,6 @@ use app_test_support::create_fake_rollout_with_token_usage;
 use app_test_support::create_final_assistant_message_sse_response;
 use app_test_support::create_mock_responses_server_repeating_assistant;
 use app_test_support::create_mock_responses_server_sequence_unchecked;
-use app_test_support::create_shell_command_sse_response;
 use app_test_support::rollout_path;
 use app_test_support::test_absolute_path;
 use app_test_support::to_response;
@@ -2048,6 +2048,66 @@ async fn thread_resume_returns_rollout_history() -> Result<()> {
         other => panic!("expected user message item, got {other:?}"),
     }
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_resume_remaps_stale_oauth_claude_provider_for_deepseek() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let model = "deepseek/deepseek-r1:free";
+    for provider_override in [None, Some("lmstudio")] {
+        let codex_home = TempDir::new()?;
+        mock_responses_config(&server.uri())
+            .with_model_provider("aicodex_gateway_responses")
+            .with_model(model)
+            .write(codex_home.path())?;
+        let conversation_id = create_fake_rollout(
+            codex_home.path(),
+            "2025-01-05T12-00-00",
+            "2025-01-05T12:00:00Z",
+            "Saved user message",
+            Some("aicodex_gateway_claude"),
+            /*git_info*/ None,
+        )?;
+
+        let mut mcp = TestAppServer::builder()
+            .with_codex_home(codex_home.path())
+            .without_managed_config()
+            .build_initialized()
+            .await?;
+        let state_db = StateRuntime::init(
+            codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
+            "aicodex_gateway_responses".into(),
+        )
+        .await?;
+        let thread_id = ThreadId::from_string(&conversation_id)?;
+        let mut metadata = state_db
+            .get_thread(thread_id)
+            .await?
+            .expect("thread metadata should exist");
+        metadata.model = Some(model.to_string());
+        metadata.model_provider = "aicodex_gateway_claude".to_string();
+        state_db.upsert_thread(&metadata).await?;
+
+        let resume_id = mcp
+            .send_thread_resume_request(ThreadResumeParams {
+                thread_id: conversation_id,
+                model_provider: provider_override.map(str::to_string),
+                ..Default::default()
+            })
+            .await?;
+        let ThreadResumeResponse {
+            thread,
+            model: resumed_model,
+            model_provider,
+            ..
+        } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(resume_id)).await??;
+        let expected_provider = provider_override.unwrap_or("aicodex_gateway_responses");
+
+        assert_eq!(resumed_model, model);
+        assert_eq!(model_provider, expected_provider);
+        assert_eq!(thread.model_provider, expected_provider);
+    }
     Ok(())
 }
 
@@ -4593,7 +4653,7 @@ async fn thread_resume_replays_pending_command_execution_request_approval() -> R
 
     let responses = vec![
         create_final_assistant_message_sse_response("seeded")?,
-        create_shell_command_sse_response(
+        create_command_execution_sse_response(
             vec![
                 "python3".to_string(),
                 "-c".to_string(),

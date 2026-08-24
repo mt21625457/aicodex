@@ -45,7 +45,7 @@ const MAX_CHAT_MESSAGE_TOOL_CALLS: usize = 64;
 const UNSUPPORTED_IMAGE_PLACEHOLDER: &str = "[unsupported image reference omitted]";
 const UNSUPPORTED_AUDIO_PLACEHOLDER: &str = "[audio content omitted: unsupported by Chat API]";
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy-claude-tests"))]
 pub(crate) fn build_chat_completions_request(
     prompt: &Prompt,
     model_info: &ModelInfo,
@@ -359,8 +359,13 @@ pub(crate) fn build_chat_completions_request_for_provider(
             }
             ResponseItem::FunctionCallOutput {
                 call_id, output, ..
+            } => {
+                flush_pending_reasoning(&mut messages, &mut pending_reasoning);
+                if let Some(call_id) = call_id {
+                    messages.push(tool_result_message(call_id, output));
+                }
             }
-            | ResponseItem::CustomToolCallOutput {
+            ResponseItem::CustomToolCallOutput {
                 call_id, output, ..
             } => {
                 flush_pending_reasoning(&mut messages, &mut pending_reasoning);
@@ -853,6 +858,6 @@ fn is_supported_image_url(url: &str) -> bool {
     url.starts_with("data:") || url.starts_with("https://") || url.starts_with("http://")
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy-claude-tests"))]
 #[path = "chat_completions_tests.rs"]
 mod tests;

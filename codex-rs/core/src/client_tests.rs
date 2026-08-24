@@ -9,11 +9,12 @@ use super::X_CODEX_PARENT_THREAD_ID_HEADER;
 use super::X_CODEX_TURN_METADATA_HEADER;
 use super::X_CODEX_WINDOW_ID_HEADER;
 use super::X_OPENAI_SUBAGENT_HEADER;
-use super::strip_reasoning_content_for_responses_input;
 use crate::AttestationContext;
 use crate::AttestationProvider;
 use crate::GenerateAttestationFuture;
 use crate::responses_metadata::CodexResponsesMetadata;
+use crate::responses_reasoning_replay::ResponsesReasoningReplay;
+use crate::responses_reasoning_replay::strip_reasoning_content_for_responses_input;
 use crate::test_support::TestCodexResponsesRequestKind;
 use crate::test_support::responses_metadata as test_responses_metadata;
 use codex_api::AgentIdentityTelemetry;
@@ -506,7 +507,12 @@ fn strips_provider_specific_reasoning_state_before_responses_serialization() {
         internal_chat_message_metadata_passthrough: None,
     }];
 
-    strip_reasoning_content_for_responses_input(&mut input, /*is_openai_provider*/ true);
+    strip_reasoning_content_for_responses_input(
+        &mut input,
+        ResponsesReasoningReplay::EncryptedHandoff {
+            is_openai_provider: true,
+        },
+    );
 
     let serialized = serde_json::to_value(&input[0]).expect("serialize reasoning item");
     assert_eq!(serialized["type"], "reasoning");
@@ -534,7 +540,12 @@ fn preserves_openai_encrypted_reasoning_state_without_raw_content_for_responses_
         internal_chat_message_metadata_passthrough: None,
     }];
 
-    strip_reasoning_content_for_responses_input(&mut input, /*is_openai_provider*/ true);
+    strip_reasoning_content_for_responses_input(
+        &mut input,
+        ResponsesReasoningReplay::EncryptedHandoff {
+            is_openai_provider: true,
+        },
+    );
 
     let serialized = serde_json::to_value(&input[0]).expect("serialize reasoning item");
     assert_eq!(serialized["type"], "reasoning");
@@ -564,7 +575,12 @@ fn preserves_openai_encrypted_reasoning_state_with_raw_content_for_responses_ser
         internal_chat_message_metadata_passthrough: None,
     }];
 
-    strip_reasoning_content_for_responses_input(&mut input, /*is_openai_provider*/ true);
+    strip_reasoning_content_for_responses_input(
+        &mut input,
+        ResponsesReasoningReplay::EncryptedHandoff {
+            is_openai_provider: true,
+        },
+    );
 
     let serialized = serde_json::to_value(&input[0]).expect("serialize reasoning item");
     assert_eq!(serialized["type"], "reasoning");
@@ -591,7 +607,12 @@ fn strips_unknown_raw_reasoning_state_before_responses_serialization() {
         internal_chat_message_metadata_passthrough: None,
     }];
 
-    strip_reasoning_content_for_responses_input(&mut input, /*is_openai_provider*/ true);
+    strip_reasoning_content_for_responses_input(
+        &mut input,
+        ResponsesReasoningReplay::EncryptedHandoff {
+            is_openai_provider: true,
+        },
+    );
 
     let serialized = serde_json::to_value(&input[0]).expect("serialize reasoning item");
     assert!(
@@ -619,7 +640,12 @@ fn strips_raw_reasoning_encrypted_content_for_non_openai_responses_providers() {
         internal_chat_message_metadata_passthrough: None,
     }];
 
-    strip_reasoning_content_for_responses_input(&mut input, /*is_openai_provider*/ false);
+    strip_reasoning_content_for_responses_input(
+        &mut input,
+        ResponsesReasoningReplay::EncryptedHandoff {
+            is_openai_provider: false,
+        },
+    );
 
     let serialized = serde_json::to_value(&input[0]).expect("serialize reasoning item");
     assert!(

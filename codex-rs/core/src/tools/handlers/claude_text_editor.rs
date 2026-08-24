@@ -133,7 +133,7 @@ impl ToolExecutor<ToolInvocation> for ClaudeTextEditorHandler {
                     let new_str = required_arg(args.new_str, "new_str", "str_replace")?;
                     let path_uri = PathUri::from_abs_path(&path.absolute);
                     let current = fs
-                        .read_file_text(&path_uri, Some(&sandbox))
+                        .read_file_text(&path_uri, Default::default(), Some(&sandbox))
                         .await
                         .map_err(text_editor_io_error)?;
                     let matches = current.matches(&old_str).count();
@@ -159,7 +159,7 @@ impl ToolExecutor<ToolInvocation> for ClaudeTextEditorHandler {
                     let new_str = required_arg(args.new_str, "new_str", "insert")?;
                     let path_uri = PathUri::from_abs_path(&path.absolute);
                     let current = fs
-                        .read_file_text(&path_uri, Some(&sandbox))
+                        .read_file_text(&path_uri, Default::default(), Some(&sandbox))
                         .await
                         .map_err(text_editor_io_error)?;
                     let updated = insert_after_line(&current, insert_line, &new_str)?;
@@ -286,7 +286,7 @@ async fn view_path(
 ) -> Result<FunctionToolOutput, FunctionCallError> {
     let path_uri = PathUri::from_abs_path(path);
     let metadata = fs
-        .get_metadata(&path_uri, sandbox)
+        .get_metadata(&path_uri, Default::default(), sandbox)
         .await
         .map_err(text_editor_io_error)?;
     if metadata.is_directory {
@@ -311,7 +311,7 @@ async fn view_path(
         ));
     }
     let text = fs
-        .read_file_text(&path_uri, sandbox)
+        .read_file_text(&path_uri, Default::default(), sandbox)
         .await
         .map_err(text_editor_io_error)?;
     Ok(FunctionToolOutput::from_text(
@@ -363,7 +363,7 @@ async fn apply_generated_patch(
     let text = output
         .post_tool_use_response(&call_id, &payload)
         .and_then(|value| value.as_str().map(str::to_string))
-        .unwrap_or_else(|| output.log_preview());
+        .unwrap_or_else(|| output.log_output());
     Ok(FunctionToolOutput {
         body: vec![FunctionCallOutputContentItem::InputText { text }],
         success: Some(true),

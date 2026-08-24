@@ -546,6 +546,7 @@ mod fs_processor;
 mod git_processor;
 mod initialize_processor;
 mod marketplace_processor;
+mod mcp_event_stream;
 mod mcp_processor;
 mod persisted_resume_settings;
 mod plugins;
@@ -574,6 +575,8 @@ pub(crate) use fs_processor::FsRequestProcessor;
 pub(crate) use git_processor::GitRequestProcessor;
 pub(crate) use initialize_processor::InitializeRequestProcessor;
 pub(crate) use marketplace_processor::MarketplaceRequestProcessor;
+pub(crate) use mcp_event_stream::McpEventStreamReady;
+pub(crate) use mcp_event_stream::McpEventStreams;
 pub(crate) use mcp_processor::McpRequestProcessor;
 pub(crate) use plugins::PluginRequestProcessor;
 pub(crate) use process_exec_processor::ProcessExecRequestProcessor;
@@ -692,7 +695,6 @@ pub(crate) use self::thread_summary::read_summary_from_rollout;
 #[cfg(test)]
 pub(crate) use self::thread_summary::summary_to_thread;
 pub(crate) use self::thread_summary::thread_settings_from_config_snapshot;
-pub(crate) use self::thread_summary::thread_settings_from_core_snapshot;
 
 pub(crate) fn build_api_turns_from_rollout_items_with_mode(
     items: &[RolloutItem],

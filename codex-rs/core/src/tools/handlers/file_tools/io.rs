@@ -39,7 +39,7 @@ pub(super) async fn read_editable_file(
     tool_name: &str,
 ) -> Result<(Vec<u8>, FileMetadata), FunctionCallError> {
     let metadata = fs
-        .get_metadata(path, Some(sandbox))
+        .get_metadata(path, Default::default(), Some(sandbox))
         .await
         .map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound && tool_name == "edit_file" {
@@ -68,7 +68,7 @@ pub(super) async fn read_editable_file(
         )));
     }
     let metadata = fs
-        .get_metadata(path, Some(sandbox))
+        .get_metadata(path, Default::default(), Some(sandbox))
         .await
         .map_err(file_io_error)?;
     Ok((bytes, metadata))

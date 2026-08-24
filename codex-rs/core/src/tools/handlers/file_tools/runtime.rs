@@ -51,7 +51,7 @@ pub(super) async fn read_file(
     .await?;
     let fs = environment.environment.get_filesystem();
     let metadata = fs
-        .get_metadata(&path, Some(&sandbox))
+        .get_metadata(&path, Default::default(), Some(&sandbox))
         .await
         .map_err(file_io_error)?;
     if metadata.is_directory || !metadata.is_file {
@@ -346,7 +346,10 @@ pub(super) async fn write_file(
         environment_id: environment.selection.environment_id.clone(),
         path: canonical_path,
     };
-    let existing = match fs.get_metadata(&path, Some(&sandbox)).await {
+    let existing = match fs
+        .get_metadata(&path, Default::default(), Some(&sandbox))
+        .await
+    {
         Ok(_) => Some(read_editable_file(fs.as_ref(), &path, &sandbox, "write_file").await?),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(file_io_error(error)),

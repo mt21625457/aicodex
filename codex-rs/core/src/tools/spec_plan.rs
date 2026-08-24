@@ -6,8 +6,8 @@ use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::code_mode::execute_spec::create_code_mode_tool;
 use crate::tools::context::ToolInvocation;
+use crate::tools::dedicated_file_tool_plan;
 use crate::tools::effective_tool_mode;
-use crate::tools::handlers::ClaudeBashHandler;
 use crate::tools::handlers::CodeModeExecuteHandler;
 use crate::tools::handlers::CodeModeWaitHandler;
 use crate::tools::handlers::CurrentTimeHandler;
@@ -25,14 +25,11 @@ use crate::tools::handlers::RequestPermissionsHandler;
 use crate::tools::handlers::RequestPluginInstallHandler;
 use crate::tools::handlers::RequestUserInputHandler;
 use crate::tools::handlers::SendUserMessageAsyncHandler;
-use crate::tools::handlers::ShellCommandHandler;
-use crate::tools::handlers::ShellCommandHandlerOptions;
 use crate::tools::handlers::SleepHandler;
 use crate::tools::handlers::TestSyncHandler;
 use crate::tools::handlers::ToolSearchHandlerCache;
 use crate::tools::handlers::ViewImageHandler;
 use crate::tools::handlers::WaitForEnvironmentHandler;
-use crate::tools::handlers::WebSearchHandler;
 use crate::tools::handlers::WriteStdinHandler;
 use crate::tools::handlers::extension_tools::ExtensionToolAdapter;
 use crate::tools::handlers::multi_agents::CloseAgentHandler;
@@ -65,8 +62,6 @@ use crate::tools::tool_namespaces_info::collect_tool_namespaces_info;
 use codex_extension_api::ExtensionData;
 use codex_features::Feature;
 use codex_login::AuthManager;
-use codex_model_provider_info::is_kimi_model_slug;
-use codex_models_manager::model_info::is_grok_model_slug;
 use codex_protocol::DEFAULT_FUNCTION_NAMESPACE;
 use codex_protocol::account::PlanType;
 use codex_protocol::config_types::WebSearchMode;
@@ -95,8 +90,6 @@ use codex_tools::collect_code_mode_exec_prompt_tool_definitions;
 use codex_tools::collect_request_plugin_install_entries;
 use codex_tools::default_namespace_description;
 use codex_tools::request_user_input_available_modes;
-use codex_tools::shell_command_backend_for_features;
-use codex_tools::shell_type_for_model_and_features;
 use futures::future::BoxFuture;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -324,13 +317,6 @@ pub(crate) fn finalize_tool_router(
     hosted_specs: Vec<ToolSpec>,
     tool_search_handler_cache: &ToolSearchHandlerCache,
 ) -> CodexResult<ToolRouter> {
-    // Hosted WebSearch specs are model-visible; keep a Hidden runtime so Claude /
-    // Moonshot-style `web_search` function calls still dispatch locally.
-    for spec in &hosted_specs {
-        if matches!(spec, ToolSpec::WebSearch { .. }) {
-            registry.add_with_exposure(WebSearchHandler::new(spec.clone()), ToolExposure::Hidden);
-        }
-    }
     apply_direct_model_only_namespace_overrides(turn_context, &mut registry);
     let code_mode_enabled = matches!(
         effective_tool_mode(turn_context),
@@ -974,65 +960,34 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistr
     let turn_context = context.turn_context;
     let features = turn_context.config.features.get();
     let environment_mode = tool_environment_mode(context.environments);
-    if !environment_mode.has_environment() {
+    if !environment_mode.has_environment()
+        || !features.enabled(Feature::ShellTool)
+        || !features.enabled(Feature::UnifiedExec)
+        || matches!(
+            turn_context.model_info.shell_type,
+            ConfigShellToolType::Disabled
+        )
+    {
         return;
     }
 
     let allow_login_shell = any_environment_allows_login_shell(context.environments);
     let exec_permission_approvals_enabled = features.enabled(Feature::ExecPermissionApprovals);
     let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
-    let supports_shell_command = context.environments.single_local_environment().is_some();
-    let prefer_dedicated_file_tools =
-        crate::tools::dedicated_file_tool_plan::model_visible(turn_context, environment_mode);
-    let shell_command_options = ShellCommandHandlerOptions {
-        backend_config: shell_command_backend_for_features(features),
+    registry.add(ExecCommandHandler::new(ExecCommandHandlerOptions {
         allow_login_shell,
         exec_permission_approvals_enabled,
-        prefer_dedicated_file_tools,
-    };
-
-    match shell_type_for_model_and_features(&turn_context.model_info, features) {
-        ConfigShellToolType::UnifiedExec => {
-            registry.add(ExecCommandHandler::new(ExecCommandHandlerOptions {
-                allow_login_shell,
-                exec_permission_approvals_enabled,
-                include_environment_id,
-                include_shell_parameter: unified_exec_should_include_shell_parameter(
-                    turn_context,
-                    context.environments,
-                ),
-                prefer_dedicated_file_tools,
-            }));
-            registry.add(WriteStdinHandler);
-
-            if supports_shell_command {
-                // Keep the legacy shell tool registered while unified exec is
-                // model-visible.
-                registry.add_with_exposure(
-                    ShellCommandHandler::new(shell_command_options),
-                    ToolExposure::Hidden,
-                );
-                // Claude native `bash` calls dispatch here without a separate
-                // model-visible shell tool.
-                registry.add_with_exposure(
-                    ClaudeBashHandler::new(shell_command_options),
-                    ToolExposure::Hidden,
-                );
-            }
-        }
-        ConfigShellToolType::Disabled => {}
-        ConfigShellToolType::Default
-        | ConfigShellToolType::Local
-        | ConfigShellToolType::ShellCommand => {
-            if supports_shell_command {
-                registry.add(ShellCommandHandler::new(shell_command_options));
-                registry.add_with_exposure(
-                    ClaudeBashHandler::new(shell_command_options),
-                    ToolExposure::Hidden,
-                );
-            }
-        }
-    }
+        include_environment_id,
+        include_shell_parameter: unified_exec_should_include_shell_parameter(
+            turn_context,
+            context.environments,
+        ),
+        prefer_dedicated_file_tools: dedicated_file_tool_plan::model_visible(
+            turn_context,
+            environment_mode,
+        ),
+    }));
+    registry.add(WriteStdinHandler);
 }
 
 fn unified_exec_should_include_shell_parameter(
@@ -1088,14 +1043,13 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
     }
 
     if !turn_context.session_source.is_non_root_agent()
-        && features.enabled(Feature::SendAsyncMessage)
         && turn_context
             .model_info
             .experimental_supported_tools
             .iter()
             .any(|tool| tool == "send_user_message_async")
     {
-        registry.add(SendUserMessageAsyncHandler);
+        registry.add_with_exposure(SendUserMessageAsyncHandler, ToolExposure::DirectModelOnly);
     }
 
     if environment_mode.has_environment() && features.enabled(Feature::RequestPermissionsTool) {
@@ -1135,18 +1089,15 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
         ));
     }
 
-    let provider_capabilities = turn_context.provider.capabilities();
-    let apply_patch_tool_type = turn_context
-        .model_info
-        .apply_patch_tool_type
-        .as_ref()
-        .or(provider_capabilities.default_apply_patch_tool_type.as_ref());
-    for (runtime, exposure) in crate::tools::dedicated_file_tool_plan::planned_runtimes(
-        turn_context,
-        environment_mode,
-        apply_patch_tool_type.is_some(),
-    ) {
-        registry.register_trusted_with_exposure(runtime, exposure);
+    if environment_mode.has_environment() {
+        let apply_patch_available = turn_context.model_info.apply_patch_tool_type.is_some();
+        for (runtime, exposure) in dedicated_file_tool_plan::planned_runtimes(
+            turn_context,
+            environment_mode,
+            apply_patch_available,
+        ) {
+            registry.register_trusted_with_exposure(runtime, exposure);
+        }
     }
 
     if turn_context
@@ -1178,25 +1129,14 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
     let turn_context = context.turn_context;
     if collab_tools_enabled(turn_context) {
         if multi_agent_v2_enabled(turn_context) {
-            let base_exposure = if turn_context.config.multi_agent_v2.non_code_mode_only {
+            let exposure = if turn_context.config.multi_agent_v2.non_code_mode_only {
                 ToolExposure::DirectModelOnly
             } else {
                 ToolExposure::Direct
             };
-            let is_grok = is_grok_model_slug(&turn_context.model_info.slug);
-            let configured_tool_namespace = namespace_tools_enabled(turn_context)
+            let tool_namespace = namespace_tools_enabled(turn_context)
                 .then_some(turn_context.config.multi_agent_v2.tool_namespace.as_deref())
                 .flatten();
-            let exposure = if is_grok {
-                configured_tool_namespace.map_or(base_exposure, |namespace| {
-                    grok_collaboration_exposure(turn_context, base_exposure, namespace)
-                })
-            } else {
-                base_exposure
-            };
-            // xAI Responses accepts top-level function tools but not OpenAI namespace tools.
-            // Keep the V2 handlers plain for Grok so the gateway does not have to discard them.
-            let tool_namespace = (!is_grok).then_some(configured_tool_namespace).flatten();
             let agent_type_description =
                 agent_type_description(turn_context, context.default_agent_type_description);
             let hide_spawn_agent_metadata =
@@ -1247,29 +1187,13 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
         } else {
             let agent_type_description =
                 agent_type_description(turn_context, context.default_agent_type_description);
-            let base_exposure = if search_tool_enabled(turn_context) {
+            let exposure = if search_tool_enabled(turn_context) {
                 ToolExposure::Deferred
             } else {
                 ToolExposure::Direct
             };
-            let exposure = if is_grok_model_slug(&turn_context.model_info.slug) {
-                grok_collaboration_exposure(
-                    turn_context,
-                    base_exposure,
-                    crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE,
-                )
-            } else {
-                base_exposure
-            };
-            let prepare_handler = |handler: Arc<dyn CoreToolRuntime>| {
-                if is_grok_model_slug(&turn_context.model_info.slug) {
-                    Arc::new(PlainFunctionOverride { handler }) as Arc<dyn CoreToolRuntime>
-                } else {
-                    handler
-                }
-            };
-            registry.register_trusted_with_exposure(
-                prepare_handler(Arc::new(SpawnAgentHandler::new(SpawnAgentToolOptions {
+            registry.add_with_exposure(
+                SpawnAgentHandler::new(SpawnAgentToolOptions {
                     available_models: turn_context.available_models.clone(),
                     agent_type_description,
                     expose_agent_type: !turn_context.config.agent_roles.is_empty(),
@@ -1277,55 +1201,15 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                     expose_spawn_agent_model_overrides: true,
                     multi_agent_version: turn_context.multi_agent_version,
                     usage_hint_text: turn_context.config.multi_agent_v2.usage_hint_text.clone(),
-                }))),
+                }),
                 exposure,
             );
-            registry.register_trusted_with_exposure(
-                prepare_handler(Arc::new(SendInputHandler)),
-                exposure,
-            );
-            registry.register_trusted_with_exposure(
-                prepare_handler(Arc::new(ResumeAgentHandler)),
-                exposure,
-            );
-            registry.register_trusted_with_exposure(
-                prepare_handler(Arc::new(WaitAgentHandler::new(context.wait_agent_timeouts))),
-                exposure,
-            );
-            registry.register_trusted_with_exposure(
-                prepare_handler(Arc::new(CloseAgentHandler)),
-                exposure,
-            );
+            registry.add_with_exposure(SendInputHandler, exposure);
+            registry.add_with_exposure(ResumeAgentHandler, exposure);
+            registry
+                .add_with_exposure(WaitAgentHandler::new(context.wait_agent_timeouts), exposure);
+            registry.add_with_exposure(CloseAgentHandler, exposure);
         }
-    }
-}
-
-fn grok_collaboration_exposure(
-    turn_context: &TurnContext,
-    exposure: ToolExposure,
-    logical_namespace: &str,
-) -> ToolExposure {
-    let code_mode_excluded = matches!(
-        effective_tool_mode(turn_context),
-        ToolMode::CodeMode | ToolMode::CodeModeOnly
-    ) && turn_context
-        .config
-        .code_mode
-        .excluded_tool_namespaces
-        .iter()
-        .any(|namespace| namespace == logical_namespace);
-    let direct_model_only = turn_context
-        .config
-        .code_mode
-        .direct_only_tool_namespaces
-        .iter()
-        .any(|namespace| namespace == logical_namespace);
-    if matches!(exposure, ToolExposure::Direct | ToolExposure::Deferred)
-        && (code_mode_excluded || direct_model_only)
-    {
-        ToolExposure::DirectModelOnly
-    } else {
-        exposure
     }
 }
 
@@ -1388,23 +1272,12 @@ fn append_extension_tool_executors(
 ) -> Option<ToolName> {
     let standalone_web_search_enabled = standalone_web_search_enabled(turn_context);
     let web_search_mode_on = turn_context.config.web_search_mode.value() != WebSearchMode::Disabled;
-    let standalone_web_search_provider_allowed = turn_context.provider.info().is_openai()
-        || turn_context
-            .provider
-            .info()
-            .uses_openai_actor_authorization()
-        || turn_context.provider.info().supports_standalone_web_search
-        || is_kimi_model_slug(&turn_context.model_info.slug);
     let mut standalone_web_search_tool = None;
 
     for executor in executors {
         let tool_name = executor.tool_name();
         let is_standalone_web_search = tool_name == ToolName::namespaced("web", "run");
-        if is_standalone_web_search
-            && (!standalone_web_search_enabled
-                || !web_search_mode_on
-                || !standalone_web_search_provider_allowed)
-        {
+        if is_standalone_web_search && (!standalone_web_search_enabled || !web_search_mode_on) {
             continue;
         }
         if tool_name == ToolName::namespaced(IMAGE_GEN_NAMESPACE, IMAGEGEN_TOOL_NAME)
@@ -1477,57 +1350,6 @@ impl CoreToolRuntime for MultiAgentV2NamespaceOverride {
         self.handler.wait_until_ready(session)
     }
 
-    fn matches_kind(&self, payload: &crate::tools::context::ToolPayload) -> bool {
-        self.handler.matches_kind(payload)
-    }
-
-    fn create_diff_consumer(
-        &self,
-    ) -> Option<Box<dyn crate::tools::registry::ToolArgumentDiffConsumer>> {
-        self.handler.create_diff_consumer()
-    }
-}
-
-struct PlainFunctionOverride {
-    handler: Arc<dyn CoreToolRuntime>,
-}
-
-impl ToolExecutor<ToolInvocation> for PlainFunctionOverride {
-    fn tool_name(&self) -> ToolName {
-        ToolName::plain(self.handler.tool_name().name)
-    }
-
-    fn spec(&self) -> ToolSpec {
-        match self.handler.spec() {
-            ToolSpec::Namespace(mut namespace) if namespace.tools.len() == 1 => {
-                match namespace.tools.remove(0) {
-                    ResponsesApiNamespaceTool::Function(tool) => ToolSpec::Function(tool),
-                    ResponsesApiNamespaceTool::Custom(tool) => ToolSpec::Freeform(tool),
-                }
-            }
-            spec => spec,
-        }
-    }
-
-    fn exposure(&self) -> ToolExposure {
-        self.handler.exposure()
-    }
-
-    fn supports_parallel_tool_calls(&self) -> bool {
-        self.handler.supports_parallel_tool_calls()
-    }
-
-    fn search_info(&self) -> Option<ToolSearchInfo> {
-        let info = self.handler.search_info()?;
-        ToolSearchInfo::from_spec(info.entry.search_text, self.spec(), info.source_info)
-    }
-
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
-        self.handler.handle(invocation)
-    }
-}
-
-impl CoreToolRuntime for PlainFunctionOverride {
     fn matches_kind(&self, payload: &crate::tools::context::ToolPayload) -> bool {
         self.handler.matches_kind(payload)
     }

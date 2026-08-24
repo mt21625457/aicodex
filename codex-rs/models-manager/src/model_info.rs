@@ -156,7 +156,7 @@ pub fn model_info_from_slug(slug: &str) -> ModelInfo {
         description: None,
         default_reasoning_level,
         supported_reasoning_levels,
-        shell_type: ConfigShellToolType::Default,
+        shell_type: ConfigShellToolType::UnifiedExec,
         visibility: ModelVisibility::None,
         supported_in_api: true,
         priority: 99,
@@ -201,6 +201,16 @@ pub fn model_info_from_slug(slug: &str) -> ModelInfo {
 pub fn is_grok_model_slug(model: &str) -> bool {
     let normalized = unprefixed_model_slug(model);
     normalized.starts_with("grok-") || normalized.starts_with("grok_")
+}
+
+/// Returns whether a model slug identifies DeepSeek, including gateway-prefixed slugs.
+pub fn is_deepseek_model_slug(model: &str) -> bool {
+    let model = model.trim();
+    let model = match model.rsplit_once('/') {
+        Some((_, model)) => model.split(':').next().unwrap_or(model),
+        None => model.rsplit(':').next().unwrap_or(model),
+    };
+    model.trim().to_ascii_lowercase().starts_with("deepseek-")
 }
 
 /// Returns whether a model slug identifies an official OpenAI GPT model.

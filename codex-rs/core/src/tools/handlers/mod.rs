@@ -26,7 +26,6 @@ pub(crate) mod request_plugin_install_spec;
 mod request_user_input;
 pub(crate) mod request_user_input_spec;
 mod send_user_message_async;
-mod shell;
 pub(crate) mod shell_spec;
 mod sleep;
 mod test_sync;
@@ -37,7 +36,6 @@ pub(crate) mod unified_exec;
 mod view_image;
 pub(crate) mod view_image_spec;
 mod wait_for_environment;
-mod web_search;
 
 use codex_sandboxing::policy_transforms::materialize_additional_permissions;
 use codex_sandboxing::policy_transforms::merge_permission_profiles;
@@ -78,9 +76,6 @@ pub use request_permissions::RequestPermissionsHandler;
 pub use request_plugin_install::RequestPluginInstallHandler;
 pub use request_user_input::RequestUserInputHandler;
 pub use send_user_message_async::SendUserMessageAsyncHandler;
-pub(crate) use shell::ClaudeBashHandler;
-pub use shell::ShellCommandHandler;
-pub(crate) use shell::ShellCommandHandlerOptions;
 pub use sleep::SleepHandler;
 pub use test_sync::TestSyncHandler;
 pub(crate) use tool_search::ToolSearchHandlerCache;
@@ -90,7 +85,6 @@ pub use unified_exec::WriteStdinHandler;
 pub use view_image::ViewImageHandler;
 pub(crate) use wait_for_environment::WaitForEnvironmentHandler;
 pub use wait_for_environment::WaitForEnvironmentToolConfig;
-pub use web_search::WebSearchHandler;
 
 pub(crate) fn parse_arguments<T>(arguments: &str) -> Result<T, FunctionCallError>
 where
@@ -164,18 +158,6 @@ where
 {
     let _guard = AbsolutePathBufGuard::new(base_path);
     parse_arguments(arguments)
-}
-
-fn resolve_workdir_base_path(
-    arguments: &str,
-    default_cwd: &AbsolutePathBuf,
-) -> Result<AbsolutePathBuf, FunctionCallError> {
-    let arguments: Value = parse_arguments(arguments)?;
-    Ok(arguments
-        .get("workdir")
-        .and_then(Value::as_str)
-        .filter(|workdir| !workdir.is_empty())
-        .map_or_else(|| default_cwd.clone(), |workdir| default_cwd.join(workdir)))
 }
 
 fn resolve_tool_environment<'a>(

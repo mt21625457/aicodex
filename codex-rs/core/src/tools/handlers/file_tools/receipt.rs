@@ -176,12 +176,15 @@ pub(super) async fn refresh_receipt_after_commit(
     sandbox: &codex_file_system::FileSystemSandboxContext,
     step_context: &Arc<StepContext>,
 ) {
-    let Ok(bytes) = fs.read_file(path, Some(sandbox)).await else {
+    let Ok(bytes) = fs.read_file(path, Default::default(), Some(sandbox)).await else {
         let mut guard = state.lock().await;
         remove_receipt(&mut guard, key);
         return;
     };
-    let Ok(metadata) = fs.get_metadata(path, Some(sandbox)).await else {
+    let Ok(metadata) = fs
+        .get_metadata(path, Default::default(), Some(sandbox))
+        .await
+    else {
         let mut guard = state.lock().await;
         remove_receipt(&mut guard, key);
         return;

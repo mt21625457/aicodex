@@ -37,6 +37,8 @@ fn base_instruction_override_is_literal_and_preserves_catalog_messages() {
     let auto_review = AutoReviewMessages {
         policy: Some("review policy".to_string()),
         policy_template: Some("review policy template".to_string()),
+        rejection_instructions: Some("rejection instructions".to_string()),
+        timeout_instructions: Some(String::new()),
     };
     let permissions = PermissionMessages {
         danger_full_access: Some("danger".to_string()),
@@ -355,6 +357,21 @@ fn openai_gpt_model_slug_recognizes_official_gpt_families() {
     assert!(!is_openai_gpt_model_slug("grok-4.5"));
     assert!(!is_openai_gpt_model_slug("MiniMax-M3"));
     assert!(!is_openai_gpt_model_slug("k3"));
+}
+
+#[test]
+fn deepseek_model_slug_recognizes_plain_and_prefixed_slugs() {
+    assert!(is_deepseek_model_slug("deepseek-v4-pro"));
+    assert!(is_deepseek_model_slug("deepseek-reasoner"));
+    assert!(is_deepseek_model_slug(
+        "aicodex_gateway_responses:deepseek-v4-flash"
+    ));
+    assert!(is_deepseek_model_slug("openai/deepseek-chat"));
+    assert!(is_deepseek_model_slug("deepseek/deepseek-r1:free"));
+    assert!(!is_deepseek_model_slug("deepseek-proxy:gpt-5.4"));
+    assert!(!is_deepseek_model_slug("gpt-5.4"));
+    assert!(!is_deepseek_model_slug("grok-4.5"));
+    assert!(!is_deepseek_model_slug("k3"));
 }
 
 #[test]

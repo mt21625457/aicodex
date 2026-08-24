@@ -892,7 +892,7 @@ async fn chat_dedicated_file_tools_read_edit_edit_loop_uses_mapped_names() -> an
     let target_path = test.executor_environment().cwd().join("target.txt");
     let target = PathUri::from_abs_path(&target_path);
     test.fs()
-        .write_file(&target, b"before\n".to_vec(), None)
+        .write_file(&target, b"before\n".to_vec(), Default::default(), None)
         .await?;
 
     submit_dedicated_text_turn(&test, "update target.txt twice").await?;
@@ -1036,7 +1036,9 @@ async fn chat_dedicated_hidden_apply_patch_dispatches_without_advertising() -> a
             .join("chat-hidden-patch.txt"),
     );
     assert_eq!(
-        test.fs().read_file(&target, None).await?,
+        test.fs()
+            .read_file(&target, Default::default(), None)
+            .await?,
         b"hidden chat compatibility\n"
     );
     Ok(())

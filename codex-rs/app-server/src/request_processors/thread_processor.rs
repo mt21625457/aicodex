@@ -15,6 +15,7 @@ use codex_app_server_protocol::ThreadSectionMoveParams;
 use codex_app_server_protocol::ThreadSectionMoveResponse;
 use codex_extension_api::ExtensionDataInit;
 use codex_extension_api::ThreadIdleCause;
+use codex_models_manager::model_info::is_deepseek_model_slug;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::mcp::ClientMcpExtensions;
@@ -100,7 +101,7 @@ struct ThreadReadTokenUsageReplay {
 
 struct ThreadRevertRuntimeSnapshot {
     config: Config,
-    settings: ThreadConfigSnapshot,
+    settings: CodexThreadSettingsOverrides,
     client_mcp_extensions: ClientMcpExtensions,
 }
 
@@ -2070,7 +2071,7 @@ impl ThreadRequestProcessor {
         }
         let runtime_snapshot = ThreadRevertRuntimeSnapshot {
             config: thread.config().await.as_ref().clone(),
-            settings: config_snapshot,
+            settings: thread.restorable_thread_settings().await,
             client_mcp_extensions: thread.client_mcp_extensions(),
         };
 
@@ -4574,6 +4575,7 @@ impl ThreadRequestProcessor {
             )),
         };
         let mut thread = thread?;
+        thread.model_provider = config_snapshot.model_provider_id.clone();
         thread.can_accept_direct_input = Some(can_accept_direct_input);
         thread.id = thread_id.to_string();
         thread.session_id = session_id;
@@ -4784,7 +4786,7 @@ impl ThreadRequestProcessor {
             restore_approval_policy || restore_approvals_reviewer || restore_permission_profile;
         let loaded_parent_settings = if paginated_source && needs_latest_settings {
             if let Ok(parent) = self.thread_manager.get_thread(source_thread_id).await {
-                let snapshot = parent.config_snapshot().await;
+                let snapshot = parent.thread_settings_snapshot().await;
                 Some(PersistedResumeSettings {
                     approval_policy: snapshot.approval_policy,
                     approvals_reviewer: Some(snapshot.approvals_reviewer),
@@ -5827,10 +5829,6 @@ fn is_aicodex_gateway_provider(provider: &str) -> bool {
     )
 }
 
-fn is_deepseek_model_slug(model: &str) -> bool {
-    model.starts_with("deepseek-")
-}
-
 /// OAuth / AICodex Gateway DeepSeek models speak OpenAI Responses, even when a
 /// stale profile is still parked on `aicodex_gateway_claude`.
 pub(super) fn remap_oauth_gateway_provider_for_deepseek(
@@ -5838,8 +5836,7 @@ pub(super) fn remap_oauth_gateway_provider_for_deepseek(
     model_provider: Option<String>,
     fallback_provider: &str,
 ) -> Option<String> {
-    let model = unprefixed_model_slug(model);
-    if !is_deepseek_model_slug(&model) {
+    if !model.is_some_and(is_deepseek_model_slug) {
         return model_provider;
     }
     let effective = model_provider
@@ -5859,10 +5856,9 @@ fn infer_thread_wire_api(model: Option<&str>, model_provider: &str) -> Option<St
     if provider_indicates_chat_wire_api(&provider) {
         return Some("chat".to_string());
     }
+    let model_is_deepseek = model.is_some_and(is_deepseek_model_slug);
     let model = unprefixed_model_slug(model);
-    if is_deepseek_model_slug(&model)
-        && (provider.is_empty() || is_aicodex_gateway_provider(&provider))
-    {
+    if model_is_deepseek && (provider.is_empty() || is_aicodex_gateway_provider(&provider)) {
         return Some("responses".to_string());
     }
     if provider == "aicodex_gateway_claude"
@@ -5887,8 +5883,7 @@ fn infer_thread_wire_api(model: Option<&str>, model_provider: &str) -> Option<St
     if model == "k3" || model.starts_with("claude-") || model.starts_with("kimi-") {
         return Some("claude".to_string());
     }
-    if model.starts_with("gpt-") || model.starts_with("chatgpt-") || is_deepseek_model_slug(&model)
-    {
+    if model.starts_with("gpt-") || model.starts_with("chatgpt-") || model_is_deepseek {
         return Some("responses".to_string());
     }
     None
@@ -5921,7 +5916,7 @@ pub(crate) fn thread_from_stored_thread_with_config(
         },
         config.model_provider_id.as_str(),
     );
-    let provider_id = remapped_provider.as_deref().unwrap_or_else(|| {
+    let provider_id = remapped_provider.as_deref().unwrap_or({
         if thread.model_provider.is_empty() {
             config.model_provider_id.as_str()
         } else {

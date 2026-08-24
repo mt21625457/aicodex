@@ -122,10 +122,11 @@ use crate::attestation::X_OAI_ATTESTATION_HEADER;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
-use crate::client_common::is_claude_reasoning_item_id;
 use crate::feedback_tags;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::subagent_header_value;
+use crate::responses_reasoning_replay::responses_reasoning_replay;
+use crate::responses_reasoning_replay::strip_reasoning_content_for_responses_input;
 use crate::util::emit_feedback_auth_recovery_tags;
 use codex_feedback::FeedbackRequestTags;
 use codex_feedback::emit_feedback_request_tags_with_auth_env;
@@ -925,7 +926,10 @@ impl ModelClient {
     ) -> Result<ResponsesApiRequest> {
         let mut input = prompt.get_formatted_input_for_request(model_info.use_responses_lite);
         let is_openai = self.state.provider.info().is_openai();
-        strip_reasoning_content_for_responses_input(&mut input, is_openai);
+        strip_reasoning_content_for_responses_input(
+            &mut input,
+            responses_reasoning_replay(&model_info.slug, is_openai),
+        );
         if !is_openai {
             for item in &mut input {
                 item.clear_internal_chat_message_metadata_passthrough();
@@ -1252,45 +1256,6 @@ impl ModelClient {
     }
 }
 
-fn strip_reasoning_content_for_responses_input(
-    input: &mut [ResponseItem],
-    is_openai_provider: bool,
-) {
-    for item in input {
-        if let ResponseItem::Reasoning {
-            id,
-            content,
-            encrypted_content,
-            ..
-        } = item
-        {
-            let has_raw_reasoning_content =
-                content.as_ref().is_some_and(|content| !content.is_empty());
-            // Responses reasoning items are replayed with encrypted_content/summary.
-            // Raw reasoning_text content is output-only; sending it back as input
-            // causes OpenAI-compatible Responses providers to reject the request.
-            // Claude-wire reasoning signatures are a different provider-specific
-            // state format and must not be replayed as OpenAI encrypted reasoning.
-            // Older persisted histories may not have retained the reasoning item
-            // id, so unknown-origin raw reasoning also cannot safely carry
-            // encrypted_content into a Responses request.
-            //
-            // Use an empty vector because the protocol serializer currently omits
-            // empty reasoning content, while None serializes as content: null.
-            *content = Some(Vec::new());
-            let id = id.as_deref().unwrap_or_default();
-            let unknown_origin_raw_reasoning = id.is_empty() && has_raw_reasoning_content;
-            let non_openai_raw_reasoning = !is_openai_provider && has_raw_reasoning_content;
-            if is_claude_reasoning_item_id(id)
-                || unknown_origin_raw_reasoning
-                || non_openai_raw_reasoning
-            {
-                *encrypted_content = None;
-            }
-        }
-    }
-}
-
 impl Drop for ModelClientSession {
     fn drop(&mut self) {
         let websocket_session = std::mem::take(&mut self.websocket_session);
@@ -1377,7 +1342,8 @@ impl ModelClientSession {
             previous_items.extend_from_slice(&response.items_added);
         }
         let is_openai = self.client.state.provider.info().is_openai();
-        strip_reasoning_content_for_responses_input(&mut previous_items, is_openai);
+        let reasoning_replay = responses_reasoning_replay(&request.model, is_openai);
+        strip_reasoning_content_for_responses_input(&mut previous_items, reasoning_replay);
         previous_items
             .iter_mut()
             .for_each(ResponseItem::clear_internal_chat_message_metadata_passthrough);
@@ -1395,7 +1361,7 @@ impl ModelClientSession {
             return None;
         };
         let mut request_prefix = request_items_to_compare.to_vec();
-        strip_reasoning_content_for_responses_input(&mut request_prefix, is_openai);
+        strip_reasoning_content_for_responses_input(&mut request_prefix, reasoning_replay);
         request_prefix
             .iter_mut()
             .for_each(ResponseItem::clear_internal_chat_message_metadata_passthrough);

@@ -99,12 +99,22 @@ const REMOTE_V2_SUMMARY: &str = "global-instructions-remote-v2-summary";
 
 pub(super) const COMPACT_WARNING_MESSAGE: &str = "Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted.";
 
-fn ev_shell_command_call(call_id: &str, command: &str) -> serde_json::Value {
+fn ev_exec_command_call(call_id: &str, command: &str) -> serde_json::Value {
     ev_function_call(
         call_id,
-        "shell_command",
-        &json!({ "command": command }).to_string(),
+        "exec_command",
+        &json!({ "cmd": command }).to_string(),
     )
+}
+
+pub(super) fn allow_echo_commands(home: &Path) {
+    let rules_dir = home.join("rules");
+    fs::create_dir_all(&rules_dir).expect("create exec policy rules directory");
+    fs::write(
+        rules_dir.join("default.rules"),
+        r#"prefix_rule(pattern=["echo"], decision="allow")"#,
+    )
+    .expect("write echo exec policy rule");
 }
 
 fn disabled_permission_user_turn(
@@ -1041,14 +1051,14 @@ async fn multiple_auto_compact_per_task_runs_after_token_limit_hit() {
     let server = start_mock_server().await;
 
     let non_openai_provider_name = non_openai_model_provider(&server).name;
-    let codex = test_codex()
+    let test = test_codex()
+        .with_pre_build_hook(allow_echo_commands)
         .with_config(move |config| {
             config.model_provider.name = non_openai_provider_name;
         })
         .build(&server)
         .await
-        .expect("build codex")
-        .codex;
+        .expect("build codex");
 
     // user message
     let user_message = "create an app";
@@ -1078,7 +1088,7 @@ async fn multiple_auto_compact_per_task_runs_after_token_limit_hit() {
     // first chunk of work
     let model_reasoning_response_1_sse = sse(vec![
         reasoning_response_1.clone(),
-        ev_shell_command_call("r1-shell", "echo make-react"),
+        ev_exec_command_call("r1-shell", "echo make-react"),
         ev_completed_with_tokens("r1", token_count_used),
     ]);
 
@@ -1096,7 +1106,7 @@ async fn multiple_auto_compact_per_task_runs_after_token_limit_hit() {
     // second chunk of work
     let model_reasoning_response_2_sse = sse(vec![
         reasoning_response_2.clone(),
-        ev_shell_command_call("r3-shell", "echo make-node"),
+        ev_exec_command_call("r3-shell", "echo make-node"),
         ev_completed_with_tokens("r3", token_count_used),
     ]);
 
@@ -1114,7 +1124,7 @@ async fn multiple_auto_compact_per_task_runs_after_token_limit_hit() {
     // third chunk of work
     let model_reasoning_response_3_sse = sse(vec![
         ev_reasoning_item("m6", &["I will create a python app"], &[]),
-        ev_shell_command_call("r6-shell", "echo make-python"),
+        ev_exec_command_call("r6-shell", "echo make-python"),
         ev_completed_with_tokens("r6", token_count_used),
     ]);
 
@@ -1146,14 +1156,15 @@ async fn multiple_auto_compact_per_task_runs_after_token_limit_hit() {
     let request_log = mount_sse_sequence(&server, bodies).await;
 
     // Start the conversation with the user message
-    codex
-        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
-            text: user_message.into(),
-            text_elements: Vec::new(),
-        }]))
+    test.codex
+        .start_or_steer_turn(disabled_permission_user_turn(
+            user_message,
+            test.cwd.path().to_path_buf(),
+            test.session_configured.model.clone(),
+        ))
         .await
         .expect("submit user input");
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     // collect the requests payloads from the model
     let requests_payloads = request_log.requests();
@@ -1307,9 +1318,9 @@ async fn multiple_auto_compact_per_task_runs_after_token_limit_hit() {
         "type": "reasoning"
       },
       {
-        "arguments": "{\"command\":\"echo make-react\"}",
+        "arguments": "{\"cmd\":\"echo make-react\"}",
         "call_id": "r1-shell",
-        "name": "shell_command",
+        "name": "exec_command",
         "type": "function_call"
       },
       {
@@ -1406,9 +1417,9 @@ async fn multiple_auto_compact_per_task_runs_after_token_limit_hit() {
         "type": "reasoning"
       },
       {
-        "arguments": "{\"command\":\"echo make-node\"}",
+        "arguments": "{\"cmd\":\"echo make-node\"}",
         "call_id": "r3-shell",
-        "name": "shell_command",
+        "name": "exec_command",
         "type": "function_call"
       },
       {
@@ -1505,9 +1516,9 @@ async fn multiple_auto_compact_per_task_runs_after_token_limit_hit() {
         "type": "reasoning"
       },
       {
-        "arguments": "{\"command\":\"echo make-python\"}",
+        "arguments": "{\"cmd\":\"echo make-python\"}",
         "call_id": "r6-shell",
-        "name": "shell_command",
+        "name": "exec_command",
         "type": "function_call"
       },
       {
@@ -5069,6 +5080,111 @@ async fn snapshot_request_shape_manual_compact_without_previous_user_messages() 
             ]
         )
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mid_turn_compact_replays_deepseek_raw_reasoning_on_continuation() -> Result<()> {
+    let server = start_mock_server().await;
+    let provider = local_compaction_provider(&server);
+    let response_mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_reasoning_item(
+                    "think-1",
+                    &["plan"],
+                    &["keep this deepseek chain of thought"],
+                ),
+                ev_function_call(DUMMY_CALL_ID, DUMMY_FUNCTION_NAME, "{}"),
+                ev_completed_with_tokens("first-response", /*total_tokens*/ 96),
+            ]),
+            sse(vec![
+                ev_assistant_message("compact-message", SUMMARY_TEXT),
+                ev_completed("compact-response"),
+            ]),
+            sse(vec![
+                ev_assistant_message("m2", FINAL_REPLY),
+                ev_completed("follow-up-response"),
+            ]),
+        ],
+    )
+    .await;
+
+    let mut builder = test_codex()
+        .with_model("deepseek-v4-pro")
+        .with_config(move |config| {
+            config.model_provider = provider;
+            set_test_compact_prompt(config);
+            config.model_context_window = Some(100);
+            config.model_auto_compact_token_limit = Some(90);
+        });
+    let test = builder.build_with_auto_env(&server).await?;
+
+    test.submit_turn("trigger mid-turn compaction").await?;
+
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 3);
+    let request_inputs = requests[1..]
+        .iter()
+        .map(|request| {
+            request
+                .body_json()
+                .get("input")
+                .and_then(Value::as_array)
+                .cloned()
+                .expect("request should include input")
+        })
+        .collect::<Vec<_>>();
+    let mut replayed_indexes = Vec::new();
+    for input in &request_inputs {
+        let replayed_index = input
+            .iter()
+            .position(|item| {
+                item.get("type").and_then(Value::as_str) == Some("reasoning")
+                    && item
+                        .get("content")
+                        .and_then(Value::as_array)
+                        .is_some_and(|content| {
+                            content.iter().any(|part| {
+                                part.get("type").and_then(Value::as_str) == Some("reasoning_text")
+                                    && part.get("text").and_then(Value::as_str)
+                                        == Some("keep this deepseek chain of thought")
+                            })
+                        })
+            })
+            .expect("DeepSeek request should replay last-turn reasoning_text");
+        let replayed = &input[replayed_index];
+        assert!(replayed.get("id").is_none());
+        assert!(replayed.get("encrypted_content").is_none());
+        assert!(
+            replayed
+                .get("summary")
+                .and_then(Value::as_array)
+                .is_some_and(Vec::is_empty)
+        );
+        replayed_indexes.push(replayed_index);
+    }
+    let follow_up_input = &request_inputs[1];
+    let replayed_index = replayed_indexes[1];
+    let summary_index = follow_up_input
+        .iter()
+        .position(|item| {
+            item.get("type").and_then(Value::as_str) == Some("message")
+                && item
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .is_some_and(|content| {
+                        content.iter().any(|part| {
+                            part.get("text")
+                                .and_then(Value::as_str)
+                                .is_some_and(|text| text.starts_with(SUMMARY_PREFIX))
+                        })
+                    })
+        })
+        .expect("follow-up request should include compaction summary");
+    assert!(replayed_index < summary_index);
+
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

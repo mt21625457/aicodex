@@ -411,6 +411,7 @@ fn parse_update_file_chunk(
         change_context,
         old_lines: Vec::new(),
         new_lines: Vec::new(),
+        context_line_indices: Vec::new(),
         is_end_of_file: false,
     };
     let mut parsed_lines = 0;
@@ -431,12 +432,10 @@ fn parse_update_file_chunk(
                 match line_contents.chars().next() {
                     None => {
                         // Interpret this as an empty line.
-                        chunk.old_lines.push(String::new());
-                        chunk.new_lines.push(String::new());
+                        chunk.push_context_line(String::new());
                     }
                     Some(' ') => {
-                        chunk.old_lines.push(line_contents[1..].to_string());
-                        chunk.new_lines.push(line_contents[1..].to_string());
+                        chunk.push_context_line(line_contents[1..].to_string());
                     }
                     Some('+') => {
                         chunk.new_lines.push(line_contents[1..].to_string());
@@ -553,6 +552,7 @@ fn test_update_file_chunk() {
                     "add".to_string(),
                     "context2".to_string(),
                 ],
+                context_line_indices: vec![(0, 0), (1, 1), (3, 3)],
                 is_end_of_file: false,
             },
             6,
@@ -569,6 +569,7 @@ fn test_update_file_chunk() {
                 change_context: None,
                 old_lines: Vec::new(),
                 new_lines: vec!["line".to_string()],
+                context_line_indices: Vec::new(),
                 is_end_of_file: true,
             },
             3,

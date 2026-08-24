@@ -10,7 +10,7 @@ use crate::UpdateFileChunk;
 use crate::seek_sequence;
 use crate::text_file::Replacement;
 use crate::text_file::SourceFile;
-use crate::text_file::read_patchable_text_file_with_fingerprint;
+use crate::text_file::read_patchable_text_file;
 
 #[cfg(test)]
 #[path = "file_update_tests.rs"]
@@ -18,7 +18,6 @@ mod tests;
 
 pub(crate) struct AppliedPatch {
     pub(crate) original_contents: String,
-    pub(crate) original_fingerprint: [u8; 32],
     pub(crate) new_contents: String,
     pub(crate) new_bytes: Vec<u8>,
 }
@@ -30,20 +29,20 @@ pub(crate) async fn derive_new_contents_from_chunks(
     chunks: &[UpdateFileChunk],
     update_file_mode: ApplyPatchFileUpdateMode,
     fs: &dyn ExecutorFileSystem,
+    follow_symlinks: bool,
     sandbox: Option<&FileSystemSandboxContext>,
 ) -> std::result::Result<AppliedPatch, ApplyPatchError> {
-    let (original_file, original_fingerprint) =
-        read_patchable_text_file_with_fingerprint(path, fs, sandbox)
-            .await
-            .map_err(|err| {
-                ApplyPatchError::IoError(IoError {
-                    context: format!(
-                        "Failed to read file to update {}",
-                        path.inferred_native_path_string()
-                    ),
-                    source: err,
-                })
-            })?;
+    let original_file = read_patchable_text_file(path, fs, follow_symlinks, sandbox)
+        .await
+        .map_err(|err| {
+            ApplyPatchError::IoError(IoError {
+                context: format!(
+                    "Failed to read file to update {}",
+                    path.inferred_native_path_string()
+                ),
+                source: err,
+            })
+        })?;
     let original_contents = original_file.contents;
     let encoding = original_file.encoding;
 
@@ -89,7 +88,6 @@ pub(crate) async fn derive_new_contents_from_chunks(
     })?;
     Ok(AppliedPatch {
         original_contents,
-        original_fingerprint,
         new_contents,
         new_bytes,
     })
@@ -331,7 +329,15 @@ async fn unified_diff_from_chunks_with_context_and_mode(
         original_contents,
         new_contents,
         ..
-    } = derive_new_contents_from_chunks(path, chunks, update_file_mode, fs, sandbox).await?;
+    } = derive_new_contents_from_chunks(
+        path,
+        chunks,
+        update_file_mode,
+        fs,
+        /*follow_symlinks*/ true,
+        sandbox,
+    )
+    .await?;
     let text_diff = TextDiff::from_lines(&original_contents, &new_contents);
     let unified_diff = text_diff.unified_diff().context_radius(context).to_string();
     Ok(ApplyPatchFileUpdate {
