@@ -205,12 +205,12 @@ pub fn is_grok_model_slug(model: &str) -> bool {
 
 /// Returns whether a model slug identifies DeepSeek, including gateway-prefixed slugs.
 pub fn is_deepseek_model_slug(model: &str) -> bool {
-    let model = model.trim();
-    let model = match model.rsplit_once('/') {
-        Some((_, model)) => model.split(':').next().unwrap_or(model),
-        None => model.rsplit(':').next().unwrap_or(model),
-    };
-    model.trim().to_ascii_lowercase().starts_with("deepseek-")
+    family_slug_after_provider_prefix(model).starts_with("deepseek-")
+}
+
+/// Returns whether a model slug identifies MiniMax, including gateway-prefixed slugs.
+pub fn is_minimax_model_slug(model: &str) -> bool {
+    family_slug_after_provider_prefix(model).starts_with("minimax-")
 }
 
 /// Returns whether a model slug identifies an official OpenAI GPT model.
@@ -221,6 +221,19 @@ pub fn is_deepseek_model_slug(model: &str) -> bool {
 pub fn is_openai_gpt_model_slug(model: &str) -> bool {
     let normalized = unprefixed_model_slug(model);
     normalized.starts_with("gpt-") || normalized.starts_with("chatgpt-")
+}
+
+/// Last path segment, then the model id before a `:free`-style suffix.
+///
+/// `unprefixed_model_slug` takes the last `:`/`/` segment, so
+/// `minimax/MiniMax-M3:free` would become `free`.
+fn family_slug_after_provider_prefix(model: &str) -> String {
+    let model = model.trim();
+    let model = match model.rsplit_once('/') {
+        Some((_, model)) => model.split(':').next().unwrap_or(model),
+        None => model.rsplit(':').next().unwrap_or(model),
+    };
+    model.trim().to_ascii_lowercase()
 }
 
 fn unprefixed_model_slug(model: &str) -> String {

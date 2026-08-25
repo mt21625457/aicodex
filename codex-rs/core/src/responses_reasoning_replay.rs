@@ -1,13 +1,14 @@
 //! Responses-wire reasoning replay policy.
 //!
 //! Official OpenAI Responses continues thinking with `encrypted_content` and
-//! rejects raw `reasoning_text` as input. DeepSeek (including gateway-prefixed
-//! slugs) needs that plaintext replayed or the next turn is downgraded to
-//! non-thinking.
+//! rejects raw `reasoning_text` as input. DeepSeek and MiniMax (including
+//! gateway-prefixed slugs) need that plaintext replayed or the next turn is
+//! downgraded to non-thinking and can stall or repeat after tool results.
 
 use crate::event_mapping::parse_turn_item;
 use codex_history::ResponseItemEnvelope;
 use codex_models_manager::model_info::is_deepseek_model_slug;
+use codex_models_manager::model_info::is_minimax_model_slug;
 use codex_prompts::SUMMARY_PREFIX;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ReasoningItemContent;
@@ -24,7 +25,7 @@ pub(crate) enum ResponsesReasoningReplay {
     /// OpenAI / OpenAI-compatible: omit raw content; keep encrypted handoff
     /// only for trusted OpenAI-origin items.
     EncryptedHandoff { is_openai_provider: bool },
-    /// DeepSeek-style: keep `reasoning_text` so the next turn can continue thinking.
+    /// DeepSeek / MiniMax: keep `reasoning_text` so the next turn can continue thinking.
     RawReasoningText,
 }
 
@@ -32,7 +33,7 @@ pub(crate) fn responses_reasoning_replay(
     model_slug: &str,
     is_openai_provider: bool,
 ) -> ResponsesReasoningReplay {
-    if is_deepseek_model_slug(model_slug) {
+    if is_deepseek_model_slug(model_slug) || is_minimax_model_slug(model_slug) {
         ResponsesReasoningReplay::RawReasoningText
     } else {
         ResponsesReasoningReplay::EncryptedHandoff { is_openai_provider }
@@ -178,8 +179,9 @@ fn strip_encrypted_handoff_reasoning(input: &mut [ResponseItem], is_openai_provi
 
 /// Last-turn `Reasoning` items to keep in compacted replacement history.
 ///
-/// Only DeepSeek raw replay keeps these items. Earlier turns are dropped, and
-/// the newest items are preferred when the last turn exceeds the token cap.
+/// Only DeepSeek / MiniMax raw replay keeps these items. Earlier turns are
+/// dropped, and the newest items are preferred when the last turn exceeds the
+/// token cap.
 pub(crate) fn last_turn_reasoning_for_raw_replay(
     items: &[ResponseItemEnvelope],
     model_slug: &str,

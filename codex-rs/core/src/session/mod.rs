@@ -221,6 +221,7 @@ mod mcp_prewarm;
 mod mcp_refresh;
 mod mcp_runtime;
 pub(crate) mod multi_agents;
+pub(crate) mod repeated_follow_up;
 mod review;
 mod rollout_budget;
 mod rollout_reconstruction;

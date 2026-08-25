@@ -48,6 +48,23 @@ fn non_deepseek_models_keep_encrypted_handoff_split_by_provider() {
 }
 
 #[test]
+fn minimax_and_deepseek_use_raw_reasoning_replay() {
+    for slug in [
+        "MiniMax-M3",
+        "minimax:MiniMax-M3",
+        "aicodex_gateway_responses:MiniMax-M3",
+        "minimax/MiniMax-M3:free",
+        "deepseek-v4-pro",
+    ] {
+        assert_eq!(
+            responses_reasoning_replay(slug, /*is_openai_provider*/ false),
+            ResponsesReasoningReplay::RawReasoningText,
+            "unexpected replay policy for {slug}"
+        );
+    }
+}
+
+#[test]
 fn raw_replay_normalizes_legacy_text_and_clears_provider_state() {
     let mut input = vec![ResponseItem::Reasoning {
         id: Some(ResponseItemId::from_server("reasoning-id".to_string())),
@@ -133,23 +150,22 @@ fn last_turn_reasoning_keeps_only_items_after_the_last_real_user() {
         reasoning_item("new", "new thought"),
     ];
 
-    let retained = last_turn_reasoning_for_raw_replay(
-        &items,
-        "deepseek-v4-pro",
-        /*is_openai_provider*/ false,
-    );
+    for slug in ["deepseek-v4-pro", "MiniMax-M3"] {
+        let retained =
+            last_turn_reasoning_for_raw_replay(&items, slug, /*is_openai_provider*/ false);
 
-    assert_eq!(retained.len(), 1);
-    match &retained[0].item {
-        ResponseItem::Reasoning { content, .. } => {
-            assert_eq!(
-                content,
-                &Some(vec![ReasoningItemContent::ReasoningText {
-                    text: "new thought".to_string(),
-                }])
-            );
+        assert_eq!(retained.len(), 1, "unexpected retained count for {slug}");
+        match &retained[0].item {
+            ResponseItem::Reasoning { content, .. } => {
+                assert_eq!(
+                    content,
+                    &Some(vec![ReasoningItemContent::ReasoningText {
+                        text: "new thought".to_string(),
+                    }])
+                );
+            }
+            other => panic!("expected reasoning item for {slug}, got {other:?}"),
         }
-        other => panic!("expected reasoning item, got {other:?}"),
     }
 }
 

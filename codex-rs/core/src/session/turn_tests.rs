@@ -74,6 +74,7 @@ async fn plan_mode_uses_contributed_turn_item_for_last_agent_message() {
     let turn_store = ExtensionData::new(turn_context.sub_id.clone());
     let mut state = PlanModeStreamState::new(&turn_context.sub_id);
     let mut last_agent_message = None;
+    let mut follow_up_text = None;
     let item = assistant_output_text("original assistant text");
 
     let handled = handle_assistant_item_done_in_plan_mode(
@@ -84,12 +85,17 @@ async fn plan_mode_uses_contributed_turn_item_for_last_agent_message() {
         &mut state,
         /*previously_active_item*/ None,
         &mut last_agent_message,
+        &mut follow_up_text,
     )
     .await;
 
     assert!(handled);
     assert_eq!(
         last_agent_message.as_deref(),
+        Some("plan contributed assistant text")
+    );
+    assert_eq!(
+        follow_up_text.as_deref(),
         Some("plan contributed assistant text")
     );
 }

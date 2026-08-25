@@ -375,6 +375,22 @@ fn deepseek_model_slug_recognizes_plain_and_prefixed_slugs() {
 }
 
 #[test]
+fn minimax_model_slug_recognizes_plain_and_prefixed_slugs() {
+    assert!(is_minimax_model_slug("MiniMax-M3"));
+    assert!(is_minimax_model_slug("minimax-m3"));
+    assert!(is_minimax_model_slug("minimax:MiniMax-M3"));
+    assert!(is_minimax_model_slug(
+        "aicodex_gateway_responses:MiniMax-M3"
+    ));
+    assert!(is_minimax_model_slug("openai/MiniMax-M3"));
+    assert!(is_minimax_model_slug("minimax/MiniMax-M3:free"));
+    assert!(!is_minimax_model_slug("minimax"));
+    assert!(!is_minimax_model_slug("gpt-5.4"));
+    assert!(!is_minimax_model_slug("deepseek-v4-pro"));
+    assert!(!is_minimax_model_slug("grok-4.5"));
+}
+
+#[test]
 fn grok_models_use_multi_agent_v2_metadata() {
     use codex_protocol::protocol::MultiAgentVersion;
 

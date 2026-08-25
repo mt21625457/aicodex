@@ -3,6 +3,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use super::repeated_follow_up::RepeatedFollowUpDetector;
+use super::repeated_follow_up::retain_longest_follow_up;
 use crate::client::ModelClientSession;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
@@ -78,6 +80,7 @@ use codex_login::CodexAuth;
 use codex_model_provider::RemoteCompactionSupport;
 use codex_model_provider_info::WireApi;
 use codex_models_manager::model_info::is_grok_model_slug;
+use codex_models_manager::model_info::is_minimax_model_slug;
 use codex_protocol::ResponseItemId;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::ModeKind;
@@ -339,6 +342,7 @@ pub(crate) async fn run_turn(
     let mut can_drain_pending_input = input.is_empty();
     let mut pending_input_deferred_for_model_follow_up = false;
     let mut claude_pause_turn_continuations = 0usize;
+    let mut repeated_follow_up = RepeatedFollowUpDetector::new();
     let mut pre_sampling_admission_compactions = 0usize;
     let mut context_window_recovery_attempted = false;
     let mut skip_pre_sampling_admission_once = initial_pre_sampling_compacted;
@@ -494,6 +498,7 @@ pub(crate) async fn run_turn(
                     needs_follow_up: model_needs_follow_up,
                     provider_stop_reason,
                     last_agent_message: sampling_request_last_agent_message,
+                    follow_up_text: sampling_request_follow_up_text,
                 } = sampling_request_output;
                 if model_needs_follow_up {
                     sess.input_queue
@@ -540,6 +545,21 @@ pub(crate) async fn run_turn(
                     }
                 } else if provider_stop_reason.as_deref() != Some("pause_turn") {
                     claude_pause_turn_continuations = 0;
+                }
+                if model_needs_follow_up
+                    && is_minimax_model_slug(&turn_context.model_info.slug)
+                    && repeated_follow_up.trip_on_repeat(sampling_request_follow_up_text.as_deref())
+                {
+                    sess.send_event(
+                        &turn_context,
+                        EventMsg::Error(ErrorEvent {
+                            message: "The model repeated the same follow-up message after tool results; stopping automatic continuation.".to_string(),
+                            codex_error_info: None,
+                        }),
+                    )
+                    .await;
+                    last_agent_message = sampling_request_last_agent_message;
+                    break;
                 }
                 let token_limit_reached = token_status.token_limit_reached;
                 trace!(
@@ -2079,6 +2099,7 @@ struct SamplingRequestResult {
     needs_follow_up: bool,
     provider_stop_reason: Option<String>,
     last_agent_message: Option<String>,
+    follow_up_text: Option<String>,
 }
 
 /// Ephemeral per-response state for streaming a single proposed plan.
@@ -2581,6 +2602,7 @@ async fn emit_turn_item_in_plan_mode(
 }
 
 /// Handle a completed assistant response item in plan mode, returning true if handled.
+#[allow(clippy::too_many_arguments)]
 async fn handle_assistant_item_done_in_plan_mode(
     sess: &Session,
     turn_context: &TurnContext,
@@ -2589,6 +2611,7 @@ async fn handle_assistant_item_done_in_plan_mode(
     state: &mut PlanModeStreamState,
     previously_active_item: Option<&TurnItem>,
     last_agent_message: &mut Option<String>,
+    follow_up_text: &mut Option<String>,
 ) -> bool {
     if let ResponseItem::Message { role, .. } = item
         && role == "assistant"
@@ -2626,6 +2649,7 @@ async fn handle_assistant_item_done_in_plan_mode(
         )
         .await;
         if let Some(agent_message) = final_last_agent_message {
+            retain_longest_follow_up(follow_up_text, &agent_message);
             *last_agent_message = Some(agent_message);
         }
         return true;
@@ -2734,6 +2758,7 @@ async fn try_run_sampling_request(
     let mut completed_tool_call_started = false;
     let mut streamed_tool_input_started = false;
     let mut last_agent_message: Option<String> = None;
+    let mut follow_up_text: Option<String> = None;
     let mut active_item: Option<TurnItem> = None;
     let mut active_tool_argument_diff_consumer: Option<(
         String,
@@ -2803,6 +2828,7 @@ async fn try_run_sampling_request(
                         needs_follow_up: true,
                         provider_stop_reason: Some("stream_error_after_tool_call".to_string()),
                         last_agent_message,
+                        follow_up_text,
                     });
                 }
                 if streamed_tool_input_started {
@@ -2825,6 +2851,7 @@ async fn try_run_sampling_request(
                         needs_follow_up: true,
                         provider_stop_reason: Some("stream_closed_after_tool_call".to_string()),
                         last_agent_message,
+                        follow_up_text,
                     });
                 }
                 if streamed_tool_input_started {
@@ -2898,6 +2925,7 @@ async fn try_run_sampling_request(
                         state,
                         previously_streamed_item.as_ref(),
                         &mut last_agent_message,
+                        &mut follow_up_text,
                     )
                     .await
                 {
@@ -2947,6 +2975,7 @@ async fn try_run_sampling_request(
                     in_flight.push_back(tool_future);
                 }
                 if let Some(agent_message) = output_result.last_agent_message {
+                    retain_longest_follow_up(&mut follow_up_text, &agent_message);
                     last_agent_message = Some(agent_message);
                 }
                 needs_follow_up |= output_result.needs_follow_up;
@@ -2956,6 +2985,7 @@ async fn try_run_sampling_request(
                         needs_follow_up: true,
                         provider_stop_reason: None,
                         last_agent_message,
+                        follow_up_text,
                     });
                 }
             }
@@ -3155,6 +3185,7 @@ async fn try_run_sampling_request(
                     needs_follow_up,
                     provider_stop_reason,
                     last_agent_message,
+                    follow_up_text,
                 });
             }
             ResponseEvent::OutputTextDelta(delta) => {
