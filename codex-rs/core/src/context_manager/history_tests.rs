@@ -11,6 +11,7 @@ use codex_protocol::AgentPath;
 use codex_protocol::ResponseItemId;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::ContentItemKind;
 use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
@@ -45,6 +46,13 @@ const EXEC_FORMAT_MAX_BYTES: usize = 10_000;
 const EXEC_FORMAT_MAX_TOKENS: usize = 2_500;
 const TEST_WAV_SAMPLE_RATE: u32 = 8_000;
 
+fn unknown_content_metadata() -> InternalChatMessageMetadataPassthrough {
+    InternalChatMessageMetadataPassthrough {
+        content_item_kinds: Some(vec![ContentItemKind("unknown".to_string())]),
+        ..Default::default()
+    }
+}
+
 fn pcm_wav_data_url(sample_count: u32) -> (String, usize) {
     let padding = sample_count % 2;
     let mut bytes = Vec::new();
@@ -77,7 +85,7 @@ fn assistant_msg(text: &str) -> ResponseItem {
             text: text.to_string(),
         }],
         phase: None,
-        internal_chat_message_metadata_passthrough: None,
+        internal_chat_message_metadata_passthrough: Some(unknown_content_metadata()),
     }
 }
 
@@ -96,7 +104,7 @@ fn inter_agent_assistant_msg(text: &str) -> ResponseItem {
             text: serde_json::to_string(&communication).unwrap(),
         }],
         phase: None,
-        internal_chat_message_metadata_passthrough: None,
+        internal_chat_message_metadata_passthrough: Some(unknown_content_metadata()),
     }
 }
 
@@ -133,6 +141,12 @@ fn conversation_history_snapshot_shares_response_items_until_history_changes() {
     assert_eq!(
         raw_items(&history),
         vec![assistant_msg("original"), assistant_msg("later")],
+    );
+
+    history.replace(vec![assistant_msg("replacement")]);
+    assert_ne!(
+        snapshot.history_version(),
+        history.conversation_history_snapshot().history_version()
     );
 }
 
@@ -250,7 +264,7 @@ fn user_msg(text: &str) -> ResponseItem {
             text: text.to_string(),
         }],
         phase: None,
-        internal_chat_message_metadata_passthrough: None,
+        internal_chat_message_metadata_passthrough: Some(unknown_content_metadata()),
     }
 }
 
@@ -262,7 +276,7 @@ fn user_input_text_msg(text: &str) -> ResponseItem {
             text: text.to_string(),
         }],
         phase: None,
-        internal_chat_message_metadata_passthrough: None,
+        internal_chat_message_metadata_passthrough: Some(unknown_content_metadata()),
     }
 }
 
@@ -274,7 +288,7 @@ fn developer_msg(text: &str) -> ResponseItem {
             text: text.to_string(),
         }],
         phase: None,
-        internal_chat_message_metadata_passthrough: None,
+        internal_chat_message_metadata_passthrough: Some(unknown_content_metadata()),
     }
 }
 
@@ -289,7 +303,10 @@ fn developer_msg_with_fragments(texts: &[&str]) -> ResponseItem {
             })
             .collect(),
         phase: None,
-        internal_chat_message_metadata_passthrough: None,
+        internal_chat_message_metadata_passthrough: Some(InternalChatMessageMetadataPassthrough {
+            content_item_kinds: Some(vec![ContentItemKind("unknown".to_string()); texts.len()]),
+            ..Default::default()
+        }),
     }
 }
 
@@ -319,6 +336,7 @@ fn reference_context_item() -> TurnContextItem {
         multi_agent_version: None,
         multi_agent_mode: None,
         realtime_active: Some(false),
+        cyber_access_program: None,
         effort: None,
         summary: codex_protocol::config_types::ReasoningSummary::Auto,
     }
@@ -390,41 +408,7 @@ fn filters_non_api_messages() {
     let a = assistant_msg("hello");
     h.record_items([&u, &a], policy);
 
-    let items = raw_items(&h);
-    assert_eq!(
-        items,
-        vec![
-            ResponseItem::Reasoning {
-                id: None,
-                summary: vec![ReasoningItemReasoningSummary::SummaryText {
-                    text: "summary".to_string(),
-                }],
-                content: Some(vec![ReasoningItemContent::ReasoningText {
-                    text: "thinking...".to_string(),
-                }]),
-                encrypted_content: None,
-                internal_chat_message_metadata_passthrough: None,
-            },
-            ResponseItem::Message {
-                id: None,
-                role: "user".to_string(),
-                content: vec![ContentItem::OutputText {
-                    text: "hi".to_string()
-                }],
-                phase: None,
-                internal_chat_message_metadata_passthrough: None,
-            },
-            ResponseItem::Message {
-                id: None,
-                role: "assistant".to_string(),
-                content: vec![ContentItem::OutputText {
-                    text: "hello".to_string()
-                }],
-                phase: None,
-                internal_chat_message_metadata_passthrough: None,
-            }
-        ]
-    );
+    assert_eq!(raw_items(&h), vec![reasoning, u, a]);
 }
 
 #[test]
@@ -673,7 +657,17 @@ fn for_prompt_strips_media_when_model_does_not_support_it() {
                 },
             ],
             phase: None,
-            internal_chat_message_metadata_passthrough: None,
+            internal_chat_message_metadata_passthrough: Some(
+                InternalChatMessageMetadataPassthrough {
+                    content_item_kinds: Some(vec![
+                        ContentItemKind("user.text".to_string()),
+                        ContentItemKind("user.image".to_string()),
+                        ContentItemKind("user.audio".to_string()),
+                        ContentItemKind("user.text".to_string()),
+                    ]),
+                    ..Default::default()
+                },
+            ),
         },
         ResponseItem::FunctionCall {
             id: None,
@@ -757,7 +751,17 @@ fn for_prompt_strips_media_when_model_does_not_support_it() {
                 },
             ],
             phase: None,
-            internal_chat_message_metadata_passthrough: None,
+            internal_chat_message_metadata_passthrough: Some(
+                InternalChatMessageMetadataPassthrough {
+                    content_item_kinds: Some(vec![
+                        ContentItemKind("user.text".to_string()),
+                        ContentItemKind("images.unsupported".to_string()),
+                        ContentItemKind("audio.unsupported".to_string()),
+                        ContentItemKind("user.text".to_string()),
+                    ]),
+                    ..Default::default()
+                },
+            ),
         },
         ResponseItem::FunctionCall {
             id: None,
@@ -860,7 +864,7 @@ fn for_prompt_strips_media_when_model_does_not_support_it() {
             audio_url: "data:audio/wav;base64,YXVkaW8=".to_string(),
         }],
         phase: None,
-        internal_chat_message_metadata_passthrough: None,
+        internal_chat_message_metadata_passthrough: Some(unknown_content_metadata()),
     };
     let with_audio = create_history_with_items(vec![audio_message.clone()]);
     assert_eq!(
@@ -907,7 +911,7 @@ fn for_prompt_preserves_image_generation_calls_when_images_are_supported() {
                     text: "hi".to_string(),
                 }],
                 phase: None,
-                internal_chat_message_metadata_passthrough: None,
+                internal_chat_message_metadata_passthrough: Some(unknown_content_metadata()),
             }
         ]
     );
@@ -944,7 +948,7 @@ fn for_prompt_clears_image_generation_result_when_images_are_unsupported() {
                     text: "generate a lobster".to_string(),
                 }],
                 phase: None,
-                internal_chat_message_metadata_passthrough: None,
+                internal_chat_message_metadata_passthrough: Some(unknown_content_metadata()),
             },
             ResponseItem::ImageGenerationCall {
                 id: Some(ResponseItemId::with_suffix("ig", "123")),
@@ -1246,6 +1250,67 @@ fn drop_last_n_user_turns_trims_context_updates_above_rolled_back_turn() {
             .expect("serialize retained reference context item"),
         serde_json::to_value(Some(reference_context_item))
             .expect("serialize expected reference context item")
+    );
+}
+
+#[test]
+fn drop_last_n_user_turns_preserves_annotations_for_surviving_developer_fragments() {
+    let turn_id = "rolled-back-turn";
+    let model_switch = ModelSwitchInstructions::new("switched model instructions").render();
+    let developer_message = ResponseItem::Message {
+        id: None,
+        role: "developer".to_string(),
+        content: vec![
+            ContentItem::InputText {
+                text: "persistent developer instructions".to_string(),
+            },
+            ContentItem::InputText { text: model_switch },
+            ContentItem::InputText {
+                text: "persistent environment instructions".to_string(),
+            },
+        ],
+        phase: None,
+        internal_chat_message_metadata_passthrough: Some(InternalChatMessageMetadataPassthrough {
+            turn_id: Some(turn_id.to_string()),
+            content_item_kinds: Some(vec![
+                ContentItemKind("generic.developer_instructions".to_string()),
+                ContentItemKind("model_switch.instructions".to_string()),
+                ContentItemKind("environments.instructions".to_string()),
+            ]),
+            ..Default::default()
+        }),
+    };
+    let mut user_message = user_input_text_msg("turn to roll back");
+    user_message.set_turn_id_if_missing(turn_id);
+    let mut history = create_history_with_items(vec![developer_message, user_message]);
+
+    history.drop_last_n_user_turns(/*num_turns*/ 1);
+
+    assert_eq!(
+        raw_items(&history),
+        vec![ResponseItem::Message {
+            id: None,
+            role: "developer".to_string(),
+            content: vec![
+                ContentItem::InputText {
+                    text: "persistent developer instructions".to_string(),
+                },
+                ContentItem::InputText {
+                    text: "persistent environment instructions".to_string(),
+                },
+            ],
+            phase: None,
+            internal_chat_message_metadata_passthrough: Some(
+                InternalChatMessageMetadataPassthrough {
+                    turn_id: Some(turn_id.to_string()),
+                    content_item_kinds: Some(vec![
+                        ContentItemKind("generic.developer_instructions".to_string()),
+                        ContentItemKind("environments.instructions".to_string()),
+                    ]),
+                    ..Default::default()
+                },
+            ),
+        }],
     );
 }
 
@@ -2660,7 +2725,7 @@ fn text_only_items_unchanged() {
         id: None,
         role: "assistant".to_string(),
         content: vec![ContentItem::OutputText {
-            text: "Hello world, this is a response.".to_string(),
+            text: "Hello, \"world\"!\nこんにちは".to_string(),
         }],
         phase: None,
         internal_chat_message_metadata_passthrough: None,

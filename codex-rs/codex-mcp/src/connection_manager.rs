@@ -11,6 +11,8 @@ mod required;
 mod resources;
 #[path = "connection_manager/startup.rs"]
 mod startup;
+#[path = "connection_manager/status.rs"]
+mod status;
 #[path = "connection_manager/tool_catalog.rs"]
 mod tool_catalog;
 
@@ -35,6 +37,7 @@ use crate::mcp::ToolPluginProvenance;
 use crate::pagination::MAX_CODEX_APPS_TOOL_CATALOG_ITEMS;
 use crate::pagination::MAX_MCP_CATALOG_ITEMS;
 use crate::rmcp_client::AsyncManagedClient;
+use crate::rmcp_client::DEFAULT_STARTUP_TIMEOUT;
 use crate::rmcp_client::DEFAULT_TOOL_TIMEOUT;
 use crate::rmcp_client::ManagedClient;
 use crate::rmcp_client::StartupOutcomeError;
@@ -58,8 +61,6 @@ use codex_diagnostics::Gauge;
 use codex_diagnostics::GaugeGuard;
 use codex_protocol::mcp::CallToolResult;
 use codex_protocol::mcp::McpServerInfo;
-use codex_protocol::models::PermissionProfile;
-use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::McpStartupCompleteEvent;
@@ -79,6 +80,8 @@ static LIVE_CONNECTIONS: Gauge = Gauge::new("mcp.connections.live");
 pub(crate) struct McpServerConnection {
     identity: Option<McpServerConnectionIdentity>,
     client: AsyncManagedClient,
+    // Startup-only budget; changing it must not replace a ready connection.
+    startup_timeout: Duration,
     startup_trigger: Option<watch::Sender<bool>>,
     _diagnostics_guard: GaugeGuard,
 }
@@ -178,6 +181,7 @@ impl McpServerView {
 /// A published view over a set of running MCP server connections.
 pub(crate) struct McpConnectionSet {
     servers: HashMap<String, McpServerView>,
+    disabled_servers: Vec<String>,
     protocol_mode: crate::McpProtocolMode,
     required_servers: Vec<String>,
     optional_startup_deadline: OnceLock<tokio::time::Instant>,
@@ -220,8 +224,6 @@ impl McpConnectionSet {
         } = input;
         let store_mode = config.mcp_oauth_credentials_store_mode;
         let keyring_backend_kind = config.auth_keyring_backend_kind;
-        let approval_policy = &config.approval_policy;
-        let initial_permission_profile = config.permission_profile.clone();
         let codex_home = config.codex_home.clone();
         let prefix_mcp_tool_names = config.prefix_mcp_tool_names;
         let non_prefixed_mcp_tool_servers = config.non_prefixed_mcp_tool_servers.clone();
@@ -230,6 +232,11 @@ impl McpConnectionSet {
         let tool_plugin_provenance = crate::mcp::tool_plugin_provenance(&config);
         let auth = auth.as_ref();
         let mut servers = HashMap::new();
+        let disabled_servers = mcp_servers
+            .iter()
+            .filter(|(_, server)| !server.enabled())
+            .map(|(name, _)| name.clone())
+            .collect();
         let mut required_servers = mcp_servers
             .iter()
             .filter(|(_, server)| server.enabled() && server.required())
@@ -244,8 +251,7 @@ impl McpConnectionSet {
         let reusable_previous = previous.filter(|previous| {
             !previous.servers.is_empty()
                 && previous.elicitation_requests.update(
-                    approval_policy.value(),
-                    initial_permission_profile.clone(),
+                    Arc::clone(&config),
                     elicitation_reviewer.clone(),
                     elicitation_lifecycle.clone(),
                 )
@@ -254,8 +260,7 @@ impl McpConnectionSet {
             previous.elicitation_requests.clone()
         } else {
             ElicitationRequestManager::new(
-                approval_policy.value(),
-                initial_permission_profile,
+                Arc::clone(&config),
                 elicitation_reviewer,
                 elicitation_lifecycle,
                 elicitation_router,
@@ -291,6 +296,9 @@ impl McpConnectionSet {
             let metadata = McpServerMetadata::from(&server);
             let configured_config = server.config().clone();
             let configured_tool_filter = ToolFilter::from_config(&configured_config);
+            let startup_timeout = configured_config
+                .startup_timeout_sec
+                .unwrap_or(DEFAULT_STARTUP_TIMEOUT);
             let configured_tool_timeout = Some(
                 configured_config
                     .tool_timeout_sec
@@ -377,6 +385,7 @@ impl McpConnectionSet {
                 let reusable_pending_startup = connection.identity.as_ref()
                     == Some(&connection_identity)
                     && !connection.client.startup_complete.load(Ordering::Acquire)
+                    && connection.startup_timeout == startup_timeout
                     && !connection.startup_is_dormant()
                     && !connection.client.cancel_token.is_cancelled()
                     && previous_view.catalog_item_limit == catalog_item_limit
@@ -536,6 +545,7 @@ impl McpConnectionSet {
                     connection: Arc::new(McpServerConnection {
                         identity: Some(connection_identity),
                         client: async_managed_client.clone(),
+                        startup_timeout,
                         startup_trigger,
                         _diagnostics_guard: LIVE_CONNECTIONS.track(),
                     }),
@@ -661,6 +671,7 @@ impl McpConnectionSet {
         }
         let manager = Self {
             servers,
+            disabled_servers,
             protocol_mode,
             required_servers,
             optional_startup_deadline: OnceLock::new(),
@@ -720,6 +731,7 @@ impl McpConnectionSet {
     pub fn empty(prefix_mcp_tool_names: bool) -> Self {
         Self {
             servers: HashMap::new(),
+            disabled_servers: Vec::new(),
             protocol_mode: crate::McpProtocolMode::Legacy,
             required_servers: Vec::new(),
             optional_startup_deadline: OnceLock::new(),
@@ -729,13 +741,7 @@ impl McpConnectionSet {
             tool_plugin_provenance: Arc::new(ToolPluginProvenance::default()),
             prefix_mcp_tool_names,
             non_prefixed_mcp_tool_servers: Vec::new(),
-            elicitation_requests: ElicitationRequestManager::new(
-                AskForApproval::Never,
-                PermissionProfile::default(),
-                /*reviewer*/ None,
-                /*lifecycle*/ None,
-                ElicitationRequestRouter::default(),
-            ),
+            elicitation_requests: ElicitationRequestManager::default(),
         }
     }
 
@@ -854,10 +860,12 @@ impl McpConnectionSet {
     }
 
     /// Invoke the tool indicated by the (server, tool) pair.
+    #[allow(clippy::too_many_arguments)]
     pub async fn call_tool(
         &self,
         server: &str,
         tool: &str,
+        environment_id: Option<&str>,
         arguments: Option<serde_json::Value>,
         meta: Option<serde_json::Value>,
         requested_timeout: Option<Duration>,
@@ -867,6 +875,14 @@ impl McpConnectionSet {
             .servers
             .get(server)
             .ok_or_else(|| anyhow!("unknown MCP server '{server}'"))?;
+        if let Some(environment_id) = environment_id
+            && view.metadata.environment_id != environment_id
+        {
+            bail!(
+                "MCP server `{server}` is running in environment `{}`, expected `{environment_id}`",
+                view.metadata.environment_id
+            );
+        }
         if !view.tool_filter.allows(tool) {
             return Err(anyhow!(
                 "tool '{tool}' is disabled for MCP server '{server}'"

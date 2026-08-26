@@ -1,7 +1,9 @@
+use super::thread_input::ensure_direct_input_allowed;
 use super::*;
 use codex_core::McpManager;
 use codex_mcp::McpServerSource;
 use codex_mcp::ReadResourceRequestParams;
+use codex_mcp::resolve_oauth_callback;
 
 use crate::thread_state::ThreadStateManager;
 
@@ -203,6 +205,11 @@ impl McpRequestProcessor {
         let resolved_scopes =
             resolve_oauth_scopes(scopes, server.scopes.clone(), discovered_scopes);
         let oauth_credential_name = server.oauth_credential_name(&name);
+        let callback_url =
+            resolve_oauth_callback(server, &url, mcp_config.mcp_oauth_callback_url.as_deref())
+                .map_err(|err| {
+                    internal_error(format!("failed to resolve MCP OAuth callback: {err}"))
+                })?;
 
         let handle = perform_oauth_login_return_url(
             oauth_credential_name.as_ref(),
@@ -217,6 +224,7 @@ impl McpRequestProcessor {
             server.oauth_resource.as_deref(),
             timeout_secs,
             server.oauth_callback_port(mcp_config.mcp_oauth_callback_port),
+            callback_url.as_deref(),
             mcp_config.mcp_oauth_callback_url.as_deref(),
             http_client,
             redirect_mode,
@@ -275,52 +283,32 @@ impl McpRequestProcessor {
         };
         let mcp_manager = self.thread_manager.mcp_manager();
         let auth = self.auth_manager.auth().await;
-        let (mcp_config, runtime_context) = match thread {
-            Some(thread) => thread.runtime_mcp_config_and_context(&config).await,
-            None => {
-                let mcp_config = mcp_manager.runtime_config(&config).await;
-                let runtime_context = McpRuntimeContext::new(
-                    self.thread_manager.environment_manager(),
-                    config.cwd.to_path_buf(),
-                );
-                (mcp_config, runtime_context)
-            }
-        };
+        let environment_manager = self.thread_manager.environment_manager();
 
         tokio::spawn(async move {
-            Self::list_mcp_server_status_task(
-                outgoing,
-                request,
+            let (mcp_config, runtime_context) = match thread.as_ref() {
+                Some(thread) => thread.runtime_mcp_config_and_context(&config).await,
+                None => {
+                    let mcp_config = mcp_manager.runtime_config(&config).await;
+                    let runtime_context =
+                        McpRuntimeContext::new(environment_manager, config.cwd.to_path_buf());
+                    (mcp_config, runtime_context)
+                }
+            };
+
+            let result = Self::list_mcp_server_status_response(
+                request.request_id.to_string(),
                 params,
                 mcp_config,
                 auth,
                 runtime_context,
                 mcp_manager,
+                thread,
             )
             .await;
+            outgoing.send_result(request, result).await;
         });
         Ok(())
-    }
-
-    async fn list_mcp_server_status_task(
-        outgoing: Arc<OutgoingMessageSender>,
-        request_id: ConnectionRequestId,
-        params: ListMcpServerStatusParams,
-        mcp_config: codex_mcp::McpConfig,
-        auth: Option<CodexAuth>,
-        runtime_context: McpRuntimeContext,
-        mcp_manager: Arc<McpManager>,
-    ) {
-        let result = Self::list_mcp_server_status_response(
-            request_id.request_id.to_string(),
-            params,
-            mcp_config,
-            auth,
-            runtime_context,
-            mcp_manager,
-        )
-        .await;
-        outgoing.send_result(request_id, result).await;
     }
 
     async fn list_mcp_server_status_response(
@@ -330,6 +318,7 @@ impl McpRequestProcessor {
         auth: Option<CodexAuth>,
         runtime_context: McpRuntimeContext,
         mcp_manager: Arc<McpManager>,
+        thread: Option<Arc<codex_core::CodexThread>>,
     ) -> Result<ListMcpServerStatusResponse, JSONRPCErrorError> {
         let detail = match params.detail.unwrap_or(McpServerStatusDetail::Full) {
             McpServerStatusDetail::Full => McpSnapshotDetail::Full,
@@ -347,6 +336,10 @@ impl McpRequestProcessor {
         )
         .await;
 
+        let runtime_statuses = match thread {
+            Some(thread) => thread.mcp_connection_statuses(&mcp_config).await,
+            None => HashMap::new(),
+        };
         let McpServerStatusSnapshot {
             server_infos,
             tools_by_server,
@@ -355,6 +348,7 @@ impl McpRequestProcessor {
             auth_statuses,
             mut server_names,
         } = snapshot;
+        server_names.extend(runtime_statuses.keys().cloned());
         server_names.extend(
             auth_statuses
                 .keys()
@@ -388,6 +382,7 @@ impl McpRequestProcessor {
             .iter()
             .map(|name| McpServerStatus {
                 name: name.clone(),
+                runtime_status: runtime_statuses.get(name).copied().map(Into::into),
                 plugin_id: mcp_config.mcp_server_catalog.server(name).and_then(
                     |server| match server.source() {
                         McpServerSource::Plugin(plugin)
@@ -537,6 +532,7 @@ impl McpRequestProcessor {
         let outgoing = Arc::clone(&self.outgoing);
         let thread_id = params.thread_id.clone();
         let (_, thread) = self.load_thread(&thread_id).await?;
+        ensure_direct_input_allowed(thread.as_ref()).await?;
         let meta = with_mcp_tool_call_thread_id_meta(params.meta, &thread_id);
         let request_id = request_id.clone();
 

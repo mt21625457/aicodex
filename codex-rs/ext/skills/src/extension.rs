@@ -67,6 +67,7 @@ use crate::state::HostSkillsStepState;
 use crate::state::SkillsSessionState;
 use crate::state::SkillsThreadState;
 use crate::state::SkillsTurnState;
+use crate::telemetry::SkillTelemetry;
 use crate::tools::SkillAnalytics;
 use crate::tools::SkillToolAuthority;
 use crate::tools::skill_tools;
@@ -236,7 +237,9 @@ where
             }
             rendered
                 .fragment
-                .map(|fragment| PromptFragment::developer_capability(fragment.render()))
+                .map(|fragment| {
+                    PromptFragment::developer_capability(fragment.render(), fragment.content_kind())
+                })
                 .into_iter()
                 .collect()
         })
@@ -322,6 +325,10 @@ impl<C> SkillInvocationContributor for SkillsExtension<C>
 where
     C: Send + Sync + 'static,
 {
+    fn requires_host_skill_discovery(&self) -> bool {
+        self.providers.has_host_provider()
+    }
+
     fn on_skill_invocation<'a>(
         &'a self,
         input: SkillInvocationInput<'a>,
@@ -664,6 +671,7 @@ pub fn install_with_providers_and_metrics<C>(
         shadow_selection: Arc::new(ShadowSelectionExperiment::new(metrics_client)),
     });
     registry.thread_lifecycle_contributor(extension.clone());
+    registry.turn_lifecycle_contributor(Arc::new(SkillTelemetry));
     registry.config_contributor(extension.clone());
     registry.prompt_contributor(extension.clone());
     registry.turn_input_contributor(extension.clone());

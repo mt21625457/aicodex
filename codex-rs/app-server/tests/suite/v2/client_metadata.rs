@@ -71,6 +71,11 @@ async fn turn_start_forwards_client_metadata_to_responses_request_v2() -> Result
     let client_metadata = HashMap::from([
         ("fiber_run_id".to_string(), "fiber-start-123".to_string()),
         ("origin".to_string(), "gaas".to_string()),
+        (
+            "context_window_id".to_string(),
+            "client-supplied".to_string(),
+        ),
+        ("turn_trigger".to_string(), "client-supplied".to_string()),
     ]);
     let turn_req = mcp
         .send_turn_start_request(TurnStartParams {
@@ -80,6 +85,7 @@ async fn turn_start_forwards_client_metadata_to_responses_request_v2() -> Result
                 text: "Hello".to_string(),
                 text_elements: Vec::new(),
             }],
+            turn_trigger: Some("user".to_string()),
             responsesapi_client_metadata: Some(client_metadata.clone()),
             ..Default::default()
         })
@@ -102,12 +108,19 @@ async fn turn_start_forwards_client_metadata_to_responses_request_v2() -> Result
     assert_eq!(metadata["fiber_run_id"].as_str(), Some("fiber-start-123"));
     assert_eq!(metadata["origin"].as_str(), Some("gaas"));
     assert_eq!(metadata["thread_source"].as_str(), Some("automation"));
+    assert_eq!(metadata["turn_trigger"].as_str(), Some("user"));
     assert_eq!(metadata["turn_id"].as_str(), Some(turn.id.as_str()));
     assert!(metadata.get("installation_id").is_some());
     assert!(metadata.get("session_id").is_some());
     assert_eq!(
         metadata["window_id"].as_str(),
         request.header("x-codex-window-id").as_deref()
+    );
+    assert_eq!(metadata["window_number"].as_u64(), Some(0));
+    assert!(
+        metadata["context_window_id"]
+            .as_str()
+            .is_some_and(|window_id| uuid::Uuid::parse_str(window_id).is_ok())
     );
 
     Ok(())
@@ -181,6 +194,7 @@ async fn turn_start_sends_fork_lineage_in_turn_metadata_for_thread_fork_v2() -> 
         metadata["forked_from_thread_id"].as_str(),
         Some(source_thread_id.as_str())
     );
+    assert!(metadata.get("forked_from_ordinal_exclusive").is_none());
     assert_eq!(metadata["thread_id"].as_str(), Some(thread.id.as_str()));
     assert_eq!(metadata["turn_id"].as_str(), Some(turn.id.as_str()));
 
@@ -428,6 +442,7 @@ async fn turn_steer_updates_client_metadata_on_follow_up_responses_request_v2() 
                 text: "Run sleep".to_string(),
                 text_elements: Vec::new(),
             }],
+            turn_trigger: Some("user".to_string()),
             responsesapi_client_metadata: Some(start_metadata.clone()),
             ..Default::default()
         })
@@ -481,6 +496,7 @@ async fn turn_steer_updates_client_metadata_on_follow_up_responses_request_v2() 
         Some("fiber-start-123")
     );
     assert_eq!(first_metadata["turn_id"].as_str(), Some(turn_id.as_str()));
+    assert_eq!(first_metadata["turn_trigger"].as_str(), Some("user"));
 
     let second_metadata = requests[1]
         .header("x-codex-turn-metadata")
@@ -493,6 +509,7 @@ async fn turn_steer_updates_client_metadata_on_follow_up_responses_request_v2() 
     );
     assert_eq!(second_metadata["origin"].as_str(), Some("gaas"));
     assert_eq!(second_metadata["turn_id"].as_str(), Some(turn_id.as_str()));
+    assert_eq!(second_metadata["turn_trigger"].as_str(), Some("user"));
 
     Ok(())
 }
@@ -546,6 +563,7 @@ async fn turn_start_forwards_client_metadata_to_responses_websocket_request_body
                 text: "Hello".to_string(),
                 text_elements: Vec::new(),
             }],
+            turn_trigger: Some("user".to_string()),
             responsesapi_client_metadata: Some(client_metadata),
             ..Default::default()
         })
@@ -580,11 +598,17 @@ async fn turn_start_forwards_client_metadata_to_responses_websocket_request_body
     assert_eq!(metadata["fiber_run_id"].as_str(), Some("fiber-start-123"));
     assert_eq!(metadata["origin"].as_str(), Some("gaas"));
     assert_eq!(metadata["thread_source"].as_str(), Some("automation"));
+    assert_eq!(metadata["turn_trigger"].as_str(), Some("user"));
     assert_eq!(metadata["turn_id"].as_str(), Some(turn.id.as_str()));
     assert!(metadata.get("session_id").is_some());
     assert_eq!(
         metadata["window_id"].as_str(),
         request["client_metadata"]["x-codex-window-id"].as_str()
+    );
+    assert!(
+        metadata["context_window_id"]
+            .as_str()
+            .is_some_and(|window_id| uuid::Uuid::parse_str(window_id).is_ok())
     );
 
     websocket_server.shutdown().await;

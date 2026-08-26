@@ -28,6 +28,7 @@ use codex_core_plugins::remote_bundle::RemotePluginBundleInstallError;
 use codex_mcp::McpOAuthLoginSupport;
 use codex_mcp::McpRuntimeContext;
 use codex_mcp::oauth_login_support;
+use codex_mcp::resolve_oauth_callback;
 use codex_mcp::should_retry_without_scopes;
 use codex_plugin::PluginId;
 use codex_plugin::PluginTelemetryMetadata;
@@ -37,6 +38,7 @@ use codex_rmcp_client::OAuthDiscoveryTimeout;
 use codex_rmcp_client::StreamableHttpRedirectMode;
 use codex_rmcp_client::perform_oauth_login_silent;
 
+mod local;
 mod search;
 
 fn plugin_redirect_mode(plugin_root: &Path) -> StreamableHttpRedirectMode {
@@ -556,7 +558,7 @@ impl PluginRequestProcessor {
         let include_local = marketplace_kinds.contains(&PluginListMarketplaceKind::Local);
         let include_vertical = marketplace_kinds.contains(&PluginListMarketplaceKind::Vertical);
 
-        let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
+        let config = self.load_catalog_config(&roots).await?;
         let empty_response = || PluginListResponse {
             marketplaces: Vec::new(),
             marketplace_load_errors: Vec::new(),
@@ -814,7 +816,7 @@ impl PluginRequestProcessor {
             marketplaces: Vec::new(),
             marketplace_load_errors: Vec::new(),
         };
-        let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
+        let config = self.load_catalog_config(&roots).await?;
         if !config.features.enabled(Feature::Plugins) {
             return Ok(empty_response());
         }
@@ -1608,14 +1610,6 @@ impl PluginRequestProcessor {
             );
             return Err(invalid_request(error_message));
         }
-        // Direct install writes the same cache tree that installed-plugin sync
-        // prunes before the backend installed snapshot can include this plugin.
-        let _remote_plugin_cache_mutation =
-            codex_core_plugins::remote::mark_remote_plugin_cache_mutation_in_flight(
-                config.codex_home.as_path(),
-                &actual_remote_marketplace_name,
-                &remote_plugin_name,
-            );
         let validated_bundle = codex_core_plugins::remote_bundle::validate_remote_plugin_bundle(
             &remote_plugin_id,
             &actual_remote_marketplace_name,
@@ -1638,6 +1632,24 @@ impl PluginRequestProcessor {
             remote_plugin_bundle_install_error_to_jsonrpc(err)
         })?;
 
+        // Direct install writes the same cache tree that installed-plugin sync prunes. Hold the
+        // shared cache-root gate through the backend mutation so a full sync cannot commit a
+        // snapshot fetched before this plugin became installed.
+        let plugins_manager = self.thread_manager.plugins_manager();
+        let remote_plugin_sync_guard = plugins_manager
+            .acquire_remote_installed_plugin_sync_guard()
+            .await
+            .map_err(|err| {
+                internal_error(format!("failed to coordinate remote plugin install: {err}"))
+            })?;
+        // Keep this marker through downstream setup after releasing the shared gate. A new sync
+        // may start then, but it must not prune the bundle that this install just materialized.
+        let _remote_plugin_cache_mutation =
+            codex_core_plugins::remote::mark_remote_plugin_cache_mutation_in_flight(
+                config.codex_home.as_path(),
+                &actual_remote_marketplace_name,
+                &remote_plugin_name,
+            );
         let result = codex_core_plugins::remote_bundle::download_and_install_remote_plugin_bundle(
             &remote_plugin_service_config,
             config.codex_home.to_path_buf(),
@@ -1693,13 +1705,12 @@ impl PluginRequestProcessor {
             remote_plugin_catalog_error_to_jsonrpc(err, "install remote plugin")
         })?;
 
-        self.thread_manager
-            .plugins_manager()
-            .maybe_start_remote_installed_plugins_cache_refresh_after_mutation(
-                &config.plugins_config_input(),
-                auth.clone(),
-                Some(self.effective_plugins_changed_callback()),
-            );
+        plugins_manager.maybe_start_remote_installed_plugins_cache_refresh_after_mutation(
+            &config.plugins_config_input(),
+            auth.clone(),
+            Some(self.effective_plugins_changed_callback()),
+        );
+        drop(remote_plugin_sync_guard);
 
         let plugin_metadata = self
             .thread_manager
@@ -1934,12 +1945,25 @@ impl PluginRequestProcessor {
             let store_mode = config.mcp_oauth_credentials_store_mode;
             let keyring_backend_kind = config.auth_keyring_backend_kind();
             let callback_port = server.oauth_callback_port(config.mcp_oauth_callback_port);
-            let callback_url = config.mcp_oauth_callback_url.clone();
+            let callback_url = match resolve_oauth_callback(
+                &server,
+                &oauth_config.url,
+                config.mcp_oauth_callback_url.as_deref(),
+            ) {
+                Ok(callback_url) => callback_url,
+                Err(error) => {
+                    warn!(
+                        "failed to resolve MCP OAuth callback for plugin install {name}: {error}"
+                    );
+                    continue;
+                }
+            };
             let outgoing = Arc::clone(&self.outgoing);
             let notification_name = name.clone();
             let oauth_credential_name = server.oauth_credential_name(&name).into_owned();
             let thread_manager = Arc::clone(&self.thread_manager);
             let http_client = Arc::clone(&http_client);
+            let global_callback_url = config.mcp_oauth_callback_url.clone();
 
             tokio::spawn(async move {
                 let oauth_client_id = server.oauth_client_id();
@@ -1956,6 +1980,7 @@ impl PluginRequestProcessor {
                     server.oauth_resource.as_deref(),
                     callback_port,
                     callback_url.as_deref(),
+                    global_callback_url.as_deref(),
                     Arc::clone(&http_client),
                     redirect_mode,
                 )
@@ -1976,6 +2001,7 @@ impl PluginRequestProcessor {
                             server.oauth_resource.as_deref(),
                             callback_port,
                             callback_url.as_deref(),
+                            global_callback_url.as_deref(),
                             http_client,
                             redirect_mode,
                         )
@@ -2128,6 +2154,20 @@ impl PluginRequestProcessor {
             plugin_telemetry.capability_summary =
                 Some(uninstall_target.fallback_capability_summary.clone());
         }
+        let remote_plugin_sync_guard = plugins_manager
+            .acquire_remote_installed_plugin_sync_guard()
+            .await
+            .map_err(|err| {
+                internal_error(format!(
+                    "failed to coordinate remote plugin uninstall: {err}"
+                ))
+            })?;
+        let remote_plugin_cache_mutation =
+            codex_core_plugins::remote::mark_remote_plugin_cache_mutation_in_flight(
+                config.codex_home.as_path(),
+                &uninstall_target.plugin_id.marketplace_name,
+                &uninstall_target.plugin_id.plugin_name,
+            );
         let uninstall_result = codex_core_plugins::remote::uninstall_remote_plugin(
             &remote_plugin_service_config,
             auth.as_ref(),
@@ -2136,20 +2176,24 @@ impl PluginRequestProcessor {
         )
         .await;
 
+        let mut refresh_effective_plugins = false;
         if matches!(
             &uninstall_result,
             Ok(()) | Err(RemotePluginCatalogError::CacheRemove(_))
         ) {
             self.analytics_events_client
                 .track_plugin_uninstalled(plugin_telemetry);
-            if plugins_manager.clear_remote_installed_plugins_cache() {
-                self.on_effective_plugins_changed().await;
-            }
+            refresh_effective_plugins = plugins_manager.clear_remote_installed_plugins_cache();
             plugins_manager.maybe_start_remote_installed_plugins_cache_refresh_after_mutation(
                 &config.plugins_config_input(),
                 auth.clone(),
                 Some(self.effective_plugins_changed_callback()),
             );
+        }
+        drop(remote_plugin_cache_mutation);
+        drop(remote_plugin_sync_guard);
+        if refresh_effective_plugins {
+            self.on_effective_plugins_changed().await;
         }
 
         uninstall_result.map_err(|err| {

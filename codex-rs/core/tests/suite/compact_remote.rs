@@ -51,6 +51,7 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RealtimeConversationRealtimeEvent;
 use codex_protocol::protocol::RealtimeEvent;
 use codex_protocol::protocol::RealtimeOutputModality;
+use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
 use core_test_support::PathBufExt;
@@ -770,7 +771,9 @@ async fn remote_compact_replaces_history_for_followups() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let harness = TestCodexHarness::with_builder(
-        test_codex().with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing()),
+        test_codex()
+            .with_history_mode(ThreadHistoryMode::Paginated)
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing()),
     )
     .await?;
     let codex = harness.test().codex.clone();
@@ -865,6 +868,8 @@ async fn remote_compact_replaces_history_for_followups() -> Result<()> {
         compact_metadata["window_id"].as_str(),
         compact_request.header("x-codex-window-id").as_deref()
     );
+    assert_eq!(compact_metadata["window_number"].as_u64(), Some(0));
+    assert!(compact_metadata["context_window_id"].as_str().is_some());
     assert_eq!(
         compact_metadata["compaction"],
         json!({
@@ -891,6 +896,10 @@ async fn remote_compact_replaces_history_for_followups() -> Result<()> {
     assert_ne!(
         first_response_metadata["turn_id"], compact_metadata["turn_id"],
         "manual compaction should use its own turn id"
+    );
+    assert_eq!(
+        first_response_metadata["context_window_id"], compact_metadata["context_window_id"],
+        "remote compaction should retain the active model-visible context window"
     );
     assert_eq!(
         compact_body["tools"],
@@ -950,6 +959,10 @@ async fn remote_compact_replaces_history_for_followups() -> Result<()> {
     assert_ne!(
         follow_up_metadata["window_id"], compact_metadata["window_id"],
         "the following user turn should use the new compacted context window"
+    );
+    assert_ne!(
+        follow_up_metadata["context_window_id"], compact_metadata["context_window_id"],
+        "the following user turn should expose the new model-visible context window"
     );
     let follow_up_body = follow_up_request.body_json().to_string();
     assert!(
@@ -1319,6 +1332,150 @@ async fn remote_manual_compact_chatgpt_auth_reuses_service_tier_and_prompt_cache
     Ok(())
 }
 
+#[test_case(None; "default_trims_images")]
+#[test_case(Some(false); "disabled_preserves_images")]
+#[test_case(Some(true); "enabled_trims_images")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_compact_v2_charges_retained_images_to_token_budget(
+    image_budget_enabled: Option<bool>,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let harness = TestCodexHarness::with_auto_env_builder(
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_config(move |config| {
+                let _ = config.features.enable(Feature::RemoteCompactionV2);
+                let _ = config.features.enable(Feature::UnifiedImageBudget);
+                if let Some(enabled) = image_budget_enabled {
+                    let _ = config
+                        .features
+                        .set_enabled(Feature::CompactionImageBudget, enabled);
+                }
+            }),
+    )
+    .await?;
+    let codex = &harness.test().codex;
+    // Each original-detail image costs 10,000 estimated patch tokens.
+    let image_inputs = (1..=8)
+        .map(|number| {
+            let image = image::ImageBuffer::from_pixel(
+                /*width*/ 3200,
+                /*height*/ 3200,
+                image::Luma([number as u8]),
+            );
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image.write_to(&mut bytes, image::ImageFormat::Png)?;
+            Ok(UserInput::Image {
+                image_url: format!(
+                    "data:image/png;base64,{}",
+                    BASE64_STANDARD.encode(bytes.get_ref())
+                ),
+                detail: Some(codex_protocol::models::ImageDetail::Original),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut input = image_inputs[..7].to_vec();
+    input.push(UserInput::Text {
+        text: "Compare these images".to_string(),
+        text_elements: Vec::new(),
+    });
+    let initial_mock = mount_sse_once(
+        harness.server(),
+        sse(vec![
+            responses::ev_assistant_message("initial", "done"),
+            responses::ev_completed("initial"),
+        ]),
+    )
+    .await;
+    codex
+        .start_or_steer_turn(TurnInputRequest::user_input(input))
+        .await?;
+    wait_for_turn_complete(codex).await;
+    let initial_request = initial_mock.single_request();
+    let prepared_images = initial_request.message_input_image_urls("user");
+    assert_eq!(prepared_images.len(), 7);
+
+    for cycle in 1..=2 {
+        let compact_mock = mount_sse_once(
+            harness.server(),
+            sse(vec![
+                json!({
+                    "type": "response.output_item.done",
+                    "item": { "type": "compaction", "encrypted_content": "IMAGE_BUDGET_SUMMARY" },
+                }),
+                responses::ev_completed("compact-images"),
+            ]),
+        )
+        .await;
+        codex.submit(Op::Compact).await?;
+        wait_for_turn_complete(codex).await;
+        let compact_request = compact_mock.single_request();
+        assert_eq!(compact_request.path(), "/v1/responses");
+        assert_eq!(
+            compact_request.inputs_of_type("compaction_trigger").len(),
+            1
+        );
+
+        let follow_up_mock = mount_sse_once(
+            harness.server(),
+            sse(vec![
+                responses::ev_assistant_message("after", "done"),
+                responses::ev_completed("after"),
+            ]),
+        )
+        .await;
+        codex
+            .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+                text: "after compact".to_string(),
+                text_elements: Vec::new(),
+            }]))
+            .await?;
+        wait_for_turn_complete(codex).await;
+        let follow_up = follow_up_mock.single_request();
+        assert_eq!(
+            follow_up.inputs_of_type("compaction")[0]["encrypted_content"],
+            "IMAGE_BUDGET_SUMMARY"
+        );
+        let dropped = if image_budget_enabled.unwrap_or(true) {
+            cycle
+        } else {
+            0
+        };
+        let mut expected_images = prepared_images[dropped..].to_vec();
+        if cycle == 2 {
+            let UserInput::Image { image_url, .. } = &image_inputs[7] else {
+                unreachable!()
+            };
+            expected_images.push(image_url.clone());
+        }
+        assert_eq!(follow_up.message_input_image_urls("user"), expected_images);
+        assert!(
+            follow_up
+                .message_input_texts("user")
+                .iter()
+                .any(|text| text == "Compare these images")
+        );
+
+        if cycle == 1 {
+            let append_mock = mount_sse_once(
+                harness.server(),
+                sse(vec![
+                    responses::ev_assistant_message("append", "done"),
+                    responses::ev_completed("append"),
+                ]),
+            )
+            .await;
+            codex
+                .start_or_steer_turn(TurnInputRequest::user_input(vec![image_inputs[7].clone()]))
+                .await?;
+            wait_for_turn_complete(codex).await;
+            let _ = append_mock.single_request();
+        }
+    }
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -1433,6 +1590,7 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
                     .to_string(),
                 /*trigger_turn*/ false,
             ),
+            start_options: Default::default(),
         })
         .await?;
     codex
@@ -1444,6 +1602,7 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
                 "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/child\nPayload:\nchild completion".to_string(),
                 /*trigger_turn*/ false,
             ),
+            start_options: Default::default(),
         })
         .await?;
     let delegated_task_ciphertext = format!("delegated compact task{}", "x".repeat(40_000));
@@ -1456,6 +1615,7 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
                 delegated_task_ciphertext.clone(),
                 /*trigger_turn*/ true,
             ),
+            start_options: Default::default(),
         })
         .await?;
     wait_for_turn_complete(&codex).await;
@@ -1471,6 +1631,7 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
                 descendant_followup_ciphertext.to_string(),
                 /*trigger_turn*/ true,
             ),
+            start_options: Default::default(),
         })
         .await?;
     wait_for_turn_complete(&codex).await;
@@ -1671,6 +1832,7 @@ async fn remote_compact_v2_retries_failures_with_stream_retry_budget() -> Result
 
     let harness = TestCodexHarness::with_builder(
         test_codex()
+            .with_history_mode(ThreadHistoryMode::Paginated)
             .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
             .with_config(|config| {
                 let _ = config.features.enable(Feature::RemoteCompactionV2);
@@ -1739,9 +1901,15 @@ async fn remote_compact_v2_retries_failures_with_stream_retry_budget() -> Result
         response_requests.len(),
         "expected initial turn, failed open, failed stream, compact retry, and follow-up turn"
     );
-
     for compact_request in &response_requests[1..=3] {
         assert_eq!("/v1/responses", compact_request.path());
+        let compact_metadata: Value = serde_json::from_str(
+            &compact_request
+                .header("x-codex-turn-metadata")
+                .expect("v2 compact request should include turn metadata"),
+        )?;
+        assert_eq!(compact_metadata["window_number"].as_u64(), Some(0));
+        assert!(compact_metadata["context_window_id"].as_str().is_some());
         assert!(
             compact_request
                 .body_json()

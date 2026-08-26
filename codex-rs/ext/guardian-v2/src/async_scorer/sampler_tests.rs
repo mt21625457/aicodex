@@ -35,6 +35,7 @@ use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 
 use super::CLASSIFICATION_TOKEN_USAGE_METRIC;
+use super::INITIAL_WEBSOCKET_CONNECTIONS;
 use super::LunaSampler;
 use super::LunaSamplerConfig;
 use super::LunaSamplingRequest;
@@ -80,8 +81,7 @@ fn assert_connection_metadata(server: &responses::WebSocketTestServer) -> Result
                     "thread_id": thread_id,
                     "guardian_classifier_source_thread_id": "thread-1",
                     "turn_id": turn_id,
-                    "request_kind": "guardian_classifier",
-                    "is_guardian_mode": true,
+                    "thread_source": "guardian_classifier",
                 },
             })
         );
@@ -89,7 +89,20 @@ fn assert_connection_metadata(server: &responses::WebSocketTestServer) -> Result
     Ok(thread_id)
 }
 
+#[derive(Clone, Copy)]
+enum ProxyPrewarmLimit {
+    AllConnections,
+    StopAfter { ready_connections: usize },
+}
+
 async fn proxy_websocket_servers(servers: &[&responses::WebSocketTestServer]) -> Result<String> {
+    proxy_websocket_servers_with_prewarm_limit(servers, ProxyPrewarmLimit::AllConnections).await
+}
+
+async fn proxy_websocket_servers_with_prewarm_limit(
+    servers: &[&responses::WebSocketTestServer],
+    prewarm_limit: ProxyPrewarmLimit,
+) -> Result<String> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let targets = servers
@@ -97,7 +110,15 @@ async fn proxy_websocket_servers(servers: &[&responses::WebSocketTestServer]) ->
         .map(|server| server.uri().trim_start_matches("ws://").to_owned())
         .collect::<Vec<_>>();
     tokio::spawn(async move {
-        for target in targets {
+        for (index, target) in targets.into_iter().enumerate() {
+            if let ProxyPrewarmLimit::StopAfter { ready_connections } = prewarm_limit
+                && index == ready_connections
+            {
+                let Ok((connection, _)) = listener.accept().await else {
+                    return;
+                };
+                drop(connection);
+            }
             let Ok((mut incoming, _)) = listener.accept().await else {
                 return;
             };
@@ -126,25 +147,28 @@ fn sampler_config(base_url: String) -> LunaSamplerConfig {
         session_id: "session-1".to_owned(),
         thread_id: "thread-1".to_owned(),
         originator: Some("guardian-v2-test".to_owned()),
+        free_guardian: false,
         service_tier: None,
         luna_compaction_hash: None,
         metrics: None,
     }
 }
 
+async fn connect_sampler(config: LunaSamplerConfig) -> Result<LunaSampler> {
+    let sampler = LunaSampler::new(config);
+    sampler.prewarm().await;
+    Ok(sampler)
+}
+
 fn sample_request(turn_id: &str) -> LunaSamplingRequest {
     LunaSamplingRequest {
-        instructions: "Return a risk score.".to_owned(),
+        instructions: "Return high for high risk or low for low risk.".to_owned(),
+        trusted_review_evidence: Vec::new(),
+        trusted_tool_context: None,
         input: vec!["The user requested a README summary.".to_owned()],
         images: Vec::new(),
         parent_compaction: None,
         parent_compaction_hash: None,
-        output_schema: json!({
-            "type": "object",
-            "properties": { "score": { "type": "number" } },
-            "required": ["score"],
-            "additionalProperties": false
-        }),
         reasoning_effort: ReasoningEffort::None,
         turn_id: turn_id.to_owned(),
     }
@@ -170,26 +194,25 @@ impl ExtensionMetrics for RecordingMetrics {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn sampler_records_token_usage_after_returning_an_early_score() -> Result<()> {
+async fn sampler_records_token_usage_after_returning_an_early_classification() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let events = vec![
-        ev_output_text_delta(r#"{"score":0.25}"#),
+        ev_output_text_delta("low"),
         ev_completed_with_tokens("response-1", /*total_tokens*/ 37),
     ];
-    let server = responses::start_websocket_server(vec![Vec::new(), vec![events]]).await;
+    let mut connections = vec![Vec::new(); INITIAL_WEBSOCKET_CONNECTIONS - 1];
+    connections.push(vec![events]);
+    let server = responses::start_websocket_server(connections).await;
     let metrics = Arc::new(RecordingMetrics::default());
     let mut config = sampler_config(format!(
         "http://{}/v1",
         server.uri().trim_start_matches("ws://")
     ));
     config.metrics = Some(metrics.clone());
-    let sampler = LunaSampler::connect(config).await?;
+    let sampler = connect_sampler(config).await?;
 
-    assert_eq!(
-        sampler.sample(sample_request("turn-1")).await?,
-        r#"{"score":0.25}"#
-    );
+    assert_eq!(sampler.sample(sample_request("turn-1")).await?, "low");
     tokio::time::timeout(Duration::from_secs(2), async {
         while metrics.0.lock().unwrap().len() < 7 {
             tokio::task::yield_now().await;
@@ -230,20 +253,93 @@ impl ExternalAuth for RefreshableAuth {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn preconnected_sampler_reuses_authenticated_websocket_for_structured_requests() -> Result<()>
-{
+async fn classifier_uses_free_endpoint_only_with_codex_backend_auth() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    for (auth, base_path, free_guardian, expected_path, expected_service_tier) in [
+        (
+            CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+            "/backend-api/codex",
+            false,
+            "/backend-api/codex/responses",
+            Some("priority"),
+        ),
+        (
+            CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+            "/backend-api/codex",
+            true,
+            "/backend-api/codex/guardian-classifier",
+            None,
+        ),
+        (
+            CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+            "/v1",
+            true,
+            "/v1/responses",
+            Some("priority"),
+        ),
+        (
+            CodexAuth::from_api_key("test-api-key"),
+            "/v1",
+            true,
+            "/v1/responses",
+            Some("priority"),
+        ),
+    ] {
+        let events = vec![
+            ev_assistant_message("classification", "low"),
+            ev_completed("response-1"),
+        ];
+        let mut connections = vec![Vec::new(); INITIAL_WEBSOCKET_CONNECTIONS - 1];
+        connections.push(vec![events]);
+        let server = responses::start_websocket_server(connections).await;
+        let base_url = format!(
+            "http://{}{base_path}",
+            server.uri().trim_start_matches("ws://")
+        );
+        let mut config = sampler_config(base_url.clone());
+        config.provider = create_model_provider(
+            ModelProviderInfo::create_openai_provider(Some(base_url)),
+            Some(AuthManager::from_auth_for_testing(auth)),
+        );
+        config.free_guardian = free_guardian;
+        config.service_tier = Some("priority".to_owned());
+        let sampler = connect_sampler(config).await?;
+
+        assert_eq!(sampler.sample(sample_request("turn-1")).await?, "low");
+        for handshake in server.handshakes() {
+            assert_eq!(handshake.uri(), expected_path);
+            assert_eq!(handshake.header("x-codex-routing-hint"), None);
+        }
+        let request = server
+            .wait_for_request(
+                /*connection_index*/ INITIAL_WEBSOCKET_CONNECTIONS - 1,
+                /*request_index*/ 0,
+            )
+            .await
+            .body_json();
+        assert_eq!(request["service_tier"].as_str(), expected_service_tier);
+
+        drop(sampler);
+        server.shutdown().await;
+    }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn preconnected_sampler_reuses_authenticated_websocket_for_classifications() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let scripted_requests = vec![
         vec![
-            ev_output_text_delta(r#"{"score":0"#),
-            ev_output_text_delta(".25}"),
+            ev_output_text_delta("low"),
             ev_model_verification_metadata("response-1", vec!["trusted_access_for_cyber"]),
-            ev_assistant_message("sample-1", r#"{"score":0.25}"#),
+            ev_assistant_message("sample-1", "low"),
             ev_completed("response-1"),
         ],
         vec![
-            ev_assistant_message("sample-2", r#"{"score":0.75}"#),
+            ev_assistant_message("sample-2", "high"),
             ev_completed("response-2"),
         ],
     ];
@@ -251,7 +347,13 @@ async fn preconnected_sampler_reuses_authenticated_websocket_for_structured_requ
     let refreshed =
         responses::start_websocket_server(vec![vec![scripted_requests[1].clone()]]).await;
     let server = responses::start_websocket_server(vec![scripted_requests]).await;
-    let base_url = proxy_websocket_servers(&[&idle_server, &server, &refreshed]).await?;
+    let base_url = proxy_websocket_servers_with_prewarm_limit(
+        &[&idle_server, &server, &refreshed],
+        ProxyPrewarmLimit::StopAfter {
+            ready_connections: 2,
+        },
+    )
+    .await?;
     let manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("test-api-key"));
     manager
         .set_external_auth(Arc::new(RefreshableAuth(std::sync::Mutex::new(
@@ -263,7 +365,7 @@ async fn preconnected_sampler_reuses_authenticated_websocket_for_structured_requ
         Some(manager.clone()),
     );
 
-    let sampler = LunaSampler::connect(LunaSamplerConfig {
+    let sampler = connect_sampler(LunaSamplerConfig {
         provider,
         http_client_factory: HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         agent_identity_policy: AgentIdentityAuthPolicy::JwtOnly,
@@ -271,6 +373,7 @@ async fn preconnected_sampler_reuses_authenticated_websocket_for_structured_requ
         session_id: "session-1".to_owned(),
         thread_id: "thread-1".to_owned(),
         originator: Some("guardian-v2-test".to_owned()),
+        free_guardian: false,
         service_tier: None,
         luna_compaction_hash: None,
         metrics: None,
@@ -303,15 +406,11 @@ async fn preconnected_sampler_reuses_authenticated_websocket_for_structured_requ
         Some("guardian-v2-test".to_owned())
     );
 
-    let schema = json!({
-        "type": "object",
-        "properties": { "score": { "type": "number" } },
-        "required": ["score"],
-        "additionalProperties": false
-    });
     let first = sampler
         .sample(LunaSamplingRequest {
-            instructions: "Return a risk score.".to_owned(),
+            instructions: "Return high for high risk or low for low risk.".to_owned(),
+            trusted_review_evidence: Vec::new(),
+            trusted_tool_context: None,
             input: vec![
                 "The user requested a README summary.".to_owned(),
                 "The assistant inspected README.md.".to_owned(),
@@ -319,7 +418,6 @@ async fn preconnected_sampler_reuses_authenticated_websocket_for_structured_requ
             images: Vec::new(),
             parent_compaction: None,
             parent_compaction_hash: None,
-            output_schema: schema.clone(),
             reasoning_effort: ReasoningEffort::None,
             turn_id: "turn-1".to_owned(),
         })
@@ -339,19 +437,20 @@ async fn preconnected_sampler_reuses_authenticated_websocket_for_structured_requ
     manager.refresh_token_from_authority().await?;
     let second = sampler
         .sample(LunaSamplingRequest {
-            instructions: "Return a risk score.".to_owned(),
+            instructions: "Return high for high risk or low for low risk.".to_owned(),
+            trusted_review_evidence: Vec::new(),
+            trusted_tool_context: None,
             input: vec!["The user requested a source review.".to_owned()],
             images: Vec::new(),
             parent_compaction: None,
             parent_compaction_hash: None,
-            output_schema: schema,
             reasoning_effort: ReasoningEffort::Medium,
             turn_id: "turn-2".to_owned(),
         })
         .await?;
 
-    assert_eq!(first, r#"{"score":0.25}"#);
-    assert_eq!(second, r#"{"score":0.75}"#);
+    assert_eq!(first, "low");
+    assert_eq!(second, "high");
     let mut requests = server.single_connection();
     assert_eq!(requests.len(), 1);
     assert_eq!(
@@ -378,7 +477,7 @@ async fn preconnected_sampler_reuses_authenticated_websocket_for_structured_requ
         assert_eq!(request["model"], "gpt-5.6-luna");
         assert_eq!(request["input"][0]["tools"], json!([]));
         assert_eq!(request["tool_choice"], "none");
-        assert_eq!(request["text"]["format"]["strict"], true);
+        assert!(request.get("text").is_none());
         assert_eq!(request["prompt_cache_key"], "guardian-v2:thread-1");
         assert_eq!(
             request["client_metadata"]["turn_id"],
@@ -405,17 +504,18 @@ async fn sampler_reuses_parent_compaction_only_for_matching_model_hashes() -> Re
         (Some(""), Some(""), false),
     ] {
         let events = vec![
-            ev_assistant_message("sample", r#"{"score":0.25}"#),
+            ev_assistant_message("sample", "low"),
             ev_completed("response-1"),
         ];
-        let server =
-            responses::start_websocket_server(vec![Vec::new(), vec![events.clone(), events]]).await;
+        let mut connections = vec![Vec::new(); INITIAL_WEBSOCKET_CONNECTIONS - 1];
+        connections.push(vec![events.clone(), events]);
+        let server = responses::start_websocket_server(connections).await;
         let mut config = sampler_config(format!(
             "http://{}/v1",
             server.uri().trim_start_matches("ws://")
         ));
         config.luna_compaction_hash = luna_hash.map(str::to_owned);
-        let sampler = LunaSampler::connect(config).await?;
+        let sampler = connect_sampler(config).await?;
         let parent_compaction = ResponseItem::Compaction {
             id: Some(ResponseItemId::from_server("cmp_parent".to_owned())),
             encrypted_content: "opaque encrypted summary".to_owned(),
@@ -424,33 +524,44 @@ async fn sampler_reuses_parent_compaction_only_for_matching_model_hashes() -> Re
         let mut request = sample_request("turn-1");
         request.parent_compaction = Some(parent_compaction.clone());
         request.parent_compaction_hash = parent_hash.map(str::to_owned);
+        request.trusted_review_evidence = vec!["trusted review".to_owned()];
 
-        assert_eq!(sampler.sample(request).await?, r#"{"score":0.25}"#);
+        assert_eq!(sampler.sample(request).await?, "low");
 
         let request = server
-            .wait_for_request(/*connection_index*/ 1, /*request_index*/ 0)
+            .wait_for_request(
+                /*connection_index*/ INITIAL_WEBSOCKET_CONNECTIONS - 1,
+                /*request_index*/ 0,
+            )
             .await
             .body_json();
         let input = request["input"].as_array().expect("input items");
         assert_eq!(input[0]["type"], "additional_tools");
         assert_eq!(input[1]["role"], "developer");
         if should_reuse {
-            assert_eq!(input.len(), 4);
+            assert_eq!(input.len(), 5);
             assert_eq!(input[2], serde_json::to_value(&parent_compaction)?);
-            assert_eq!(input[3]["role"], "user");
+            assert_eq!(input[3]["role"], "developer");
+            assert_eq!(input[3]["content"][1]["text"], "trusted review");
+            assert_eq!(input[4]["role"], "user");
 
             let mut switched_request = sample_request("turn-2");
             switched_request.parent_compaction = Some(parent_compaction);
             switched_request.parent_compaction_hash = Some("incompatible".to_owned());
-            assert_eq!(sampler.sample(switched_request).await?, r#"{"score":0.25}"#);
+            assert_eq!(sampler.sample(switched_request).await?, "low");
             let switched_request = server
-                .wait_for_request(/*connection_index*/ 1, /*request_index*/ 1)
+                .wait_for_request(
+                    /*connection_index*/ INITIAL_WEBSOCKET_CONNECTIONS - 1,
+                    /*request_index*/ 1,
+                )
                 .await
                 .body_json();
             assert_eq!(switched_request["input"][2]["role"], "user");
         } else {
-            assert_eq!(input.len(), 3);
-            assert_eq!(input[2]["role"], "user");
+            assert_eq!(input.len(), 4);
+            assert_eq!(input[2]["role"], "developer");
+            assert_eq!(input[2]["content"][1]["text"], "trusted review");
+            assert_eq!(input[3]["role"], "user");
         }
     }
 
@@ -458,14 +569,11 @@ async fn sampler_reuses_parent_compaction_only_for_matching_model_hashes() -> Re
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn sampler_returns_complete_json_before_terminal_response_events() -> Result<()> {
+async fn sampler_returns_classification_token_before_terminal_response_events() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let config = WebSocketConnectionConfig {
-        requests: vec![vec![
-            ev_output_text_delta(r#"{"score":0"#),
-            ev_output_text_delta(".25}"),
-        ]],
+        requests: vec![vec![ev_output_text_delta("low")]],
         response_headers: Vec::new(),
         accept_delay: None,
         close_after_requests: false,
@@ -479,7 +587,7 @@ async fn sampler_returns_complete_json_before_terminal_response_events() -> Resu
             "test-api-key",
         ))),
     );
-    let sampler = LunaSampler::connect(LunaSamplerConfig {
+    let sampler = connect_sampler(LunaSamplerConfig {
         provider,
         http_client_factory: HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         agent_identity_policy: AgentIdentityAuthPolicy::JwtOnly,
@@ -487,6 +595,7 @@ async fn sampler_returns_complete_json_before_terminal_response_events() -> Resu
         session_id: "session-1".to_owned(),
         thread_id: "thread-1".to_owned(),
         originator: None,
+        free_guardian: false,
         service_tier: None,
         luna_compaction_hash: None,
         metrics: None,
@@ -496,26 +605,46 @@ async fn sampler_returns_complete_json_before_terminal_response_events() -> Resu
     let output = tokio::time::timeout(
         Duration::from_secs(2),
         sampler.sample(LunaSamplingRequest {
-            instructions: "Return a risk score.".to_owned(),
+            instructions: "Return high for high risk or low for low risk.".to_owned(),
+            trusted_review_evidence: Vec::new(),
+            trusted_tool_context: None,
             input: vec!["The user requested a README summary.".to_owned()],
             images: Vec::new(),
             parent_compaction: None,
             parent_compaction_hash: None,
-            output_schema: json!({
-                "type": "object",
-                "properties": { "score": { "type": "number" } },
-                "required": ["score"],
-                "additionalProperties": false
-            }),
             reasoning_effort: ReasoningEffort::None,
             turn_id: "turn-1".to_owned(),
         }),
     )
     .await??;
 
-    assert_eq!(output, r#"{"score":0.25}"#);
+    assert_eq!(output, "low");
     drop(sampler);
     tokio::join!(idle_server.shutdown(), server.shutdown());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sampler_keeps_first_classification_token_when_later_output_disagrees() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let events = vec![
+        ev_output_text_delta("low"),
+        ev_output_text_delta("high"),
+        ev_assistant_message("sample", "lowhigh"),
+        ev_completed("response-1"),
+    ];
+    let mut connections = vec![Vec::new(); INITIAL_WEBSOCKET_CONNECTIONS - 1];
+    connections.push(vec![events]);
+    let server = responses::start_websocket_server(connections).await;
+    let sampler = connect_sampler(sampler_config(format!(
+        "http://{}/v1",
+        server.uri().trim_start_matches("ws://")
+    )))
+    .await?;
+
+    assert_eq!(sampler.sample(sample_request("turn-1")).await?, "low");
+
     Ok(())
 }
 
@@ -524,7 +653,7 @@ async fn sampler_recovers_after_initial_prewarm_failures() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_websocket_server(vec![vec![vec![
-        ev_assistant_message("recovered", r#"{"score":0.25}"#),
+        ev_assistant_message("recovered", "low"),
         ev_completed("recovered"),
     ]]])
     .await;
@@ -552,13 +681,10 @@ async fn sampler_recovers_after_initial_prewarm_failures() -> Result<()> {
         }
     });
 
-    let sampler = LunaSampler::connect(sampler_config(format!("http://{address}/v1"))).await?;
+    let sampler = connect_sampler(sampler_config(format!("http://{address}/v1"))).await?;
     assert_eq!(failed_connections.load(Ordering::Relaxed), 1);
 
-    assert_eq!(
-        sampler.sample(sample_request("turn-1")).await?,
-        r#"{"score":0.25}"#
-    );
+    assert_eq!(sampler.sample(sample_request("turn-1")).await?, "low");
     assert_eq!(server.handshakes().len(), 1);
 
     Ok(())
@@ -569,17 +695,14 @@ async fn sampler_remains_available_when_second_prewarm_fails() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_websocket_server(vec![vec![vec![
-        ev_assistant_message("response-1", r#"{"score":0.25}"#),
+        ev_assistant_message("response-1", "low"),
         ev_completed("response-1"),
     ]]])
     .await;
     let sampler =
-        LunaSampler::connect(sampler_config(proxy_websocket_servers(&[&server]).await?)).await?;
+        connect_sampler(sampler_config(proxy_websocket_servers(&[&server]).await?)).await?;
 
-    assert_eq!(
-        sampler.sample(sample_request("turn-1")).await?,
-        r#"{"score":0.25}"#
-    );
+    assert_eq!(sampler.sample(sample_request("turn-1")).await?, "low");
     assert_eq!(server.handshakes().len(), 1);
     Ok(())
 }
@@ -588,17 +711,18 @@ async fn sampler_remains_available_when_second_prewarm_fails() -> Result<()> {
 async fn sampler_grows_its_pool_for_overlapping_requests() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let response = |id: &str| {
-        vec![vec![
-            ev_assistant_message(id, r#"{"score":0.25}"#),
-            ev_completed(id),
-        ]]
-    };
+    let response = |id: &str| vec![vec![ev_assistant_message(id, "low"), ev_completed(id)]];
     let first = responses::start_websocket_server(vec![response("response-1")]).await;
     let second = responses::start_websocket_server(vec![response("response-2")]).await;
     let third = responses::start_websocket_server(vec![response("response-3")]).await;
-    let sampler = LunaSampler::connect(sampler_config(
-        proxy_websocket_servers(&[&first, &second, &third]).await?,
+    let sampler = connect_sampler(sampler_config(
+        proxy_websocket_servers_with_prewarm_limit(
+            &[&first, &second, &third],
+            ProxyPrewarmLimit::StopAfter {
+                ready_connections: 2,
+            },
+        )
+        .await?,
     ))
     .await?;
 
@@ -610,11 +734,7 @@ async fn sampler_grows_its_pool_for_overlapping_requests() -> Result<()> {
 
     assert_eq!(
         outputs,
-        (
-            r#"{"score":0.25}"#.to_owned(),
-            r#"{"score":0.25}"#.to_owned(),
-            r#"{"score":0.25}"#.to_owned(),
-        )
+        ("low".to_owned(), "low".to_owned(), "low".to_owned(),)
     );
     let mut thread_ids = HashSet::new();
     let mut turn_ids = HashSet::new();
@@ -644,13 +764,13 @@ async fn sampler_replaces_scored_drains_before_unfinished_classifications() -> R
     skip_if_no_network!(Ok(()));
 
     let incomplete_response = WebSocketConnectionConfig {
-        requests: vec![vec![ev_output_text_delta(r#"{"score":0.25}"#)]],
+        requests: vec![vec![ev_output_text_delta("low")]],
         response_headers: Vec::new(),
         accept_delay: None,
         close_after_requests: false,
     };
     let scored_response = WebSocketConnectionConfig {
-        requests: vec![vec![ev_assistant_message("scored", r#"{"score":0.25}"#)]],
+        requests: vec![vec![ev_assistant_message("scored", "low")]],
         ..incomplete_response.clone()
     };
     let stalled_response = WebSocketConnectionConfig {
@@ -669,14 +789,18 @@ async fn sampler_replaces_scored_drains_before_unfinished_classifications() -> R
     }
     servers.push(
         responses::start_websocket_server(vec![vec![vec![
-            ev_assistant_message("newest", r#"{"score":0.75}"#),
+            ev_assistant_message("newest", "high"),
             ev_completed("newest"),
         ]]])
         .await,
     );
-    let server_refs = servers.iter().collect::<Vec<_>>();
+    let server_refs = servers[2..INITIAL_WEBSOCKET_CONNECTIONS]
+        .iter()
+        .chain(servers[..2].iter())
+        .chain(servers[INITIAL_WEBSOCKET_CONNECTIONS..].iter())
+        .collect::<Vec<_>>();
     let sampler = Arc::new(
-        LunaSampler::connect(sampler_config(proxy_websocket_servers(&server_refs).await?)).await?,
+        connect_sampler(sampler_config(proxy_websocket_servers(&server_refs).await?)).await?,
     );
 
     let oldest_sampler = Arc::clone(&sampler);
@@ -701,7 +825,7 @@ async fn sampler_replaces_scored_drains_before_unfinished_classifications() -> R
             sampler
                 .sample(sample_request(&format!("turn-{index}")))
                 .await?,
-            r#"{"score":0.25}"#
+            "low"
         );
     }
 
@@ -711,11 +835,11 @@ async fn sampler_replaces_scored_drains_before_unfinished_classifications() -> R
             sampler.sample(sample_request("replace-oldest")),
         )
         .await??,
-        r#"{"score":0.25}"#
+        "low"
     );
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(2), scored_request).await???,
-        r#"{"score":0.25}"#
+        "low"
     );
     assert!(!oldest.is_finished());
 
@@ -725,7 +849,7 @@ async fn sampler_replaces_scored_drains_before_unfinished_classifications() -> R
             sampler.sample(sample_request("replace-oldest-drain")),
         )
         .await??,
-        r#"{"score":0.75}"#
+        "high"
     );
 
     assert!(!oldest.is_finished());
@@ -743,7 +867,7 @@ async fn sampler_retries_expired_websockets_on_another_warm_connection() -> Resu
     skip_if_no_network!(Ok(()));
 
     let healthy = responses::start_websocket_server(vec![vec![vec![
-        ev_assistant_message("response-1", r#"{"score":0.25}"#),
+        ev_assistant_message("response-1", "low"),
         ev_completed("response-1"),
     ]]])
     .await;
@@ -757,14 +881,14 @@ async fn sampler_retries_expired_websockets_on_another_warm_connection() -> Resu
         }
     })]]])
     .await;
-    let sampler = LunaSampler::connect(sampler_config(
+    let sampler = connect_sampler(sampler_config(
         proxy_websocket_servers(&[&healthy, &expired]).await?,
     ))
     .await?;
 
     let output = sampler.sample(sample_request("turn-1")).await?;
 
-    assert_eq!(output, r#"{"score":0.25}"#);
+    assert_eq!(output, "low");
     let expired_requests = expired.single_connection();
     let healthy_requests = healthy.single_connection();
     assert_eq!(expired_requests.len(), 1);
@@ -791,31 +915,31 @@ async fn sampler_assigns_a_fresh_identity_when_replacing_aged_connections() -> R
     skip_if_no_network!(Ok(()));
 
     let response = vec![vec![
-        ev_assistant_message("response-1", r#"{"score":0.25}"#),
+        ev_assistant_message("response-1", "low"),
         ev_completed("response-1"),
     ]];
     let first = responses::start_websocket_server(vec![response.clone()]).await;
     let second = responses::start_websocket_server(vec![response.clone()]).await;
     let replacement = responses::start_websocket_server(vec![response]).await;
-    let sampler = LunaSampler::connect(sampler_config(
-        proxy_websocket_servers(&[&first, &second, &replacement]).await?,
+    let sampler = connect_sampler(sampler_config(
+        proxy_websocket_servers_with_prewarm_limit(
+            &[&first, &second, &replacement],
+            ProxyPrewarmLimit::StopAfter {
+                ready_connections: 2,
+            },
+        )
+        .await?,
     ))
     .await?;
 
-    assert_eq!(
-        sampler.sample(sample_request("turn-1")).await?,
-        r#"{"score":0.25}"#
-    );
+    assert_eq!(sampler.sample(sample_request("turn-1")).await?, "low");
     {
         let mut connections = sampler.idle_connections.lock().unwrap();
         for connection in connections.iter_mut() {
             connection.expires_at = std::time::Instant::now();
         }
     }
-    assert_eq!(
-        sampler.sample(sample_request("turn-2")).await?,
-        r#"{"score":0.25}"#
-    );
+    assert_eq!(sampler.sample(sample_request("turn-2")).await?, "low");
 
     let thread_ids = [&first, &second, &replacement]
         .into_iter()
@@ -844,19 +968,22 @@ async fn sampler_reconnects_after_transient_service_failures() -> Result<()> {
     let first = responses::start_websocket_server(unavailable()).await;
     let second = responses::start_websocket_server(unavailable()).await;
     let recovered = responses::start_websocket_server(vec![vec![vec![
-        ev_assistant_message("recovered", r#"{"score":0.25}"#),
+        ev_assistant_message("recovered", "low"),
         ev_completed("recovered"),
     ]]])
     .await;
-    let sampler = LunaSampler::connect(sampler_config(
-        proxy_websocket_servers(&[&first, &second, &recovered]).await?,
+    let sampler = connect_sampler(sampler_config(
+        proxy_websocket_servers_with_prewarm_limit(
+            &[&first, &second, &recovered],
+            ProxyPrewarmLimit::StopAfter {
+                ready_connections: 2,
+            },
+        )
+        .await?,
     ))
     .await?;
 
-    assert_eq!(
-        sampler.sample(sample_request("turn-1")).await?,
-        r#"{"score":0.25}"#
-    );
+    assert_eq!(sampler.sample(sample_request("turn-1")).await?, "low");
     assert_eq!(first.single_connection().len(), 1);
     assert_eq!(second.single_connection().len(), 1);
     assert_eq!(recovered.single_connection().len(), 1);
@@ -886,8 +1013,14 @@ async fn sampler_limits_transient_recovery_attempts() -> Result<()> {
     let second = responses::start_websocket_server(unavailable()).await;
     let third = responses::start_websocket_server(unavailable()).await;
     let unused = responses::start_websocket_server(unavailable()).await;
-    let sampler = LunaSampler::connect(sampler_config(
-        proxy_websocket_servers(&[&first, &second, &third, &unused]).await?,
+    let sampler = connect_sampler(sampler_config(
+        proxy_websocket_servers_with_prewarm_limit(
+            &[&first, &second, &third, &unused],
+            ProxyPrewarmLimit::StopAfter {
+                ready_connections: 2,
+            },
+        )
+        .await?,
     ))
     .await?;
 

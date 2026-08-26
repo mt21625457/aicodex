@@ -122,7 +122,7 @@ pub(crate) async fn execute_user_shell_command(
             trace_id: turn_context.trace_id.clone(),
             started_at: turn_context.turn_timing_state.started_at_unix_secs().await,
             model_context_window: turn_context.model_context_window(),
-            collaboration_mode_kind: turn_context.mode,
+            collaboration_mode_kind: turn_context.mode(),
         });
         session.send_event(turn_context.as_ref(), event).await;
     }
@@ -207,6 +207,7 @@ pub(crate) async fn execute_user_shell_command(
         cwd: cwd.clone().into(),
         env: exec_env_map,
         exec_server_env_config: None,
+        exec_server_shell_snapshot: None,
         // `/shell` is the explicit full-access escape hatch, so it must not
         // inherit a managed proxy from the surrounding session or turn.
         network: None,
@@ -311,7 +312,7 @@ pub(crate) async fn execute_user_shell_command(
                         duration: Some(output.duration),
                         formatted_output: Some(format_exec_output_str(
                             &output,
-                            turn_context.model_info.truncation_policy.into(),
+                            turn_context.model_info().truncation_policy.into(),
                         )),
                     }),
                 )
@@ -352,7 +353,7 @@ pub(crate) async fn execute_user_shell_command(
                         duration: Some(exec_output.duration),
                         formatted_output: Some(format_exec_output_str(
                             &exec_output,
-                            turn_context.model_info.truncation_policy.into(),
+                            turn_context.model_info().truncation_policy.into(),
                         )),
                     }),
                 )
@@ -374,6 +375,7 @@ async fn send_user_shell_error(session: &Session, turn_context: &TurnContext, me
         .send_event(
             turn_context,
             EventMsg::Error(ErrorEvent {
+                misalignment: None,
                 message: message.to_string(),
                 codex_error_info: None,
             }),

@@ -58,7 +58,7 @@ pub(super) async fn run_remote_compact_attempt(
     let trace_input_history = compaction_trace
         .is_enabled()
         .then(|| history.raw_items().cloned().collect());
-    let prompt_input = history.for_prompt(&turn_context.model_info.input_modalities);
+    let prompt_input = history.for_prompt(&turn_context.model_info().input_modalities);
     let tool_router = &step_context.tool_router;
     let prompt = Prompt {
         input: prompt_input,
@@ -67,23 +67,24 @@ pub(super) async fn run_remote_compact_attempt(
         base_instructions,
         output_schema: None,
         output_schema_strict: true,
+        cyber_access_program: turn_context.cyber_access_program,
     };
-    let window_id = sess.current_window_id().await;
-    let responses_metadata = turn_context.turn_metadata_state.to_responses_metadata(
-        sess.installation_id.clone(),
-        window_id,
-        CodexResponsesRequestKind::Compaction(compaction_metadata),
-    );
+    let responses_metadata = sess
+        .responses_metadata(
+            turn_context.as_ref(),
+            CodexResponsesRequestKind::Compaction(compaction_metadata),
+        )
+        .await;
     let new_history = sess
         .services
         .model_client
         .compact_conversation_history(
             &prompt,
-            &turn_context.model_info,
+            turn_context.model_info(),
             turn_state,
             CompactConversationRequestSettings {
-                effort: turn_context.reasoning_effort.clone(),
-                summary: turn_context.reasoning_summary,
+                effort: turn_context.reasoning_effort().cloned(),
+                summary: turn_context.reasoning_summary(),
                 service_tier: if sess.services.auth_manager.auth_mode() == Some(AuthMode::ApiKey) {
                     None
                 } else {

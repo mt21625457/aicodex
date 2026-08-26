@@ -1,10 +1,8 @@
 use super::mcp_refresh::McpRefreshInvalidationGuard;
 use super::*;
 use crate::environment_selection::combine_selected_capability_roots;
-use crate::tools::sandboxing::executor_windows_sandbox_level;
 use codex_exec_server::ExecutorCapabilityDiscoveryCache;
 use codex_exec_server::ExecutorCapabilityDiscoverySnapshot;
-use codex_exec_server::FileSystemSandboxContext;
 use codex_exec_server::MAX_SELECTED_CAPABILITY_ROOTS;
 use codex_exec_server::ResolvedSelectedCapabilityRoot;
 use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
@@ -98,10 +96,9 @@ impl Session {
         config: &Config,
     ) -> (McpConfig, McpRuntimeContext) {
         let originator = self.originator().await;
-        let (windows_sandbox_level, session_source, host_fallback_cwd) = {
+        let (session_source, host_fallback_cwd) = {
             let state = self.state.lock().await;
             (
-                state.session_configuration.windows_sandbox_level,
                 state.session_configuration.session_source.clone(),
                 state.session_configuration.cwd().clone(),
             )
@@ -117,10 +114,9 @@ impl Session {
                 config,
                 &ready_selected_capability_roots,
                 &environments,
-                windows_sandbox_level,
             )
             .await;
-        let mcp_config = self
+        let mcp_projection = self
             .services
             .mcp_manager
             .runtime_config_for_step(
@@ -135,6 +131,14 @@ impl Session {
                 &ready_selected_capability_roots,
                 executor_capability_discovery.as_deref(),
             )
+            .await;
+        let mcp_config = self
+            .project_selected_environment_mcp_servers(
+                &session_source,
+                config,
+                &environments,
+                mcp_projection,
+            )
             .await
             .config;
         let local_process_cwd = environments
@@ -144,6 +148,17 @@ impl Session {
         let runtime_context = McpRuntimeContext::new(
             self.services.turn_environments.environment_manager(),
             local_process_cwd,
+        )
+        .with_selected_environments(
+            environments
+                .turn_environments()
+                .map(|environment| {
+                    (
+                        environment.selection.environment_id.clone(),
+                        Arc::clone(&environment.environment),
+                    )
+                })
+                .collect(),
         );
         (mcp_config, runtime_context)
     }
@@ -163,6 +178,24 @@ impl Session {
             return;
         };
         loop {
+            let environments = self.services.turn_environments.snapshot().await;
+            let ready_environments = environments
+                .turn_environments()
+                .map(|environment| {
+                    (
+                        environment.selection.environment_id.clone(),
+                        Arc::clone(&environment.environment),
+                    )
+                })
+                .collect();
+            // Attachment resolution can finish after the owner's configuration callback.
+            if !self
+                .services
+                .mcp_runtime
+                .current_environments_match(&ready_environments)
+            {
+                self.mark_mcp_runtime_dirty();
+            }
             let auth = self.services.auth_manager.auth_cached();
             if !self
                 .services
@@ -191,7 +224,6 @@ impl Session {
                     &desired.config,
                     &ready_selected_capability_roots,
                     &desired.environments,
-                    desired.windows_sandbox_level,
                 )
                 .await;
             let mcp_projection = self
@@ -218,9 +250,6 @@ impl Session {
             )
             .await;
             refresh_invalidation.published = true;
-            if !self.mcp_refresh.is_pending() {
-                return;
-            }
         }
     }
 
@@ -246,7 +275,6 @@ impl Session {
                 &desired.config,
                 &ready_selected_capability_roots,
                 &desired.environments,
-                desired.windows_sandbox_level,
             )
             .await;
         let mcp_projection = self
@@ -263,6 +291,14 @@ impl Session {
                 },
                 &ready_selected_capability_roots,
                 executor_capability_discovery.as_deref(),
+            )
+            .await;
+        let mcp_projection = self
+            .project_selected_environment_mcp_servers(
+                &desired.session_source,
+                &desired.config,
+                &desired.environments,
+                mcp_projection,
             )
             .await;
         let selected_plugins = mcp_projection.selected_plugins.clone();
@@ -346,7 +382,6 @@ impl Session {
         config: &Config,
         ready_selected_capability_roots: &[SelectedCapabilityRoot],
         environments: &TurnEnvironmentSnapshot,
-        windows_sandbox_level: WindowsSandboxLevel,
     ) -> Option<Arc<ExecutorCapabilityDiscoverySnapshot>> {
         // Capability roots can currently be selected independently of turn environments, so a
         // root may be ready when there is no primary `TurnEnvironment`. Keep using the thread
@@ -381,17 +416,10 @@ impl Session {
             environments
                 .turn_environments()
                 .map(|environment| {
-                    let mut sandbox = FileSystemSandboxContext::from_permission_profile_with_cwd(
-                        environment.permission_profile().clone(),
-                        environment.cwd().clone(),
-                    );
-                    sandbox.workspace_roots = environment.workspace_roots().to_vec();
-                    sandbox.windows_sandbox_level =
-                        executor_windows_sandbox_level(windows_sandbox_level, environment.cwd());
-                    sandbox.windows_sandbox_private_desktop =
-                        config.permissions.windows_sandbox_private_desktop;
-                    sandbox.use_legacy_landlock = config.features.use_legacy_landlock();
-                    (environment.selection.environment_id.clone(), sandbox)
+                    (
+                        environment.selection.environment_id.clone(),
+                        environment.sandbox_context(/*additional_permissions*/ None),
+                    )
                 })
                 .collect::<HashMap<_, _>>()
         } else {
@@ -638,7 +666,6 @@ impl Session {
                 refresh_config,
                 &ready_selected_capability_roots,
                 &environments,
-                turn_context.windows_sandbox_level,
             )
             .await;
         let mcp_projection = self
@@ -754,7 +781,7 @@ async fn review_guardian_mcp_elicitation(
             || crate::connectors::mcp_approvals_reviewer_from_layers(
                 &mcp_config.config_layer_stack,
                 ApprovalsReviewer::AutoReview,
-                Some(turn_context.model_info.slug.as_str()),
+                Some(turn_context.model_info().slug.as_str()),
                 request.server_name.as_str(),
                 connector_id,
             ) != ApprovalsReviewer::AutoReview
@@ -786,17 +813,29 @@ async fn review_guardian_mcp_elicitation(
         )
         .await;
 
-        return Ok(matches!(decision, ReviewDecision::Approved).then(|| {
-            mcp_elicitation_response_from_guardian_decision(decision, &turn_context.model_info)
+        return Ok(matches!(
+            decision,
+            ReviewDecision::Approved
+                | ReviewDecision::Denied { .. }
+                | ReviewDecision::TimedOut
+                | ReviewDecision::Abort
+        )
+        .then(|| {
+            mcp_elicitation_response_from_guardian_decision(decision, turn_context.model_info())
         }));
     }
 
     let approval_policy = mcp_config.approval_policy.value();
     match approval_policy {
         AskForApproval::Never => {
+            let Some(permission_profile) =
+                mcp_config.permission_profile_for_server(&request.server_name)
+            else {
+                return Ok(Some(mcp_elicitation_decline_without_message()));
+            };
             if codex_mcp::mcp_permission_prompt_is_auto_approved(
                 approval_policy,
-                &mcp_config.permission_profile,
+                permission_profile,
                 codex_mcp::McpPermissionPromptAutoApproveContext::default(),
             ) && matches!(
                 &request.elicitation,
@@ -825,7 +864,7 @@ async fn review_guardian_mcp_elicitation(
     let approvals_reviewer = crate::connectors::mcp_approvals_reviewer_from_layers(
         &mcp_config.config_layer_stack,
         mcp_config.approvals_reviewer,
-        Some(turn_context.model_info.slug.as_str()),
+        Some(turn_context.model_info().slug.as_str()),
         request.server_name.as_str(),
         elicitation_connector_id(&request.elicitation),
     );
@@ -848,17 +887,22 @@ async fn review_guardian_mcp_elicitation(
     };
 
     let review_id = crate::guardian::new_guardian_review_id();
-    let decision = crate::guardian::review_approval_request(
+    let decision = crate::guardian::review_approval_request_with_cancel(
         &session,
         &turn_context,
-        review_id.clone(),
+        review_id,
         guardian_request,
-        Default::default(),
+        /*retry_reason*/ None,
+        crate::guardian::GuardianReviewOptions {
+            plugin_attribution_override: None,
+            approval_request_source: codex_analytics::GuardianApprovalRequestSource::MainTurn,
+            external_cancel: Some(cancellation_token),
+        },
     )
     .await;
     Ok(Some(mcp_elicitation_response_from_guardian_decision(
         decision,
-        &turn_context.model_info,
+        turn_context.model_info(),
     )))
 }
 

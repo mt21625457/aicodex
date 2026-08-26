@@ -9,7 +9,7 @@ use anyhow::anyhow;
 use codex_analytics::GuardianReviewAnalyticsResult;
 use codex_analytics::GuardianReviewSessionAnalyticsParams;
 use codex_analytics::GuardianReviewSessionKind;
-use codex_extension_api::UserInstructions;
+use codex_extension_api::Instructions;
 use codex_history::InitialHistory;
 use codex_history::RolloutItem;
 use codex_protocol::ThreadId;
@@ -17,6 +17,7 @@ use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::items::TurnItem;
+use codex_protocol::mcp::is_node_repl_backed_server;
 use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ImageDetail;
@@ -202,7 +203,7 @@ struct GuardianReviewSessionReuseKey {
     permissions: Permissions,
     developer_instructions: Option<String>,
     base_instructions: Option<String>,
-    user_instructions: Option<UserInstructions>,
+    user_instructions: Option<Instructions>,
     compact_prompt: Option<String>,
     cwd: PathUri,
     mcp_servers: Constrained<HashMap<String, McpServerConfig>>,
@@ -216,7 +217,7 @@ struct GuardianReviewSessionReuseKey {
 impl GuardianReviewSessionReuseKey {
     fn from_spawn_config(
         spawn_config: &Config,
-        user_instructions: Option<UserInstructions>,
+        user_instructions: Option<Instructions>,
         parent_history_version: u64,
     ) -> Self {
         Self {
@@ -437,7 +438,7 @@ impl GuardianReviewSessionManager {
             .with_node_repl_policy_eligibility(
                 parent_context
                     .turn()
-                    .model_info
+                    .model_info()
                     .node_repl_auto_review_required,
             );
             let spawn_cancel_token = self.cancellation_token.child_token();
@@ -527,7 +528,7 @@ impl GuardianReviewSessionManager {
             params
                 .parent_context
                 .turn()
-                .model_info
+                .model_info()
                 .node_repl_auto_review_required,
         );
         let mut spawned_trunk = false;
@@ -951,11 +952,11 @@ async fn run_review_on_session(
                 .sync_session_approved_hosts_to(&review_session.session.services.network_approval)
                 .await;
 
-            if params.parent_context.turn().model_info.node_repl_auto_review_required
+            if params.parent_context.turn().model_info().node_repl_auto_review_required
                 && matches!(
                     &params.request,
                     GuardianApprovalRequest::McpToolCall { server, tool_name, .. }
-                        if server == "node_repl" && tool_name == "js"
+                        if is_node_repl_backed_server(server) && tool_name == "js"
                 )
             {
                 let policy = GuardianNodeReplPolicy;
@@ -1178,8 +1179,10 @@ async fn run_review_on_session(
             })
             .on_start(TurnStartOptions {
                 final_output_json_schema: Some(params.schema.clone()),
+                service_tier: None,
                 parent_turn_id: Some(parent_turn.sub_id.clone()),
                 root_turn_id: parent_turn.turn_metadata_state.root_turn_id(),
+                ..Default::default()
             }),
         TurnInputMode::StartIfIdle,
     );
@@ -1605,10 +1608,10 @@ mod tests {
 
     async fn test_review_params() -> GuardianReviewSessionParams {
         let (session, turn) = crate::session::tests::make_session_and_context().await;
-        let model = turn.model_info.slug.clone();
-        let reasoning_effort = turn.reasoning_effort.clone();
-        let reasoning_summary = turn.reasoning_summary;
-        let personality = turn.personality;
+        let model = turn.model_info().slug.clone();
+        let reasoning_effort = turn.reasoning_effort().cloned();
+        let reasoning_summary = turn.reasoning_summary();
+        let personality = turn.personality();
         #[allow(deprecated)]
         let cwd = turn.cwd.clone();
         let spawn_config = build_guardian_review_session_config(
@@ -2307,6 +2310,7 @@ mod tests {
             .send(Event {
                 id: "prior-turn".to_string(),
                 msg: EventMsg::Error(ErrorEvent {
+                    misalignment: None,
                     message: "stale guardian error".to_string(),
                     codex_error_info: None,
                 }),
@@ -2348,6 +2352,7 @@ mod tests {
             .send(Event {
                 id: "current-turn".to_string(),
                 msg: EventMsg::Error(ErrorEvent {
+                    misalignment: None,
                     message: "temporary failure".to_string(),
                     codex_error_info: Some(CodexErrorInfo::ServerOverloaded),
                 }),

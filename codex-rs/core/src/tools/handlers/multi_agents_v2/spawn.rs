@@ -150,11 +150,20 @@ async fn handle_spawn_agent(
     .await?;
     apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
 
+    // Remember an applied configured default so cold reload reapplies its restrictions.
+    let persisted_role_name = role_name.or_else(|| {
+        (!is_full_history_fork
+            && config
+                .agent_roles
+                .get(DEFAULT_ROLE_NAME)
+                .is_some_and(|role| role.config_file.is_some()))
+        .then_some(DEFAULT_ROLE_NAME)
+    });
     let spawn_source = thread_spawn_source(
         session.thread_id,
         &turn.session_source,
         child_depth,
-        role_name,
+        persisted_role_name,
         Some(args.task_name.clone()),
     )?;
     let new_agent_path = spawn_source.get_agent_path().ok_or_else(|| {
@@ -177,7 +186,7 @@ async fn handle_spawn_agent(
     let multi_agent_v2_usage_hints =
         if is_full_history_fork && turn.multi_agent_version == MultiAgentVersion::V2 {
             let child_model_info = match config.model.as_deref() {
-                Some(model) if model != turn.model_info.slug => Some(
+                Some(model) if model != turn.model_info().slug => Some(
                     session
                         .services
                         .models_manager
@@ -188,7 +197,7 @@ async fn handle_spawn_agent(
             };
             let child_catalog = child_model_info
                 .as_ref()
-                .unwrap_or(&turn.model_info)
+                .unwrap_or(turn.model_info())
                 .model_messages
                 .as_ref()
                 .and_then(|messages| messages.multi_agent.as_ref())
@@ -214,6 +223,7 @@ async fn handle_spawn_agent(
                     root_turn_id: turn.turn_metadata_state.root_turn_id(),
                     environments: Some(step_context.environments.to_selections()),
                     multi_agent_v2_usage_hints,
+                    cyber_access_program: turn.cyber_access_program,
                 },
             ),
     )

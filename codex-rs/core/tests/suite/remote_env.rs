@@ -13,6 +13,7 @@ use codex_core::WaitForEnvironmentToolConfig;
 use codex_core::compact::SUMMARIZATION_PROMPT;
 use codex_core::config::Config;
 use codex_core::config::Constrained;
+use codex_core::windows_sandbox::WindowsSandboxLevelExt;
 use codex_exec_server::CopyOptions;
 use codex_exec_server::CreateDirectoryOptions;
 use codex_exec_server::EnvironmentReadyInfo;
@@ -46,6 +47,7 @@ use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
+use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::FileSystemPermissions;
 use codex_protocol::models::PermissionProfile;
@@ -555,8 +557,15 @@ async fn environment_permissions_follow_configuration_ownership() -> Result<()> 
                 vec![TurnEnvironmentSelection {
                     config: EnvironmentConfigState::Ready(EnvironmentConfig {
                         allow_login_shell: test.config.permissions.allow_login_shell,
+                        workspace_roots: selection.workspace_roots.clone(),
                         permission_profile: owner_permission_profile,
                         shell_environment_policy: Default::default(),
+                        windows_sandbox_level: WindowsSandboxLevel::from_config(&test.config),
+                        windows_sandbox_private_desktop: test
+                            .config
+                            .permissions
+                            .windows_sandbox_private_desktop,
+                        use_legacy_landlock: test.config.features.use_legacy_landlock(),
                         exec_policy: None,
                         mcp_policy: None,
                         network_policy: None,
@@ -863,6 +872,8 @@ async fn settings_update_does_not_retarget_active_turn_environment() -> Result<(
 async fn deferred_executor_promotes_primary_environment_when_startup_completes() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let server = start_mock_server().await;
+    let apps = core_test_support::apps_test_server::AppsTestServer::mount(&server).await?;
+    let mcp_url = format!("{}/api/codex/ps/mcp", apps.chatgpt_base_url);
     let response_mock = mount_sse_sequence(
         &server,
         vec![
@@ -904,7 +915,20 @@ async fn deferred_executor_promotes_primary_environment_when_startup_completes()
     .await;
     let mut builder = test_codex()
         .with_exec_server_url(format!("ws://{}", listener.local_addr()?))
-        .with_config(|config| {
+        .with_model_info_override("gpt-5.4", |model| model.supports_search_tool = false)
+        .with_config(move |config| {
+            config
+                .mcp_servers
+                .set(HashMap::from([(
+                    "deferred".to_string(),
+                    serde_json::from_value(json!({
+                        "url": mcp_url,
+                        "environment_id": REMOTE_ENVIRONMENT_ID,
+                        "startup_timeout_sec": 60,
+                    }))
+                    .expect("MCP server config"),
+                )]))
+                .expect("set MCP server");
             config.project_doc_max_bytes = 0;
             assert!(config.features.enable(Feature::DeferredExecutor).is_ok());
             assert!(
@@ -958,8 +982,56 @@ async fn deferred_executor_promotes_primary_environment_when_startup_completes()
     assert!(initial_context.contains("<environment id=\"local\" primary=\"true\">"));
     assert!(initial_context.contains("<environment id=\"remote\" primary=\"false\">"));
     assert!(initial_context.contains("<status>starting</status>"));
+    assert!(
+        requests[1]
+            .tool_by_name("mcp__deferred", "calendar_list_events")
+            .is_none()
+    );
 
-    serve_environment_info(listener).await;
+    let mut websocket = accept_initialized_exec_server(listener).await;
+    // Forward MCP HTTP through the fake executor while keeping startup under test control.
+    let http_client =
+        codex_exec_server::Environment::create_for_tests(/*exec_server_url*/ None)?
+            .get_http_client();
+    let executor = tokio::spawn(async move {
+        loop {
+            let request = read_exec_server_json(&mut websocket).await;
+            let Some(id) = request.get("id") else {
+                continue;
+            };
+            let mut messages = Vec::new();
+            if request["method"] == "http/request" {
+                let params = serde_json::from_value(request["params"].clone()).unwrap();
+                let mut response =
+                    serde_json::to_value(http_client.http_request(params).await.unwrap()).unwrap();
+                if request["params"]["streamResponse"] == true {
+                    let body = response["bodyBase64"].take();
+                    response["bodyBase64"] = json!("");
+                    messages.push(json!({
+                        "method": "http/request/bodyDelta",
+                        "params": { "requestId": request["params"]["requestId"], "seq": 1,
+                            "deltaBase64": body, "done": true }
+                    }));
+                }
+                messages.insert(0, json!({ "id": id, "result": response }));
+            } else if request["method"] == "environment/info" {
+                messages.push(json!({ "id": id,
+                    "result": { "shell": { "name": "zsh", "path": "/bin/zsh" } }
+                }));
+            } else {
+                messages.push(
+                    json!({ "id": id, "error": { "code": -32601, "message": "unsupported" } }),
+                );
+            }
+            for message in messages {
+                websocket
+                    .send(Message::Text(message.to_string().into()))
+                    .await
+                    .unwrap();
+            }
+        }
+    });
+    core_test_support::wait_for_mcp_server(&test.codex, "deferred").await?;
     test.codex
         .submit(Op::UserInputAnswer {
             id: request.turn_id,
@@ -979,6 +1051,11 @@ async fn deferred_executor_promotes_primary_environment_when_startup_completes()
     .await;
 
     let requests = response_mock.requests();
+    assert!(
+        requests[2]
+            .tool_by_name("mcp__deferred", "calendar_list_events")
+            .is_some()
+    );
     let updated_context = requests[2]
         .message_input_texts("user")
         .into_iter()
@@ -1009,6 +1086,8 @@ async fn deferred_executor_promotes_primary_environment_when_startup_completes()
         Some(&Value::Null)
     );
 
+    executor.abort();
+    let _ = executor.await;
     Ok(())
 }
 
@@ -1169,16 +1248,26 @@ impl NoiseRendezvousConnectProvider for FailingNoiseConnectProvider {
     }
 }
 
-struct ReadyNoiseConnectProvider {
+struct OfflineThenReadyNoiseConnectProvider {
     websocket_url: String,
     executor_public_key: NoiseChannelPublicKey,
+    calls: AtomicUsize,
 }
 
-impl NoiseRendezvousConnectProvider for ReadyNoiseConnectProvider {
+impl NoiseRendezvousConnectProvider for OfflineThenReadyNoiseConnectProvider {
     fn connect_bundle(
         &self,
         _: NoiseChannelPublicKey,
     ) -> BoxFuture<'_, std::result::Result<NoiseRendezvousConnectBundle, ExecServerError>> {
+        if self.calls.fetch_add(1, Ordering::Relaxed) == 0 {
+            return Box::pin(async {
+                Err(ExecServerError::EnvironmentRegistryHttp {
+                    status: http::StatusCode::CONFLICT,
+                    code: Some("environment_offline".to_string()),
+                    message: "test environment is offline".to_string(),
+                })
+            });
+        }
         let bundle = NoiseRendezvousConnectBundle {
             websocket_url: self.websocket_url.clone(),
             environment_id: REMOTE_ENVIRONMENT_ID.to_string(),
@@ -1234,8 +1323,15 @@ async fn shared_executor_keeps_ready_capability_roots_scoped_to_each_attachment(
         EnvironmentConfigState::Pending,
         EnvironmentConfigState::Ready(EnvironmentConfig {
             allow_login_shell: false,
+            workspace_roots: selection.workspace_roots.clone(),
             permission_profile: permission_profile.clone(),
             shell_environment_policy: Default::default(),
+            windows_sandbox_level: WindowsSandboxLevel::from_config(&test.config),
+            windows_sandbox_private_desktop: test
+                .config
+                .permissions
+                .windows_sandbox_private_desktop,
+            use_legacy_landlock: test.config.features.use_legacy_landlock(),
             exec_policy: None,
             mcp_policy: None,
             network_policy: None,
@@ -1272,8 +1368,15 @@ async fn shared_executor_keeps_ready_capability_roots_scoped_to_each_attachment(
             environments: Some(vec![TurnEnvironmentSelection {
                 config: EnvironmentConfigState::Ready(EnvironmentConfig {
                     allow_login_shell: true,
+                    workspace_roots: selection.workspace_roots.clone(),
                     permission_profile: permission_profile.clone(),
                     shell_environment_policy: Default::default(),
+                    windows_sandbox_level: WindowsSandboxLevel::from_config(&test.config),
+                    windows_sandbox_private_desktop: test
+                        .config
+                        .permissions
+                        .windows_sandbox_private_desktop,
+                    use_legacy_landlock: test.config.features.use_legacy_landlock(),
                     exec_policy: None,
                     mcp_policy: None,
                     network_policy: None,
@@ -1294,8 +1397,15 @@ async fn shared_executor_keeps_ready_capability_roots_scoped_to_each_attachment(
                 vec![TurnEnvironmentSelection {
                     config: EnvironmentConfigState::Ready(EnvironmentConfig {
                         allow_login_shell: false,
+                        workspace_roots: selection.workspace_roots.clone(),
                         permission_profile: permission_profile.clone(),
                         shell_environment_policy: Default::default(),
+                        windows_sandbox_level: WindowsSandboxLevel::from_config(&test.config),
+                        windows_sandbox_private_desktop: test
+                            .config
+                            .permissions
+                            .windows_sandbox_private_desktop,
+                        use_legacy_landlock: test.config.features.use_legacy_landlock(),
                         exec_policy: None,
                         mcp_policy: None,
                         network_policy: None,
@@ -1355,8 +1465,15 @@ async fn shared_executor_keeps_ready_capability_roots_scoped_to_each_attachment(
                     vec![TurnEnvironmentSelection {
                         config: EnvironmentConfigState::Ready(EnvironmentConfig {
                             allow_login_shell: false,
+                            workspace_roots: selection.workspace_roots.clone(),
                             permission_profile: permission_profile.clone(),
                             shell_environment_policy: Default::default(),
+                            windows_sandbox_level: WindowsSandboxLevel::from_config(&test.config),
+                            windows_sandbox_private_desktop: test
+                                .config
+                                .permissions
+                                .windows_sandbox_private_desktop,
+                            use_legacy_landlock: test.config.features.use_legacy_landlock(),
                             exec_policy: None,
                             mcp_policy: None,
                             network_policy: None,
@@ -1415,7 +1532,7 @@ async fn shared_executor_keeps_ready_capability_roots_scoped_to_each_attachment(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn owner_network_policy_is_rejected_until_runtime_enforcement_exists() -> Result<()> {
+async fn owner_network_policy_rejects_unsupported_environment_authority() -> Result<()> {
     let server = start_mock_server().await;
     let test = test_codex().build_with_auto_env(&server).await?;
     let selections = test.codex.environment_selections().await;
@@ -1424,10 +1541,12 @@ async fn owner_network_policy_is_rejected_until_runtime_enforcement_exists() -> 
         .context("thread should select its executor environment")?;
     let owner_config = EnvironmentConfig {
         allow_login_shell: test.config.permissions.allow_login_shell,
-        permission_profile: PermissionProfileSnapshot::legacy(
-            test.config.permissions.permission_profile().clone(),
-        ),
+        workspace_roots: selection.workspace_roots.clone(),
+        permission_profile: PermissionProfileSnapshot::legacy(PermissionProfile::Disabled),
         shell_environment_policy: test.config.permissions.shell_environment_policy.clone(),
+        windows_sandbox_level: WindowsSandboxLevel::from_config(&test.config),
+        windows_sandbox_private_desktop: test.config.permissions.windows_sandbox_private_desktop,
+        use_legacy_landlock: test.config.features.use_legacy_landlock(),
         exec_policy: None,
         mcp_policy: None,
         network_policy: Some(EnvironmentNetworkPolicy::from_config(
@@ -1450,15 +1569,23 @@ async fn owner_network_policy_is_rejected_until_runtime_enforcement_exists() -> 
         })
         .await
         .err()
-        .context("preview must not accept an unenforced policy")?;
+        .context("preview must not accept an unsupported environment policy")?;
     let ready_error = test
         .codex
         .environment_ready(selection, owner_config)
         .await
-        .expect_err("readiness must not accept an unenforced policy");
+        .expect_err("readiness must not accept an unsupported environment policy");
 
+    let expected = if selection.environment_id == LOCAL_ENVIRONMENT_ID {
+        "attachment-owned network policy requires a remote executor"
+    } else {
+        "environment network policy requires managed network enforcement"
+    };
     for error in [preview_error.to_string(), ready_error.to_string()] {
-        assert!(error.contains("attachment-owned network policy is not supported yet"));
+        assert!(
+            error.contains(expected),
+            "unexpected validation error: {error}"
+        );
     }
     assert_eq!(test.codex.environment_selections().await, selections);
     Ok(())
@@ -1493,6 +1620,7 @@ async fn pending_attachment_installs_configuration_before_waiting_turn_resumes()
         config: EnvironmentConfigState::Pending,
         ..selection.clone()
     };
+    let owner_workspace_root = selection.cwd.join("owner-workspace")?;
     let root = |id: &str| SelectedCapabilityRoot {
         id: id.to_string(),
         location: CapabilityRootLocation::Environment {
@@ -1502,8 +1630,12 @@ async fn pending_attachment_installs_configuration_before_waiting_turn_resumes()
     };
     let owner_config = |id: &str, allow_login_shell: bool| EnvironmentConfig {
         allow_login_shell,
+        workspace_roots: vec![selection.cwd.clone(), owner_workspace_root.clone()],
         permission_profile: PermissionProfileSnapshot::legacy(PermissionProfile::read_only()),
         shell_environment_policy: Default::default(),
+        windows_sandbox_level: WindowsSandboxLevel::from_config(&test.config),
+        windows_sandbox_private_desktop: test.config.permissions.windows_sandbox_private_desktop,
+        use_legacy_landlock: test.config.features.use_legacy_landlock(),
         exec_policy: None,
         mcp_policy: None,
         network_policy: None,
@@ -1518,6 +1650,7 @@ async fn pending_attachment_installs_configuration_before_waiting_turn_resumes()
     let waiting = timeout(Duration::from_secs(5), start_pending_thread())
         .await
         .context("pending thread startup should not block")??;
+    let requested_workspace_roots = waiting.thread.config_snapshot().await.workspace_roots;
     let independent = start_pending_thread().await?;
     let failed = start_pending_thread().await?;
 
@@ -1633,21 +1766,18 @@ async fn pending_attachment_installs_configuration_before_waiting_turn_resumes()
         config: EnvironmentConfigState::Ready(waiting_config.clone()),
         ..pending_selection.clone()
     };
-    submit_thread_settings(
-        &waiting.thread,
-        ThreadSettingsOverrides {
-            environments: Some(TurnEnvironmentSelections::new(
-                test.config.cwd.clone(),
-                vec![ready_selection.clone()],
-            )),
-            ..Default::default()
-        },
-    )
-    .await?;
+    waiting
+        .thread
+        .environment_ready(&pending_selection, waiting_config)
+        .await?;
     wait_for_response_request_count(&response_mock, /*expected_count*/ 2).await;
     assert_eq!(
         waiting.thread.environment_selections().await,
         vec![ready_selection]
+    );
+    assert_eq!(
+        waiting.thread.config_snapshot().await.workspace_roots,
+        requested_workspace_roots
     );
 
     let ready_request = response_mock
@@ -1675,6 +1805,13 @@ async fn pending_attachment_installs_configuration_before_waiting_turn_resumes()
             .into_iter()
             .rfind(|text| text.contains("<ready_capability_roots>")),
         Some("<ready_capability_roots>waiting-root</ready_capability_roots>".to_string())
+    );
+    assert!(
+        ready_request
+            .message_input_texts("user")
+            .iter()
+            .any(|text| text.contains(&owner_workspace_root.inferred_native_path_string())),
+        "waiting turn should observe owner-resolved workspace roots"
     );
 
     let recovered_selection = TurnEnvironmentSelection {
@@ -1824,6 +1961,11 @@ async fn ready_before_selection_resolves_resumed_thread_capability_root_after_wa
     } else {
         stale_root.clone()
     };
+    let provider = Arc::new(OfflineThenReadyNoiseConnectProvider {
+        websocket_url: format!("{rendezvous_url}/relay?role=harness"),
+        executor_public_key,
+        calls: AtomicUsize::new(0),
+    });
     let environment = test
         .thread_manager
         .environment_manager()
@@ -1836,10 +1978,7 @@ async fn ready_before_selection_resolves_resumed_thread_capability_root_after_wa
                     Vec::new()
                 },
             }),
-            Arc::new(ReadyNoiseConnectProvider {
-                websocket_url: format!("{rendezvous_url}/relay?role=harness"),
-                executor_public_key,
-            }),
+            provider.clone(),
         )?
         .context("Ready-first report should create the environment")?;
 
@@ -1914,6 +2053,7 @@ async fn ready_before_selection_resolves_resumed_thread_capability_root_after_wa
 
     let requests = response_mock.requests();
     assert_eq!(requests.len(), 2);
+    assert_eq!(provider.calls.load(Ordering::Relaxed), 2);
     // Provisioning was reported ready before selection, but selection materialization remains
     // nonblocking while the transport starts.
     // The first request may legally see either Starting or Ready; the wait makes step two ready.
@@ -2149,12 +2289,19 @@ async fn deferred_executor_spawn_agent_inherits_ready_step_environments(
         workspace_roots: vec![PathUri::from_abs_path(&test.config.cwd)],
         config: EnvironmentConfigState::Ready(EnvironmentConfig {
             allow_login_shell: test.config.permissions.allow_login_shell,
+            workspace_roots: vec![PathUri::from_abs_path(&test.config.cwd)],
             permission_profile: PermissionProfileSnapshot::active_with_profile_workspace_roots(
                 PermissionProfile::read_only(),
                 owner_active_profile.clone(),
                 vec![owner_profile_workspace_root.clone()],
             ),
             shell_environment_policy: Default::default(),
+            windows_sandbox_level: WindowsSandboxLevel::from_config(&test.config),
+            windows_sandbox_private_desktop: test
+                .config
+                .permissions
+                .windows_sandbox_private_desktop,
+            use_legacy_landlock: test.config.features.use_legacy_landlock(),
             exec_policy: None,
             mcp_policy: None,
             network_policy: None,

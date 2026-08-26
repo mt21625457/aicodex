@@ -58,7 +58,9 @@ mod compact;
 mod compact_remote;
 mod compact_remote_parity;
 mod compact_resume_fork;
+mod context_annotations;
 mod current_time_reminder;
+mod cyber_access_program;
 mod cyber_exec_policy;
 mod deprecation_notice;
 mod exec;
@@ -68,14 +70,23 @@ mod extension_sandbox;
 mod external_auth;
 mod fork_thread;
 mod git_enrichment;
+mod guardian_mcp_elicitation;
 #[cfg(not(target_os = "windows"))]
 mod guardian_review;
 #[cfg(not(target_os = "windows"))]
+mod guardian_review_cancellation;
+#[cfg(not(target_os = "windows"))]
+mod guardian_subagent_authorization;
+#[cfg(not(target_os = "windows"))]
 mod hooks;
+#[cfg(not(target_os = "windows"))]
+mod hooks_executor;
 #[cfg(not(target_os = "windows"))]
 mod hooks_mcp;
 mod image_rollout;
 mod injected_models_cache;
+#[cfg(not(target_os = "windows"))]
+mod interrupt_hooks;
 mod items;
 mod json_result;
 mod live_cli;
@@ -135,12 +146,16 @@ mod safety_buffering;
 mod safety_check_downgrade;
 mod search_tool;
 mod send_user_message_async;
+mod settings_commits;
+mod settings_constraints;
 mod shell_snapshot;
 mod skill_approval;
 mod skills;
 mod skills_extension;
 mod spawn_agent_description;
 mod sqlite_state;
+mod step_settings;
+mod step_settings_snapshots;
 mod stream_error_allows_next_turn;
 mod stream_no_completed;
 mod subagent_notifications;

@@ -69,7 +69,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
         .is_enabled()
         .then(|| history.raw_items().cloned().collect());
     let (mut input, prompt_input_metadata): (Vec<_>, Vec<_>) = history
-        .for_prompt_annotated(&turn_context.model_info.input_modalities)
+        .for_prompt_annotated(&turn_context.model_info().input_modalities)
         .into_iter()
         .map(|envelope| (envelope.item, envelope.metadata))
         .unzip();
@@ -82,16 +82,17 @@ pub(super) async fn run_remote_compact_v2_attempt(
         base_instructions,
         output_schema: None,
         output_schema_strict: true,
+        cyber_access_program: turn_context.cyber_access_program,
     };
 
-    let window_id = sess.current_window_id().await;
-    let responses_metadata = turn_context.turn_metadata_state.to_responses_metadata(
-        sess.installation_id.clone(),
-        window_id,
-        CodexResponsesRequestKind::Compaction(compaction_metadata),
-    );
+    let responses_metadata = sess
+        .responses_metadata(
+            turn_context.as_ref(),
+            CodexResponsesRequestKind::Compaction(compaction_metadata),
+        )
+        .await;
     let trace_attempt = compaction_trace.start_attempt(&serde_json::json!({
-        "model": turn_context.model_info.slug.as_str(),
+        "model": turn_context.model_info().slug.as_str(),
         "instructions": prompt.base_instructions.text.as_str(),
         "input": &prompt.input,
         "parallel_tool_calls": prompt.parallel_tool_calls,

@@ -95,6 +95,7 @@ async fn replayed_failed_turns_preserve_overload_warnings_between_retries() {
             /*duration_ms*/ None,
             /*error*/
             Some(AppServerTurnError {
+                misalignment: None,
                 message: error_message.to_string(),
                 codex_error_info: Some(CodexErrorInfo::ServerOverloaded),
                 additional_details: None,
@@ -1024,6 +1025,7 @@ async fn replayed_retryable_app_server_error_keeps_turn_running() {
     chat.handle_server_notification(
         ServerNotification::Error(ErrorNotification {
             error: AppServerTurnError {
+                misalignment: None,
                 message: "Reconnecting... 1/5".to_string(),
                 codex_error_info: None,
                 additional_details: Some("Idle timeout waiting for SSE".to_string()),
@@ -1185,6 +1187,70 @@ async fn replayed_in_progress_mcp_tool_call_stays_active() {
     let active = active_blob(&chat);
     assert!(active.contains("Calling"));
     assert!(!active.contains("MCP tool call completed without a result"));
+}
+
+#[tokio::test]
+async fn failed_repl_mcp_tool_call_preserves_status_and_result() {
+    for server in ["node_repl", "cua_repl"] {
+        let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+        let _ = drain_insert_history(&mut rx);
+
+        chat.handle_server_notification(
+            ServerNotification::ItemCompleted(ItemCompletedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                completed_at_ms: 0,
+                item: AppServerThreadItem::McpToolCall {
+                    id: "mcp-failed".to_string(),
+                    server: server.to_string(),
+                    tool: "js".to_string(),
+                    status: codex_app_server_protocol::McpToolCallStatus::Failed,
+                    arguments: json!({"title": "Inspect workspace"}),
+                    app_context: None,
+                    mcp_app_resource_uri: None,
+                    plugin_id: None,
+                    read_only_hint: None,
+                    result: Some(Box::new(codex_app_server_protocol::McpToolCallResult {
+                        content: vec![
+                            json!({"type": "text", "text": "Script failed"}),
+                            json!({"type": "text", "text": r#"{"exit_code":0,"output":"ready","chunk_id":"chunk-1"}"#}),
+                            json!({"type": "text", "text": "Script error:\npermission denied"}),
+                        ],
+                        structured_content: None,
+                        meta: None,
+                    })),
+                    error: None,
+                    duration_ms: Some(5),
+                },
+            }),
+            /*replay_kind*/ None,
+        );
+
+        let cells = drain_insert_history(&mut rx);
+        let [lines] = cells.as_slice() else {
+            panic!("expected one completed MCP tool call for {server}");
+        };
+        insta::allow_duplicates! {
+            insta::assert_snapshot!(lines_to_single_string(lines), @r#"
+            • Called Inspect workspace
+              └ Script failed
+                {"exit_code": 0, "output": "ready", "chunk_id": "chunk-1"}
+                Script error:
+                permission denied
+            "#);
+        }
+        assert_eq!(
+            lines.first(),
+            Some(&Line::from(vec![
+                "•".red().bold(),
+                " ".into(),
+                "Called".bold(),
+                " ".into(),
+                "Inspect workspace".cyan(),
+            ])),
+            "{server}",
+        );
+    }
 }
 
 #[tokio::test]
