@@ -9,6 +9,7 @@ use codex_app_server_protocol::SelectedCapabilityRoot;
 use codex_app_server_protocol::ThreadRevertParams;
 use codex_app_server_protocol::ThreadRevertResponse;
 use codex_app_server_protocol::ThreadRevertedNotification;
+use codex_app_server_protocol::ThreadRuntimeLifecycle;
 use codex_app_server_protocol::ThreadSection;
 use codex_app_server_protocol::ThreadSectionAppearance;
 use codex_app_server_protocol::ThreadSectionMoveParams;
@@ -88,6 +89,7 @@ struct ThreadListFilters {
 
 struct ThreadReadView {
     thread: Thread,
+    runtime_lifecycle: ThreadRuntimeLifecycle,
     token_usage_info: Option<TokenUsageInfo>,
     token_usage_turn_id: Option<String>,
 }
@@ -2765,6 +2767,7 @@ impl ThreadRequestProcessor {
         Ok((
             ThreadReadResponse {
                 thread: view.thread,
+                runtime_lifecycle: Some(view.runtime_lifecycle),
             },
             replay,
         ))
@@ -2876,8 +2879,25 @@ impl ThreadRequestProcessor {
                 latest_token_usage_turn_id_from_rollout_items(items, thread.turns.as_slice())
             })
         });
+        let runtime_lifecycle = {
+            let thread_state = self
+                .thread_state_manager
+                .thread_state_if_present(thread_id)
+                .await;
+            if let Some(thread_state) = thread_state {
+                let state = thread_state.lock().await;
+                state.runtime_lifecycle_snapshot()
+            } else {
+                ThreadRuntimeLifecycle {
+                    active_turn_id: None,
+                    active_turn_started_at: None,
+                    last_terminal_turn_id: None,
+                }
+            }
+        };
         Ok(ThreadReadView {
             thread,
+            runtime_lifecycle,
             token_usage_info,
             token_usage_turn_id,
         })

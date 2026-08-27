@@ -4086,7 +4086,9 @@ async fn direct_input_to_multi_agent_v2_subagent_starts_follow_up_turn() -> Resu
     ));
     assert_eq!(listed_child.can_accept_direct_input, Some(true));
 
-    let ThreadReadResponse { thread: read_child } = mcp
+    let ThreadReadResponse {
+        thread: read_child, ..
+    } = mcp
         .request(|request_id| ClientRequest::ThreadRead {
             request_id,
             params: ThreadReadParams {

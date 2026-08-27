@@ -770,7 +770,7 @@ async fn thread_search_returns_content_matches() -> Result<()> {
                 items_view: None,
             })
             .await?;
-        let ThreadReadResponse { thread } =
+        let ThreadReadResponse { thread, .. } =
             timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
         pinned_threads.push(thread);
     }

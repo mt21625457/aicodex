@@ -139,8 +139,10 @@ async fn thread_read_returns_summary_without_turns() -> Result<()> {
             items_view: None,
         })
         .await?;
-    let ThreadReadResponse { thread, .. } =
-        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(read_id)).await??;
+    let ThreadReadResponse {
+        thread,
+        runtime_lifecycle,
+    } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(read_id)).await??;
 
     assert_eq!(thread.id, conversation_id);
     assert_eq!(thread.preview, preview);
@@ -153,6 +155,10 @@ async fn thread_read_returns_summary_without_turns() -> Result<()> {
     assert_eq!(thread.git_info, None);
     assert_eq!(thread.turns.len(), 0);
     assert_eq!(thread.status, ThreadStatus::NotLoaded);
+    let runtime_lifecycle = runtime_lifecycle.expect("thread/read runtime lifecycle");
+    assert_eq!(runtime_lifecycle.active_turn_id, None);
+    assert_eq!(runtime_lifecycle.active_turn_started_at, None);
+    assert_eq!(runtime_lifecycle.last_terminal_turn_id, None);
 
     Ok(())
 }
@@ -306,7 +312,7 @@ async fn paginated_stored_thread_routes_projected_turns() -> Result<()> {
             items_view: None,
         })
         .await?;
-    let ThreadReadResponse { thread } =
+    let ThreadReadResponse { thread, .. } =
         timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(read_id)).await??;
     assert_eq!(thread.history_mode, ThreadHistoryMode::Paginated);
     assert!(thread.turns.is_empty());
@@ -344,7 +350,7 @@ async fn paginated_stored_thread_routes_projected_turns() -> Result<()> {
             items_view: None,
         })
         .await?;
-    let ThreadReadResponse { thread } =
+    let ThreadReadResponse { thread, .. } =
         timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(read_id)).await??;
     assert_eq!(thread.history_mode, ThreadHistoryMode::Paginated);
     assert!(thread.turns.is_empty());
@@ -1082,7 +1088,7 @@ async fn thread_read_can_return_archived_threads_by_id() -> Result<()> {
             items_view: None,
         })
         .await?;
-    let ThreadReadResponse { thread } =
+    let ThreadReadResponse { thread, .. } =
         timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(read_id)).await??;
 
     assert_eq!(thread.id, conversation_id);
@@ -1525,7 +1531,7 @@ async fn thread_read_and_list_surface_recorded_model_metadata() -> Result<()> {
         mcp.read_stream_until_response_message(RequestId::Integer(turn_start_id)),
     )
     .await??;
-    let _: TurnStartResponse = to_response::<TurnStartResponse>(turn_start_response)?;
+    let turn_start = to_response::<TurnStartResponse>(turn_start_response)?;
     timeout(
         DEFAULT_READ_TIMEOUT,
         mcp.read_stream_until_notification_message("turn/completed"),
@@ -1545,11 +1551,20 @@ async fn thread_read_and_list_surface_recorded_model_metadata() -> Result<()> {
     )
     .await??;
     let read_result = read_resp.result.clone();
-    let ThreadReadResponse { thread: read, .. } = to_response::<ThreadReadResponse>(read_resp)?;
+    let ThreadReadResponse {
+        thread: read,
+        runtime_lifecycle,
+    } = to_response::<ThreadReadResponse>(read_resp)?;
     assert_eq!(read.model_provider, "mock_provider");
     assert_eq!(read.model_id.as_deref(), Some("gpt-5.2"));
     assert_eq!(read.wire_api.as_deref(), Some("responses"));
     assert_eq!(read.effort, Some(ReasoningEffort::High));
+    let runtime_lifecycle = runtime_lifecycle.expect("thread/read runtime lifecycle");
+    assert_eq!(runtime_lifecycle.active_turn_id, None);
+    assert_eq!(
+        runtime_lifecycle.last_terminal_turn_id.as_deref(),
+        Some(turn_start.turn.id.as_str())
+    );
     let read_thread_json = read_result
         .get("thread")
         .and_then(Value::as_object)
@@ -1901,6 +1916,7 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
         .await?;
     let ThreadReadResponse {
         thread: unloaded_thread,
+        ..
     } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(read_id)).await??;
     assert_eq!(unloaded_thread.turns, expected_full_turns);
 
@@ -2168,6 +2184,7 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
         .await?;
     let ThreadReadResponse {
         thread: loaded_thread,
+        ..
     } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(read_id)).await??;
     assert_eq!(&loaded_thread.turns[..2], expected_full_turns);
     assert_eq!(

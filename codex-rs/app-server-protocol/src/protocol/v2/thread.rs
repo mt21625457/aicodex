@@ -1689,8 +1689,26 @@ pub struct ThreadReadParams {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
+pub struct ThreadRuntimeLifecycle {
+    /// Identifier of the currently active turn, when app-server has one.
+    pub active_turn_id: Option<String>,
+    /// Unix timestamp (in seconds) when the active turn started, if known.
+    #[ts(type = "number | null")]
+    pub active_turn_started_at: Option<i64>,
+    /// Identifier of the latest terminal turn observed by the live thread listener.
+    pub last_terminal_turn_id: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
 pub struct ThreadReadResponse {
     pub thread: Thread,
+    /// Lightweight, content-free runtime evidence for lifecycle reconciliation.
+    /// Older app-server builds omit this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub runtime_lifecycle: Option<ThreadRuntimeLifecycle>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

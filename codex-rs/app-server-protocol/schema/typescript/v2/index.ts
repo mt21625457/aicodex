@@ -495,6 +495,7 @@ export type { ThreadResumeResponse } from "./ThreadResumeResponse";
 export type { ThreadRevertedNotification } from "./ThreadRevertedNotification";
 export type { ThreadRollbackParams } from "./ThreadRollbackParams";
 export type { ThreadRollbackResponse } from "./ThreadRollbackResponse";
+export type { ThreadRuntimeLifecycle } from "./ThreadRuntimeLifecycle";
 export type { ThreadSearchResult } from "./ThreadSearchResult";
 export type { ThreadSearchSortKey } from "./ThreadSearchSortKey";
 export type { ThreadSection } from "./ThreadSection";

@@ -4,6 +4,7 @@ use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadGoal;
 use codex_app_server_protocol::ThreadHistoryBuilder;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadRuntimeLifecycle;
 use codex_app_server_protocol::ThreadSettings;
 use codex_app_server_protocol::TranscriptMetadata;
 use codex_app_server_protocol::Turn;
@@ -162,6 +163,15 @@ impl ThreadState {
 
     pub(crate) fn active_turn_snapshot(&self) -> Option<Turn> {
         self.current_turn_history.active_turn_snapshot()
+    }
+
+    pub(crate) fn runtime_lifecycle_snapshot(&self) -> ThreadRuntimeLifecycle {
+        let active_turn = self.active_turn_snapshot();
+        ThreadRuntimeLifecycle {
+            active_turn_id: active_turn.as_ref().map(|turn| turn.id.clone()),
+            active_turn_started_at: active_turn.and_then(|turn| turn.started_at),
+            last_terminal_turn_id: self.last_terminal_turn_id.clone(),
+        }
     }
 
     pub(crate) fn attach_transcript_metadata(&self, turn_id: &str, item: &mut ThreadItem) {
@@ -336,6 +346,29 @@ mod tests {
         assert_eq!(results, vec![true, false, true, false]);
     }
 
+    #[tokio::test]
+    async fn read_only_thread_state_lookup_does_not_create_an_entry() {
+        let manager = ThreadStateManager::new();
+        let missing_thread_id = ThreadId::new();
+
+        assert!(
+            manager
+                .thread_state_if_present(missing_thread_id)
+                .await
+                .is_none()
+        );
+        assert!(manager.state.lock().await.threads.is_empty());
+
+        let existing_thread_id = ThreadId::new();
+        let existing = manager.thread_state(existing_thread_id).await;
+        let resolved = manager
+            .thread_state_if_present(existing_thread_id)
+            .await
+            .expect("existing thread state");
+        assert!(Arc::ptr_eq(&existing, &resolved));
+        assert_eq!(manager.state.lock().await.threads.len(), 1);
+    }
+
     #[test]
     fn transcript_metadata_survives_turn_reset_for_late_command_completion() {
         let mut state = ThreadState::default();
@@ -350,6 +383,14 @@ mod tests {
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
             }),
+        );
+        assert_eq!(
+            state.runtime_lifecycle_snapshot(),
+            ThreadRuntimeLifecycle {
+                active_turn_id: Some("turn-1".to_string()),
+                active_turn_started_at: Some(42),
+                last_terminal_turn_id: None,
+            }
         );
         state.track_current_turn_event(
             "turn-1",
@@ -386,6 +427,14 @@ mod tests {
         );
 
         assert!(state.active_turn_snapshot().is_none());
+        assert_eq!(
+            state.runtime_lifecycle_snapshot(),
+            ThreadRuntimeLifecycle {
+                active_turn_id: None,
+                active_turn_started_at: None,
+                last_terminal_turn_id: Some("turn-1".to_string()),
+            }
+        );
 
         let mut item = ThreadItem::CommandExecution {
             id: "cmd-1".to_string(),
@@ -583,6 +632,17 @@ impl ThreadStateManager {
     pub(crate) async fn thread_state(&self, thread_id: ThreadId) -> Arc<Mutex<ThreadState>> {
         let mut state = self.state.lock().await;
         state.threads.entry(thread_id).or_default().state.clone()
+    }
+
+    pub(crate) async fn thread_state_if_present(
+        &self,
+        thread_id: ThreadId,
+    ) -> Option<Arc<Mutex<ThreadState>>> {
+        let state = self.state.lock().await;
+        state
+            .threads
+            .get(&thread_id)
+            .map(|thread_entry| thread_entry.state.clone())
     }
 
     pub(crate) fn current_listener_command_tx(

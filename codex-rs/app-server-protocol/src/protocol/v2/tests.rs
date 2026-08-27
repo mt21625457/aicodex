@@ -431,43 +431,44 @@ fn thread_resume_params_accept_turns_page_bootstrap() {
 
 #[test]
 fn thread_resume_response_round_trips_initial_turns_page() {
+    let thread = Thread {
+        id: "thr_123".to_string(),
+        extra: None,
+        session_id: "thr_123".to_string(),
+        forked_from_id: None,
+        parent_thread_id: None,
+        preview: String::new(),
+        ephemeral: false,
+        section: Some(ThreadSection {
+            id: "01984de2-8f74-7c91-a3b2-5c5e937cf318".to_string(),
+            name: "Pinned".to_string(),
+            appearance: None,
+        }),
+        section_entered_at: Some(1),
+        project_id: None,
+        history_mode: Default::default(),
+        model_provider: "openai".to_string(),
+        model_id: None,
+        wire_api: None,
+        effort: None,
+        created_at: 1,
+        updated_at: 1,
+        recency_at: Some(1),
+        status: ThreadStatus::Idle,
+        path: None,
+        cwd: absolute_path("tmp"),
+        cli_version: "0.0.0".to_string(),
+        source: SessionSource::Exec,
+        can_accept_direct_input: None,
+        thread_source: None,
+        agent_nickname: None,
+        agent_role: None,
+        git_info: None,
+        name: None,
+        turns: Vec::new(),
+    };
     let response = ThreadResumeResponse {
-        thread: Thread {
-            id: "thr_123".to_string(),
-            extra: None,
-            session_id: "thr_123".to_string(),
-            forked_from_id: None,
-            parent_thread_id: None,
-            preview: String::new(),
-            ephemeral: false,
-            section: Some(ThreadSection {
-                id: "01984de2-8f74-7c91-a3b2-5c5e937cf318".to_string(),
-                name: "Pinned".to_string(),
-                appearance: None,
-            }),
-            section_entered_at: Some(1),
-            project_id: None,
-            history_mode: Default::default(),
-            model_provider: "openai".to_string(),
-            model_id: None,
-            wire_api: None,
-            effort: None,
-            created_at: 1,
-            updated_at: 1,
-            recency_at: Some(1),
-            status: ThreadStatus::Idle,
-            path: None,
-            cwd: absolute_path("tmp"),
-            cli_version: "0.0.0".to_string(),
-            source: SessionSource::Exec,
-            can_accept_direct_input: None,
-            thread_source: None,
-            agent_nickname: None,
-            agent_role: None,
-            git_info: None,
-            name: None,
-            turns: Vec::new(),
-        },
+        thread: thread.clone(),
         model: "gpt-5".to_string(),
         model_provider: "openai".to_string(),
         service_tier: None,
@@ -532,6 +533,54 @@ fn thread_resume_response_round_trips_initial_turns_page() {
     let decoded = serde_json::from_value::<ThreadResumeResponse>(value)
         .expect("deserialize thread resume response");
     assert_eq!(decoded, response);
+
+    let read_response = ThreadReadResponse {
+        thread: thread.clone(),
+        runtime_lifecycle: Some(ThreadRuntimeLifecycle {
+            active_turn_id: Some("turn_active".to_string()),
+            active_turn_started_at: Some(42),
+            last_terminal_turn_id: Some("turn_terminal".to_string()),
+        }),
+    };
+    let value = serde_json::to_value(&read_response).expect("serialize thread read response");
+    assert_eq!(
+        value["runtimeLifecycle"],
+        json!({
+            "activeTurnId": "turn_active",
+            "activeTurnStartedAt": 42,
+            "lastTerminalTurnId": "turn_terminal",
+        })
+    );
+    let decoded = serde_json::from_value::<ThreadReadResponse>(value.clone())
+        .expect("deserialize thread read response");
+    assert_eq!(decoded, read_response);
+
+    let null_lifecycle = ThreadReadResponse {
+        thread: thread.clone(),
+        runtime_lifecycle: Some(ThreadRuntimeLifecycle {
+            active_turn_id: None,
+            active_turn_started_at: None,
+            last_terminal_turn_id: None,
+        }),
+    };
+    assert_eq!(
+        serde_json::to_value(null_lifecycle).expect("serialize null lifecycle")["runtimeLifecycle"],
+        json!({
+            "activeTurnId": null,
+            "activeTurnStartedAt": null,
+            "lastTerminalTurnId": null,
+        })
+    );
+
+    let mut legacy_value = value;
+    legacy_value
+        .as_object_mut()
+        .expect("thread read response should be an object")
+        .remove("runtimeLifecycle");
+    let legacy = serde_json::from_value::<ThreadReadResponse>(legacy_value)
+        .expect("deserialize legacy thread read response");
+    assert_eq!(legacy.thread, thread);
+    assert_eq!(legacy.runtime_lifecycle, None);
 }
 
 #[test]

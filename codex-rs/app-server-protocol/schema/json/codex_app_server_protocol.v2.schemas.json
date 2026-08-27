@@ -18940,6 +18940,17 @@
     "ThreadReadResponse": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
+        "runtimeLifecycle": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadRuntimeLifecycle"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Lightweight, content-free runtime evidence for lifecycle reconciliation. Older app-server builds omit this field."
+        },
         "thread": {
           "$ref": "#/definitions/Thread"
         }
@@ -19462,6 +19473,33 @@
         "thread"
       ],
       "title": "ThreadRollbackResponse",
+      "type": "object"
+    },
+    "ThreadRuntimeLifecycle": {
+      "properties": {
+        "activeTurnId": {
+          "description": "Identifier of the currently active turn, when app-server has one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "activeTurnStartedAt": {
+          "description": "Unix timestamp (in seconds) when the active turn started, if known.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "lastTerminalTurnId": {
+          "description": "Identifier of the latest terminal turn observed by the live thread listener.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
       "type": "object"
     },
     "ThreadSearchResult": {

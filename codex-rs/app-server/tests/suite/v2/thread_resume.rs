@@ -1115,7 +1115,7 @@ async fn thread_resume_preserves_acknowledged_model_effort_and_approvals_reviewe
                 items_view: None,
             })
             .await?;
-        let ThreadReadResponse { thread: read } =
+        let ThreadReadResponse { thread: read, .. } =
             timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(read_id)).await??;
         assert_eq!(read.cwd.as_path(), persisted_cwd);
 
