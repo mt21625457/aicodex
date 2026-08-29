@@ -30,6 +30,7 @@ use codex_protocol::config_types::ServiceTier;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::models::WebSearchAction;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelServiceTier;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
@@ -301,6 +302,63 @@ async fn responses_websocket_omits_unprefixed_item_ids_without_mutating_prompt()
         serde_json::to_value(&prompt.input).expect("prompt input should serialize")[1]["id"]
             .as_str(),
         Some("018f9e15-7a6a-7000-8000-000000000001")
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_websocket_omits_type_invalid_web_search_ids_without_mutating_prompt() {
+    skip_if_no_network!();
+
+    let server = start_websocket_server(vec![vec![vec![
+        ev_response_created("resp-1"),
+        ev_completed("resp-1"),
+    ]]])
+    .await;
+
+    let harness = websocket_harness_with_provider_options(
+        websocket_provider(&server),
+        /*runtime_metrics_enabled*/ false,
+        /*concurrent_reasoning_summaries_enabled*/ false,
+        /*enabled_features*/ &[],
+    )
+    .await;
+    let mut client_session = harness.client.new_session();
+    let official = ResponseItem::WebSearchCall {
+        id: Some(ResponseItemId::with_suffix("ws", "web-search-id")),
+        status: Some("completed".into()),
+        action: Some(WebSearchAction::Search {
+            query: Some("weather".into()),
+            queries: None,
+        }),
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let function_call_id = ResponseItem::WebSearchCall {
+        id: Some(ResponseItemId::from_server(
+            "call_00_k2IyKvN5kbXuxLHMiIl45992".into(),
+        )),
+        status: Some("completed".into()),
+        action: Some(WebSearchAction::Search {
+            query: Some("docs".into()),
+            queries: None,
+        }),
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let prompt = prompt_with_input(vec![official, function_call_id]);
+
+    stream_until_complete(&mut client_session, &harness, &prompt).await;
+
+    let connection = server.single_connection();
+    let body = connection.first().expect("missing request").body_json();
+    assert_eq!(body["input"].as_array().map(Vec::len), Some(2));
+    assert_eq!(body["input"][0]["id"].as_str(), Some("ws_web-search-id"));
+    assert_eq!(body["input"][1]["type"].as_str(), Some("web_search_call"));
+    assert_eq!(body["input"][1].get("id"), None);
+    assert_eq!(
+        serde_json::to_value(&prompt.input).expect("prompt input should serialize")[1]["id"]
+            .as_str(),
+        Some("call_00_k2IyKvN5kbXuxLHMiIl45992")
     );
 
     server.shutdown().await;

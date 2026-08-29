@@ -1032,7 +1032,14 @@ impl ModelClient {
 
     fn prepare_response_items_for_request(&self, input: &mut [ResponseItem]) {
         for item in input {
-            if item.id().is_some_and(|id| !id.is_prefixed()) {
+            let Some(id) = item.id() else {
+                continue;
+            };
+            let keep = match item.id_prefix() {
+                Some(prefix) => id.has_prefix(prefix),
+                None => id.is_prefixed(),
+            };
+            if !keep {
                 item.set_id(/*new_id*/ None);
             }
         }

@@ -51,3 +51,22 @@ fn recognizes_non_empty_prefix_and_suffix() {
         assert_eq!(id.is_prefixed(), expected, "{value}");
     }
 }
+
+#[test]
+fn recognizes_type_specific_prefixes() {
+    for (value, prefix, expected) in [
+        ("ws_abc", "ws", true),
+        ("ws", "ws", true),
+        ("call_00_k2IyKvN5kbXuxLHMiIl45992", "ws", false),
+        ("call_00_k2IyKvN5kbXuxLHMiIl45992", "call", true),
+        ("fc_function", "fc", true),
+        ("ws-abc", "ws", true),
+        ("wsomething", "ws", false),
+        ("", "ws", false),
+        ("call_00_k2IyKvN5kbXuxLHMiIl45992", "", false),
+    ] {
+        let id: ResponseItemId =
+            serde_json::from_value(value.into()).expect("ID should deserialize");
+        assert_eq!(id.has_prefix(prefix), expected, "{value} / {prefix}");
+    }
+}

@@ -37,6 +37,26 @@ impl ResponseItemId {
         self.split_once('_')
             .is_some_and(|(prefix, suffix)| !prefix.is_empty() && !suffix.is_empty())
     }
+
+    /// Returns whether this ID uses `prefix` as its Responses type prefix.
+    ///
+    /// Official IDs are `{prefix}_{suffix}`. A function `call_id` such as
+    /// `call_00_...` is prefixed in the generic sense, but is not valid for
+    /// types that require a different prefix (for example `web_search_call`
+    /// must begin with `ws`).
+    pub fn has_prefix(&self, prefix: &str) -> bool {
+        let prefix = prefix.trim();
+        if prefix.is_empty() {
+            return false;
+        }
+        let value = self.as_str();
+        if value == prefix {
+            return true;
+        }
+        value
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with('_') || rest.starts_with('-'))
+    }
 }
 
 impl Deref for ResponseItemId {

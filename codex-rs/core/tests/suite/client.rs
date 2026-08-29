@@ -3315,6 +3315,139 @@ async fn azure_responses_request_does_not_store_and_preserves_prefixed_item_ids(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_http_omits_type_invalid_web_search_ids_without_mutating_prompt() {
+    skip_if_no_network!();
+
+    let server = MockServer::start().await;
+
+    let sse_body = concat!(
+        "data: {\"type\":\"response.created\",\"response\":{}}\n\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\"}}\n\n",
+    );
+    let resp_mock = mount_sse_once(&server, sse_body.to_string()).await;
+
+    let provider = ModelProviderInfo {
+        name: "openai".into(),
+        base_url: Some(format!("{}/v1", server.uri())),
+        env_key: None,
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        auth: None,
+        aws: None,
+        wire_api: WireApi::Responses,
+        supports_developer_role: None,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: Some(0),
+        stream_max_retries: Some(0),
+        stream_idle_timeout_ms: Some(5_000),
+        websocket_connect_timeout_ms: None,
+        requires_openai_auth: false,
+        supports_websockets: false,
+        supports_standalone_web_search: false,
+    };
+
+    let codex_home = TempDir::new().unwrap();
+    let mut config = load_default_config_for_test(&codex_home).await;
+    config.model_provider_id = provider.name.clone();
+    config.model_provider = provider.clone();
+    let effort = config.model_reasoning_effort.clone();
+    let summary = config.model_reasoning_summary;
+    let model = codex_core::test_support::get_model_offline(config.model.as_deref());
+    config.model = Some(model.clone());
+    let config = Arc::new(config);
+    let model_info =
+        codex_core::test_support::construct_model_info_offline(model.as_str(), &config);
+    let thread_id = ThreadId::new();
+    let auth_manager =
+        codex_core::test_support::auth_manager_from_auth(CodexAuth::from_api_key("Test API Key"));
+    let session_telemetry = SessionTelemetry::new(
+        thread_id,
+        model.as_str(),
+        model_info.slug.as_str(),
+        /*account_id*/ None,
+        Some("test@test.com".to_string()),
+        auth_manager.auth_mode().map(TelemetryAuthMode::from),
+        "test_originator".to_string(),
+        /*log_user_prompts*/ false,
+        "test".to_string(),
+        SessionSource::Exec,
+    );
+
+    let client = ModelClient::new(
+        /*auth_manager*/ None,
+        AgentIdentityAuthPolicy::JwtOnly,
+        thread_id,
+        provider.clone(),
+        SessionSource::Exec,
+        "test_originator".to_string(),
+        config.model_verbosity,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*concurrent_reasoning_summaries_enabled*/ false,
+        /*attestation_provider*/ None,
+        config.http_client_factory(),
+    );
+    let responses_metadata = test_turn_responses_metadata(&client, thread_id);
+    let mut client_session = client.new_session();
+
+    let mut prompt = Prompt::default();
+    prompt.input.push(ResponseItem::WebSearchCall {
+        id: Some(ResponseItemId::with_suffix("ws", "web-search-id")),
+        status: Some("completed".into()),
+        action: Some(WebSearchAction::Search {
+            query: Some("weather".into()),
+            queries: None,
+        }),
+        internal_chat_message_metadata_passthrough: None,
+    });
+    prompt.input.push(ResponseItem::WebSearchCall {
+        id: Some(ResponseItemId::from_server(
+            "call_00_k2IyKvN5kbXuxLHMiIl45992".into(),
+        )),
+        status: Some("completed".into()),
+        action: Some(WebSearchAction::Search {
+            query: Some("docs".into()),
+            queries: None,
+        }),
+        internal_chat_message_metadata_passthrough: None,
+    });
+
+    let mut stream = client_session
+        .stream(
+            &prompt,
+            &model_info,
+            &session_telemetry,
+            effort,
+            summary.unwrap_or(ReasoningSummary::Auto),
+            /*service_tier*/ None,
+            &responses_metadata,
+            &codex_rollout_trace::InferenceTraceContext::disabled(),
+        )
+        .await
+        .expect("responses stream to start");
+
+    while let Some(event) = stream.next().await {
+        if let Ok(ResponseEvent::Completed { .. }) = event {
+            break;
+        }
+    }
+
+    let body = resp_mock.single_request().body_json();
+    assert_eq!(body["input"].as_array().map(Vec::len), Some(2));
+    assert_eq!(body["input"][0]["id"].as_str(), Some("ws_web-search-id"));
+    assert_eq!(body["input"][1]["type"].as_str(), Some("web_search_call"));
+    assert_eq!(body["input"][1].get("id"), None);
+    assert_eq!(
+        serde_json::to_value(&prompt.input).expect("prompt input should serialize")[1]["id"]
+            .as_str(),
+        Some("call_00_k2IyKvN5kbXuxLHMiIl45992")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn token_count_includes_rate_limits_snapshot_and_responses_context_estimate() {
     skip_if_no_network!();
     let server = MockServer::start().await;
