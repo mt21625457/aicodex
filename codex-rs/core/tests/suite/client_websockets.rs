@@ -255,7 +255,7 @@ async fn responses_websocket_omits_routing_hint_for_provider_with_own_credential
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn responses_websocket_omits_unprefixed_item_ids_without_mutating_prompt() {
+async fn responses_websocket_store_false_omits_all_item_ids_without_mutating_prompt() {
     skip_if_no_network!();
 
     let server = start_websocket_server(vec![vec![vec![
@@ -294,10 +294,16 @@ async fn responses_websocket_omits_unprefixed_item_ids_without_mutating_prompt()
 
     let connection = server.single_connection();
     let body = connection.first().expect("missing request").body_json();
+    assert_eq!(body["store"], serde_json::Value::Bool(false));
     assert_eq!(body["input"].as_array().map(Vec::len), Some(3));
-    assert_eq!(body["input"][0]["id"].as_str(), Some("msg_existing"));
+    assert_eq!(body["input"][0].get("id"), None);
     assert_eq!(body["input"][1].get("id"), None);
     assert_eq!(body["input"][2].get("id"), None);
+    assert_eq!(
+        serde_json::to_value(&prompt.input).expect("prompt input should serialize")[0]["id"]
+            .as_str(),
+        Some("msg_existing")
+    );
     assert_eq!(
         serde_json::to_value(&prompt.input).expect("prompt input should serialize")[1]["id"]
             .as_str(),
@@ -317,8 +323,12 @@ async fn responses_websocket_omits_type_invalid_web_search_ids_without_mutating_
     ]]])
     .await;
 
+    let mut provider = websocket_provider(&server);
+    // Azure Responses uses `store: true`, so this exercises type-specific
+    // ID validation rather than the `store: false` rule that removes all IDs.
+    provider.name = "azure".into();
     let harness = websocket_harness_with_provider_options(
-        websocket_provider(&server),
+        provider,
         /*runtime_metrics_enabled*/ false,
         /*concurrent_reasoning_summaries_enabled*/ false,
         /*enabled_features*/ &[],
@@ -351,6 +361,7 @@ async fn responses_websocket_omits_type_invalid_web_search_ids_without_mutating_
 
     let connection = server.single_connection();
     let body = connection.first().expect("missing request").body_json();
+    assert_eq!(body["store"], serde_json::Value::Bool(true));
     assert_eq!(body["input"].as_array().map(Vec::len), Some(2));
     assert_eq!(body["input"][0]["id"].as_str(), Some("ws_web-search-id"));
     assert_eq!(body["input"][1]["type"].as_str(), Some("web_search_call"));

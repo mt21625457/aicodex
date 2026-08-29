@@ -9,6 +9,7 @@ use super::X_CODEX_PARENT_THREAD_ID_HEADER;
 use super::X_CODEX_TURN_METADATA_HEADER;
 use super::X_CODEX_WINDOW_ID_HEADER;
 use super::X_OPENAI_SUBAGENT_HEADER;
+use super::prepare_response_items_for_request;
 use crate::AttestationContext;
 use crate::AttestationProvider;
 use crate::GenerateAttestationFuture;
@@ -478,6 +479,70 @@ fn started_inference_attempt(temp: &TempDir) -> anyhow::Result<InferenceTraceAtt
         }],
     }));
     Ok(attempt)
+}
+
+fn reasoning_item(id: &str) -> ResponseItem {
+    ResponseItem::Reasoning {
+        id: Some(ResponseItemId::from_server(id.to_string())),
+        summary: Vec::new(),
+        content: None,
+        encrypted_content: Some("encrypted-reasoning".to_string()),
+        internal_chat_message_metadata_passthrough: None,
+    }
+}
+
+#[test]
+fn store_false_strips_all_item_ids_before_responses_request() {
+    let local_id = ResponseItemId::new("rs");
+    let mut input = vec![
+        reasoning_item(local_id.as_str()),
+        reasoning_item("rs_server"),
+        output_message("assistant", "hello"),
+        ResponseItem::Message {
+            id: Some(ResponseItemId::from_server("legacy-id".to_string())),
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "follow-up".to_string(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        },
+    ];
+
+    prepare_response_items_for_request(&mut input, /*store*/ false);
+
+    assert!(
+        input.iter().all(|item| item.id().is_none()),
+        "store:false must omit item ids so providers do not look up unpersisted items"
+    );
+}
+
+#[test]
+fn store_true_keeps_type_valid_ids_and_strips_invalid_ids() {
+    let mut input = vec![
+        reasoning_item("rs_server"),
+        output_message("assistant", "hello"),
+        reasoning_item("msg_wrong-type"),
+        ResponseItem::Message {
+            id: Some(ResponseItemId::from_server("legacy-id".to_string())),
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "follow-up".to_string(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        },
+    ];
+
+    prepare_response_items_for_request(&mut input, /*store*/ true);
+
+    assert_eq!(input[0].id().map(ResponseItemId::as_str), Some("rs_server"));
+    assert_eq!(
+        input[1].id().map(ResponseItemId::as_str),
+        Some("msg_assistant")
+    );
+    assert_eq!(input[2].id(), None);
+    assert_eq!(input[3].id(), None);
 }
 
 fn output_message(id: &str, text: &str) -> ResponseItem {

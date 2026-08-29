@@ -3086,7 +3086,7 @@ async fn includes_managed_developer_instructions_once_per_request() -> anyhow::R
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn azure_responses_request_does_not_store_and_preserves_prefixed_item_ids() {
+async fn azure_responses_request_stores_and_preserves_type_valid_item_ids() {
     skip_if_no_network!();
 
     let server = MockServer::start().await;
@@ -3283,7 +3283,7 @@ async fn azure_responses_request_does_not_store_and_preserves_prefixed_item_ids(
     assert_eq!(request.path(), "/openai/responses");
     let body = request.body_json();
 
-    assert_eq!(body["store"], serde_json::Value::Bool(false));
+    assert_eq!(body["store"], serde_json::Value::Bool(true));
     assert_eq!(body["stream"], serde_json::Value::Bool(true));
     assert_eq!(body["input"].as_array().map(Vec::len), Some(10));
     assert_eq!(body["input"][0]["id"].as_str(), Some("rs_reasoning-id"));
@@ -3327,7 +3327,9 @@ async fn responses_http_omits_type_invalid_web_search_ids_without_mutating_promp
     let resp_mock = mount_sse_once(&server, sse_body.to_string()).await;
 
     let provider = ModelProviderInfo {
-        name: "openai".into(),
+        // Azure Responses uses `store: true`, so this exercises type-specific
+        // ID validation rather than the `store: false` rule that removes all IDs.
+        name: "azure".into(),
         base_url: Some(format!("{}/v1", server.uri())),
         env_key: None,
         env_key_instructions: None,
@@ -3436,6 +3438,7 @@ async fn responses_http_omits_type_invalid_web_search_ids_without_mutating_promp
     }
 
     let body = resp_mock.single_request().body_json();
+    assert_eq!(body["store"], serde_json::Value::Bool(true));
     assert_eq!(body["input"].as_array().map(Vec::len), Some(2));
     assert_eq!(body["input"][0]["id"].as_str(), Some("ws_web-search-id"));
     assert_eq!(body["input"][1]["type"].as_str(), Some("web_search_call"));

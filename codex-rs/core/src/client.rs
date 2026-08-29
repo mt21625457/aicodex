@@ -190,6 +190,22 @@ fn responses_websocket_allowed_for_model(model: &str) -> bool {
     is_openai_gpt_model_slug(model)
 }
 
+pub(crate) fn prepare_response_items_for_request(input: &mut [ResponseItem], store: bool) {
+    for item in input {
+        // `store: false` does not persist item IDs. Replaying locally minted
+        // prefixed IDs (for example `rs_<uuid>`) makes OpenAI-compatible
+        // Responses providers look up a stored item and return 404.
+        let keep = store
+            && item.id().is_none_or(|id| match item.id_prefix() {
+                Some(prefix) => id.has_prefix(prefix),
+                None => id.is_prefixed(),
+            });
+        if !keep {
+            item.set_id(/*new_id*/ None);
+        }
+    }
+}
+
 pub(crate) struct CompactConversationRequestSettings {
     pub(crate) effort: Option<ReasoningEffortConfig>,
     pub(crate) summary: ReasoningSummaryConfig,
@@ -668,9 +684,10 @@ impl ModelClient {
             service_tier,
             prompt_cache_key,
             text,
+            store,
             ..
         } = request;
-        self.prepare_response_items_for_request(&mut input);
+        self.prepare_response_items_for_request(&mut input, store);
         let payload = ApiCompactionInput {
             model: &model,
             input: &input,
@@ -1030,19 +1047,8 @@ impl ModelClient {
         Ok(request)
     }
 
-    fn prepare_response_items_for_request(&self, input: &mut [ResponseItem]) {
-        for item in input {
-            let Some(id) = item.id() else {
-                continue;
-            };
-            let keep = match item.id_prefix() {
-                Some(prefix) => id.has_prefix(prefix),
-                None => id.is_prefixed(),
-            };
-            if !keep {
-                item.set_id(/*new_id*/ None);
-            }
-        }
+    fn prepare_response_items_for_request(&self, input: &mut [ResponseItem], store: bool) {
+        prepare_response_items_for_request(input, store);
     }
 
     /// Returns whether the Responses-over-WebSocket transport is active for this session.
@@ -1622,7 +1628,7 @@ impl ModelClientSession {
                     .insert(X_CODEX_ROUTING_HINT_HEADER, header_value);
             }
             self.client
-                .prepare_response_items_for_request(&mut request.input);
+                .prepare_response_items_for_request(&mut request.input, request.store);
             let request_session_telemetry =
                 session_telemetry_for_request(session_telemetry, &request);
             let inference_trace_attempt = inference_trace.start_attempt();
@@ -2177,7 +2183,7 @@ impl ModelClientSession {
             };
             let original_item_ids = if let Some(incremental_items) = &mut incremental_items {
                 self.client
-                    .prepare_response_items_for_request(incremental_items);
+                    .prepare_response_items_for_request(incremental_items, request.store);
                 None
             } else {
                 let original_item_ids = request
@@ -2186,7 +2192,7 @@ impl ModelClientSession {
                     .map(|item| item.id().cloned())
                     .collect::<Vec<_>>();
                 self.client
-                    .prepare_response_items_for_request(&mut request.input);
+                    .prepare_response_items_for_request(&mut request.input, request.store);
                 Some(original_item_ids)
             };
             let ws_payload = ResponseCreateWsRequest {
