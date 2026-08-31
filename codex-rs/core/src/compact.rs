@@ -281,7 +281,7 @@ async fn run_compact_task_inner_impl(
         let turn_input_len = turn_input.len();
         let prompt = Prompt {
             input: turn_input,
-            base_instructions: sess.get_base_instructions().await,
+            base_instructions: sess.get_prompt_base_instructions().await,
             ..Default::default()
         };
         let attempt_result = drain_to_completed(
@@ -774,6 +774,7 @@ async fn drain_to_completed(
             Ok(ResponseEvent::Completed {
                 response_id,
                 token_usage,
+                usage_metadata,
                 ..
             }) => {
                 sess.send_event(
@@ -781,6 +782,7 @@ async fn drain_to_completed(
                     EventMsg::RawResponseCompleted(RawResponseCompletedEvent {
                         response_id,
                         token_usage: token_usage.clone(),
+                        usage_metadata,
                     }),
                 )
                 .await;

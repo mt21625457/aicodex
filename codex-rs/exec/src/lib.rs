@@ -976,6 +976,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                         turn_trigger: None,
                         client_user_message_id: None,
                         input: items.into_iter().map(Into::into).collect(),
+                        tool_output: None,
                         responsesapi_client_metadata: None,
                         additional_context: None,
                         environments: None,
@@ -1418,6 +1419,10 @@ fn should_process_notification(
             .thread_id
             .as_deref()
             .is_none_or(|candidate| candidate == thread_id),
+        ServerNotification::AuthRecoveryStarted(notification)
+        | ServerNotification::AuthRecoveryCompleted(notification) => {
+            notification.thread_id == thread_id && notification.turn_id == turn_id
+        }
         ServerNotification::Error(notification) => {
             notification.thread_id == thread_id && notification.turn_id == turn_id
         }

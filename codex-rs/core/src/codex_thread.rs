@@ -1,6 +1,7 @@
 use crate::agent::AgentStatus;
 use crate::config::ConstraintResult;
 use crate::context::ContextualUserFragment;
+use crate::context::GuardianReviewEvidence;
 use crate::elicitation::ElicitationRegistration;
 use crate::session::SessionIo;
 use crate::session::SessionSettingsUpdate;
@@ -175,13 +176,11 @@ impl GuardianRootMessage {
     }
 }
 
-/// Authorization state that changes on history rewrites or genuine user input.
+/// Authorization state that changes on genuine user input or history resets.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GuardianAuthorizationVersion {
-    /// Conversation-history rewrite generation.
-    pub history_version: u64,
-    /// Number of genuine user messages in the conversation snapshot.
-    pub user_message_count: usize,
+    /// User-message/reset revision, preserved across compaction and internal context.
+    pub user_message_revision: u64,
     /// Number of successful, host-produced answers to genuine user-input requests.
     pub user_input_response_count: usize,
 }
@@ -190,11 +189,7 @@ impl GuardianAuthorizationVersion {
     /// Captures history replacement and genuine user input from the same snapshot.
     pub fn from_history(history: &dyn ConversationHistorySnapshot) -> Self {
         Self {
-            history_version: history.history_version(),
-            user_message_count: history
-                .items()
-                .filter(|item| item.is_user_message())
-                .count(),
+            user_message_revision: history.user_message_revision(),
             user_input_response_count: 0,
         }
     }
@@ -205,6 +200,7 @@ impl GuardianAuthorizationVersion {
 pub struct GuardianRootSnapshot {
     pub authorization_version: GuardianAuthorizationVersion,
     pub messages: Vec<GuardianRootMessage>,
+    pub trusted_skill_paths: Vec<String>,
 }
 
 pub struct CodexThread {
@@ -508,6 +504,28 @@ impl CodexThread {
         self.session.inject_if_running(items).await
     }
 
+    /// Returns the trusted root when the expected turn is currently active.
+    pub async fn active_turn_root(&self, expected_turn_id: &str) -> Option<String> {
+        let active = self.session.active_turn.lock().await;
+        let task = active.as_ref()?.task.as_ref()?;
+        if task.turn_context.sub_id != expected_turn_id {
+            return None;
+        }
+        task.turn_context.turn_metadata_state.root_turn_id()
+    }
+
+    /// Invalidates the trusted root when the expected turn is currently active.
+    pub async fn invalidate_turn_lineage(&self, expected_turn_id: &str) {
+        let active = self.session.active_turn.lock().await;
+        if let Some(task) = active.as_ref().and_then(|turn| turn.task.as_ref())
+            && task.turn_context.sub_id == expected_turn_id
+        {
+            task.turn_context
+                .turn_metadata_state
+                .mark_root_turn_ambiguous();
+        }
+    }
+
     pub async fn set_app_server_client_info(
         &self,
         app_server_client_name: Option<String>,
@@ -805,6 +823,17 @@ impl CodexThread {
 
     pub fn multi_agent_version(&self) -> Option<MultiAgentVersion> {
         self.session.multi_agent_version()
+    }
+
+    /// Returns the current user-authorization revision for Guardian.
+    pub async fn guardian_authorization_version(&self) -> GuardianAuthorizationVersion {
+        let history = self.session.conversation_history_snapshot().await;
+        self.thread_extension_data()
+            .get::<GuardianReviewEvidence>()
+            .map_or_else(
+                || GuardianAuthorizationVersion::from_history(history.as_ref()),
+                |evidence| evidence.authorization_version(history.as_ref()),
+            )
     }
 
     /// Returns bounded root conversation evidence and its authorization version atomically.

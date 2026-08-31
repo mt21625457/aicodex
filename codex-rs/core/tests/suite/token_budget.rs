@@ -249,6 +249,7 @@ async fn token_budget_guidance_precedes_standalone_context_window() -> Result<()
     let guidance_message = "Preserve important state before compaction.";
     let test = test_codex()
         .with_config(move |config| {
+            config.update_plan_enabled = true;
             config.model_context_window = Some(CONFIGURED_CONTEXT_WINDOW);
             config.token_budget = Some(TokenBudgetConfig {
                 guidance_message: Some(guidance_message.to_string()),
@@ -461,7 +462,7 @@ async fn token_budget_defaults_follow_the_active_model() -> Result<()> {
         "switching models should preserve the existing model-switch message"
     );
     let expected_guidance = format!(
-        "{CONTEXT_WINDOW_GUIDANCE_OPEN_TAG}\nUse second-model context-window guidance.\n{CONTEXT_WINDOW_GUIDANCE_CLOSE_TAG}"
+        "{CONTEXT_WINDOW_GUIDANCE_OPEN_TAG}\nThis context-window guidance replaces all previously provided context-window guidance.\n\nUse second-model context-window guidance.\n{CONTEXT_WINDOW_GUIDANCE_CLOSE_TAG}"
     );
     assert_eq!(
         developer_texts
@@ -1468,6 +1469,7 @@ async fn new_context_tool_skips_auto_compact_fallback() -> Result<()> {
     let test = test_codex()
         .with_extensions(Arc::new(extensions.build()))
         .with_config(|config| {
+            config.update_plan_enabled = true;
             config.model_context_window = Some(10_000);
             config.token_budget = Some(TokenBudgetConfig {
                 auto_compact_fallback_prompt: Some(AUTO_COMPACT_FALLBACK_PROMPT.to_string()),

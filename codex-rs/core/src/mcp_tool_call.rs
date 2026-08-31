@@ -17,6 +17,7 @@ use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use crate::tools::ApprovalContext;
 use crate::tools::hook_names::HookToolName;
+use crate::tools::lifecycle::process_mcp_tool_result;
 use crate::tools::sandboxing::ApprovalAction;
 use crate::tools::sandboxing::ToolError;
 use crate::turn_metadata::McpTurnMetadataContext;
@@ -29,6 +30,7 @@ use codex_config::types::AppToolApproval;
 use codex_connectors::AppToolPolicy;
 use codex_connectors::AppToolPolicyEvaluator;
 use codex_connectors::AppToolPolicyInput;
+use codex_extension_api::McpToolContext;
 use codex_features::Feature;
 use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_mcp::MCP_TOOL_CODEX_APPS_META_KEY;
@@ -45,7 +47,9 @@ use codex_protocol::items::McpToolCallError;
 use codex_protocol::items::McpToolCallItem;
 use codex_protocol::items::McpToolCallStatus;
 use codex_protocol::items::TurnItem;
+use codex_protocol::mcp::CONFIRMATION_POLICIES_META_KEY;
 use codex_protocol::mcp::CallToolResult;
+use codex_protocol::mcp::is_node_repl_backed_server;
 use codex_protocol::mcp_approval_meta::APPROVAL_KIND_KEY as MCP_TOOL_APPROVAL_KIND_KEY;
 use codex_protocol::mcp_approval_meta::APPROVAL_KIND_MCP_TOOL_CALL as MCP_TOOL_APPROVAL_KIND_MCP_TOOL_CALL;
 use codex_protocol::mcp_approval_meta::CONNECTOR_DESCRIPTION_KEY as MCP_TOOL_APPROVAL_CONNECTOR_DESCRIPTION_KEY;
@@ -420,7 +424,7 @@ async fn handle_approved_mcp_tool_call(
         .unwrap_or_else(|| JsonValue::Object(serde_json::Map::new()));
     let result = async {
         let result = async {
-            let result = prepared_call
+            let mut result = prepared_call
                 .call_with_preparation(/*requested_timeout*/ None, || async {
                     if let McpToolApprovalApplication::Apply { decision, policy } =
                         &approval_application
@@ -499,6 +503,19 @@ async fn handle_approved_mcp_tool_call(
                 })
                 .await
                 .map_err(|error| format!("tool call error: {error:?}"))?;
+            let mcp_tool = McpToolContext::from_prepared_call(
+                &prepared_call,
+                turn_context.config.mcp_servers.get().get(&server),
+            );
+            process_mcp_tool_result(
+                sess,
+                turn_context,
+                call_id,
+                &mcp_tool,
+                &tool_input,
+                &mut result,
+            )
+            .await;
             let result = sanitize_mcp_tool_result_for_model(
                 &turn_context.model_info().input_modalities,
                 Ok(result),
@@ -1234,7 +1251,47 @@ fn build_mcp_tool_call_request_meta(
         );
     }
 
+    if let Some(policies) = build_confirmation_policies_request_meta(step_context, server) {
+        request_meta.insert(CONFIRMATION_POLICIES_META_KEY.to_string(), policies);
+    }
+
     (!request_meta.is_empty()).then_some(serde_json::Value::Object(request_meta))
+}
+
+/// Builds confirmation-policy metadata for eligible actor MCP calls.
+///
+/// Policies follow the issuing step's model snapshot, including across approval
+/// waits. Only `node_repl`/`cua_repl` receive them; Guardian sessions are excluded.
+/// Eligible calls get an empty object when no policies are configured, clearing
+/// startup defaults. Text stays verbatim so runtimes own blank-value fallback.
+fn build_confirmation_policies_request_meta(
+    step_context: &StepContext,
+    server: &str,
+) -> Option<serde_json::Value> {
+    if !is_node_repl_backed_server(server)
+        || crate::guardian::is_basic_session_source(&step_context.turn.session_source)
+    {
+        return None;
+    }
+
+    let mut policies = serde_json::Map::new();
+    if let Some(confirmation_policies) = step_context
+        .settings
+        .model_info
+        .model_messages
+        .as_ref()
+        .and_then(|messages| messages.confirmation_policies.as_ref())
+    {
+        for (name, policy) in [
+            ("browser_use", confirmation_policies.browser_use.as_ref()),
+            ("computer_use", confirmation_policies.computer_use.as_ref()),
+        ] {
+            if let Some(policy) = policy {
+                policies.insert(name.to_string(), serde_json::Value::String(policy.clone()));
+            }
+        }
+    }
+    Some(serde_json::Value::Object(policies))
 }
 
 fn with_mcp_tool_call_ids_meta(

@@ -2572,6 +2572,7 @@ dependencies = [
  "codex-code-mode-protocol",
  "codex-http-client",
  "codex-install-context",
+ "codex-otel",
  "codex-protocol",
  "futures",
  "http-body-util",
@@ -3205,9 +3206,13 @@ name = "codex-feedback"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "codex-http-client",
  "codex-login",
  "codex-protocol",
+ "flate2",
+ "http 1.4.0",
+ "httpdate",
  "log",
  "mime_guess",
  "pretty_assertions",
@@ -3321,6 +3326,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-guardian-context"
+version = "0.0.0"
+dependencies = [
+ "codex-protocol",
+ "pretty_assertions",
+ "serde_json",
+]
+
+[[package]]
 name = "codex-guardian-v2"
 version = "0.0.0"
 dependencies = [
@@ -3338,12 +3352,14 @@ dependencies = [
  "codex-network-proxy",
  "codex-protocol",
  "core_test_support",
+ "dirs",
  "http 1.4.0",
  "pretty_assertions",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -3373,6 +3389,7 @@ dependencies = [
  "codex-protocol",
  "codex-tools",
  "codex-utils-output-truncation",
+ "core_test_support",
  "http 1.4.0",
  "pretty_assertions",
  "serde_json",
@@ -3514,11 +3531,13 @@ dependencies = [
  "landlock",
  "libc",
  "pretty_assertions",
+ "rustix 1.1.4",
  "seccompiler",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "test-case",
  "tokio",
  "url",
 ]
@@ -3604,6 +3623,7 @@ dependencies = [
  "codex-utils-path-uri",
  "codex-utils-plugins",
  "futures",
+ "insta",
  "lru",
  "pretty_assertions",
  "regex-lite",
@@ -3928,6 +3948,7 @@ dependencies = [
  "codex-utils-path-uri",
  "codex-utils-plugins",
  "pretty_assertions",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 
