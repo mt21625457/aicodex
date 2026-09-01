@@ -145,7 +145,6 @@ impl ChatWidget {
     }
 
     pub(super) fn dispatch_command(&mut self, cmd: SlashCommand) {
-        self.flush_completed_command_activity();
         if !self.ensure_slash_command_allowed_in_side_conversation(cmd) {
             return;
         }
@@ -665,6 +664,9 @@ impl ChatWidget {
             .set_composer_text(String::new(), Vec::new(), Vec::new());
         self.bottom_pane.set_composer_pending_pastes(Vec::new());
         self.bottom_pane.drain_pending_submission_state();
+        if self.bottom_pane.composer_is_vim_enabled() {
+            self.bottom_pane.enable_vim_in_insert_mode();
+        }
     }
 
     fn prepared_inline_user_message(
