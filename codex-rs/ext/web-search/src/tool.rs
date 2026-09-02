@@ -60,7 +60,7 @@ pub(crate) struct WebSearchTool {
     pub(crate) originator: Option<String>,
 }
 
-impl ToolExecutor<ToolCall> for WebSearchTool {
+impl<'call> ToolExecutor<ToolCall<'call>> for WebSearchTool {
     fn tool_name(&self) -> ToolName {
         ToolName::namespaced(WEB_NAMESPACE, RUN_TOOL_NAME)
     }
@@ -94,13 +94,19 @@ impl ToolExecutor<ToolCall> for WebSearchTool {
         true
     }
 
-    fn handle(&self, call: ToolCall) -> codex_extension_api::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, call: ToolCall<'call>) -> codex_extension_api::ToolExecutorFuture<'a>
+    where
+        'call: 'a,
+    {
         Box::pin(self.handle_call(call))
     }
 }
 
 impl WebSearchTool {
-    async fn handle_call(&self, call: ToolCall) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
+    async fn handle_call(
+        &self,
+        call: ToolCall<'_>,
+    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         if select_web_search_backend(
             self.moonshot_feature_enabled,
             self.moonshot_search.enabled,
@@ -109,7 +115,6 @@ impl WebSearchTool {
         {
             return self.handle_moonshot_call(call).await;
         }
-
         let commands = parse_commands(&call)?;
         let command_action = command_action(&commands);
         let search_provider = if self.primary_provider.info().supports_standalone_web_search {
@@ -212,7 +217,7 @@ impl WebSearchTool {
 
     async fn handle_moonshot_call(
         &self,
-        call: ToolCall,
+        call: ToolCall<'_>,
     ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let arguments = call.function_arguments()?;
         let normalized = normalize_moonshot_commands(arguments);
@@ -270,7 +275,7 @@ impl WebSearchTool {
 
     async fn execute_moonshot(
         &self,
-        call: &ToolCall,
+        call: &ToolCall<'_>,
         commands: &codex_web_search::NormalizedMoonshotCommands,
     ) -> Result<codex_web_search::MoonshotSearchExecution, FunctionCallError> {
         let provider = self.primary_provider.api_provider().await.map_err(|_| {
@@ -354,7 +359,7 @@ fn search_request_headers(originator: Option<&str>, turn_metadata: Option<&str>)
     headers
 }
 
-fn parse_commands(call: &ToolCall) -> Result<SearchCommands, FunctionCallError> {
+fn parse_commands(call: &ToolCall<'_>) -> Result<SearchCommands, FunctionCallError> {
     let arguments = call.function_arguments()?;
     if arguments.trim().is_empty() {
         return Ok(SearchCommands::default());

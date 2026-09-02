@@ -1,5 +1,6 @@
 use crate::rate_limits::RateLimitError;
 use codex_client::TransportError;
+use codex_protocol::protocol::MisalignmentErrorDetails;
 use http::StatusCode;
 use std::fmt;
 use std::time::Duration;
@@ -137,6 +138,11 @@ pub enum ApiError {
         message: String,
         delay: Option<Duration>,
     },
+    #[error("rate limit exceeded: {message}")]
+    RateLimitExceeded {
+        message: String,
+        delay: Option<Duration>,
+    },
     #[error("rate limit: {0}")]
     RateLimit(String),
     #[error("invalid request: {message}")]
@@ -144,7 +150,10 @@ pub enum ApiError {
     #[error("cyber policy: {message}")]
     CyberPolicy { message: String },
     #[error("misalignment policy violation: {message}")]
-    MisalignmentPolicyViolation { message: String },
+    MisalignmentPolicyViolation {
+        message: String,
+        misalignment: Option<MisalignmentErrorDetails>,
+    },
     #[error("server overloaded")]
     ServerOverloaded,
 }

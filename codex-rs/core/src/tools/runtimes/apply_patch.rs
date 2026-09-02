@@ -103,7 +103,28 @@ impl ApplyPatchRuntime {
         req: &ApplyPatchRequest,
         attempt: &SandboxAttempt<'_>,
     ) -> Option<FileSystemSandboxContext> {
-        file_system_sandbox_context_for_attempt(req.additional_permissions.as_ref(), attempt)
+        if !attempt.sandbox_requested {
+            return None;
+        }
+
+        let permissions = effective_permission_profile(
+            attempt.exec_server_permissions,
+            req.additional_permissions.as_ref(),
+        );
+        Some(FileSystemSandboxContext {
+            permissions: permissions.into(),
+            cwd: Some(attempt.sandbox_cwd.clone()),
+            workspace_roots: attempt.workspace_roots.to_vec(),
+            user_home_dir: req.turn_environment.user_home_dir.clone(),
+            temporary_directories: None,
+            windows_sandbox_level: executor_windows_sandbox_level(
+                attempt.windows_sandbox_level,
+                attempt.sandbox_cwd,
+            ),
+            windows_sandbox_private_desktop: attempt.windows_sandbox_private_desktop,
+            windows_sandbox_proxy_settings_mode: None,
+            use_legacy_landlock: attempt.use_legacy_landlock,
+        })
     }
 }
 
@@ -121,6 +142,8 @@ fn file_system_sandbox_context_for_attempt(
         permissions: permissions.into(),
         cwd: Some(attempt.sandbox_cwd.clone()),
         workspace_roots: attempt.workspace_roots.to_vec(),
+        user_home_dir: None,
+        temporary_directories: None,
         windows_sandbox_level: executor_windows_sandbox_level(
             attempt.windows_sandbox_level,
             attempt.sandbox_cwd,

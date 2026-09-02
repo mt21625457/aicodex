@@ -148,7 +148,10 @@ impl ToolExecutor<ToolInvocation> for ReadFileHandler {
         true
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(read_file(
             self.state.clone(),
             self.multi_environment,
@@ -223,7 +226,10 @@ impl ToolExecutor<ToolInvocation> for EditFileHandler {
         })
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(edit_file(
             self.state.clone(),
             self.multi_environment,
@@ -288,7 +294,10 @@ impl ToolExecutor<ToolInvocation> for WriteFileHandler {
         })
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(write_file(
             self.state.clone(),
             self.multi_environment,

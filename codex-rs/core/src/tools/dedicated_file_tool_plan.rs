@@ -122,13 +122,13 @@ pub(crate) fn claude_uses_dedicated_file_tools(turn_context: &TurnContext) -> bo
     let provider_compat = crate::claude::provider_compat_for_provider(
         &provider.name,
         provider.base_url.as_deref(),
-        Some(&turn_context.model_info.slug),
+        Some(&turn_context.model_info().slug),
     );
     claude_policy_uses_dedicated_file_tools(
         true,
         turn_context.config.claude_file_tool_mode,
         provider_compat,
-        &turn_context.model_info.slug,
+        &turn_context.model_info().slug,
     )
 }
 

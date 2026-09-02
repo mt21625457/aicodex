@@ -103,15 +103,25 @@ async fn create_process_context(use_remote: bool) -> Result<ProcessContext> {
 }
 
 #[cfg(unix)]
-#[test_case(false, false, false, "bash"; "local_pipe")]
-#[test_case(false, true, false, "bash"; "local_tty")]
-#[test_case(true, false, false, "bash"; "remote_pipe")]
-#[test_case(true, true, false, "bash"; "remote_tty")]
-#[test_case(true, false, true, "bash"; "remote_sandbox")]
-#[test_case(false, false, false, "sh"; "local_sh_pipe")]
+#[test_case(false, false, false, false, "bash"; "local_pipe")]
+#[test_case(false, true, false, false, "bash"; "local_tty")]
+#[test_case(true, false, false, false, "bash"; "remote_pipe")]
+#[test_case(true, true, false, false, "bash"; "remote_tty")]
+#[test_case(true, false, true, false, "bash"; "remote_sandbox")]
+#[test_case(false, false, false, false, "sh"; "local_sh_pipe")]
+#[test_case(false, false, false, true, "bash"; "local_bash_env")]
+#[test_case(true, false, false, true, "bash"; "remote_bash_env")]
 #[cfg_attr(
     target_os = "macos",
-    test_case(false, false, false, "zsh"; "local_zsh_pipe")
+    test_case(false, false, false, false, "zsh"; "local_zsh_pipe")
+)]
+#[cfg_attr(
+    target_os = "macos",
+    test_case(false, false, false, true, "zsh"; "local_zshenv")
+)]
+#[cfg_attr(
+    target_os = "macos",
+    test_case(true, false, false, true, "zsh"; "remote_zshenv")
 )]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 // Serialize tests that launch a real exec-server process through the full CLI.
@@ -120,6 +130,7 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
     use_remote: bool,
     tty: bool,
     use_sandbox: bool,
+    automatic_startup: bool,
     shell_name: &str,
 ) -> Result<()> {
     if use_sandbox
@@ -133,16 +144,16 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
     let home = TempDir::new()?;
     let cwd = PathUri::from_host_native_path(home.path())?;
     let (shell_path, profile_name) = match shell_name {
+        "bash" if automatic_startup => ("/bin/bash", ".bash-env"),
         "bash" => ("/bin/bash", ".bashrc"),
         "sh" => ("/bin/sh", ".snapshot-env"),
+        "zsh" if automatic_startup => ("/bin/zsh", ".zshenv"),
         "zsh" => ("/bin/zsh", ".zshrc"),
         name => anyhow::bail!("unsupported test shell {name}"),
     };
     let profile_path = home.path().join(profile_name);
     let profile_path_entry = home.path().join("profile-bin");
     let runtime_path_entry = home.path().join("runtime-bin");
-    let inherited_path = std::env::var("PATH")?;
-    let runtime_path = format!("{}:{inherited_path}", runtime_path_entry.display());
     let padding = if !use_remote && !tty && shell_name == "bash" {
         format!(
             "snapshot_padding() {{ printf '%s' '{}'; }}\n",
@@ -162,6 +173,12 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
             "printf x >> \"$HOME/captures\"\nexport PATH=\"$HOME/profile-bin:/usr/bin:/bin\"\nexport PROFILE_ALLOWED=profile\nexport PROFILE_SECRET=secret\nexport PROFILE_DENIED=denied\nprofile_helper() {{ printf helper; }}\n{shadowed_builtins}{padding}"
         ),
     )?;
+    if shell_name == "zsh" && automatic_startup {
+        std::fs::write(
+            home.path().join(".zshrc"),
+            "export PATH=\"$HOME/profile-bin:/usr/bin:/bin\"\n",
+        )?;
+    }
     let mut configured_environment = HashMap::from([(
         "HOME".to_string(),
         home.path().to_string_lossy().into_owned(),
@@ -172,12 +189,19 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
             profile_path.to_string_lossy().into_owned(),
         );
     }
+    if shell_name == "bash" && automatic_startup {
+        configured_environment.insert(
+            "BASH_ENV".to_string(),
+            profile_path.to_string_lossy().into_owned(),
+        );
+    }
     let policy = ExecEnvPolicy {
         inherit: ShellEnvironmentPolicyInherit::All,
         ignore_default_excludes: false,
         exclude: vec!["PROFILE_DENIED".to_string()],
         r#set: configured_environment,
         include_only: vec![
+            "BASH_ENV".to_string(),
             "ENV".to_string(),
             "HOME".to_string(),
             "PATH".to_string(),
@@ -190,7 +214,8 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
         ("profile_helper; ", "helper")
     };
     let command = format!(
-        "{command_prefix}printf '|%s|%s|%s|%s|%s|%s' \"$PROFILE_ALLOWED\" \"${{PROFILE_SECRET-missing}}\" \"${{PROFILE_DENIED-missing}}\" \"$PATH\" \"${{__CODEX_SHELL_SNAPSHOT_STATE_0-missing}}\" \"${{__CODEX_SHELL_SNAPSHOT_STATE_1-missing}}\""
+        "export PATH='{}':\"$PATH\"; {command_prefix}printf '|%s|%s|%s|%s|%s|%s' \"$PROFILE_ALLOWED\" \"${{PROFILE_SECRET-missing}}\" \"${{PROFILE_DENIED-missing}}\" \"$PATH\" \"${{__CODEX_SHELL_SNAPSHOT_STATE_0-missing}}\" \"${{__CODEX_SHELL_SNAPSHOT_STATE_1-missing}}\"",
+        runtime_path_entry.display(),
     );
     let expected_stdout = format!(
         "{expected_prefix}|profile|missing|missing|{}:{}:/usr/bin:/bin|missing|missing",
@@ -212,9 +237,8 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
                         name: shell_name.to_string(),
                         path: shell_path.to_string(),
                     },
-                    runtime_path_prepends: vec![runtime_path_entry.to_string_lossy().into_owned()],
                 }),
-                env: HashMap::from([("PATH".to_string(), runtime_path.clone())]),
+                env: HashMap::new(),
                 tty,
                 pipe_stdin: false,
                 arg0: None,
@@ -293,7 +317,6 @@ async fn shell_snapshot_v2_remote_managed_proxy_uses_prepared_execution_context(
                         name: "bash".to_string(),
                         path: "/bin/bash".to_string(),
                     },
-                    runtime_path_prepends: Vec::new(),
                 }),
                 env: HashMap::new(),
                 tty: false,
@@ -328,13 +351,39 @@ async fn shell_snapshot_v2_remote_managed_proxy_uses_prepared_execution_context(
 }
 
 #[cfg(unix)]
+#[test_case(false, false, "bash", 1; "local_pipe_recovery")]
+#[test_case(false, true, "bash", 1; "local_tty_recovery")]
+#[test_case(true, false, "bash", 1; "remote_pipe_recovery")]
+#[test_case(true, true, "bash", 1; "remote_tty_recovery")]
+#[test_case(false, false, "bash", 3; "local_retry_budget_exhausted")]
+#[test_case(true, false, "bash", 3; "remote_retry_budget_exhausted")]
+#[cfg_attr(target_os = "macos", test_case(false, false, "zsh", 1; "local_zsh_recovery"))]
+#[cfg_attr(target_os = "macos", test_case(true, false, "zsh", 1; "remote_zsh_recovery"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn shell_snapshot_v2_capture_failure_falls_back_to_original_command() -> Result<()> {
-    let context = create_process_context(/*use_remote*/ false).await?;
+#[serial_test::serial(remote_exec_server)]
+async fn shell_snapshot_v2_capture_failure_falls_back_and_retries(
+    use_remote: bool,
+    tty: bool,
+    shell_name: &str,
+    failures_before_repair: usize,
+) -> Result<()> {
+    if use_remote
+        && let Some(warning) =
+            codex_sandboxing::system_bwrap_warning(&PermissionProfile::workspace_write())
+    {
+        eprintln!("skipping sandbox test: {warning}");
+        return Ok(());
+    }
+    let context = create_process_context(use_remote).await?;
     let home = TempDir::new()?;
     let cwd = PathUri::from_host_native_path(home.path())?;
+    let (shell_path, profile_name) = match shell_name {
+        "bash" => ("/bin/bash", ".bashrc"),
+        "zsh" => ("/bin/zsh", ".zshrc"),
+        name => anyhow::bail!("unsupported test shell {name}"),
+    };
     std::fs::write(
-        home.path().join(".bashrc"),
+        home.path().join(profile_name),
         "printf x >> \"$HOME/captures\"\nexit 7\n",
     )?;
     let policy = ExecEnvPolicy {
@@ -350,31 +399,35 @@ async fn shell_snapshot_v2_capture_failure_falls_back_to_original_command() -> R
     let mut params = ExecParams {
         process_id: ProcessId::from("snapshot-first"),
         argv: vec![
-            "/bin/bash".to_string(),
+            shell_path.to_string(),
             "-lc".to_string(),
-            "printf original".to_string(),
+            "if command -v profile_helper >/dev/null; then profile_helper; else printf original; fi".to_string(),
         ],
-        cwd,
+        cwd: cwd.clone(),
         env_policy: Some(policy),
         shell_snapshot: Some(ShellSnapshotRequest {
             scope_id: "attachment-1".to_string(),
             shell: ShellInfo {
-                name: "bash".to_string(),
-                path: "/bin/bash".to_string(),
+                name: shell_name.to_string(),
+                path: shell_path.to_string(),
             },
-            runtime_path_prepends: Vec::new(),
         }),
         env: HashMap::new(),
-        tty: false,
+        tty,
         pipe_stdin: false,
         arg0: None,
-        sandbox: None,
+        sandbox: use_remote.then(|| {
+            FileSystemSandboxContext::from_permission_profile_with_cwd(
+                PermissionProfile::workspace_write(),
+                cwd,
+            )
+        }),
         enforce_managed_network: false,
         managed_network: None,
         network_proxy: None,
     };
 
-    for attempt in 0..2 {
+    for attempt in 0..failures_before_repair {
         params.process_id = ProcessId::from(format!("snapshot-fallback-{attempt}"));
         let fallback = context.backend.start(params.clone()).await?;
         let fallback_output = collect_process_output_from_events(fallback.process).await?;
@@ -382,8 +435,36 @@ async fn shell_snapshot_v2_capture_failure_falls_back_to_original_command() -> R
             fallback_output,
             ("original".to_string(), String::new(), Some(0), true)
         );
+        // A real remote executor has its own clock; the unit test uses a
+        // paused clock to check requests made during the one-second backoff.
+        sleep(Duration::from_millis(1100)).await;
     }
-    assert_eq!(std::fs::read_to_string(home.path().join("captures"))?, "x");
+    assert_eq!(
+        std::fs::read_to_string(home.path().join("captures"))?,
+        "x".repeat(failures_before_repair)
+    );
+
+    std::fs::write(
+        home.path().join(profile_name),
+        "printf x >> \"$HOME/captures\"\nprofile_helper() { printf recovered; }\n",
+    )?;
+    let (expected_output, expected_captures) = if failures_before_repair == 3 {
+        ("original", "xxx")
+    } else {
+        ("recovered", "xx")
+    };
+    for attempt in 0..2 {
+        params.process_id = ProcessId::from(format!("snapshot-after-repair-{attempt}"));
+        let started = context.backend.start(params.clone()).await?;
+        assert_eq!(
+            collect_process_output_from_events(started.process).await?,
+            (expected_output.to_string(), String::new(), Some(0), true)
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(home.path().join("captures"))?,
+        expected_captures
+    );
     Ok(())
 }
 

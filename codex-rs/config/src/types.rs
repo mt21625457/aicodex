@@ -42,6 +42,7 @@ pub use crate::tui_keymap::TuiListKeymap;
 pub use crate::tui_keymap::TuiPagerKeymap;
 pub use crate::tui_keymap::TuiVimNormalKeymap;
 pub use crate::tui_keymap::TuiVimOperatorKeymap;
+pub use crate::tui_keymap::TuiVimSearchKeymap;
 
 pub const DEFAULT_OTEL_ENVIRONMENT: &str = "dev";
 pub const DEFAULT_MEMORIES_MAX_ROLLOUTS_PER_STARTUP: usize = 2;
@@ -721,6 +722,12 @@ pub struct Tui {
     #[serde(default = "default_true")]
     pub show_tooltips: bool,
 
+    /// When true, disables burst-paste detection for typed input entirely.
+    /// All characters are inserted as they are received, and no buffering
+    /// or placeholder replacement will occur for fast keypress bursts.
+    /// Overrides the legacy top-level `disable_paste_burst` setting. Defaults to `false`.
+    pub disable_paste_burst: Option<bool>,
+
     /// Start the composer in Vim mode (`Normal`) by default.
     /// Defaults to `false`.
     #[serde(default)]
@@ -891,7 +898,7 @@ pub struct PluginMcpServerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled_tools: Option<Vec<String>>,
 
-    /// Per-tool approval settings keyed by tool name.
+    /// Per-tool policy settings keyed by tool name.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub tools: HashMap<String, McpServerToolConfig>,
 }

@@ -70,7 +70,7 @@ async fn run_turn(test: &TestCodex, prompt: &str) -> anyhow::Result<()> {
 }
 
 async fn build_codex_with_test_tool(server: &wiremock::MockServer) -> anyhow::Result<TestCodex> {
-    let mut builder = test_codex().with_model("test-gpt-5.1-codex");
+    let mut builder = test_codex().with_model("gpt-5.1-codex-test");
     builder.build(server).await
 }
 

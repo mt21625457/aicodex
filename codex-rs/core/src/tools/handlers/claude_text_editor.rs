@@ -85,7 +85,10 @@ impl ToolExecutor<ToolInvocation> for ClaudeTextEditorHandler {
         })
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(async move {
             let turn = invocation.turn.clone();
             let arguments = match &invocation.payload {

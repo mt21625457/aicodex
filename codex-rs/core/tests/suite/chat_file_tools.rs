@@ -834,7 +834,7 @@ async fn submit_dedicated_turn_with_approval(test: &TestCodex, text: &str) -> an
 fn configure_dedicated_chat_provider(config: &mut Config) {
     config.model_provider.name = "Chat Completions".to_string();
     config.model_provider.env_key = None;
-    config.model_provider.experimental_bearer_token = Some("test-token".to_string());
+    config.model_provider.experimental_bearer_token = Some("test-token".into());
     config.model_provider.requires_openai_auth = false;
     config.model_provider.supports_websockets = true;
     config.model_provider.stream_max_retries = Some(0);

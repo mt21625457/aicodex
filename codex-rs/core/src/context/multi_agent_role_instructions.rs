@@ -1,4 +1,7 @@
 use super::ContextualUserFragment;
+use crate::config::MULTI_AGENT_USAGE_HINT_MAX_TOKENS;
+use crate::config::truncate_text_to_token_budget;
+use codex_protocol::models::ContentItemKind;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MultiAgentRoleInstructions {
@@ -9,20 +12,24 @@ pub(crate) struct MultiAgentRoleInstructions {
 impl MultiAgentRoleInstructions {
     pub(crate) fn unmarked(text: impl Into<String>) -> Self {
         Self {
-            text: text.into(),
+            text: truncate_text_to_token_budget(&text.into(), MULTI_AGENT_USAGE_HINT_MAX_TOKENS),
             marked: false,
         }
     }
 
     pub(crate) fn catalog(text: impl Into<String>) -> Self {
         Self {
-            text: text.into(),
+            text: truncate_text_to_token_budget(&text.into(), MULTI_AGENT_USAGE_HINT_MAX_TOKENS),
             marked: true,
         }
     }
 }
 
 impl ContextualUserFragment for MultiAgentRoleInstructions {
+    fn content_kind(&self) -> ContentItemKind {
+        ContentItemKind("multi_agent.role_instructions".to_string())
+    }
+
     fn role(&self) -> &'static str {
         "developer"
     }

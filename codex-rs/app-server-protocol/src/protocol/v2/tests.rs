@@ -1,6 +1,7 @@
 use super::*;
 use crate::ServerNotification;
 use codex_protocol::approvals::ElicitationRequest as CoreElicitationRequest;
+use codex_protocol::approvals::GuardianAssessmentAction as CoreGuardianAssessmentAction;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
@@ -37,6 +38,7 @@ use codex_protocol::permissions::FileSystemSandboxEntry as CoreFileSystemSandbox
 use codex_protocol::permissions::FileSystemSpecialPath as CoreFileSystemSpecialPath;
 use codex_protocol::protocol::AgentStatus as CoreAgentStatus;
 use codex_protocol::protocol::AskForApproval as CoreAskForApproval;
+use codex_protocol::protocol::CodexErrorInfo as CoreCodexErrorInfo;
 use codex_protocol::protocol::ContextTokenUsageSource as CoreContextTokenUsageSource;
 use codex_protocol::protocol::ConversationTextRole;
 use codex_protocol::protocol::ExecCommandSource as CoreExecCommandSource;
@@ -247,6 +249,30 @@ fn context_token_usage_source_serializes_all_sources() {
 }
 
 #[test]
+fn managed_hooks_requirements_default_interrupt_to_empty() {
+    let value = json!({
+        "managedDir": null,
+        "windowsManagedDir": null,
+        "PreToolUse": [],
+        "PermissionRequest": [],
+        "PostToolUse": [],
+        "PreCompact": [],
+        "PostCompact": [],
+        "SessionStart": [],
+        "SessionEnd": [],
+        "UserPromptSubmit": [],
+        "SubagentStart": [],
+        "SubagentStop": [],
+        "Stop": []
+    });
+
+    let parsed: ManagedHooksRequirements =
+        serde_json::from_value(value).expect("deserialize managed hooks requirements");
+
+    assert_eq!(parsed.interrupt, Vec::new());
+}
+
+#[test]
 fn external_agent_config_detect_response_defaults_connectors_for_older_servers() {
     let response = serde_json::from_value::<ExternalAgentConfigDetectResponse>(json!({
         "items": [],
@@ -318,6 +344,7 @@ fn thread_sources_round_trip_as_scalar_labels() {
     for (source, label) in [
         (ThreadSource::User, "user"),
         (ThreadSource::Subagent, "subagent"),
+        (ThreadSource::GuardianReview, "guardian_review"),
         (
             ThreadSource::Feature("automation".to_string()),
             "automation",
@@ -1519,23 +1546,44 @@ fn fs_copy_params_round_trip_with_recursive_directory_copy() {
 
 #[test]
 fn thread_shell_command_params_round_trip() {
-    let params = ThreadShellCommandParams {
-        thread_id: "thr_123".to_string(),
-        command: "printf 'hello world\\n'".to_string(),
-    };
+    for timeout_ms in [None, Some(0), Some(28_800_000)] {
+        let params = ThreadShellCommandParams {
+            thread_id: "thr_123".to_string(),
+            command: "printf 'hello world\\n'".to_string(),
+            timeout_ms,
+        };
 
-    let value = serde_json::to_value(&params).expect("serialize thread/shellCommand params");
+        let value = serde_json::to_value(&params).expect("serialize thread/shellCommand params");
+        assert_eq!(
+            value,
+            json!({
+                "threadId": "thr_123",
+                "command": "printf 'hello world\\n'",
+                "timeoutMs": timeout_ms,
+            })
+        );
+
+        let decoded = serde_json::from_value::<ThreadShellCommandParams>(value)
+            .expect("deserialize thread/shellCommand params");
+        assert_eq!(decoded, params);
+    }
+}
+
+#[test]
+fn thread_shell_command_params_without_timeout_remain_valid() {
+    let decoded = serde_json::from_value::<ThreadShellCommandParams>(json!({
+        "threadId": "thr_123",
+        "command": "echo hello",
+    }))
+    .expect("deserialize thread/shellCommand params without timeoutMs");
     assert_eq!(
-        value,
-        json!({
-            "threadId": "thr_123",
-            "command": "printf 'hello world\\n'",
-        })
+        decoded,
+        ThreadShellCommandParams {
+            thread_id: "thr_123".to_string(),
+            command: "echo hello".to_string(),
+            timeout_ms: None,
+        }
     );
-
-    let decoded = serde_json::from_value::<ThreadShellCommandParams>(value)
-        .expect("deserialize thread/shellCommand params");
-    assert_eq!(decoded, params);
 }
 
 #[test]
@@ -2236,6 +2284,8 @@ fn config_granular_approval_policy_is_marked_experimental() {
         service_tier: None,
         analytics: None,
         apps: None,
+        browser_use: None,
+        computer_use: None,
         desktop: None,
         additional: HashMap::new(),
     });
@@ -2269,6 +2319,8 @@ fn config_approvals_reviewer_is_marked_experimental() {
         service_tier: None,
         analytics: None,
         apps: None,
+        browser_use: None,
+        computer_use: None,
         desktop: None,
         additional: HashMap::new(),
     });
@@ -2297,6 +2349,7 @@ fn config_requirements_granular_allowed_approval_policy_is_marked_experimental()
             default_permissions: None,
             allowed_web_search_modes: None,
             allow_managed_hooks_only: None,
+            allow_browser_and_computer_use: None,
             allow_appshots: None,
             allow_remote_control: None,
             computer_use: None,
@@ -2741,6 +2794,7 @@ fn mcp_server_status_serializes_absent_server_info_as_null() {
     let response = ListMcpServerStatusResponse {
         data: vec![McpServerStatus {
             name: "not-ready".to_string(),
+            runtime_status: None,
             plugin_id: None,
             server_info: None,
             tools: HashMap::new(),
@@ -2756,6 +2810,7 @@ fn mcp_server_status_serializes_absent_server_info_as_null() {
         json!({
             "data": [{
                 "name": "not-ready",
+                "runtimeStatus": null,
                 "pluginId": null,
                 "serverInfo": null,
                 "tools": {},
@@ -2765,6 +2820,33 @@ fn mcp_server_status_serializes_absent_server_info_as_null() {
             }],
             "nextCursor": null,
         })
+    );
+}
+
+#[test]
+fn mcp_server_status_accepts_older_inventory_without_runtime_status() {
+    let status: McpServerStatus = serde_json::from_value(json!({
+        "name": "older-server",
+        "pluginId": null,
+        "serverInfo": null,
+        "tools": {},
+        "resources": [],
+        "resourceTemplates": [],
+        "authStatus": "unknown",
+    }))
+    .expect("older app-server inventory should deserialize");
+    assert_eq!(
+        status,
+        McpServerStatus {
+            name: "older-server".to_string(),
+            runtime_status: None,
+            plugin_id: None,
+            server_info: None,
+            tools: HashMap::new(),
+            resources: Vec::new(),
+            resource_templates: Vec::new(),
+            auth_status: McpAuthStatus::Unknown,
+        }
     );
 }
 
@@ -2828,6 +2910,7 @@ fn mcp_server_status_serializes_absent_server_info_metadata_as_null() {
     let response = ListMcpServerStatusResponse {
         data: vec![McpServerStatus {
             name: "initialized".to_string(),
+            runtime_status: None,
             plugin_id: Some("lookup@test".to_string()),
             server_info: Some(McpServerInfo {
                 name: "lookup-server".to_string(),
@@ -2850,6 +2933,7 @@ fn mcp_server_status_serializes_absent_server_info_metadata_as_null() {
         json!({
             "data": [{
                 "name": "initialized",
+                "runtimeStatus": null,
                 "pluginId": "lookup@test",
                 "serverInfo": {
                     "name": "lookup-server",
@@ -3011,6 +3095,46 @@ fn guardian_approval_review_action_round_trips_command_shape() {
         serde_json::to_value(&action).expect("serialize guardian review action"),
         value
     );
+}
+
+#[test]
+fn guardian_stdin_review_action_round_trips_native_and_foreign_paths() {
+    for (cwd_uri, cwd_native) in [
+        ("file:///home/alice/repo", "/home/alice/repo"),
+        (
+            "file:///C:/Users/Alice%20Smith/repo",
+            r"C:\Users\Alice Smith\repo",
+        ),
+        ("file://server/share/repo", r"\\server\share\repo"),
+    ] {
+        let core_action = CoreGuardianAssessmentAction::WriteStdin {
+            approval_id: "stdin-approval".into(),
+            process_id: "42".into(),
+            stdin: "yes\n".into(),
+            cwd: PathUri::parse(cwd_uri).expect("valid cwd URI"),
+        };
+        let action = GuardianApprovalReviewAction::from(core_action.clone());
+        let value = json!({
+            "type": "writeStdin",
+            "approvalId": "stdin-approval",
+            "processId": "42",
+            "stdin": "yes\n",
+            "cwd": cwd_native,
+        });
+
+        assert_eq!(
+            serde_json::to_value(&action).expect("serialize stdin review action"),
+            value,
+        );
+        let deserialized: GuardianApprovalReviewAction =
+            serde_json::from_value(value).expect("deserialize stdin review action");
+        assert_eq!(deserialized, action);
+        assert_eq!(
+            CoreGuardianAssessmentAction::try_from(deserialized)
+                .expect("convert stdin review action"),
+            core_action,
+        );
+    }
 }
 
 #[test]
@@ -3395,7 +3519,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
 
     let sub_agent_activity_item = TurnItem::SubAgentActivity(SubAgentActivityItem {
         id: "activity-1".to_string(),
-        kind: CoreSubAgentActivityKind::Interrupted,
+        kind: CoreSubAgentActivityKind::Completed,
         agent_thread_id: receiver_thread_id,
         agent_path: codex_protocol::AgentPath::root()
             .join("worker")
@@ -3406,7 +3530,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         ThreadItem::from(sub_agent_activity_item),
         ThreadItem::SubAgentActivity {
             id: "activity-1".to_string(),
-            kind: SubAgentActivityKind::Interrupted,
+            kind: SubAgentActivityKind::Completed,
             agent_thread_id: receiver_thread_id.to_string(),
             agent_path: "/root/worker".to_string(),
         }
@@ -4631,11 +4755,19 @@ fn codex_error_info_serializes_http_status_code_in_camel_case() {
 }
 
 #[test]
-fn codex_error_info_serializes_cyber_policy_in_camel_case() {
-    assert_eq!(
-        serde_json::to_value(CodexErrorInfo::CyberPolicy).unwrap(),
-        json!("cyberPolicy")
-    );
+fn core_error_info_converts_to_camel_case() {
+    for (core, expected) in [
+        (CoreCodexErrorInfo::CyberPolicy, json!("cyberPolicy")),
+        (
+            CoreCodexErrorInfo::RateLimitExceeded,
+            json!("rateLimitExceeded"),
+        ),
+    ] {
+        assert_eq!(
+            serde_json::to_value(CodexErrorInfo::from(core)).unwrap(),
+            expected
+        );
+    }
 }
 
 #[test]
@@ -4857,6 +4989,8 @@ fn turn_start_params_preserve_explicit_null_service_tier() {
         thread_id: "thread_123".to_string(),
         client_user_message_id: None,
         input: vec![],
+        turn_trigger: None,
+        tool_output: None,
         responsesapi_client_metadata: None,
         additional_context: None,
         environments: None,
@@ -4869,12 +5003,14 @@ fn turn_start_params_preserve_explicit_null_service_tier() {
         model: None,
         model_provider: None,
         service_tier: None,
+        service_tier_for_turn: None,
         effort: None,
         summary: None,
         output_schema: None,
         collaboration_mode: None,
         multi_agent_mode: None,
         personality: None,
+        cyber_access_program: None,
     };
     let serialized_without_override =
         serde_json::to_value(&without_override).expect("params should serialize");
@@ -4902,6 +5038,35 @@ fn turn_start_params_round_trip_model_provider() {
         serialized.get("modelProvider"),
         Some(&json!("aicodex_gateway_claude"))
     );
+}
+
+#[test]
+fn turn_start_cyber_access_program_uses_separate_wire_formats() {
+    for (app_server_value, core_value) in [
+        ("standard", "standard"),
+        ("daybreakBlue", "daybreak_blue"),
+        ("daybreakRed", "daybreak_red"),
+    ] {
+        let params: TurnStartParams = serde_json::from_value(json!({
+            "threadId": "thread_123",
+            "input": [],
+            "cyberAccessProgram": app_server_value,
+        }))
+        .expect("params should deserialize");
+        let core_program: codex_protocol::turn_input::CyberAccessProgram = params
+            .cyber_access_program
+            .expect("explicit program")
+            .into();
+
+        assert_eq!(
+            serde_json::to_value(params).expect("params should serialize")["cyberAccessProgram"],
+            app_server_value,
+        );
+        assert_eq!(
+            serde_json::to_value(core_program).expect("core program should serialize"),
+            json!(core_value),
+        );
+    }
 }
 
 #[test]

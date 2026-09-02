@@ -9,4 +9,4 @@ export type ThreadReadResponse = { thread: Thread,
  * Lightweight, content-free runtime evidence for lifecycle reconciliation.
  * Older app-server builds omit this field.
  */
-runtimeLifecycle?: ThreadRuntimeLifecycle | null, };
+runtimeLifecycle: ThreadRuntimeLifecycle | null, };

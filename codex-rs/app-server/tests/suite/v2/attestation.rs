@@ -135,7 +135,7 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
                     mcp.send_response(
                         request_id,
                         serde_json::to_value(AttestationGenerateResponse {
-                            token: ATTESTATION_HEADER.to_string(),
+                            token: ATTESTATION_HEADER.into(),
                         })?,
                     )
                     .await?;
@@ -172,7 +172,7 @@ fn create_chatgpt_websocket_config(codex_home: &Path, server_uri: &str) -> std::
         codex_home.join("config.toml"),
         format!(
             r#"
-model = "mock-model"
+model = "gpt-5.4"
 approval_policy = "never"
 sandbox_mode = "read-only"
 

@@ -83,7 +83,7 @@ pub(crate) async fn handle_retryable_response_stream_error(
     if retry_state.retries >= max_retries
         && client_session.try_switch_fallback_transport(
             &turn_context.session_telemetry,
-            &turn_context.model_info,
+            turn_context.model_info(),
         )
     {
         // Transport fallback is expected recovery, not a user-facing failure.

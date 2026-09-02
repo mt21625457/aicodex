@@ -1772,6 +1772,7 @@ async fn resumed_claude_history_keeps_legacy_apply_patch_hidden_and_serializable
     initial
         .submit_turn("create legacy Claude patch history")
         .await?;
+    initial.codex.shutdown_and_wait().await?;
 
     let mut resume_builder = test_codex().with_config(|config| {
         configure_claude_provider_with_apply_patch(config);

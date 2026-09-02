@@ -20,7 +20,7 @@ const OTHER_TOOLTIP_NON_MAC: &str = "*New* Build faster with Codex.";
 const FREE_GO_TOOLTIP: &str =
     "*New* For a limited time, Codex is included in your plan for free – let’s build together.";
 
-const RAW_TOOLTIPS: &str = include_str!("../tooltips.txt");
+const RAW_TOOLTIPS: &str = include_str!("../assets/tooltips.txt");
 
 lazy_static! {
     static ref TOOLTIPS: Vec<&'static str> = RAW_TOOLTIPS
@@ -387,7 +387,7 @@ mod tests {
             assert_eq!(paid_app_tooltip(), Some(tooltip));
         } else if IS_MACOS {
             let tooltip = tooltip.expect("macOS should advertise the desktop app");
-            insta::assert_snapshot!(tooltip, @"Run `codex app` to open the Desktop app (it installs on macOS if needed).");
+            insta::assert_snapshot!(tooltip, @"Run `aicodex app` to open the Desktop app (it installs on macOS if needed).");
             assert_eq!(paid_app_tooltip(), Some(APP_TOOLTIP));
         } else if IS_WINDOWS {
             assert_eq!(tooltip, None);
@@ -405,7 +405,7 @@ mod tests {
             is_wsl: false,
         })
         .expect("graphical native Linux should advertise the desktop app");
-        insta::assert_snapshot!(tooltip, @"Try the **Desktop app** on Linux: install it from https://learn.chatgpt.com/docs/linux/linux-app and run 'chatgpt'.");
+        insta::assert_snapshot!(tooltip, @"Try the **Desktop app** on Linux: install it from https://learn.chatgpt.com/docs/linux/linux-app and run 'aicodex'.");
 
         assert_eq!(
             linux_app_tooltip(LinuxDesktopSession {

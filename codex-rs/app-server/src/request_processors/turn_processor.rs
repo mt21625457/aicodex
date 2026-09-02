@@ -1,26 +1,21 @@
+use super::thread_input::ensure_direct_input_allowed;
 use super::*;
 use codex_agent_extension::AgentInvocation;
 use codex_agent_extension::AgentRun;
 use codex_agent_extension::AgentRunner;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
+use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::protocol::AdditionalContextEntry as CoreAdditionalContextEntry;
 use codex_protocol::protocol::AdditionalContextKind as CoreAdditionalContextKind;
+use codex_protocol::protocol::TurnSettingsUpdate;
+use codex_protocol::protocol::TurnSettingsUpdateOutcome;
 use codex_skills::system_cache_root_dir;
 
 use crate::image_url::REMOTE_IMAGE_URL_ERROR;
 use crate::image_url::is_remote_image_url;
-
-/// Capability reported for a loaded thread.
-///
-/// Every loaded thread accepts targeted `turn/start` and `turn/steer`
-/// requests, including multi-agent v2 spawned children. Unloaded stored
-/// threads keep this capability unavailable at the API boundary. Choosing to
-/// keep ordinary conversation input on a parent is a client navigation policy.
-pub(super) const fn loaded_thread_can_accept_direct_input() -> bool {
-    true
-}
 
 pub(super) fn validate_user_input_image_urls(
     input: &[V2UserInput],
@@ -189,9 +184,10 @@ impl TurnRequestProcessor {
 
     pub(crate) async fn thread_inject_items(
         &self,
+        request_id: &ConnectionRequestId,
         params: ThreadInjectItemsParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.thread_inject_items_response_inner(params)
+        self.thread_inject_items_response_inner(request_id, params)
             .await
             .map(|response| Some(response.into()))
     }
@@ -204,6 +200,45 @@ impl TurnRequestProcessor {
         self.thread_settings_update_inner(request_id, params)
             .await
             .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn turn_settings_update(
+        &self,
+        request_id: &ConnectionRequestId,
+        params: TurnSettingsUpdateParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let (_, thread) = self.load_thread(&params.thread_id).await?;
+        self.ensure_direct_input_allowed(request_id, thread.as_ref())
+            .await?;
+        let (reply, outcome) = oneshot::channel();
+        self.submit_core_op(
+            request_id,
+            &thread,
+            Op::TurnSettings {
+                turn_id: params.turn_id,
+                update: TurnSettingsUpdate {
+                    model: params.model,
+                    // Match thread/settings/update: public null does not clear effort.
+                    effort: params.effort.map(Some),
+                    summary: params.summary,
+                    service_tier: params.service_tier,
+                },
+                reply,
+            },
+        )
+        .await
+        .map_err(|err| internal_error(format!("failed to submit turn settings: {err}")))?;
+        let outcome = outcome
+            .await
+            .map_err(|_| internal_error("turn settings operation ended before replying"))?;
+        let status = match outcome {
+            TurnSettingsUpdateOutcome::Applied => TurnSettingsUpdateStatus::Applied,
+            TurnSettingsUpdateOutcome::TargetUnavailable => {
+                TurnSettingsUpdateStatus::TargetUnavailable
+            }
+            TurnSettingsUpdateOutcome::Rejected { reason } => return Err(invalid_request(reason)),
+        };
+        Ok(Some(TurnSettingsUpdateResponse { status }.into()))
     }
 
     pub(crate) async fn turn_steer(
@@ -329,6 +364,18 @@ impl TurnRequestProcessor {
             .map_err(|_| invalid_request(format!("thread not found: {thread_id}")))?;
 
         Ok((thread_id, thread))
+    }
+
+    async fn ensure_direct_input_allowed(
+        &self,
+        request_id: &ConnectionRequestId,
+        thread: &CodexThread,
+    ) -> Result<(), JSONRPCErrorError> {
+        ensure_direct_input_allowed(thread)
+            .await
+            .inspect_err(|error| {
+                self.track_error_response(request_id, error, /*error_type*/ None);
+            })
     }
 
     fn normalize_collaboration_mode(
@@ -463,7 +510,40 @@ impl TurnRequestProcessor {
                 .inspect_err(|error| {
                     self.track_error_response(&request_id, error, /*error_type*/ None);
                 })?;
-        if let Err(error) = Self::validate_v2_input_limit(&params.input) {
+        self.ensure_direct_input_allowed(&request_id, thread.as_ref())
+            .await?;
+        if let Some(tool_output) = &params.tool_output {
+            if !params.input.is_empty() {
+                return Err(invalid_request(
+                    "`toolOutput` cannot be combined with nonempty `input`",
+                ));
+            }
+            if tool_output.name.is_empty() {
+                return Err(invalid_request("`toolOutput.name` must not be empty"));
+            }
+        }
+        let actual_chars = params
+            .input
+            .iter()
+            .map(V2UserInput::text_char_count)
+            .sum::<usize>()
+            + params
+                .tool_output
+                .as_ref()
+                .map_or(0, |output| match &output.output {
+                    FunctionCallOutputBody::Text(text) => text.chars().count(),
+                    FunctionCallOutputBody::ContentItems(items) => items
+                        .iter()
+                        .map(|item| match item {
+                            FunctionCallOutputContentItem::InputText { text } => {
+                                text.chars().count()
+                            }
+                            _ => 0,
+                        })
+                        .sum(),
+                });
+        if actual_chars > MAX_USER_INPUT_TEXT_CHARS {
+            let error = Self::input_too_large_error(actual_chars);
             self.track_error_response(
                 &request_id,
                 &error,
@@ -486,15 +566,32 @@ impl TurnRequestProcessor {
         let environment_selections =
             resolve_turn_environment_selections(self.thread_manager.as_ref(), params.environments)?;
 
-        // Map v2 input items to core input items.
-        let mapped_items: Vec<CoreInputItem> = params
-            .input
-            .into_iter()
-            .map(V2UserInput::into_core)
-            .collect();
-        let client_user_message_id = params.client_user_message_id;
         let additional_context = map_additional_context(params.additional_context);
-        let turn_has_input = !mapped_items.is_empty();
+        let turn_has_input = !params.input.is_empty();
+        let input = if let Some(tool_output) = params.tool_output {
+            let item = ResponseItem::FunctionCallOutput {
+                id: None,
+                call_id: None,
+                name: Some(tool_output.name),
+                namespace: tool_output.namespace,
+                output: FunctionCallOutputPayload {
+                    body: tool_output.output,
+                    success: None,
+                },
+                internal_chat_message_metadata_passthrough: None,
+            };
+            validate_response_item_image_urls(std::slice::from_ref(&item))?;
+            TurnInput::ResponseItem(item)
+        } else {
+            TurnInput::UserInput {
+                content: params
+                    .input
+                    .into_iter()
+                    .map(V2UserInput::into_core)
+                    .collect(),
+                client_id: params.client_user_message_id,
+            }
+        };
         let cwd = resolve_request_cwd(params.cwd)?;
         let environments = self
             .build_environment_override(
@@ -524,20 +621,21 @@ impl TurnRequestProcessor {
                 },
             )
             .await?;
+
         let submission = thread
             .start_or_steer_turn(
-                TurnInputRequest::new(TurnInput::UserInput {
-                    content: mapped_items,
-                    client_id: client_user_message_id,
-                })
-                .with_thread_settings(thread_settings)
-                .on_start(TurnStartOptions {
-                    final_output_json_schema: params.output_schema,
-                    ..Default::default()
-                })
-                .with_additional_context(additional_context)
-                .with_responses_metadata(params.responsesapi_client_metadata)
-                .with_trace(self.request_trace_context(&request_id).await),
+                TurnInputRequest::new(input)
+                    .with_thread_settings(thread_settings)
+                    .on_start(TurnStartOptions {
+                        turn_trigger: params.turn_trigger,
+                        final_output_json_schema: params.output_schema,
+                        service_tier: params.service_tier_for_turn,
+                        cyber_access_program: params.cyber_access_program.map(Into::into),
+                        ..Default::default()
+                    })
+                    .with_additional_context(additional_context)
+                    .with_responses_metadata(params.responsesapi_client_metadata)
+                    .with_trace(self.request_trace_context(&request_id).await),
             )
             .await
             .map_err(|err| {
@@ -863,9 +961,12 @@ impl TurnRequestProcessor {
 
     async fn thread_inject_items_response_inner(
         &self,
+        request_id: &ConnectionRequestId,
         params: ThreadInjectItemsParams,
     ) -> Result<ThreadInjectItemsResponse, JSONRPCErrorError> {
         let (_, thread) = self.load_thread(&params.thread_id).await?;
+        self.ensure_direct_input_allowed(request_id, thread.as_ref())
+            .await?;
 
         let items = params
             .items
@@ -987,6 +1088,7 @@ impl TurnRequestProcessor {
                             ),
                         };
                         let error = TurnError {
+                            misalignment: None,
                             message: message.clone(),
                             codex_error_info: Some(CodexErrorInfo::ActiveTurnNotSteerable {
                                 turn_kind: turn_kind.into(),
@@ -1042,6 +1144,8 @@ impl TurnRequestProcessor {
         thread_id: &str,
     ) -> Result<Option<(ThreadId, Arc<CodexThread>)>, JSONRPCErrorError> {
         let (thread_id, thread) = self.load_thread(thread_id).await?;
+        self.ensure_direct_input_allowed(request_id, thread.as_ref())
+            .await?;
 
         match self
             .ensure_conversation_listener(
@@ -1072,6 +1176,36 @@ impl TurnRequestProcessor {
         request_id: &ConnectionRequestId,
         params: ThreadRealtimeStartParams,
     ) -> Result<Option<ThreadRealtimeStartResponse>, JSONRPCErrorError> {
+        let attaches_existing_call = matches!(
+            &params.transport,
+            Some(ThreadRealtimeStartTransport::ExistingCall { .. })
+        );
+        if attaches_existing_call {
+            let unsupported_option = if params.include_startup_context == Some(true) {
+                Some("includeStartupContext")
+            } else if params.prompt.is_some() {
+                Some("prompt")
+            } else if params
+                .initial_items
+                .as_ref()
+                .is_some_and(|items| !items.is_empty())
+            {
+                Some("initialItems")
+            } else if params.model.is_some() {
+                Some("model")
+            } else if params.voice.is_some() {
+                Some("voice")
+            } else if params.delegation_ack_filler.is_some() {
+                Some("delegationAckFiller")
+            } else {
+                None
+            };
+            if let Some(option) = unsupported_option {
+                return Err(invalid_request(format!(
+                    "existingCall transport does not support {option}"
+                )));
+            }
+        }
         let Some((_, thread)) = self
             .prepare_realtime_conversation_thread(request_id, &params.thread_id)
             .await?
@@ -1094,7 +1228,9 @@ impl TurnRequestProcessor {
                     .codex_response_handoff_channel_prefixes,
                 model: params.model,
                 output_modality: params.output_modality,
-                include_startup_context: params.include_startup_context.unwrap_or(true),
+                include_startup_context: params
+                    .include_startup_context
+                    .unwrap_or(!attaches_existing_call),
                 initial_items: params
                     .initial_items
                     .unwrap_or_default()
@@ -1114,6 +1250,12 @@ impl TurnRequestProcessor {
                     }
                     ThreadRealtimeStartTransport::Webrtc { sdp } => {
                         ConversationStartTransport::Webrtc { sdp }
+                    }
+                    ThreadRealtimeStartTransport::ExistingCall { call_id } => {
+                        ConversationStartTransport::ExistingCall {
+                            call_id,
+                            sideband_base_url: None,
+                        }
                     }
                 }),
                 version: params.version,
@@ -1394,6 +1536,8 @@ impl TurnRequestProcessor {
         } = params;
 
         let (_, parent_thread) = self.load_thread(&thread_id).await?;
+        self.ensure_direct_input_allowed(request_id, parent_thread.as_ref())
+            .await?;
         let (review_request, display_text, target_prompt) =
             Self::review_request_from_target(target)?;
         match delivery.unwrap_or(ApiReviewDelivery::Inline).to_core() {
