@@ -991,6 +991,7 @@ impl ClaudeStreamState {
             .send(Ok(ResponseEvent::Completed {
                 response_id: self.response_id(),
                 token_usage: self.usage.token_usage(),
+                usage_metadata: None,
                 end_turn: self
                     .stop_reason
                     .as_ref()

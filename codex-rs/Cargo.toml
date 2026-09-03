@@ -4,6 +4,7 @@ members = [
     "analytics",
     "agent-graph-store",
     "agent-identity",
+    "agent-roles",
     "backend-client",
     "bwrap",
     "build-info",
@@ -35,6 +36,7 @@ members = [
     "collaboration-mode-templates",
     "connectors",
     "config",
+    "config-schema",
     "context-fragments",
     "shell-command",
     "shell-escalation",
@@ -43,6 +45,7 @@ members = [
     "core-api",
     "core-plugins",
     "diagnostics",
+    "guardian-context",
     "hooks",
     "history",
     "http-client",
@@ -83,6 +86,8 @@ members = [
     "network-proxy",
     "ollama",
     "process-hardening",
+    "realtime-webrtc",
+    "voice-host",
     "protocol",
     "prompts",
     "rollout",
@@ -98,6 +103,7 @@ members = [
     "v8-poc",
     "websocket-client",
     "web-search",
+    "worktree",
     "workload-identity",
     "utils/absolute-path",
     "utils/audio",
@@ -110,6 +116,7 @@ members = [
     "utils/home-dir",
     "utils/pty",
     "utils/readiness",
+    "utils/redacted-string",
     "utils/rustls-provider",
     "utils/string",
     "utils/cli",
@@ -149,10 +156,12 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 # Internal
+codex-realtime-webrtc = { path = "realtime-webrtc" }
 app_test_support = { path = "app-server/tests/common" }
 codex-analytics = { path = "analytics" }
 codex-agent-graph-store = { path = "agent-graph-store" }
 codex-agent-identity = { path = "agent-identity" }
+codex-agent-roles = { path = "agent-roles" }
 codex-ansi-escape = { path = "ansi-escape" }
 codex-api = { path = "codex-api" }
 codex-aws-auth = { path = "aws-auth" }
@@ -210,6 +219,7 @@ codex-install-context = { path = "install-context" }
 codex-file-search = { path = "file-search" }
 codex-file-watcher = { path = "file-watcher" }
 codex-git-utils = { path = "git-utils" }
+codex-guardian-context = { path = "guardian-context" }
 codex-hooks = { path = "hooks" }
 codex-history = { path = "history" }
 codex-keyring-store = { path = "keyring-store" }
@@ -271,6 +281,7 @@ codex-utils-path = { path = "utils/path-utils" }
 codex-utils-path-uri = { path = "utils/path-uri" }
 codex-utils-plugins = { path = "utils/plugins" }
 codex-utils-pty = { path = "utils/pty" }
+codex-utils-redacted-string = { path = "utils/redacted-string" }
 codex-utils-rustls-provider = { path = "utils/rustls-provider" }
 codex-utils-sandbox-summary = { path = "utils/sandbox-summary" }
 codex-utils-sleep-inhibitor = { path = "utils/sleep-inhibitor" }
@@ -336,6 +347,7 @@ flate2 = "1.1.8"
 futures = { version = "0.3", default-features = false }
 gethostname = "1.1.0"
 gix = { version = "0.81.0", default-features = false, features = ["sha1"] }
+gix-url = "0.35.2"
 glob = "0.3"
 globset = "0.4"
 hmac = "0.12.1"

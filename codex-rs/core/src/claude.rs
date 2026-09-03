@@ -957,7 +957,7 @@ fn claude_thinking_config(
     max_tokens: u64,
 ) -> Option<ClaudeThinkingConfig> {
     let budget_tokens = match reasoning_effort.unwrap_or(ReasoningEffortConfig::High) {
-        ReasoningEffortConfig::None => return None,
+        ReasoningEffortConfig::None | ReasoningEffortConfig::Persistent => return None,
         ReasoningEffortConfig::Minimal | ReasoningEffortConfig::Low => {
             CLAUDE_THINKING_MIN_BUDGET_TOKENS
         }
@@ -1014,6 +1014,7 @@ fn kimi_k3_thinking_and_effort(
     match reasoning_effort {
         None => (None, None),
         Some(ReasoningEffortConfig::None) => (Some(ClaudeThinkingConfig::Disabled), None),
+        Some(ReasoningEffortConfig::Persistent) => (Some(ClaudeThinkingConfig::Disabled), None),
         Some(ReasoningEffortConfig::Custom(value)) if value.eq_ignore_ascii_case("none") => {
             (Some(ClaudeThinkingConfig::Disabled), None)
         }
@@ -1025,6 +1026,9 @@ fn map_kimi_k3_reasoning_effort(effort: ReasoningEffortConfig) -> ReasoningEffor
     match effort {
         ReasoningEffortConfig::None => {
             unreachable!("`none` is handled by kimi_k3_thinking_and_effort before mapping")
+        }
+        ReasoningEffortConfig::Persistent => {
+            unreachable!("`persistent` is handled by kimi_k3_thinking_and_effort before mapping")
         }
         ReasoningEffortConfig::Minimal | ReasoningEffortConfig::Low => ReasoningEffortConfig::Low,
         ReasoningEffortConfig::Medium | ReasoningEffortConfig::High => ReasoningEffortConfig::High,

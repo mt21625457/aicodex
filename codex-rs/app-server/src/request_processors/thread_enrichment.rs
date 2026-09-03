@@ -1,4 +1,4 @@
-use super::turn_processor::loaded_thread_can_accept_direct_input;
+use super::thread_input::loaded_thread_can_accept_direct_input;
 use crate::thread_status::ThreadWatchManager;
 use crate::thread_status::resolve_thread_status;
 use codex_app_server_protocol::SessionSource;
@@ -32,11 +32,7 @@ pub(super) async fn enrich_loaded_threads<T>(
                 thread.status = status.clone();
             }
 
-            if !matches!(
-                &thread.source,
-                SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
-            ) || matches!(watched_status, Some(ThreadStatus::NotLoaded))
-            {
+            if matches!(watched_status, Some(ThreadStatus::NotLoaded)) {
                 return;
             }
 
@@ -46,26 +42,33 @@ pub(super) async fn enrich_loaded_threads<T>(
             let Ok(loaded_thread) = thread_manager.get_thread(thread_id).await else {
                 return;
             };
-            match loaded_thread.agent_status().await {
-                AgentStatus::Running => {
-                    if watched_status.is_none() {
-                        thread.status = resolve_thread_status(
-                            ThreadStatus::Idle,
-                            /*has_in_progress_turn*/ true,
-                        );
+            if matches!(
+                &thread.source,
+                SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+            ) {
+                match loaded_thread.agent_status().await {
+                    AgentStatus::Running => {
+                        if watched_status.is_none() {
+                            thread.status = resolve_thread_status(
+                                ThreadStatus::Idle,
+                                /*has_in_progress_turn*/ true,
+                            );
+                        }
                     }
-                }
-                AgentStatus::PendingInit | AgentStatus::Interrupted | AgentStatus::Completed(_) => {
-                    if watched_status.is_none() {
-                        thread.status = ThreadStatus::Idle;
+                    AgentStatus::PendingInit
+                    | AgentStatus::Interrupted
+                    | AgentStatus::Completed(_) => {
+                        if watched_status.is_none() {
+                            thread.status = ThreadStatus::Idle;
+                        }
                     }
-                }
-                AgentStatus::Errored(_) => {
-                    thread.status = ThreadStatus::SystemError;
-                }
-                AgentStatus::Shutdown | AgentStatus::NotFound => {
-                    thread.status = ThreadStatus::NotLoaded;
-                    return;
+                    AgentStatus::Errored(_) => {
+                        thread.status = ThreadStatus::SystemError;
+                    }
+                    AgentStatus::Shutdown | AgentStatus::NotFound => {
+                        thread.status = ThreadStatus::NotLoaded;
+                        return;
+                    }
                 }
             }
             thread.can_accept_direct_input = Some(loaded_thread_can_accept_direct_input());

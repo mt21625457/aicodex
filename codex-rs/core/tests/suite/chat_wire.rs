@@ -16,6 +16,8 @@ use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::ItemStartedEvent;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::TokenUsage;
+use codex_protocol::turn_input::TurnInputRequest;
+use codex_protocol::turn_input::TurnInputSubmission;
 use codex_protocol::user_input::UserInput;
 use codex_tools::ChatToolCallKind;
 use codex_tools::chat_tool_name;
@@ -208,7 +210,7 @@ async fn chat_wire_provider_usage_triggers_pre_turn_auto_compaction() -> anyhow:
                 }),
                 json!({
                     "choices": [],
-                    "usage": {"prompt_tokens": 190, "completion_tokens": 20, "total_tokens": 210}
+                    "usage": {"prompt_tokens": 900, "completion_tokens": 100, "total_tokens": 1000}
                 }),
             ]),
             chat_sse(vec![json!({
@@ -234,7 +236,7 @@ async fn chat_wire_provider_usage_triggers_pre_turn_auto_compaction() -> anyhow:
         .with_model("gpt-5.2")
         .with_config(|config| {
             configure_chat_provider(config);
-            config.model_context_window = Some(1_000);
+            config.model_context_window = Some(10_000);
             config.model_auto_compact_token_limit = Some(200);
         })
         .build_with_auto_env(&server)
@@ -302,7 +304,7 @@ async fn chat_wire_missing_usage_preserves_body_scope_baseline_for_auto_compacti
                 "id": "chatcmpl_estimated_second",
                 "choices": [{
                     "index": 0,
-                    "delta": {"content": "second estimated answer with more context"},
+                "delta": {"content": "second estimated answer with more context"},
                     "finish_reason": "stop"
                 }]
             })]),
@@ -330,7 +332,7 @@ async fn chat_wire_missing_usage_preserves_body_scope_baseline_for_auto_compacti
         .with_config(|config| {
             configure_chat_provider(config);
             config.model_context_window = Some(10_000);
-            config.model_auto_compact_token_limit = Some(1);
+            config.model_auto_compact_token_limit = Some(100);
             config.model_auto_compact_token_limit_scope =
                 AutoCompactTokenLimitScope::BodyAfterPrefix;
         })
@@ -1086,11 +1088,19 @@ async fn resumed_chat_history_keeps_legacy_apply_patch_hidden_and_serializable()
         .rollout_path
         .clone()
         .expect("rollout path");
-    submit_dedicated_text_turn(&initial, "create a legacy patch history").await?;
-    wait_for_event(&initial.codex, |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
+    let TurnInputSubmission::Started {
+        turn_id: initial_turn_id,
+    } = submit_dedicated_text_turn(&initial, "create a legacy patch history").await?
+    else {
+        panic!("expected initial turn to start");
+    };
+    wait_for_event(
+        &initial.codex,
+        |event| matches!(event, EventMsg::TurnComplete(turn) if turn.turn_id == initial_turn_id),
+    )
     .await;
+    assert_eq!(responses.requests().len(), 2);
+    initial.codex.shutdown_and_wait().await?;
 
     let mut resume_builder = test_codex()
         .with_model("gpt-5.2")
@@ -1098,10 +1108,17 @@ async fn resumed_chat_history_keeps_legacy_apply_patch_hidden_and_serializable()
     let resumed = resume_builder
         .resume(&server, initial.home.clone(), rollout_path)
         .await?;
-    submit_dedicated_text_turn(&resumed, "continue after resume").await?;
-    wait_for_event(&resumed.codex, |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
+    let resumed_submission = submit_dedicated_text_turn(&resumed, "continue after resume").await?;
+    let TurnInputSubmission::Started {
+        turn_id: resumed_turn_id,
+    } = resumed_submission
+    else {
+        panic!("unexpected resumed submission: {resumed_submission:?}");
+    };
+    wait_for_event(
+        &resumed.codex,
+        |event| matches!(event, EventMsg::TurnComplete(turn) if turn.turn_id == resumed_turn_id),
+    )
     .await;
 
     let requests = responses.requests();
@@ -1460,34 +1477,37 @@ async fn submit_text_turn(test: &TestCodex, text: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn submit_dedicated_text_turn(test: &TestCodex, text: &str) -> anyhow::Result<()> {
+async fn submit_dedicated_text_turn(
+    test: &TestCodex,
+    text: &str,
+) -> anyhow::Result<TurnInputSubmission> {
     let (sandbox_policy, permission_profile) =
         turn_permission_fields(PermissionProfile::Disabled, test.config.cwd.as_path());
-    test.codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
+    let submission = test
+        .codex
+        .start_or_steer_turn(
+            TurnInputRequest::user_input(vec![UserInput::Text {
                 text: text.to_string(),
                 text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
-                environments: Some(local_selections(test.config.cwd.clone())),
-                approval_policy: Some(AskForApproval::Never),
-                sandbox_policy: Some(sandbox_policy),
-                permission_profile,
-                ..Default::default()
-            },
-        })
+            }])
+            .with_thread_settings(
+                codex_protocol::protocol::ThreadSettingsOverrides {
+                    environments: Some(local_selections(test.config.cwd.clone())),
+                    approval_policy: Some(AskForApproval::Never),
+                    sandbox_policy: Some(sandbox_policy),
+                    permission_profile,
+                    ..Default::default()
+                },
+            ),
+        )
         .await?;
-    Ok(())
+    Ok(submission)
 }
 
 fn configure_chat_provider(config: &mut Config) {
     config.model_provider.name = "Chat Completions".to_string();
     config.model_provider.env_key = None;
-    config.model_provider.experimental_bearer_token = Some("test-token".to_string());
+    config.model_provider.experimental_bearer_token = Some("test-token".into());
     config.model_provider.requires_openai_auth = false;
     config.model_provider.supports_websockets = true;
     config.model_provider.stream_max_retries = Some(0);

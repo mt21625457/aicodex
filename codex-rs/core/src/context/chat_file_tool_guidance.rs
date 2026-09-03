@@ -1,4 +1,5 @@
 use super::ContextualUserFragment;
+use codex_protocol::models::ContentItemKind;
 
 /// Bounded guidance for Chat Completions sessions exposing dedicated file tools.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +24,10 @@ impl ChatFileToolGuidance {
 }
 
 impl ContextualUserFragment for ChatFileToolGuidance {
+    fn content_kind(&self) -> ContentItemKind {
+        ContentItemKind("file_tools.chat_guidance".to_string())
+    }
+
     fn role(&self) -> &'static str {
         "developer"
     }

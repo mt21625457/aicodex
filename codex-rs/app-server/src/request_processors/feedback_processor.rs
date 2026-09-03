@@ -6,6 +6,7 @@ use codex_feedback::CODEX_APP_DIRECTORY_CACHE_ATTACHMENT_FILENAME;
 use codex_feedback::CODEX_APPS_TOOLS_CACHE_ATTACHMENT_FILENAME;
 #[cfg(target_os = "windows")]
 use codex_feedback::WINDOWS_SANDBOX_LOG_ATTACHMENT_FILENAME;
+use codex_feedback::guardian_review_failures_attachment;
 use codex_rollout::RolloutRecorder;
 use sha2::Digest;
 use sha2::Sha256;
@@ -108,6 +109,7 @@ impl FeedbackRequestProcessor {
         }
         let snapshot = self.feedback.snapshot(conversation_id);
         let thread_id = snapshot.thread_id.clone();
+        let mut extra_attachments = Vec::new();
         let (feedback_thread_ids, sqlite_feedback_logs, state_db_ctx) = if include_logs {
             if let Some(log_db) = self.log_db.as_ref() {
                 log_db.flush().await;
@@ -129,6 +131,7 @@ impl FeedbackRequestProcessor {
                 },
                 None => Vec::new(),
             };
+            extra_attachments.extend(guardian_review_failures_attachment(&feedback_thread_ids));
             let mut feedback_thread_ids = feedback_thread_ids;
             let original_len = feedback_thread_ids.len();
             if let Some(conversation_id) = conversation_id {
@@ -185,6 +188,9 @@ impl FeedbackRequestProcessor {
 
         let mut attachment_paths = Vec::new();
         let mut seen_attachment_paths = HashSet::new();
+        // File priority after logs and generated diagnostics: reported thread, subagent
+        // descendants (oldest to newest within the retained recent set), guardian rollout,
+        // sandbox log, tool caches, then caller files. Keep this order for size budgeting.
         if include_logs {
             for feedback_thread_id in &feedback_thread_ids {
                 let Some(rollout_path) = self
@@ -240,7 +246,6 @@ impl FeedbackRequestProcessor {
             }
         }
 
-        let mut extra_attachments = Vec::new();
         if include_logs {
             let doctor_cwd = feedback_cwd(
                 &self.thread_manager,
@@ -701,6 +706,7 @@ mod tests {
                 ordinal: None,
                 item: RolloutItem::TurnContext(TurnContextItem {
                     turn_id: Some((*turn_id).to_string()),
+                    root_turn_id: None,
                     cwd: AbsolutePathBuf::from_absolute_path(tempdir.path())
                         .expect("absolute feedback rollout directory"),
                     workspace_roots: None,
@@ -720,6 +726,7 @@ mod tests {
                     multi_agent_version: None,
                     multi_agent_mode: None,
                     realtime_active: None,
+                    cyber_access_program: None,
                     effort: effort.clone(),
                     summary: ReasoningSummary::Auto,
                 }),

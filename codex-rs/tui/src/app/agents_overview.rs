@@ -12,6 +12,7 @@ use crate::chatwidget::ThreadInputStateRestoreMode;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::Thread;
+use codex_app_server_protocol::ThreadHistoryMode;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadLoadedListResponse;
@@ -33,6 +34,7 @@ pub(super) struct AgentsOverviewState {
     pub(super) refresh_pending: bool,
     pub(super) rendered_full_screen: bool,
     pub(super) visible_thread_ids: Vec<ThreadId>,
+    pub(super) threads: Vec<Thread>,
     pub(super) view_state:
         Arc<std::sync::Mutex<super::agents_overview_view::AgentsOverviewViewState>>,
     pub(super) input_states: HashMap<ThreadId, ThreadInputState>,
@@ -92,7 +94,10 @@ impl App {
 
         self.agents_overview.request_id = None;
         self.agents_overview.refresh_pending = false;
-        let view = self.agents_overview_view(Vec::new(), /*selected_thread_id*/ None);
+        let view = self.agents_overview_view(
+            self.agents_overview.threads.clone(),
+            /*selected_thread_id*/ None,
+        );
         self.agents_overview.visible_thread_ids = view.thread_ids();
         self.chat_widget.show_bottom_pane_view(Box::new(view));
         self.refresh_agents_overview_threads(app_server);
@@ -240,6 +245,7 @@ impl App {
                 return;
             }
         };
+        self.agents_overview.threads = threads.clone();
         let view = self.agents_overview_view(threads, selected_thread_id);
         self.agents_overview.visible_thread_ids = view.thread_ids();
         if selected_thread_id
@@ -247,6 +253,13 @@ impl App {
             && let Ok(mut state) = self.agents_overview.view_state.lock()
             && state.renaming
         {
+            self.chat_widget.add_info_message(
+                format!(
+                    "The rename target disappeared. Unsubmitted title: {}",
+                    state.input
+                ),
+                /*hint*/ None,
+            );
             state.renaming = false;
             state.input.clear();
         }
@@ -257,7 +270,7 @@ impl App {
         }
     }
 
-    fn agents_overview_view(
+    pub(super) fn agents_overview_view(
         &self,
         mut threads: Vec<Thread>,
         selected_thread_id: Option<ThreadId>,
@@ -320,7 +333,9 @@ impl App {
         app_server: &mut AppServerSession,
         root_thread_id: ThreadId,
     ) -> color_eyre::Result<AppRunControl> {
-        if self.current_displayed_thread_id() == Some(root_thread_id) {
+        if self.current_displayed_thread_id() == Some(root_thread_id)
+            && !self.thread_unavailable(root_thread_id)
+        {
             return Ok(AppRunControl::Continue);
         }
 
@@ -482,10 +497,10 @@ impl App {
                 self.runtime_approval_policy_override =
                     Some(self.config.permissions.approval_policy.value().into());
             }
-            let destination_permissions =
-                RuntimePermissionProfileOverride::from_config(&self.config);
-            if destination_permissions != baseline_permissions {
-                self.runtime_permission_profile_override = Some(destination_permissions);
+            if !baseline_permissions.matches_config(&self.config) {
+                self.runtime_permission_profile_override = Some(
+                    RuntimePermissionProfileOverride::from_restored_config(&self.config),
+                );
             }
             if !self
                 .backfill_loaded_subagent_threads(app_server)
@@ -505,7 +520,9 @@ impl App {
             }
         }
 
-        if self.current_displayed_thread_id() != Some(root_thread_id) {
+        if self.current_displayed_thread_id() != Some(root_thread_id)
+            || self.thread_unavailable(root_thread_id)
+        {
             self.select_agent_thread_and_discard_side(tui, app_server, root_thread_id)
                 .await?;
         }
@@ -587,7 +604,7 @@ impl App {
         };
         if let Some(profile) = self.runtime_permission_profile_override.as_ref()
             && profile.active_permission_profile.is_some()
-            && (RuntimePermissionProfileOverride::from_config(&config) != *profile
+            && (!profile.matches_config(&config)
                 || config.permissions.profile_workspace_roots()
                     != self.config.permissions.profile_workspace_roots())
         {
@@ -667,15 +684,34 @@ impl App {
     ) {
         let active_turn_id = match self.active_turn_id_for_thread(thread_id).await {
             Some(turn_id) => Some(turn_id),
-            None => match app_server
-                .thread_read(thread_id, /*include_turns*/ true)
-                .await
+            None => match async {
+                let thread = app_server
+                    .thread_read(thread_id, /*include_turns*/ false)
+                    .await?;
+                let turns = match thread.history_mode {
+                    ThreadHistoryMode::Paginated if app_server.supports_paginated_history() => {
+                        app_server
+                            .thread_turns_page(thread_id, /*cursor*/ None)
+                            .await?
+                            .data
+                    }
+                    ThreadHistoryMode::Legacy | ThreadHistoryMode::Paginated => {
+                        app_server
+                            .thread_read(thread_id, /*include_turns*/ true)
+                            .await?
+                            .turns
+                    }
+                };
+                Ok::<_, color_eyre::Report>(
+                    turns
+                        .into_iter()
+                        .find(|turn| turn.status == TurnStatus::InProgress)
+                        .map(|turn| turn.id),
+                )
+            }
+            .await
             {
-                Ok(thread) => thread
-                    .turns
-                    .into_iter()
-                    .find(|turn| turn.status == TurnStatus::InProgress)
-                    .map(|turn| turn.id),
+                Ok(turn_id) => turn_id,
                 Err(error) => {
                     self.chat_widget
                         .add_error_message(format!("Failed to stop background task: {error}"));

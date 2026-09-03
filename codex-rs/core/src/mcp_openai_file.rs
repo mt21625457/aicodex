@@ -19,6 +19,7 @@ use codex_api::upload_openai_file;
 use codex_exec_server::GetMetadataOptions;
 use codex_login::CodexAuth;
 use codex_protocol::permissions::FileSystemAccessMode;
+use codex_protocol::permissions::ReadDenyMatcher;
 use codex_sandboxing::policy_transforms::effective_file_system_sandbox_policy;
 use codex_sandboxing::policy_transforms::merge_permission_profiles;
 use serde_json::Value as JsonValue;
@@ -180,9 +181,18 @@ async fn build_uploaded_argument_value(
             .entries
             .iter()
             .any(|entry| entry.access == FileSystemAccessMode::Deny);
-    let sandbox = requires_sandbox.then(|| {
-        turn_context.file_system_sandbox_context(additional_permissions, turn_environment)
-    });
+    let sandbox =
+        requires_sandbox.then(|| turn_environment.sandbox_context(additional_permissions));
+    if let Some(sandbox) = sandbox.as_ref()
+        && let Some(policy_context) = sandbox.policy_context()
+        && ReadDenyMatcher::from_context(&file_system_policy, &policy_context)
+            .is_some_and(|matcher| matcher.is_read_denied_uri(&path_uri, &policy_context))
+    {
+        return Err(contextualize_error(format!(
+            "Permission denied: `{}` is excluded by the file-system read policy",
+            path_uri.inferred_native_path_string()
+        )));
+    }
     if sandbox.is_some() {
         let environment_info = turn_environment
             .environment
@@ -287,6 +297,7 @@ mod tests {
         };
         primary.selection.cwd = PathUri::from_abs_path(&cwd);
         primary.selection.workspace_roots.clear();
+        primary.config_mut().workspace_roots.clear();
     }
 
     #[tokio::test]

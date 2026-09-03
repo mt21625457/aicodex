@@ -31,6 +31,8 @@ use crate::tools::runtimes::strip_managed_proxy_env;
 use crate::turn_timing::now_unix_timestamp_ms;
 use crate::turn_timing::record_turn_ttfm_metric;
 use crate::user_shell_command::user_shell_command_record_item;
+use codex_protocol::error::CodexErrorDetails;
+use codex_protocol::error::SandboxErr;
 use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::exec_output::StreamOutput;
 use codex_protocol::items::CommandExecutionItem;
@@ -39,9 +41,11 @@ use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecCommandSource;
+use codex_protocol::protocol::HasLegacyEvent;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_rollout::EventPersistenceMode;
+use codex_rollout::RolloutItem;
 use codex_sandboxing::SandboxType;
 use codex_shell_command::parse_command::parse_command;
 use codex_thread_store::PersistContext;
@@ -53,14 +57,16 @@ use codex_protocol::models::PermissionProfile;
 
 const USER_SHELL_TIMEOUT_MS: u64 = 60 * 60 * 1000; // 1 hour
 
-async fn emit_user_shell_item_completed_extended(
+async fn emit_user_shell_item_completed(
     session: &Session,
     turn_context: &TurnContext,
-    item: TurnItem,
+    live_item: CommandExecutionItem,
+    persisted_item: CommandExecutionItem,
 ) {
-    record_turn_ttfm_metric(turn_context, &item).await;
+    let live_item = TurnItem::CommandExecution(live_item);
+    record_turn_ttfm_metric(turn_context, &live_item).await;
     let completed_at_ms = now_unix_timestamp_ms();
-    let item_id = item.id();
+    let item_id = live_item.id();
     let started_at_ms = turn_context
         .turn_timing_state
         .take_item_started(&item_id)
@@ -75,17 +81,36 @@ async fn emit_user_shell_item_completed_extended(
             completed_at_ms
         });
     session
-        .send_event_with_persistence_mode(
+        .send_event(
             turn_context,
             EventMsg::ItemCompleted(ItemCompletedEvent {
                 thread_id: session.thread_id,
                 turn_id: turn_context.sub_id.clone(),
-                item,
+                item: live_item,
                 started_at_ms: Some(started_at_ms),
                 completed_at_ms,
             }),
-            EventPersistenceMode::Extended,
         )
+        .await;
+
+    // Legacy histories reconstruct command items from ExecCommandEnd rather than ItemCompleted.
+    // Persist that projection separately so the live item can retain diagnostic text while
+    // history keeps the command's clean output. Appending it after the live event also makes it
+    // the final value when paginated histories replay both representations.
+    let persisted_event = ItemCompletedEvent {
+        thread_id: session.thread_id,
+        turn_id: turn_context.sub_id.clone(),
+        item: TurnItem::CommandExecution(persisted_item),
+        started_at_ms: Some(started_at_ms),
+        completed_at_ms,
+    };
+    let rollout_items = persisted_event
+        .as_legacy_events(/*show_raw_agent_reasoning*/ false)
+        .into_iter()
+        .map(RolloutItem::EventMsg)
+        .collect::<Vec<_>>();
+    session
+        .persist_rollout_items_with_mode(&rollout_items, EventPersistenceMode::Extended)
         .await;
 }
 
@@ -102,11 +127,15 @@ pub(crate) enum UserShellCommandMode {
 #[derive(Clone)]
 pub(crate) struct UserShellCommandTask {
     command: String,
+    timeout_ms: Option<u64>,
 }
 
 impl UserShellCommandTask {
-    pub(crate) fn new(command: String) -> Self {
-        Self { command }
+    pub(crate) fn new(command: String, timeout_ms: Option<u64>) -> Self {
+        Self {
+            command,
+            timeout_ms,
+        }
     }
 }
 
@@ -130,6 +159,7 @@ impl SessionTask for UserShellCommandTask {
             session,
             turn_context,
             self.command.clone(),
+            self.timeout_ms,
             cancellation_token,
             UserShellCommandMode::StandaloneTurn,
         )
@@ -142,6 +172,7 @@ pub(crate) async fn execute_user_shell_command(
     session: Arc<Session>,
     turn_context: Arc<TurnContext>,
     command: String,
+    timeout_ms: Option<u64>,
     cancellation_token: CancellationToken,
     mode: UserShellCommandMode,
 ) {
@@ -163,7 +194,7 @@ pub(crate) async fn execute_user_shell_command(
             trace_id: turn_context.trace_id.clone(),
             started_at: turn_context.turn_timing_state.started_at_unix_secs().await,
             model_context_window: turn_context.model_context_window(),
-            collaboration_mode_kind: turn_context.mode,
+            collaboration_mode_kind: turn_context.mode(),
         });
         session.send_event(turn_context.as_ref(), event).await;
     }
@@ -248,13 +279,12 @@ pub(crate) async fn execute_user_shell_command(
         cwd: cwd.clone().into(),
         env: exec_env_map,
         exec_server_env_config: None,
+        exec_server_shell_snapshot: None,
         // `/shell` is the explicit full-access escape hatch, so it must not
         // inherit a managed proxy from the surrounding session or turn.
         network: None,
         network_environment_id: None,
-        // TODO(zhao-oai): Now that we have ExecExpiration::Cancellation, we
-        // should use that instead of an "arbitrarily large" timeout here.
-        expiration: USER_SHELL_TIMEOUT_MS.into(),
+        expiration: timeout_ms.unwrap_or(USER_SHELL_TIMEOUT_MS).into(),
         capture_policy: ExecCapturePolicy::ShellTool,
         sandbox: SandboxType::None,
         windows_sandbox_policy_cwd: cwd.clone().into(),
@@ -302,59 +332,63 @@ pub(crate) async fn execute_user_shell_command(
                 mode,
             )
             .await;
-            emit_user_shell_item_completed_extended(
+            let completed_item = CommandExecutionItem {
+                id: call_id,
+                plugin_id: None,
+                script_path: None,
+                process_id: None,
+                command: display_command.clone(),
+                cwd: cwd.clone().into(),
+                parsed_cmd: parsed_cmd.clone(),
+                source: ExecCommandSource::UserShell,
+                interaction_input: None,
+                status: CommandExecutionStatus::Failed,
+                stdout: Some(String::new()),
+                stderr: Some(aborted_message.clone()),
+                aggregated_output: Some(aborted_message.clone()),
+                exit_code: Some(-1),
+                duration: Some(Duration::ZERO),
+                formatted_output: Some(aborted_message),
+            };
+            emit_user_shell_item_completed(
                 session.as_ref(),
                 turn_context.as_ref(),
-                TurnItem::CommandExecution(CommandExecutionItem {
-                    id: call_id,
-                    plugin_id: None,
-                    script_path: None,
-                    process_id: None,
-                    command: display_command.clone(),
-                    cwd: cwd.clone().into(),
-                    parsed_cmd: parsed_cmd.clone(),
-                    source: ExecCommandSource::UserShell,
-                    interaction_input: None,
-                    status: CommandExecutionStatus::Failed,
-                    stdout: Some(String::new()),
-                    stderr: Some(aborted_message.clone()),
-                    aggregated_output: Some(aborted_message.clone()),
-                    exit_code: Some(-1),
-                    duration: Some(Duration::ZERO),
-                    formatted_output: Some(aborted_message),
-                }),
+                completed_item.clone(),
+                completed_item,
             )
             .await;
         }
         Ok(Ok(output)) => {
-            emit_user_shell_item_completed_extended(
+            let completed_item = CommandExecutionItem {
+                id: call_id.clone(),
+                plugin_id: None,
+                script_path: None,
+                process_id: None,
+                command: display_command.clone(),
+                cwd: cwd.clone().into(),
+                parsed_cmd: parsed_cmd.clone(),
+                source: ExecCommandSource::UserShell,
+                interaction_input: None,
+                status: if output.exit_code == 0 {
+                    CommandExecutionStatus::Completed
+                } else {
+                    CommandExecutionStatus::Failed
+                },
+                stdout: Some(output.stdout.text.clone()),
+                stderr: Some(output.stderr.text.clone()),
+                aggregated_output: Some(output.aggregated_output.text.clone()),
+                exit_code: Some(output.exit_code),
+                duration: Some(output.duration),
+                formatted_output: Some(format_exec_output_str(
+                    &output,
+                    turn_context.model_info().truncation_policy.into(),
+                )),
+            };
+            emit_user_shell_item_completed(
                 session.as_ref(),
                 turn_context.as_ref(),
-                TurnItem::CommandExecution(CommandExecutionItem {
-                    id: call_id.clone(),
-                    plugin_id: None,
-                    script_path: None,
-                    process_id: None,
-                    command: display_command.clone(),
-                    cwd: cwd.clone().into(),
-                    parsed_cmd: parsed_cmd.clone(),
-                    source: ExecCommandSource::UserShell,
-                    interaction_input: None,
-                    status: if output.exit_code == 0 {
-                        CommandExecutionStatus::Completed
-                    } else {
-                        CommandExecutionStatus::Failed
-                    },
-                    stdout: Some(output.stdout.text.clone()),
-                    stderr: Some(output.stderr.text.clone()),
-                    aggregated_output: Some(output.aggregated_output.text.clone()),
-                    exit_code: Some(output.exit_code),
-                    duration: Some(output.duration),
-                    formatted_output: Some(format_exec_output_str(
-                        &output,
-                        turn_context.model_info.truncation_policy.into(),
-                    )),
-                }),
+                completed_item.clone(),
+                completed_item,
             )
             .await;
 
@@ -363,6 +397,12 @@ pub(crate) async fn execute_user_shell_command(
         }
         Ok(Err(err)) => {
             error!("user shell command failed: {err:?}");
+            let persisted_timeout_output = match err.details() {
+                CodexErrorDetails::Sandbox(SandboxErr::Timeout { output }) => {
+                    Some(output.as_ref().clone())
+                }
+                _ => None,
+            };
             let message = format!("execution error: {err:?}");
             let exec_output = ExecToolCallOutput {
                 exit_code: -1,
@@ -372,37 +412,50 @@ pub(crate) async fn execute_user_shell_command(
                 duration: Duration::ZERO,
                 timed_out: false,
             };
-            emit_user_shell_item_completed_extended(
+            let live_item = CommandExecutionItem {
+                id: call_id,
+                plugin_id: None,
+                script_path: None,
+                process_id: None,
+                command: display_command,
+                cwd: cwd.into(),
+                parsed_cmd,
+                source: ExecCommandSource::UserShell,
+                interaction_input: None,
+                status: CommandExecutionStatus::Failed,
+                stdout: Some(exec_output.stdout.text.clone()),
+                stderr: Some(exec_output.stderr.text.clone()),
+                aggregated_output: Some(exec_output.aggregated_output.text.clone()),
+                exit_code: Some(exec_output.exit_code),
+                duration: Some(exec_output.duration),
+                formatted_output: Some(format_exec_output_str(
+                    &exec_output,
+                    turn_context.model_info().truncation_policy.into(),
+                )),
+            };
+            let persisted_output = persisted_timeout_output.as_ref().unwrap_or(&exec_output);
+            let persisted_item = CommandExecutionItem {
+                stdout: Some(persisted_output.stdout.text.clone()),
+                stderr: Some(persisted_output.stderr.text.clone()),
+                aggregated_output: Some(persisted_output.aggregated_output.text.clone()),
+                formatted_output: Some(format_exec_output_str(
+                    persisted_output,
+                    turn_context.model_info().truncation_policy.into(),
+                )),
+                ..live_item.clone()
+            };
+            emit_user_shell_item_completed(
                 session.as_ref(),
                 turn_context.as_ref(),
-                TurnItem::CommandExecution(CommandExecutionItem {
-                    id: call_id,
-                    plugin_id: None,
-                    script_path: None,
-                    process_id: None,
-                    command: display_command,
-                    cwd: cwd.into(),
-                    parsed_cmd,
-                    source: ExecCommandSource::UserShell,
-                    interaction_input: None,
-                    status: CommandExecutionStatus::Failed,
-                    stdout: Some(exec_output.stdout.text.clone()),
-                    stderr: Some(exec_output.stderr.text.clone()),
-                    aggregated_output: Some(exec_output.aggregated_output.text.clone()),
-                    exit_code: Some(exec_output.exit_code),
-                    duration: Some(exec_output.duration),
-                    formatted_output: Some(format_exec_output_str(
-                        &exec_output,
-                        turn_context.model_info.truncation_policy.into(),
-                    )),
-                }),
+                live_item,
+                persisted_item,
             )
             .await;
             persist_user_shell_output(
                 &session,
                 turn_context.as_ref(),
                 &raw_command,
-                &exec_output,
+                persisted_output,
                 mode,
             )
             .await;
@@ -415,6 +468,7 @@ async fn send_user_shell_error(session: &Session, turn_context: &TurnContext, me
         .send_event(
             turn_context,
             EventMsg::Error(ErrorEvent {
+                misalignment: None,
                 message: message.to_string(),
                 codex_error_info: None,
             }),

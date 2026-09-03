@@ -1,7 +1,9 @@
+use crate::config::NetworkProxySpec;
 use crate::guardian::GuardianNetworkAccessTrigger;
 use crate::guardian::GuardianReviewContext;
 use crate::network_policy_decision::denied_network_policy_message;
 use crate::session::session::Session;
+use crate::session::turn_context::TurnContext;
 use crate::session::turn_context::TurnEnvironment;
 use crate::tools::approvals::ApprovalAction;
 use crate::tools::approvals::ApprovalContext;
@@ -9,6 +11,7 @@ use crate::tools::events::truncate_rejection_message;
 use crate::tools::sandboxing::ToolError;
 use codex_network_proxy::BlockedRequest;
 use codex_network_proxy::BlockedRequestObserver;
+use codex_network_proxy::EnvironmentNetworkPolicy;
 use codex_network_proxy::NetworkDecision;
 use codex_network_proxy::NetworkPolicyDecider;
 use codex_network_proxy::NetworkPolicyRequest;
@@ -45,7 +48,7 @@ use uuid::Uuid;
 const ABANDONED_NETWORK_APPROVAL_MESSAGE: &str =
     "network approval was cancelled before a decision was returned";
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct NetworkApprovalSpec {
     pub network: Option<NetworkProxy>,
     pub trigger: GuardianNetworkAccessTrigger,
@@ -54,6 +57,7 @@ pub(crate) struct NetworkApprovalSpec {
     pub command: String,
     pub environment_id: String,
     pub permission_profile: PermissionProfile,
+    pub network_policy: Option<EnvironmentNetworkPolicy>,
 }
 
 #[derive(Clone, Debug)]
@@ -617,7 +621,7 @@ impl NetworkApprovalService {
         let Some(environment_id) = active_environment_id.or_else(|| {
             active_turn
                 .as_ref()
-                .and_then(|(turn_context, _)| turn_context.environments.primary())
+                .and_then(|(turn_context, _, _)| turn_context.environments.primary())
                 .map(|environment| environment.selection.environment_id.clone())
         }) else {
             return NetworkDecision::deny(REASON_NOT_ALLOWED);
@@ -644,7 +648,7 @@ impl NetworkApprovalService {
             format!("Network access to \"{target}\" was blocked by policy.");
         let prompt_reason = format!("{} is not in the allowed_domains", request.host);
 
-        let Some((turn_context, strict_auto_review)) = active_turn else {
+        let Some((turn_context, step_settings, strict_auto_review)) = active_turn else {
             if let Some(owner_call) = owner_call.as_ref() {
                 self.record_call_outcome(&owner_call.registration_id, policy_denial_message);
             }
@@ -690,7 +694,11 @@ impl NetworkApprovalService {
             pending_owner.complete(PendingApprovalDecision::Deny);
             return NetworkDecision::deny(REASON_NOT_ALLOWED);
         }
-        if !allows_network_approval_flow(turn_context.approval_policy()) {
+        let review_context = GuardianReviewContext::from_resolved_settings(
+            Arc::clone(&turn_context),
+            &step_settings,
+        );
+        if !allows_network_approval_flow(review_context.approval_policy) {
             if let Some(owner_call) = owner_call.as_ref() {
                 self.record_call_outcome(&owner_call.registration_id, policy_denial_message);
             }
@@ -751,7 +759,8 @@ impl NetworkApprovalService {
             cwd,
         };
         let approval_context = ApprovalContext {
-            review_context: GuardianReviewContext::from(&turn_context),
+            review_context,
+            cancellation_token: None,
             call_id: approval_call_id,
             tool_name: telemetry_tool_name.clone(),
             strict_auto_review,
@@ -1021,8 +1030,8 @@ pub(crate) fn build_network_policy_decider(
 }
 
 pub(crate) async fn begin_network_approval(
-    session: &Session,
-    turn_id: &str,
+    session: &Arc<Session>,
+    turn: &TurnContext,
     managed_network_active: bool,
     spec: Option<NetworkApprovalSpec>,
 ) -> Result<Option<ActiveNetworkApproval>, ToolError> {
@@ -1033,21 +1042,93 @@ pub(crate) async fn begin_network_approval(
         command,
         environment_id,
         permission_profile,
+        network_policy,
     } = match spec {
         Some(spec) => spec,
         None => return Ok(None),
-    };
-    let Some(network) = network else {
-        return Ok(None);
     };
     if !managed_network_active {
         return Ok(None);
     }
 
+    let controller = turn.config.permissions.network.as_ref();
+    let owner_spec = network_policy
+        .as_ref()
+        .map(|policy| {
+            // Resolve owner policy once, where the command's actual enforcing proxy is built.
+            NetworkProxySpec::for_environment(
+                controller,
+                policy,
+                &permission_profile,
+                session.services.exec_policy.current().as_ref(),
+            )
+        })
+        .transpose()
+        .map_err(|error| {
+            ToolError::Rejected(format!(
+                "failed to resolve environment network policy: {error}"
+            ))
+        })?;
+    let network = if let Some(owner_spec) = owner_spec.as_ref() {
+        if controller.is_some() {
+            network
+                .or_else(|| {
+                    session
+                        .services
+                        .network_proxy
+                        .load_full()
+                        .map(|controller| controller.proxy())
+                })
+                .ok_or_else(|| {
+                    ToolError::Rejected(
+                        "environment network policy requires its configured controller proxy"
+                            .to_string(),
+                    )
+                })?
+        } else {
+            // This carrier never listens: the executor starts the real per-command proxy.
+            let state = owner_spec
+                .build_state_with_audit_metadata(
+                    session.services.network_proxy_audit_metadata.clone(),
+                )
+                .map_err(|error| {
+                    ToolError::Rejected(format!(
+                        "failed to build environment network policy: {error}"
+                    ))
+                })?;
+            NetworkProxy::builder()
+                .state(Arc::new(state))
+                .managed_by_codex(/*managed_by_codex*/ false)
+                .build()
+                .await
+                .map_err(|error| {
+                    ToolError::Rejected(format!(
+                        "failed to build execution-scoped network proxy: {error}"
+                    ))
+                })?
+        }
+    } else if let Some(network) = network {
+        network
+    } else {
+        return Ok(None);
+    };
+    let environment_policy = owner_spec.map(|spec| spec.environment_policy());
+    let fallback_policy_decider = environment_policy.as_ref().map(|_| {
+        build_network_policy_decider(
+            Arc::clone(&session.services.network_approval),
+            Arc::new(RwLock::new(Arc::downgrade(session))),
+        )
+    });
     let registration_id = Uuid::new_v4().to_string();
     let attribution_token = Uuid::new_v4().to_string();
     let execution_proxy = network
-        .for_execution(&environment_id, &registration_id, attribution_token)
+        .for_execution(
+            &environment_id,
+            &registration_id,
+            attribution_token,
+            environment_policy,
+            fallback_policy_decider,
+        )
         .map_err(|err| {
             ToolError::Codex(codex_protocol::error::CodexErr::Io(io::Error::other(
                 format!("failed to create execution-scoped network proxy: {err}"),
@@ -1059,7 +1140,7 @@ pub(crate) async fn begin_network_approval(
         .network_approval
         .register_call(ActiveNetworkApprovalCall {
             registration_id: registration_id.clone(),
-            turn_id: turn_id.to_string(),
+            turn_id: turn.sub_id.clone(),
             trigger,
             tool_name,
             command,

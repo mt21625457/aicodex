@@ -190,7 +190,7 @@ impl WebSearchHandler {
         select_web_search_backend(
             turn.config.features.enabled(Feature::KimiMoonshotWebSearch),
             turn.config.moonshot_search.enabled,
-            &turn.model_info.slug,
+            &turn.model_info().slug,
         )
     }
 
@@ -217,7 +217,7 @@ impl WebSearchHandler {
         }
 
         if turn.provider.info().is_openai() {
-            turn.model_info.slug.clone()
+            turn.model_info().slug.clone()
         } else {
             OPENAI_SEARCH_FALLBACK_MODEL.to_string()
         }
@@ -249,7 +249,10 @@ impl ToolExecutor<ToolInvocation> for WebSearchHandler {
         self.spec.clone()
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(async move {
             let ToolInvocation {
                 session,
@@ -394,7 +397,7 @@ fn external_web_access_for_spec(
 
 fn search_output_token_budget(turn: &crate::session::turn_context::TurnContext) -> u64 {
     let truncation_policy: codex_utils_output_truncation::TruncationPolicy =
-        turn.model_info.truncation_policy.into();
+        turn.model_info().truncation_policy.into();
     u64::try_from(truncation_policy.token_budget()).unwrap_or(u64::MAX)
 }
 
@@ -577,7 +580,7 @@ fn push_visible_message(messages: &mut Vec<ResponseItem>, item: &ResponseItem) {
 }
 
 impl ToolOutput for OpenAiSearchOutput {
-    fn log_preview(&self) -> String {
+    fn log_output(&self) -> String {
         "[openai web search output]".to_string()
     }
 
@@ -602,7 +605,7 @@ impl ToolOutput for OpenAiSearchOutput {
 }
 
 impl ToolOutput for MoonshotSearchOutput {
-    fn log_preview(&self) -> String {
+    fn log_output(&self) -> String {
         "[moonshot web search output]".to_string()
     }
 

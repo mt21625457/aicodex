@@ -2,10 +2,12 @@ use super::persisted_resume_settings::PersistedResumeSettings;
 use super::persisted_resume_settings::latest_persisted_resume_settings;
 use super::thread_enrichment::enrich_loaded_threads;
 use super::thread_fork_goal::inherit_thread_goal_snapshot;
-use super::turn_processor::loaded_thread_can_accept_direct_input;
+use super::thread_input::can_accept_direct_input;
+use super::thread_input::loaded_thread_can_accept_direct_input;
 use super::*;
 use crate::error_code::method_not_found;
 use codex_app_server_protocol::SelectedCapabilityRoot;
+use codex_app_server_protocol::ThreadHistoryMode as ApiThreadHistoryMode;
 use codex_app_server_protocol::ThreadRevertParams;
 use codex_app_server_protocol::ThreadRevertResponse;
 use codex_app_server_protocol::ThreadRevertedNotification;
@@ -17,6 +19,7 @@ use codex_app_server_protocol::ThreadSectionMoveResponse;
 use codex_extension_api::ExtensionDataInit;
 use codex_extension_api::ThreadIdleCause;
 use codex_models_manager::model_info::is_deepseek_model_slug;
+use codex_protocol::SanitizedGitUrl;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::mcp::ClientMcpExtensions;
@@ -33,6 +36,8 @@ const PERSIST_EXTENDED_HISTORY_DEPRECATION_DETAILS: &str =
 const CODEX_TUI_CLIENT_NAME: &str = "codex-tui";
 const THREAD_ROLLBACK_DEPRECATION_SUMMARY: &str =
     "thread/rollback is deprecated and will be removed soon";
+const PAGINATED_FULL_HISTORY_DEPRECATION_SUMMARY: &str = "Full-history hydration is deprecated for paginated threads; use `excludeTurns: true`, then page with `thread/turns/list` and `thread/items/list`.";
+const PAGINATED_THREAD_READ_DEPRECATION_SUMMARY: &str = "Full-history hydration is deprecated for paginated threads; omit `includeTurns` or set it to `false`, then page with `thread/turns/list` and `thread/items/list`.";
 
 async fn stage_pending_project_metadata(
     thread_manager: &ThreadManager,
@@ -89,7 +94,7 @@ struct ThreadListFilters {
 
 struct ThreadReadView {
     thread: Thread,
-    runtime_lifecycle: ThreadRuntimeLifecycle,
+    runtime_lifecycle: Option<ThreadRuntimeLifecycle>,
     token_usage_info: Option<TokenUsageInfo>,
     token_usage_turn_id: Option<String>,
 }
@@ -811,20 +816,23 @@ impl ThreadRequestProcessor {
         app_server_client_name: Option<&str>,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         if app_server_client_name != Some(CODEX_TUI_CLIENT_NAME) {
-            self.send_thread_rollback_deprecation_notice(request_id.connection_id)
-                .await;
+            self.send_deprecation_notice(
+                request_id.connection_id,
+                THREAD_ROLLBACK_DEPRECATION_SUMMARY,
+            )
+            .await;
         }
         self.thread_rollback_inner(request_id, params)
             .await
             .map(|()| None)
     }
 
-    async fn send_thread_rollback_deprecation_notice(&self, connection_id: ConnectionId) {
+    async fn send_deprecation_notice(&self, connection_id: ConnectionId, summary: &str) {
         self.outgoing
             .send_server_notification_to_connections(
                 &[connection_id],
                 ServerNotification::DeprecationNotice(DeprecationNoticeNotification {
-                    summary: THREAD_ROLLBACK_DEPRECATION_SUMMARY.to_string(),
+                    summary: summary.to_string(),
                     details: None,
                 }),
             )
@@ -872,9 +880,19 @@ impl ThreadRequestProcessor {
         request_id: ConnectionRequestId,
         params: ThreadReadParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let include_turns = params.include_turns;
         let (response, replay) = self.thread_read_response_inner(params).await?;
+        let paginated_full_history = include_turns
+            && matches!(
+                response.thread.history_mode,
+                ApiThreadHistoryMode::Paginated
+            );
         let connection_id = request_id.connection_id;
         self.outgoing.send_response(request_id, response).await;
+        if paginated_full_history {
+            self.send_deprecation_notice(connection_id, PAGINATED_THREAD_READ_DEPRECATION_SUMMARY)
+                .await;
+        }
         if let Some(replay) = replay {
             send_thread_token_usage_info_update_to_connection(
                 &self.outgoing,
@@ -905,6 +923,35 @@ impl ThreadRequestProcessor {
         self.thread_items_list_response_inner(params)
             .await
             .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn thread_timeline_list(
+        &self,
+        params: ThreadTimelineListParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let thread_id = ThreadId::from_string(&params.thread_id)
+            .map_err(|error| invalid_request(format!("invalid thread id: {error}")))?;
+        let page = self
+            .thread_store
+            .list_timeline(StoreListTimelineParams {
+                thread_id,
+                cursor: params.cursor,
+                page_size: params
+                    .limit
+                    .map(|limit| limit as usize)
+                    .unwrap_or(THREAD_ITEMS_DEFAULT_LIMIT)
+                    .clamp(1, THREAD_ITEMS_MAX_LIMIT),
+            })
+            .await
+            .map_err(paginated_history_list_error)?;
+        Ok(Some(
+            ThreadTimelineListResponse {
+                data: page.items,
+                next_cursor: page.next_cursor,
+                active_realtime_session_at_page_start: page.active_realtime_session_at_page_start,
+            }
+            .into(),
+        ))
     }
 
     pub(crate) async fn thread_shell_command(
@@ -952,6 +999,7 @@ impl ThreadRequestProcessor {
 
         Ok((thread_id, thread))
     }
+
     pub(super) async fn acquire_thread_list_state_permit(
         &self,
     ) -> Result<SemaphorePermit<'_>, JSONRPCErrorError> {
@@ -1420,6 +1468,10 @@ impl ThreadRequestProcessor {
                 DynamicToolSpec::Namespace(namespace) => namespace.tools.len(),
             })
             .sum();
+        let history_mode = history_mode.or_else(|| {
+            (!config.ephemeral && thread_store.supports_paginated_history_lists())
+                .then_some(ThreadHistoryMode::Paginated)
+        });
         let mut thread_extension_init = ExtensionDataInit::new();
         if !selected_capability_roots.is_empty() {
             thread_extension_init.insert(selected_capability_roots);
@@ -1703,8 +1755,10 @@ impl ThreadRequestProcessor {
         }
 
         archive_thread_ids[1..].reverse();
-        for &thread_id_to_archive in &archive_thread_ids {
-            self.prepare_thread_for_archive(thread_id_to_archive).await;
+        // Collaboration may resume an archived descendant without unarchiving it.
+        self.prepare_thread_for_archive(thread_id).await;
+        for &descendant_thread_id in subtree_thread_ids.iter().skip(1).rev() {
+            self.prepare_thread_for_archive(descendant_thread_id).await;
         }
 
         let archived_thread_ids = self
@@ -1904,16 +1958,25 @@ impl ThreadRequestProcessor {
                         return Err(invalid_request("gitInfo must include at least one field"));
                     }
 
+                    let origin_url =
+                        Self::normalize_thread_metadata_git_field(origin_url, "gitInfo.originUrl")?;
+                    let origin_url = match origin_url {
+                        Some(Some(origin_url)) => {
+                            Some(Some(SanitizedGitUrl::try_from(origin_url).map_err(
+                                |_| invalid_request("gitInfo.originUrl must be a valid Git remote"),
+                            )?))
+                        }
+                        Some(None) => Some(None),
+                        None => None,
+                    };
+
                     Ok(StoreGitInfoPatch {
                         sha: Self::normalize_thread_metadata_git_field(sha, "gitInfo.sha")?,
                         branch: Self::normalize_thread_metadata_git_field(
                             branch,
                             "gitInfo.branch",
                         )?,
-                        origin_url: Self::normalize_thread_metadata_git_field(
-                            origin_url,
-                            "gitInfo.originUrl",
-                        )?,
+                        origin_url,
                     })
                 },
             )
@@ -2411,11 +2474,28 @@ impl ThreadRequestProcessor {
         request_id: &ConnectionRequestId,
         params: ThreadShellCommandParams,
     ) -> Result<ThreadShellCommandResponse, JSONRPCErrorError> {
-        let ThreadShellCommandParams { thread_id, command } = params;
+        let ThreadShellCommandParams {
+            thread_id,
+            command,
+            timeout_ms,
+        } = params;
         let command = command.trim().to_string();
         if command.is_empty() {
             return Err(invalid_request("command must not be empty"));
         }
+
+        let timeout_ms = timeout_ms
+            .map(|timeout_ms| {
+                u64::try_from(timeout_ms).map_err(|_| {
+                    invalid_params(format!(
+                        "thread/shellCommand timeoutMs must be non-negative, got {timeout_ms}"
+                    ))
+                })
+            })
+            .transpose()?;
+
+        let (_, thread) = self.load_thread(&thread_id).await?;
+
         // `thread/shellCommand` is app-server's local-host shell escape hatch,
         // not the normal turn-selected shell tool path.
         if self
@@ -2427,11 +2507,13 @@ impl ThreadRequestProcessor {
             return Err(internal_error("local environment is not configured"));
         }
 
-        let (_, thread) = self.load_thread(&thread_id).await?;
         self.submit_core_op(
             request_id,
             thread.as_ref(),
-            Op::RunUserShellCommand { command },
+            Op::RunUserShellCommand {
+                command,
+                timeout_ms,
+            },
         )
         .await
         .map_err(|err| internal_error(format!("failed to start shell command: {err}")))?;
@@ -2767,7 +2849,7 @@ impl ThreadRequestProcessor {
         Ok((
             ThreadReadResponse {
                 thread: view.thread,
-                runtime_lifecycle: Some(view.runtime_lifecycle),
+                runtime_lifecycle: view.runtime_lifecycle,
             },
             replay,
         ))
@@ -2879,21 +2961,15 @@ impl ThreadRequestProcessor {
                 latest_token_usage_turn_id_from_rollout_items(items, thread.turns.as_slice())
             })
         });
-        let runtime_lifecycle = {
-            let thread_state = self
-                .thread_state_manager
-                .thread_state_if_present(thread_id)
-                .await;
-            if let Some(thread_state) = thread_state {
-                let state = thread_state.lock().await;
-                state.runtime_lifecycle_snapshot()
-            } else {
-                ThreadRuntimeLifecycle {
-                    active_turn_id: None,
-                    active_turn_started_at: None,
-                    last_terminal_turn_id: None,
-                }
-            }
+        let runtime_lifecycle = if let Some(thread_state) = self
+            .thread_state_manager
+            .thread_state_if_present(thread_id)
+            .await
+        {
+            let state = thread_state.lock().await;
+            Some(state.runtime_lifecycle_snapshot())
+        } else {
+            None
         };
         Ok(ThreadReadView {
             thread,
@@ -2920,7 +2996,7 @@ impl ThreadRequestProcessor {
                 let (mut thread, _) =
                     thread_from_stored_thread_with_config(stored_thread, &self.config);
                 thread.turns = self
-                    .paginated_thread_full_turns(thread_id)
+                    .paginated_thread_turns(thread_id, items_view)
                     .await
                     .map_err(ThreadReadViewError::JsonRpc)?;
                 return Ok(Some((thread, None)));
@@ -3044,7 +3120,7 @@ impl ThreadRequestProcessor {
                     .await
                     .map_err(|err| thread_read_history_load_error(thread_id, err))?;
                 thread.turns = self
-                    .paginated_thread_full_turns(thread_id)
+                    .paginated_thread_turns(thread_id, items_view)
                     .await
                     .map_err(ThreadReadViewError::JsonRpc)?;
                 return Ok(None);
@@ -3315,11 +3391,12 @@ impl ThreadRequestProcessor {
         }
     }
 
-    // Older clients expect full `thread.turns` from resume and `thread/read(includeTurns=true)`.
+    // Older clients expect `thread.turns` from resume and `thread/read(includeTurns=true)`.
     // Keep this slow compatibility path until all clients page history directly.
-    async fn paginated_thread_full_turns(
+    async fn paginated_thread_turns(
         &self,
         thread_id: ThreadId,
+        items_view: TurnItemsView,
     ) -> Result<Vec<Turn>, JSONRPCErrorError> {
         let mut cursor = None;
         let mut turns = Vec::new();
@@ -3330,7 +3407,7 @@ impl ThreadRequestProcessor {
                     cursor.clone(),
                     Some(THREAD_TURNS_MAX_LIMIT as u32),
                     Some(SortDirection::Asc),
-                    Some(TurnItemsView::Full),
+                    Some(items_view),
                 )
                 .await?;
             turns.extend(page.data);
@@ -3661,6 +3738,7 @@ impl ThreadRequestProcessor {
                 &params,
                 app_server_client_name.clone(),
                 app_server_client_version.clone(),
+                /*cold_resume_history*/ None,
             )
             .await
         {
@@ -3730,8 +3808,74 @@ impl ThreadRequestProcessor {
             matches!(thread.history_mode, ThreadHistoryMode::Paginated).then_some(thread.thread_id)
         });
         let paginated_resume = paginated_thread_id.is_some();
+        if paginated_resume && include_turns {
+            self.send_deprecation_notice(
+                request_id.connection_id,
+                PAGINATED_FULL_HISTORY_DEPRECATION_SUMMARY,
+            )
+            .await;
+        }
 
-        let history_cwd = thread_history.session_cwd();
+        // Parent-owned V2 children must resume through their owner, not caller configuration.
+        if let InitialHistory::Resumed(resumed_history) = &thread_history
+            && let Some((source, _)) = thread_history.get_resumed_session_sources()
+            && !can_accept_direct_input(thread_history.get_multi_agent_version(), &source)
+        {
+            let child_thread_id = resumed_history.conversation_id;
+            self.thread_manager
+                .ensure_multi_agent_v2_child_loaded(child_thread_id)
+                .await
+                .map_err(|err| {
+                    tracing::warn!(
+                        thread_id = %child_thread_id,
+                        error = %err,
+                        "failed to resume a multi-agent v2 child through its parent"
+                    );
+                    invalid_request(
+                        "cannot resume an unloaded multi-agent v2 sub-agent through its parent; resume the parent first, or use thread/read to inspect it",
+                    )
+                })?;
+
+            let cold_resume_history = paginated_resume.then(|| thread_history.get_rollout_items());
+            // Attach to the resolved child with only the caller's history-paging preferences.
+            let attach_params = ThreadResumeParams {
+                thread_id: child_thread_id.to_string(),
+                exclude_turns,
+                initial_turns_page,
+                ..Default::default()
+            };
+            return match self
+                .resume_running_thread(
+                    &request_id,
+                    &attach_params,
+                    app_server_client_name,
+                    app_server_client_version,
+                    cold_resume_history,
+                )
+                .await?
+            {
+                RunningThreadResumeResult::Handled => Ok(()),
+                RunningThreadResumeResult::NotRunning(_) => Err(invalid_request(
+                    "cannot resume an unloaded multi-agent v2 sub-agent through its parent; resume the parent first, or use thread/read to inspect it",
+                )),
+            };
+        }
+
+        // Copied or referenced history can contain another thread's settings. Only snapshots
+        // explicitly owned by this thread can override its startup cwd.
+        let history_cwd = if let InitialHistory::Resumed(resumed) = &thread_history {
+            resumed.history.iter().rev().find_map(|item| match item {
+                RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event))
+                    if event.thread_id == Some(resumed.conversation_id) =>
+                {
+                    Some(event.thread_settings.cwd.to_path_buf())
+                }
+                _ => None,
+            })
+        } else {
+            None
+        };
+        let history_cwd = history_cwd.or_else(|| thread_history.session_cwd());
         let runtime_workspace_roots = runtime_workspace_roots.map(resolve_runtime_workspace_roots);
         let mut typesafe_overrides = self.build_thread_config_overrides(
             model,
@@ -3850,7 +3994,10 @@ impl ThreadRequestProcessor {
                     return Ok(());
                 }
                 let materialized_turns = if paginated_resume && include_turns {
-                    match self.paginated_thread_full_turns(thread_id).await {
+                    match self
+                        .paginated_thread_turns(thread_id, TurnItemsView::Full)
+                        .await
+                    {
                         Ok(turns) => Some(turns),
                         Err(error) => {
                             self.outgoing.send_error(request_id, error).await;
@@ -4078,6 +4225,7 @@ impl ThreadRequestProcessor {
         params: &ThreadResumeParams,
         app_server_client_name: Option<String>,
         app_server_client_version: Option<String>,
+        cold_resume_history: Option<&[RolloutItem]>,
     ) -> Result<RunningThreadResumeResult, JSONRPCErrorError> {
         let running_thread = if params.history.is_some() {
             if let Ok(existing_thread_id) = ThreadId::from_string(&params.thread_id)
@@ -4153,7 +4301,14 @@ impl ThreadRequestProcessor {
                 let is_running =
                     matches!(existing_thread.agent_status().await, AgentStatus::Running);
 
-                if !has_subscribers && matches!(loaded_status, ThreadStatus::Idle) && !is_running {
+                // Parent-owned V2 children must not be rebuilt from public resume overrides.
+                if can_accept_direct_input(
+                    existing_thread.multi_agent_version(),
+                    &config_snapshot.session_source,
+                ) && !has_subscribers
+                    && matches!(loaded_status, ThreadStatus::Idle)
+                    && !is_running
+                {
                     // A loaded idle thread is only a cache entry. Shut it down
                     // before removing it so cold resume cannot duplicate a
                     // thread that timed out during shutdown.
@@ -4185,6 +4340,13 @@ impl ThreadRequestProcessor {
             let redact_resume_payloads =
                 should_redact_thread_resume_payloads(app_server_client_name.as_deref());
             let include_turns = !params.exclude_turns;
+            if paginated_resume && include_turns {
+                self.send_deprecation_notice(
+                    request_id.connection_id,
+                    PAGINATED_FULL_HISTORY_DEPRECATION_SUMMARY,
+                )
+                .await;
+            }
             let needs_history =
                 !paginated_resume && (include_turns || params.initial_turns_page.is_some());
             if needs_history {
@@ -4261,7 +4423,10 @@ impl ThreadRequestProcessor {
                 .pending_resume_goal_state(existing_thread.as_ref())
                 .await;
             let paginated_turns = if paginated_resume && include_turns {
-                Some(self.paginated_thread_full_turns(existing_thread_id).await?)
+                Some(
+                    self.paginated_thread_turns(existing_thread_id, TurnItemsView::Full)
+                        .await?,
+                )
             } else {
                 None
             };
@@ -4276,6 +4441,19 @@ impl ThreadRequestProcessor {
             } else {
                 None
             };
+            let cold_resume_token_usage_turn_id = cold_resume_history
+                .map(|history| {
+                    let turns = paginated_turns
+                        .as_deref()
+                        .filter(|turns| !turns.is_empty())
+                        .unwrap_or_else(|| {
+                            paginated_initial_turns_page
+                                .as_ref()
+                                .map_or(&[][..], |page| page.data.as_slice())
+                        });
+                    restored_token_usage_turn_id(history, turns)
+                })
+                .filter(|turn_id| !turn_id.is_empty());
             let paginated_initial_turns_page_with_active_slot = if paginated_resume {
                 match params.initial_turns_page.as_ref() {
                     Some(params)
@@ -4303,6 +4481,7 @@ impl ThreadRequestProcessor {
                 Box::new(crate::thread_state::PendingThreadResumeRequest {
                     request_id: request_id.clone(),
                     history_items,
+                    cold_resume_token_usage_turn_id,
                     config_snapshot,
                     instruction_sources,
                     thread_summary,
@@ -4696,6 +4875,13 @@ impl ThreadRequestProcessor {
                 "ephemeral paginated thread/fork requires `excludeTurns: true`",
             ));
         }
+        if paginated_source && include_turns {
+            self.send_deprecation_notice(
+                request_id.connection_id,
+                PAGINATED_FULL_HISTORY_DEPRECATION_SUMMARY,
+            )
+            .await;
+        }
         let source_thread_id = source_thread.thread_id;
         let source_thread_name = source_thread
             .name
@@ -5073,7 +5259,9 @@ impl ThreadRequestProcessor {
             (thread, ephemeral_token_usage_turn_id)
         };
         if paginated_source && include_turns {
-            thread.turns = self.paginated_thread_full_turns(thread_id).await?;
+            thread.turns = self
+                .paginated_thread_turns(thread_id, TurnItemsView::Full)
+                .await?;
             token_usage_turn_id = Some(restored_token_usage_turn_id(
                 token_usage_history_items
                     .as_deref()
@@ -5659,6 +5847,7 @@ fn stored_turn_to_api_turn(
         StoredTurnStatus::InProgress => TurnStatus::InProgress,
     };
     let error = turn.error.map(|error| TurnError {
+        misalignment: None,
         message: error.message,
         codex_error_info: error.codex_error_info,
         additional_details: error.additional_details,
@@ -5965,7 +6154,7 @@ pub(crate) fn thread_from_stored_thread_with_wire_api(
     let git_info = thread.git_info.map(|info| ApiGitInfo {
         sha: info.commit_hash.map(|sha| sha.0),
         branch: info.branch,
-        origin_url: info.repository_url,
+        origin_url: info.repository_url.map(String::from),
     });
     let cwd = AbsolutePathBuf::relative_to_current_dir(path_utils::normalize_for_native_workdir(
         thread.cwd,
@@ -6052,7 +6241,7 @@ fn summary_from_stored_thread(
     let git_info = thread.git_info.map(|git| ConversationGitInfo {
         sha: git.commit_hash.map(|sha| sha.0),
         branch: git.branch,
-        origin_url: git.repository_url,
+        origin_url: git.repository_url.map(String::from),
     });
     ConversationSummary {
         conversation_id: thread.thread_id,
@@ -6152,7 +6341,7 @@ fn summary_from_thread_metadata(metadata: &ThreadMetadata) -> ConversationSummar
         metadata.agent_role.clone(),
         metadata.git_sha.clone(),
         metadata.git_branch.clone(),
-        metadata.git_origin_url.clone(),
+        metadata.git_origin_url.clone().map(String::from),
     )
 }
 

@@ -4,6 +4,8 @@ use std::time::Instant;
 use crate::Prompt;
 use crate::client::ModelClientSession;
 use crate::client_common::ResponseEvent;
+use crate::context::CompactionSummary;
+use crate::context::ContextualUserFragment;
 use crate::context::world_state::WorldState;
 use crate::hook_runtime::PostCompactHookOutcome;
 use crate::hook_runtime::PreCompactHookOutcome;
@@ -29,6 +31,8 @@ use codex_analytics::CompactionStatus;
 use codex_analytics::CompactionStrategy;
 use codex_analytics::CompactionTrigger;
 use codex_analytics::now_unix_seconds;
+use codex_context_fragments::AnnotatedContent;
+use codex_context_fragments::set_annotated_content;
 use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::error::CodexErr;
@@ -38,11 +42,11 @@ use codex_protocol::items::ContextCompactionItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::ContentItemKind;
 use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::RawResponseCompletedEvent;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
@@ -82,6 +86,7 @@ pub(crate) struct CompactedHistoryMetadata {
     pub(crate) message: String,
     pub(crate) window_number: u64,
     pub(crate) window_ids: AutoCompactWindowIds,
+    pub(crate) compaction_response_id: Option<String>,
 }
 
 pub(crate) async fn build_compaction_initial_context(
@@ -157,7 +162,7 @@ pub(crate) async fn run_compact_task(
         trace_id: turn_context.trace_id.clone(),
         started_at: turn_context.turn_timing_state.started_at_unix_secs().await,
         model_context_window: turn_context.model_context_window(),
-        collaboration_mode_kind: turn_context.mode,
+        collaboration_mode_kind: turn_context.mode(),
     });
     sess.send_event(&turn_context, start_event).await;
     run_compact_task_inner(
@@ -259,12 +264,12 @@ async fn run_compact_task_inner_impl(
     let mut history = sess.clone_history().await;
     let retained_reasoning = last_turn_reasoning_for_raw_replay(
         history.annotated_items(),
-        &turn_context.model_info.slug,
+        &turn_context.model_info().slug,
         turn_context.provider.info().is_openai(),
     );
     history.record_items(
         &[initial_input_for_turn.into()],
-        turn_context.model_info.truncation_policy.into(),
+        turn_context.model_info().truncation_policy.into(),
     );
 
     let max_retries = turn_context.provider.info().stream_max_retries();
@@ -280,22 +285,22 @@ async fn run_compact_task_inner_impl(
     // Reuse one client session so turn-scoped state (sticky routing, websocket incremental
     // request tracking)
     // survives retries within this compact turn.
-    let window_id = sess.current_window_id().await;
-    let responses_metadata = turn_context.turn_metadata_state.to_responses_metadata(
-        sess.installation_id.clone(),
-        window_id,
-        CodexResponsesRequestKind::Compaction(compaction_metadata),
-    );
+    let responses_metadata = sess
+        .responses_metadata(
+            turn_context.as_ref(),
+            CodexResponsesRequestKind::Compaction(compaction_metadata),
+        )
+        .await;
 
-    loop {
+    let compaction_response_id = loop {
         // Clone is required because of the loop
         let turn_input = history
             .clone()
-            .for_prompt(&turn_context.model_info.input_modalities);
+            .for_prompt(&turn_context.model_info().input_modalities);
         let turn_input_len = turn_input.len();
         let prompt = Prompt {
             input: turn_input,
-            base_instructions: sess.get_base_instructions().await,
+            base_instructions: sess.get_prompt_base_instructions().await,
             ..Default::default()
         };
         let attempt_result = drain_to_completed(
@@ -308,7 +313,9 @@ async fn run_compact_task_inner_impl(
         .await;
 
         match attempt_result {
-            Ok(_) => break,
+            Ok(response_id) => {
+                break response_id;
+            }
             Err(err)
                 if matches!(
                     err.details(),
@@ -359,7 +366,7 @@ async fn run_compact_task_inner_impl(
                 }
             }
         }
-    }
+    };
 
     let history_snapshot = sess.clone_history().await;
     let history_items = history_snapshot.annotated_items();
@@ -398,6 +405,7 @@ async fn run_compact_task_inner_impl(
             message: summary_text,
             window_number,
             window_ids,
+            compaction_response_id: Some(compaction_response_id),
         },
     )
     .await;
@@ -704,18 +712,33 @@ fn build_compacted_history_with_limit(
     }
 
     for message in &selected_messages {
+        let mut item = ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: message.message.clone(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: message
+                .internal_chat_message_metadata_passthrough
+                .clone(),
+        };
+        if message
+            .internal_chat_message_metadata_passthrough
+            .as_ref()
+            .and_then(|metadata| metadata.content_item_kinds.as_ref())
+            .is_some()
+        {
+            let _ = set_annotated_content(
+                &mut item,
+                vec![AnnotatedContent::input_text(
+                    &message.message,
+                    ContentItemKind("user.text".to_string()),
+                )],
+            );
+        }
         history.push(ResponseItemEnvelope {
-            item: ResponseItem::Message {
-                id: None,
-                role: "user".to_string(),
-                content: vec![ContentItem::InputText {
-                    text: message.message.clone(),
-                }],
-                phase: None,
-                internal_chat_message_metadata_passthrough: message
-                    .internal_chat_message_metadata_passthrough
-                    .clone(),
-            },
+            item,
             metadata: message.harness_metadata.clone(),
         });
     }
@@ -726,13 +749,9 @@ fn build_compacted_history_with_limit(
         summary_text.to_string()
     };
 
-    history.push(ResponseItemEnvelope::new(ResponseItem::Message {
-        id: None,
-        role: "user".to_string(),
-        content: vec![ContentItem::InputText { text: summary_text }],
-        phase: None,
-        internal_chat_message_metadata_passthrough: None,
-    }));
+    history.push(ResponseItemEnvelope::new(ContextualUserFragment::into(
+        CompactionSummary::new(summary_text),
+    )));
 
     history
 }
@@ -743,14 +762,14 @@ async fn drain_to_completed(
     client_session: &mut ModelClientSession,
     responses_metadata: &CodexResponsesMetadata,
     prompt: &Prompt,
-) -> CodexResult<Vec<ResponseItem>> {
+) -> CodexResult<String> {
     let mut stream = client_session
         .stream(
             prompt,
-            &turn_context.model_info,
+            turn_context.model_info(),
             &turn_context.session_telemetry,
-            turn_context.reasoning_effort.clone(),
-            turn_context.reasoning_summary,
+            turn_context.reasoning_effort().cloned(),
+            turn_context.reasoning_summary(),
             turn_context.config.service_tier.clone(),
             responses_metadata,
             // Rollout tracing currently models remote compaction only; local compaction streams
@@ -758,7 +777,6 @@ async fn drain_to_completed(
             &InferenceTraceContext::disabled(),
         )
         .await?;
-    let mut output_items = Vec::new();
     loop {
         let maybe_event = stream.next().await;
         let Some(event) = maybe_event else {
@@ -770,7 +788,6 @@ async fn drain_to_completed(
             Ok(ResponseEvent::OutputItemDone(item)) => {
                 sess.record_conversation_items(turn_context, std::slice::from_ref(&item))
                     .await;
-                output_items.push(item);
             }
             Ok(ResponseEvent::ServerReasoningIncluded(included)) => {
                 sess.set_server_reasoning_included(included).await;
@@ -781,19 +798,19 @@ async fn drain_to_completed(
             Ok(ResponseEvent::Completed {
                 response_id,
                 token_usage,
+                usage_metadata,
                 ..
             }) => {
-                sess.send_event(
+                sess.record_observed_response_completed(
                     turn_context,
-                    EventMsg::RawResponseCompleted(RawResponseCompletedEvent {
-                        response_id,
-                        token_usage: token_usage.clone(),
-                    }),
+                    &response_id,
+                    token_usage.as_ref(),
+                    usage_metadata.as_ref(),
                 )
                 .await;
                 sess.update_token_usage_info(turn_context, token_usage.as_ref())
                     .await?;
-                return Ok(output_items);
+                return Ok(response_id);
             }
             Ok(_) => continue,
             Err(e) => return Err(e),

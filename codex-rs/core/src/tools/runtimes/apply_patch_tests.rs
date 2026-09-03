@@ -28,6 +28,10 @@ fn test_turn_environment(environment_id: &str) -> crate::session::turn_context::
             workspace_roots: Vec::new(),
             config: EnvironmentConfigState::Ready(EnvironmentConfig {
                 allow_login_shell: true,
+                workspace_roots: Vec::new(),
+                windows_sandbox_level: WindowsSandboxLevel::Disabled,
+                windows_sandbox_private_desktop: true,
+                use_legacy_landlock: false,
                 permission_profile: PermissionProfileSnapshot::legacy(
                     PermissionProfile::read_only(),
                 ),
@@ -290,7 +294,7 @@ async fn file_system_sandbox_context_respects_sandbox_request() {
     let path = std::env::temp_dir()
         .join("apply-patch-runtime-none.txt")
         .abs();
-    let req = ApplyPatchRequest {
+    let mut req = ApplyPatchRequest {
         turn_environment: test_turn_environment(codex_exec_server::LOCAL_ENVIRONMENT_ID),
         action: ApplyPatchAction::new_add_for_test(
             &PathUri::from_abs_path(&path),
@@ -331,6 +335,8 @@ async fn file_system_sandbox_context_respects_sandbox_request() {
     );
 
     let cwd = PathUri::parse("file:///C:/workspace").expect("Windows workspace URI");
+    let user_home_dir = PathUri::parse("file:///C:/Users/remote").expect("Windows home URI");
+    req.turn_environment.user_home_dir = Some(user_home_dir.clone());
     let permissions = PermissionProfile::workspace_write();
     let attempt = SandboxAttempt {
         sandbox_requested: true,
@@ -347,10 +353,72 @@ async fn file_system_sandbox_context_respects_sandbox_request() {
             permissions: permissions.into(),
             cwd: Some(cwd.clone()),
             workspace_roots: vec![cwd],
+            user_home_dir: Some(user_home_dir),
+            temporary_directories: None,
             windows_sandbox_level: WindowsSandboxLevel::RestrictedToken,
             windows_sandbox_private_desktop: false,
             windows_sandbox_proxy_settings_mode: None,
             use_legacy_landlock: false,
         })
     );
+}
+
+#[tokio::test]
+async fn conditional_write_receives_executor_home_in_sandbox_context() {
+    let cwd = PathUri::parse("file:///C:/workspace").expect("Windows workspace URI");
+    let user_home_dir = PathUri::parse("file:///C:/Users/remote").expect("Windows home URI");
+    let mut turn_environment = test_turn_environment(codex_exec_server::REMOTE_ENVIRONMENT_ID);
+    turn_environment.user_home_dir = Some(user_home_dir.clone());
+    let req = ConditionalWriteRequest {
+        turn_environment,
+        path: cwd.join("file.txt").expect("file URI"),
+        canonical_path: cwd.join("file.txt").expect("canonical file URI"),
+        contents: b"after\n".to_vec(),
+        precondition: ConditionalWritePrecondition::MustNotExist,
+        changes: HashMap::new(),
+        patch: String::new(),
+        delta: AppliedPatchDelta::default(),
+        exec_approval_requirement: ExecApprovalRequirement::Skip {
+            bypass_sandbox: false,
+            proposed_execpolicy_amendment: None,
+        },
+    };
+    let permissions = PermissionProfile::workspace_write();
+    let manager = SandboxManager::new();
+    let attempt = SandboxAttempt {
+        sandbox: SandboxType::None,
+        sandbox_requested: true,
+        permissions: &permissions,
+        exec_server_permissions: &permissions,
+        enforce_managed_network: false,
+        manager: &manager,
+        sandbox_cwd: &cwd,
+        workspace_roots: std::slice::from_ref(&cwd),
+        codex_linux_sandbox_exe: None,
+        use_legacy_landlock: false,
+        windows_sandbox_level: WindowsSandboxLevel::Disabled,
+        windows_sandbox_private_desktop: false,
+        network_denial_cancellation_token: None,
+        network_proxy: None,
+    };
+
+    let expected_permissions = permissions.clone().into();
+    let expected_cwd = cwd.clone();
+    run_conditional_write_with_sandbox(&req, &attempt, |sandbox| async move {
+        assert_eq!(
+            sandbox,
+            Some(FileSystemSandboxContext {
+                permissions: expected_permissions,
+                cwd: Some(expected_cwd.clone()),
+                workspace_roots: vec![expected_cwd],
+                user_home_dir: Some(user_home_dir),
+                temporary_directories: None,
+                windows_sandbox_level: WindowsSandboxLevel::RestrictedToken,
+                windows_sandbox_private_desktop: false,
+                windows_sandbox_proxy_settings_mode: None,
+                use_legacy_landlock: false,
+            })
+        );
+    })
+    .await;
 }

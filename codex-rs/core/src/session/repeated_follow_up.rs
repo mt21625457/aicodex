@@ -65,9 +65,7 @@ pub(crate) fn retain_longest_follow_up(current: &mut Option<String>, candidate: 
 }
 
 fn normalize_follow_up_text(text: Option<&str>) -> Option<String> {
-    let Some(text) = text else {
-        return None;
-    };
+    let text = text?;
     let mut normalized = String::new();
     for word in text.split_whitespace() {
         if !normalized.is_empty() {

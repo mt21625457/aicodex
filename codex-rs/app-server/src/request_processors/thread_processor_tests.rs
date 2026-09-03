@@ -164,6 +164,7 @@ mod persisted_resume_approval_policy_tests {
     fn settings_item(approval_policy: AskForApproval) -> RolloutItem {
         RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(
             ThreadSettingsAppliedEvent {
+                thread_id: None,
                 thread_settings: ThreadSettingsSnapshot {
                     model: "gpt-5".to_string(),
                     model_provider_id: "openai".to_string(),
@@ -202,6 +203,7 @@ mod persisted_resume_approval_policy_tests {
     fn turn_context_item(turn_id: &str, approval_policy: AskForApproval) -> RolloutItem {
         RolloutItem::TurnContext(TurnContextItem {
             turn_id: Some(turn_id.to_string()),
+            root_turn_id: None,
             cwd: cwd(),
             workspace_roots: None,
             current_date: None,
@@ -220,6 +222,7 @@ mod persisted_resume_approval_policy_tests {
             multi_agent_version: None,
             multi_agent_mode: None,
             realtime_active: None,
+            cyber_access_program: None,
             effort: None,
             summary: codex_protocol::config_types::ReasoningSummary::Auto,
         })

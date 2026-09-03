@@ -5,11 +5,13 @@ use super::CompactedItem;
 use super::EventMsg;
 use super::InterAgentCommunication;
 use super::McpResourceOriginCheckpoint;
+use super::RealtimeItem;
 use super::ResponseItem;
 use super::ResponseItemEnvelope;
 use super::RolloutItem;
 use super::SecurityRiskScore;
 use super::SessionMetaLine;
+use super::TokenUsageRecord;
 use super::TurnContextItem;
 use super::WorldStateItem;
 use schemars::JsonSchema;
@@ -40,6 +42,9 @@ pub(super) enum RolloutItemWire<'a> {
     TurnContext {
         payload: Cow<'a, TurnContextItem>,
     },
+    TokenUsageRecord {
+        payload: Cow<'a, TokenUsageRecord>,
+    },
     WorldState {
         payload: Cow<'a, WorldStateItem>,
     },
@@ -48,6 +53,9 @@ pub(super) enum RolloutItemWire<'a> {
     },
     EventMsg {
         payload: Cow<'a, EventMsg>,
+    },
+    RealtimeItem {
+        payload: Cow<'a, RealtimeItem>,
     },
 }
 
@@ -77,6 +85,9 @@ impl<'a> From<&'a RolloutItem> for RolloutItemWire<'a> {
             RolloutItem::TurnContext(payload) => Self::TurnContext {
                 payload: Cow::Borrowed(payload),
             },
+            RolloutItem::TokenUsageRecord(payload) => Self::TokenUsageRecord {
+                payload: Cow::Borrowed(payload),
+            },
             RolloutItem::WorldState(payload) => Self::WorldState {
                 payload: Cow::Borrowed(payload),
             },
@@ -84,6 +95,9 @@ impl<'a> From<&'a RolloutItem> for RolloutItemWire<'a> {
                 payload: Cow::Borrowed(payload),
             },
             RolloutItem::EventMsg(payload) => Self::EventMsg {
+                payload: Cow::Borrowed(payload),
+            },
+            RolloutItem::RealtimeItem(payload) => Self::RealtimeItem {
                 payload: Cow::Borrowed(payload),
             },
         }
@@ -110,11 +124,15 @@ impl From<RolloutItemWire<'_>> for RolloutItem {
             }
             RolloutItemWire::Compacted { payload } => Self::Compacted(payload.into_owned()),
             RolloutItemWire::TurnContext { payload } => Self::TurnContext(payload.into_owned()),
+            RolloutItemWire::TokenUsageRecord { payload } => {
+                Self::TokenUsageRecord(payload.into_owned())
+            }
             RolloutItemWire::WorldState { payload } => Self::WorldState(payload.into_owned()),
             RolloutItemWire::SecurityRiskScore { payload } => {
                 Self::SecurityRiskScore(payload.into_owned())
             }
             RolloutItemWire::EventMsg { payload } => Self::EventMsg(payload.into_owned()),
+            RolloutItemWire::RealtimeItem { payload } => Self::RealtimeItem(payload.into_owned()),
         }
     }
 }
@@ -142,6 +160,10 @@ pub(super) struct CompactedItemWire<'a> {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<String>")]
     window_id: Option<WindowIdWire<'a>>,
+    #[serde(default)]
+    compaction_response_id: Option<Cow<'a, str>>,
+    #[serde(default)]
+    latest_token_usage_record: Option<Cow<'a, TokenUsageRecord>>,
 }
 
 impl<'a> From<&'a CompactedItem> for CompactedItemWire<'a> {
@@ -177,6 +199,8 @@ impl<'a> From<&'a CompactedItem> for CompactedItemWire<'a> {
                 .window_id
                 .as_deref()
                 .map(|window_id| WindowIdWire::Id(Cow::Borrowed(window_id))),
+            compaction_response_id: item.compaction_response_id.as_deref().map(Cow::Borrowed),
+            latest_token_usage_record: item.latest_token_usage_record.as_ref().map(Cow::Borrowed),
         }
     }
 }
@@ -238,6 +262,8 @@ impl TryFrom<CompactedItemWire<'_>> for CompactedItem {
             first_window_id: item.first_window_id.map(Cow::into_owned),
             previous_window_id: item.previous_window_id.map(Cow::into_owned),
             window_id,
+            compaction_response_id: item.compaction_response_id.map(Cow::into_owned),
+            latest_token_usage_record: item.latest_token_usage_record.map(Cow::into_owned),
         })
     }
 }

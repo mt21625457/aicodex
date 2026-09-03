@@ -33,6 +33,7 @@ use codex_sandboxing::policy_transforms::effective_permission_profile;
 use codex_sandboxing::record_filesystem_sandbox_violation;
 use codex_utils_path_uri::PathUri;
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -103,13 +104,18 @@ impl ApplyPatchRuntime {
         req: &ApplyPatchRequest,
         attempt: &SandboxAttempt<'_>,
     ) -> Option<FileSystemSandboxContext> {
-        file_system_sandbox_context_for_attempt(req.additional_permissions.as_ref(), attempt)
+        file_system_sandbox_context_for_attempt(
+            req.additional_permissions.as_ref(),
+            attempt,
+            req.turn_environment.user_home_dir.clone(),
+        )
     }
 }
 
 fn file_system_sandbox_context_for_attempt(
     additional_permissions: Option<&AdditionalPermissionProfile>,
     attempt: &SandboxAttempt<'_>,
+    user_home_dir: Option<PathUri>,
 ) -> Option<FileSystemSandboxContext> {
     if !attempt.sandbox_requested {
         return None;
@@ -121,6 +127,8 @@ fn file_system_sandbox_context_for_attempt(
         permissions: permissions.into(),
         cwd: Some(attempt.sandbox_cwd.clone()),
         workspace_roots: attempt.workspace_roots.to_vec(),
+        user_home_dir,
+        temporary_directories: None,
         windows_sandbox_level: executor_windows_sandbox_level(
             attempt.windows_sandbox_level,
             attempt.sandbox_cwd,
@@ -129,6 +137,22 @@ fn file_system_sandbox_context_for_attempt(
         windows_sandbox_proxy_settings_mode: None,
         use_legacy_landlock: attempt.use_legacy_landlock,
     })
+}
+
+async fn run_conditional_write_with_sandbox<T>(
+    req: &ConditionalWriteRequest,
+    attempt: &SandboxAttempt<'_>,
+    write: impl FnOnce(Option<FileSystemSandboxContext>) -> T,
+) -> T::Output
+where
+    T: Future,
+{
+    let sandbox = file_system_sandbox_context_for_attempt(
+        /*additional_permissions*/ None,
+        attempt,
+        req.turn_environment.user_home_dir.clone(),
+    );
+    write(sandbox).await
 }
 
 impl Sandboxable for ApplyPatchRuntime {
@@ -315,8 +339,6 @@ impl ToolRuntime<ConditionalWriteRequest, ApplyPatchRuntimeOutput> for ApplyPatc
         ctx: &ToolCtx,
     ) -> Result<ApplyPatchRuntimeOutput, ToolError> {
         let started_at = Instant::now();
-        let sandbox =
-            file_system_sandbox_context_for_attempt(/*additional_permissions*/ None, attempt);
         let file_system = req.turn_environment.environment.get_filesystem();
         let _mutation_guard = ctx
             .step_context
@@ -327,14 +349,17 @@ impl ToolRuntime<ConditionalWriteRequest, ApplyPatchRuntimeOutput> for ApplyPatc
                 std::slice::from_ref(&req.canonical_path),
             )
             .await;
-        let result = file_system
-            .write_file_conditional(
-                &req.path,
-                req.contents.clone(),
-                req.precondition,
-                sandbox.as_ref(),
-            )
-            .await;
+        let result = run_conditional_write_with_sandbox(req, attempt, |sandbox| async move {
+            file_system
+                .write_file_conditional(
+                    &req.path,
+                    req.contents.clone(),
+                    req.precondition,
+                    sandbox.as_ref(),
+                )
+                .await
+        })
+        .await;
         let (exit_code, stderr, delta) = match result {
             Ok(()) => {
                 self.committed_delta.append(req.delta.clone());

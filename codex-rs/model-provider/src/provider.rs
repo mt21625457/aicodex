@@ -96,6 +96,13 @@ pub enum ProviderUnauthorizedRecovery {
     Recovered,
 }
 
+/// User-facing lifecycle messages for provider-owned authentication recovery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderAuthRecoveryMessages {
+    pub started: &'static str,
+    pub succeeded: &'static str,
+}
+
 /// Error returned when a provider cannot construct its app-visible account state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderAccountError {
@@ -194,6 +201,11 @@ pub trait ModelProvider: fmt::Debug + Send + Sync {
             error,
             TransportError::Http { status, .. } if *status == http::StatusCode::UNAUTHORIZED
         )
+    }
+
+    /// Returns lifecycle messages when provider-owned authentication recovery is active.
+    fn auth_recovery_messages(&self) -> Option<ProviderAuthRecoveryMessages> {
+        None
     }
 
     /// Attempts provider-owned authentication recovery before using the auth manager.
@@ -411,7 +423,7 @@ impl ModelProvider for ConfiguredModelProvider {
                 })
                 .map(|auth| match &auth {
                     CodexAuth::ApiKey(_) => Ok(ProviderAccount::ApiKey),
-                    CodexAuth::BedrockApiKey(_) => {
+                    CodexAuth::BedrockApiKey(_) | CodexAuth::BedrockAccessKeys(_) => {
                         Err(ProviderAccountError::UnsupportedBedrockApiKeyAuth)
                     }
                     CodexAuth::Chatgpt(_)
@@ -528,6 +540,7 @@ mod tests {
     use codex_protocol::openai_models::ModelInfo;
     use codex_protocol::openai_models::ModelsResponse;
     use codex_protocol::protocol::SessionSource;
+    use codex_utils_redacted_string::RedactedString;
     use pretty_assertions::assert_eq;
     use serde_json::json;
     use wiremock::Mock;
@@ -854,7 +867,7 @@ mod tests {
                         "--skip",
                         counter.to_str().expect("counter path should be UTF-8"),
                     ]
-                    .map(str::to_string),
+                    .map(RedactedString::from),
                 ),
                 timeout_ms: NonZeroU64::new(10_000).expect("timeout should be non-zero"),
             }),
@@ -1202,7 +1215,7 @@ mod tests {
             .await;
 
         let mut provider_info = provider_for(server.uri());
-        provider_info.experimental_bearer_token = Some("provider-token".to_string());
+        provider_info.experimental_bearer_token = Some("provider-token".into());
         let provider = create_model_provider(
             provider_info,
             Some(AuthManager::from_auth_for_testing(

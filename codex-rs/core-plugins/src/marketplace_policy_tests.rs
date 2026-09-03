@@ -11,6 +11,9 @@ use std::fs;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
+#[path = "marketplace_policy/curated_tests.rs"]
+mod curated;
+
 fn config_layer_stack(requirements_toml: &str) -> ConfigLayerStack {
     config_layer_stack_with_user_config(requirements_toml, /*user_config*/ None)
 }
@@ -220,7 +223,7 @@ restrict_to_allowed_sources = {restricted}
 }
 
 #[test]
-fn strict_install_validates_configured_name_source_and_root() {
+fn system_marketplace_discovery_and_install_validate_source_and_root() {
     let codex_home = TempDir::new().expect("create Codex home");
     let configured_root = TempDir::new().expect("create configured marketplace");
     let other_root = TempDir::new().expect("create other marketplace");
@@ -256,6 +259,18 @@ source = {configured_root:?}
             config_file,
         )),
     );
+    let layer = stack.layers_low_to_high().next().expect("configured layer");
+    let stack = ConfigLayerStack::new(
+        vec![ConfigLayerEntry::new(
+            ConfigLayerSource::System {
+                file: AbsolutePathBuf::try_from(codex_home.path().join("system.toml")).unwrap(),
+            },
+            layer.config.clone(),
+        )],
+        stack.requirements().clone(),
+        stack.requirements_toml().clone(),
+    )
+    .expect("system config stack");
     let policy = MarketplacePolicy::from_requirements(stack.requirements());
     let configured_path =
         AbsolutePathBuf::try_from(configured_root.join(".agents/plugins/marketplace.json"))
@@ -263,6 +278,15 @@ source = {configured_root:?}
     let other_path = AbsolutePathBuf::try_from(other_root.join(".agents/plugins/marketplace.json"))
         .expect("other marketplace path");
 
+    fs::create_dir_all(configured_path.as_path().parent().unwrap()).unwrap();
+    fs::write(&configured_path, r#"{"name":"company","plugins":[]}"#).unwrap();
+    assert_eq!(
+        crate::installed_marketplaces::installed_marketplace_roots_from_layer_stack(
+            &stack,
+            codex_home.path()
+        ),
+        vec![AbsolutePathBuf::try_from(configured_root).unwrap()],
+    );
     assert_eq!(
         policy.validate_install(&stack, codex_home.path(), &configured_path, "company"),
         Ok(())
@@ -340,6 +364,9 @@ fn curated_marketplace_requires_its_expected_name() {
         r#"
 [marketplaces]
 restrict_to_allowed_sources = true
+[marketplaces.allowed_sources.curated]
+source = "git"
+url = "https://github.com/openai/plugins.git"
 "#,
     );
     let marketplace_path = AbsolutePathBuf::try_from(
@@ -508,7 +535,7 @@ enabled = true
     );
 
     let projected =
-        project_effective_user_config(&stack, codex_home.path()).expect("project user config");
+        policy_filtered_plugin_config(&stack, codex_home.path()).expect("project plugin config");
     assert_eq!(
         projected["marketplaces"]
             .as_table()
@@ -574,7 +601,7 @@ enabled = true
     );
 
     let projected =
-        project_effective_user_config(&stack, codex_home.path()).expect("project user config");
+        policy_filtered_plugin_config(&stack, codex_home.path()).expect("project plugin config");
 
     assert_eq!(
         projected["marketplaces"]
@@ -640,7 +667,7 @@ enabled = true
     );
 
     let projected =
-        project_effective_user_config(&stack, codex_home.path()).expect("project user config");
+        policy_filtered_plugin_config(&stack, codex_home.path()).expect("project plugin config");
     assert_eq!(
         projected["marketplaces"]
             .as_table()
