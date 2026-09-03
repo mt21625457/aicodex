@@ -3101,7 +3101,7 @@ async fn thread_goal_set_persists_resumable_stopped_statuses() -> Result<()> {
 }
 
 #[tokio::test]
-async fn thread_goal_set_edits_objective_without_resetting_usage() -> Result<()> {
+async fn thread_goal_set_can_edit_or_atomically_replace() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
     mock_responses_config(&server.uri()).write(codex_home.path())?;
@@ -3203,6 +3203,36 @@ async fn thread_goal_set_edits_objective_without_resetting_usage() -> Result<()>
     assert_eq!(edit.goal.tokens_used, 50);
     assert_eq!(edit.goal.time_used_seconds, 12);
     assert_eq!(edit.goal.created_at, goal.goal.created_at);
+
+    let replace_id = mcp
+        .send_raw_request(
+            "thread/goal/set",
+            Some(json!({
+                "threadId": thread_id.to_string(),
+                "objective": "restart polishing with clearer wording",
+                "status": "active",
+                "tokenBudget": 40,
+                "replaceExisting": true,
+            })),
+        )
+        .await?;
+    let replacement: ThreadGoalSetResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(replace_id)).await??;
+    let replaced_goal = state_db
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .expect("replacement goal should exist");
+
+    assert_ne!(updated_goal.goal_id, replaced_goal.goal_id);
+    assert_eq!(
+        replacement.goal.objective,
+        "restart polishing with clearer wording"
+    );
+    assert_eq!(replacement.goal.status, ThreadGoalStatus::Active);
+    assert_eq!(replacement.goal.token_budget, Some(40));
+    assert_eq!(replacement.goal.tokens_used, 0);
+    assert_eq!(replacement.goal.time_used_seconds, 0);
 
     Ok(())
 }

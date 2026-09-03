@@ -1,7 +1,9 @@
 use codex_extension_api::ToolCallOutcome;
 use codex_extension_api::ToolName;
+use codex_extension_api::TurnAbortRequest;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::protocol::TokenUsage;
+use codex_protocol::protocol::TurnAbortReason;
 use codex_state::ThreadGoalStatus;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -25,10 +27,16 @@ struct GoalAccountingInner {
     current_turn_id: Option<String>,
     turns: HashMap<String, GoalTurnAccounting>,
     wall_clock: GoalWallClockAccounting,
-    budget_limit_reported_goal_id: Option<String>,
+    budget_limit_stop_request: Option<BudgetLimitStopRequest>,
     execution_failure_goal_id: Option<String>,
     consecutive_execution_failure_turns: u8,
     last_accounted_descendant_token_usage: i64,
+}
+
+#[derive(Debug)]
+struct BudgetLimitStopRequest {
+    goal_id: String,
+    request: TurnAbortRequest,
 }
 
 #[derive(Debug)]
@@ -208,9 +216,7 @@ impl GoalAccountingState {
     pub(crate) fn mark_turn_goal_active(&self, turn_id: &str, goal_id: impl Into<String>) {
         let mut inner = self.inner();
         let goal_id = goal_id.into();
-        if inner.budget_limit_reported_goal_id.as_deref() != Some(goal_id.as_str()) {
-            inner.budget_limit_reported_goal_id = None;
-        }
+        inner.clear_budget_limit_stop_request();
         if let Some(turn) = inner.turns.get_mut(turn_id) {
             turn.active_goal_id = Some(goal_id.clone());
             if inner.current_turn_id.as_deref() == Some(turn_id) {
@@ -230,9 +236,7 @@ impl GoalAccountingState {
         let mut inner = self.inner();
         let turn_id = inner.current_turn_id.clone()?;
         let goal_id = goal_id.into();
-        if inner.budget_limit_reported_goal_id.as_deref() != Some(goal_id.as_str()) {
-            inner.budget_limit_reported_goal_id = None;
-        }
+        inner.clear_budget_limit_stop_request();
         let goal_changed = inner.wall_clock.active_goal_id.as_deref() != Some(goal_id.as_str());
         let turn = inner.turns.get_mut(turn_id.as_str())?;
         if turn.active_goal_id.as_deref() != Some(goal_id.as_str()) {
@@ -252,9 +256,7 @@ impl GoalAccountingState {
     pub(crate) fn mark_idle_goal_active(&self, goal_id: impl Into<String>) {
         let mut inner = self.inner();
         let goal_id = goal_id.into();
-        if inner.budget_limit_reported_goal_id.as_deref() != Some(goal_id.as_str()) {
-            inner.budget_limit_reported_goal_id = None;
-        }
+        inner.clear_budget_limit_stop_request();
         if inner.wall_clock.active_goal_id.as_deref() != Some(goal_id.as_str()) {
             inner.last_accounted_descendant_token_usage =
                 self.descendant_token_usage.load(Ordering::Relaxed);
@@ -269,7 +271,7 @@ impl GoalAccountingState {
             turn.active_goal_id = None;
         }
         inner.wall_clock.clear_active_goal();
-        inner.budget_limit_reported_goal_id = None;
+        inner.clear_budget_limit_stop_request();
         inner.execution_failure_goal_id = None;
         inner.consecutive_execution_failure_turns = 0;
         Some(turn_id)
@@ -283,7 +285,7 @@ impl GoalAccountingState {
             turn.active_goal_id = None;
         }
         inner.wall_clock.clear_active_goal();
-        inner.budget_limit_reported_goal_id = None;
+        inner.clear_budget_limit_stop_request();
         inner.execution_failure_goal_id = None;
         inner.consecutive_execution_failure_turns = 0;
     }
@@ -358,7 +360,7 @@ impl GoalAccountingState {
             inner.wall_clock.clear_active_goal();
         }
         if status != ThreadGoalStatus::BudgetLimited {
-            inner.budget_limit_reported_goal_id = None;
+            inner.clear_budget_limit_stop_request();
         }
     }
 
@@ -384,7 +386,7 @@ impl GoalAccountingState {
             inner.wall_clock.clear_active_goal();
         }
         if status != ThreadGoalStatus::BudgetLimited {
-            inner.budget_limit_reported_goal_id = None;
+            inner.clear_budget_limit_stop_request();
         }
     }
 
@@ -392,16 +394,28 @@ impl GoalAccountingState {
         let mut inner = self.inner();
         inner.wall_clock.reset_baseline();
         inner.wall_clock.clear_active_goal();
-        inner.budget_limit_reported_goal_id = None;
+        inner.clear_budget_limit_stop_request();
     }
 
-    pub(crate) fn mark_budget_limit_reported_if_new(&self, goal_id: &str) -> bool {
+    pub(crate) fn request_budget_limit_stop_if_new(
+        &self,
+        goal_id: &str,
+    ) -> Option<TurnAbortRequest> {
         let mut inner = self.inner();
-        if inner.budget_limit_reported_goal_id.as_deref() == Some(goal_id) {
-            return false;
+        if inner
+            .budget_limit_stop_request
+            .as_ref()
+            .is_some_and(|stop| stop.goal_id == goal_id && stop.request.is_active())
+        {
+            return None;
         }
-        inner.budget_limit_reported_goal_id = Some(goal_id.to_string());
-        true
+        inner.clear_budget_limit_stop_request();
+        let request = TurnAbortRequest::new(TurnAbortReason::BudgetLimited);
+        inner.budget_limit_stop_request = Some(BudgetLimitStopRequest {
+            goal_id: goal_id.to_string(),
+            request: request.clone(),
+        });
+        Some(request)
     }
 
     fn inner(&self) -> std::sync::MutexGuard<'_, GoalAccountingInner> {
@@ -445,13 +459,21 @@ pub(crate) fn goal_token_delta_for_usage(usage: &TokenUsage) -> i64 {
         .saturating_add(usage.output_tokens.max(0))
 }
 
+impl GoalAccountingInner {
+    fn clear_budget_limit_stop_request(&mut self) {
+        if let Some(stop) = self.budget_limit_stop_request.take() {
+            stop.request.revoke();
+        }
+    }
+}
+
 impl Default for GoalAccountingInner {
     fn default() -> Self {
         Self {
             current_turn_id: None,
             turns: HashMap::new(),
             wall_clock: GoalWallClockAccounting::new(),
-            budget_limit_reported_goal_id: None,
+            budget_limit_stop_request: None,
             execution_failure_goal_id: None,
             consecutive_execution_failure_turns: 0,
             last_accounted_descendant_token_usage: 0,

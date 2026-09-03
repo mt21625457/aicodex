@@ -143,6 +143,8 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
 use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::AdditionalContextEntry;
+use codex_protocol::protocol::AdditionalContextKind;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ConversationAudioParams;
@@ -12125,6 +12127,87 @@ async fn task_finish_emits_turn_item_lifecycle_for_leftover_pending_user_input()
             ..
         }) if turn_id == tc.sub_id
     ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn budget_limited_task_finish_commits_steer_batch_and_preserves_claimed_reason() {
+    let (sess, tc, rx) = make_session_and_context_with_rx().await;
+    sess.spawn_task(
+        Arc::clone(&tc),
+        Vec::new(),
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: false,
+        },
+    )
+    .await;
+    let abort_request = codex_extension_api::TurnAbortRequest::new(TurnAbortReason::BudgetLimited);
+    tc.extension_data.insert(abort_request.clone());
+    assert!(abort_request.claim());
+    abort_request.revoke();
+    assert!(abort_request.is_claimed());
+    while rx.try_recv().is_ok() {}
+
+    let pending_user_input = vec![UserInput::Text {
+        text: "continue this after the goal stops".to_string(),
+        text_elements: Vec::new(),
+    }];
+    let submission = super::turn_input::handle(
+        &sess,
+        TurnInputRequest::new(SubmittedTurnInput::UserInput {
+            content: pending_user_input,
+            client_id: None,
+        })
+        .with_additional_context(BTreeMap::from([(
+            "browser_info".to_string(),
+            AdditionalContextEntry {
+                value: "tab one".to_string(),
+                kind: AdditionalContextKind::Untrusted,
+            },
+        )])),
+        TurnInputMode::Steer {
+            expected_turn_id: tc.sub_id.clone(),
+        },
+        "budget-limited-steer".to_string(),
+    )
+    .await
+    .expect("steer-only submission should be valid");
+    assert!(matches!(submission, TurnInputSubmission::Steered { .. }));
+
+    sess.on_task_finished(
+        Arc::clone(&tc),
+        /*task_result*/ Err(codex_protocol::error::CodexErr::TurnAborted),
+    )
+    .await;
+
+    let history = strip_response_item_ids(&strip_metadata_from_items(&raw_history_items(
+        &sess.clone_history().await,
+    )));
+    assert!(history.iter().any(|item| matches!(
+        item,
+        ResponseItem::Message { role, content, .. }
+            if role == "user"
+                && content.iter().any(|content| matches!(
+                    content,
+                    ContentItem::InputText { text }
+                        if text == "continue this after the goal stops"
+                ))
+    )));
+    assert!(history.iter().any(|item| matches!(
+        item,
+        ResponseItem::Message { role, content, .. }
+            if role == "user"
+                && content.iter().any(|content| matches!(
+                    content,
+                    ContentItem::InputText { text } if text.contains("tab one")
+                ))
+    )));
+
+    let event = recv_terminal_event(&rx, TerminalEventKind::TurnAborted).await;
+    let EventMsg::TurnAborted(aborted) = event.msg else {
+        unreachable!();
+    };
+    assert_eq!(aborted.reason, TurnAbortReason::BudgetLimited);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

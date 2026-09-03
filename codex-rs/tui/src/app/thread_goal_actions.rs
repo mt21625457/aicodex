@@ -2,6 +2,7 @@ use super::App;
 use crate::app_event::AppEvent;
 use crate::app_event::ThreadGoalSetMode;
 use crate::app_server_session::AppServerSession;
+use crate::app_server_session::ThreadGoalWriteMode;
 use crate::bottom_pane::SelectionAction;
 use crate::bottom_pane::SelectionItem;
 use crate::bottom_pane::SelectionViewParams;
@@ -149,7 +150,7 @@ impl App {
                         self.show_replace_thread_goal_confirmation(thread_id, draft);
                         return;
                     }
-                    Some(_) => ThreadGoalSetMode::ReplaceExisting,
+                    Some(_) => ThreadGoalSetMode::ReplaceExisting { token_budget: None },
                     None => mode,
                 },
                 Err(err) => {
@@ -178,24 +179,11 @@ impl App {
             }
         };
 
-        let replacing_goal = matches!(mode, ThreadGoalSetMode::ReplaceExisting);
-        if replacing_goal {
-            let result = app_server.thread_goal_clear(thread_id).await;
-
-            if let Err(err) = result {
-                cleanup_materialized_goal_files(app_server, output_dir).await;
-                if self.current_displayed_thread_id() != Some(thread_id) {
-                    return;
-                }
-                self.chat_widget
-                    .add_error_message(thread_goal_error_message("replace", &err));
-                return;
-            }
-        }
-
+        let replacing_goal = matches!(mode, ThreadGoalSetMode::ReplaceExisting { .. });
         let (status, token_budget) = match mode {
-            ThreadGoalSetMode::ConfirmIfExists | ThreadGoalSetMode::ReplaceExisting => {
-                (ThreadGoalStatus::Active, None)
+            ThreadGoalSetMode::ConfirmIfExists => (ThreadGoalStatus::Active, None),
+            ThreadGoalSetMode::ReplaceExisting { token_budget } => {
+                (ThreadGoalStatus::Active, Some(token_budget))
             }
             ThreadGoalSetMode::UpdateExisting {
                 status,
@@ -204,7 +192,17 @@ impl App {
         };
 
         let result = app_server
-            .thread_goal_set(thread_id, Some(objective), Some(status), token_budget)
+            .thread_goal_set(
+                thread_id,
+                Some(objective),
+                Some(status),
+                token_budget,
+                if replacing_goal {
+                    ThreadGoalWriteMode::ReplaceExisting
+                } else {
+                    ThreadGoalWriteMode::UpdateExisting
+                },
+            )
             .await;
 
         match result {
@@ -242,6 +240,7 @@ impl App {
                 /*objective*/ None,
                 Some(status),
                 /*token_budget*/ None,
+                ThreadGoalWriteMode::UpdateExisting,
             )
             .await;
         if self.current_displayed_thread_id() != Some(thread_id) {
@@ -298,7 +297,7 @@ impl App {
             tx.send(AppEvent::SetThreadGoalDraft {
                 thread_id,
                 draft: replace_draft.clone(),
-                mode: ThreadGoalSetMode::ReplaceExisting,
+                mode: ThreadGoalSetMode::ReplaceExisting { token_budget: None },
             });
         })];
         let items = vec![

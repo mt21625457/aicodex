@@ -237,6 +237,7 @@ async fn exit_interrupts_before_requesting_shutdown() -> Result<()> {
             Some("test goal".to_string()),
             Some(codex_app_server_protocol::ThreadGoalStatus::Paused),
             /*token_budget*/ None,
+            crate::app_server_session::ThreadGoalWriteMode::UpdateExisting,
         )
         .await?
         .goal;

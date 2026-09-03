@@ -77,6 +77,7 @@ async fn misalignment_policy_blocks_queued_turns_and_goal_resumption() -> Result
             Some("Do not restart this stopped goal".to_string()),
             Some(ThreadGoalStatus::Blocked),
             /*token_budget*/ None,
+            crate::app_server_session::ThreadGoalWriteMode::UpdateExisting,
         )
         .await?;
     app.chat_widget
@@ -119,7 +120,7 @@ async fn misalignment_policy_blocks_queued_turns_and_goal_resumption() -> Result
                 objective: "Do not replace this stopped goal".to_string(),
                 ..Default::default()
             },
-            mode: crate::app_event::ThreadGoalSetMode::ReplaceExisting,
+            mode: crate::app_event::ThreadGoalSetMode::ReplaceExisting { token_budget: None },
         },
         AppEvent::StartSide {
             parent_thread_id: thread_id,

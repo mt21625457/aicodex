@@ -21,13 +21,6 @@ static CONTINUATION_PROMPT_WITHOUT_UPDATE_PLAN: LazyLock<Template> = LazyLock::n
     )
 });
 
-static BUDGET_LIMIT_PROMPT_TEMPLATE: LazyLock<Template> = LazyLock::new(|| {
-    parse_embedded_template(
-        include_str!("../templates/goals/budget_limit.md"),
-        "goals/budget_limit.md",
-    )
-});
-
 static OBJECTIVE_UPDATED_PROMPT_TEMPLATE: LazyLock<Template> = LazyLock::new(|| {
     parse_embedded_template(
         include_str!("../templates/goals/objective_updated.md"),
@@ -40,10 +33,6 @@ fn parse_embedded_template(source: &str, template_name: &str) -> Template {
         Ok(template) => template,
         Err(err) => panic!("embedded template {template_name} is invalid: {err}"),
     }
-}
-
-pub(crate) fn budget_limit_steering_item(goal: &ThreadGoal) -> ResponseItem {
-    goal_context_input_item(budget_limit_prompt(goal))
 }
 
 pub(crate) fn objective_updated_steering_item(goal: &ThreadGoal) -> ResponseItem {
@@ -90,27 +79,6 @@ fn continuation_prompt(goal: &ThreadGoal, update_plan_enabled: bool) -> String {
         ])
         .unwrap_or_else(|err| {
             panic!("embedded goals/continuation.md template failed to render: {err}")
-        })
-}
-
-fn budget_limit_prompt(goal: &ThreadGoal) -> String {
-    let objective = escape_xml_text(&goal.objective);
-    let time_used_seconds = goal.time_used_seconds.to_string();
-    let tokens_used = goal.tokens_used.to_string();
-    let token_budget = goal
-        .token_budget
-        .map(|budget| budget.to_string())
-        .unwrap_or_else(|| "none".to_string());
-
-    BUDGET_LIMIT_PROMPT_TEMPLATE
-        .render([
-            ("objective", objective.as_str()),
-            ("time_used_seconds", time_used_seconds.as_str()),
-            ("tokens_used", tokens_used.as_str()),
-            ("token_budget", token_budget.as_str()),
-        ])
-        .unwrap_or_else(|err| {
-            panic!("embedded goals/budget_limit.md template failed to render: {err}")
         })
 }
 

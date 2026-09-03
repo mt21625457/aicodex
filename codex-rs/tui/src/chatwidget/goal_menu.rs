@@ -12,8 +12,22 @@ impl ChatWidget {
 
     pub(crate) fn show_goal_edit_prompt(&mut self, thread_id: ThreadId, goal: AppThreadGoal) {
         let tx = self.app_event_tx.clone();
-        let status = edited_goal_status(goal.status);
-        let token_budget = goal.token_budget;
+        let mode = match goal.status {
+            AppThreadGoalStatus::BudgetLimited | AppThreadGoalStatus::Complete => {
+                crate::app_event::ThreadGoalSetMode::ReplaceExisting {
+                    token_budget: goal.token_budget,
+                }
+            }
+            AppThreadGoalStatus::Active
+            | AppThreadGoalStatus::Paused
+            | AppThreadGoalStatus::Blocked
+            | AppThreadGoalStatus::UsageLimited => {
+                crate::app_event::ThreadGoalSetMode::UpdateExisting {
+                    status: goal.status,
+                    token_budget: goal.token_budget,
+                }
+            }
+        };
         let view = CustomPromptView::new(
             "Edit goal".to_string(),
             "Type a goal objective and press Enter".to_string(),
@@ -26,10 +40,7 @@ impl ChatWidget {
                         objective,
                         ..Default::default()
                     },
-                    mode: crate::app_event::ThreadGoalSetMode::UpdateExisting {
-                        status,
-                        token_budget,
-                    },
+                    mode,
                 });
             }),
         );
@@ -127,17 +138,5 @@ fn goal_status_label(status: AppThreadGoalStatus) -> &'static str {
         AppThreadGoalStatus::UsageLimited => "usage limited",
         AppThreadGoalStatus::BudgetLimited => "limited by budget",
         AppThreadGoalStatus::Complete => "complete",
-    }
-}
-
-fn edited_goal_status(status: AppThreadGoalStatus) -> AppThreadGoalStatus {
-    match status {
-        AppThreadGoalStatus::Active => AppThreadGoalStatus::Active,
-        AppThreadGoalStatus::Paused
-        | AppThreadGoalStatus::Blocked
-        | AppThreadGoalStatus::UsageLimited => status,
-        AppThreadGoalStatus::BudgetLimited | AppThreadGoalStatus::Complete => {
-            AppThreadGoalStatus::Active
-        }
     }
 }

@@ -176,6 +176,7 @@ mod tool_lifecycle;
 mod tool_parallelism;
 mod tools;
 mod truncation;
+mod turn_abort_request;
 mod turn_input_submission;
 mod turn_state;
 mod unified_exec;

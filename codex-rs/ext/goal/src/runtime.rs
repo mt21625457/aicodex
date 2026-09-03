@@ -214,9 +214,9 @@ impl GoalRuntimeHandle {
         self.inner
             .analytics
             .status_changed(&goal, previous_status, GoalEventAttribution::NoTurn);
-        let objective_changed = previous_goal.as_ref().is_some_and(|previous_goal| {
-            !replaced_existing_goal && previous_goal.objective != goal.objective
-        });
+        let objective_changed = previous_goal
+            .as_ref()
+            .is_some_and(|previous_goal| previous_goal.objective != goal.objective);
         match goal.status {
             codex_state::ThreadGoalStatus::Active => {
                 if self.inner.accounting_state.current_turn_id().is_some() {

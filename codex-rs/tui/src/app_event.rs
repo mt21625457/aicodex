@@ -68,7 +68,9 @@ use crate::history_cell::HistoryCell;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ThreadGoalSetMode {
     ConfirmIfExists,
-    ReplaceExisting,
+    ReplaceExisting {
+        token_budget: Option<i64>,
+    },
     UpdateExisting {
         status: ThreadGoalStatus,
         token_budget: Option<i64>,

@@ -682,6 +682,7 @@ impl App {
                                 /*objective*/ None,
                                 Some(codex_app_server_protocol::ThreadGoalStatus::Paused),
                                 /*token_budget*/ None,
+                                crate::app_server_session::ThreadGoalWriteMode::UpdateExisting,
                             )
                             .await
                     {

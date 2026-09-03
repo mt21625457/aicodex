@@ -20,6 +20,10 @@
         "null"
       ]
     },
+    "replaceExisting": {
+      "description": "Replace the current goal atomically, assigning a new ID and resetting usage.",
+      "type": "boolean"
+    },
     "status": {
       "anyOf": [
         {

@@ -860,6 +860,9 @@ pub struct ThreadGoalSetParams {
     )]
     #[ts(optional = nullable, type = "number | null")]
     pub token_budget: Option<Option<i64>>,
+    /// Replace the current goal atomically, assigning a new ID and resetting usage.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub replace_existing: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

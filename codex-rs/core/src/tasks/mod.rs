@@ -10,6 +10,7 @@ use std::time::Instant;
 
 use codex_diagnostics::Gauge;
 use codex_extension_api::ThreadIdleCause;
+use codex_extension_api::TurnAbortRequest;
 use futures::future::BoxFuture;
 use tokio::select;
 use tokio::sync::Mutex;
@@ -611,9 +612,16 @@ impl Session {
     ) {
         let (last_agent_message, abort_reason) = match task_result {
             Ok(last_agent_message) => (last_agent_message, None),
-            Err(err) if matches!(err.details(), CodexErrorDetails::TurnAborted) => {
-                (None, Some(TurnAbortReason::Interrupted))
-            }
+            Err(err) if matches!(err.details(), CodexErrorDetails::TurnAborted) => (
+                None,
+                Some(
+                    turn_context
+                        .extension_data
+                        .get::<TurnAbortRequest>()
+                        .filter(|request| request.is_claimed())
+                        .map_or(TurnAbortReason::Interrupted, |request| request.reason()),
+                ),
+            ),
             Err(err) => {
                 warn!(%err, "session task returned an unexpected error");
                 self.emit_turn_error_lifecycle(
@@ -811,11 +819,10 @@ impl Session {
                 turn_id: turn_context.sub_id.clone(),
                 profile,
             });
-        let idle_cause = if matches!(
-            abort_reason.as_ref(),
-            Some(TurnAbortReason::Interrupted | TurnAbortReason::BudgetLimited)
-        ) {
+        let idle_cause = if matches!(abort_reason.as_ref(), Some(TurnAbortReason::Interrupted)) {
             ThreadIdleCause::Interrupted
+        } else if matches!(abort_reason.as_ref(), Some(TurnAbortReason::BudgetLimited)) {
+            ThreadIdleCause::BudgetLimited
         } else if abort_reason.is_none() && turn_context.terminal_error.lock().await.is_some() {
             ThreadIdleCause::Failed
         } else {

@@ -5703,7 +5703,7 @@ async fn set_thread_goal_draft_materializes_long_objective_and_confirms_before_p
         &mut app_server,
         thread_id,
         paste_draft,
-        crate::app_event::ThreadGoalSetMode::ReplaceExisting,
+        crate::app_event::ThreadGoalSetMode::ReplaceExisting { token_budget: None },
     )
     .await;
     let goal = app_server
@@ -5728,7 +5728,7 @@ async fn set_thread_goal_draft_materializes_long_objective_and_confirms_before_p
             pending_pastes: vec![stale_paste],
             ..Default::default()
         },
-        crate::app_event::ThreadGoalSetMode::ReplaceExisting,
+        crate::app_event::ThreadGoalSetMode::ReplaceExisting { token_budget: None },
     )
     .await;
     assert_eq!(
@@ -5749,7 +5749,7 @@ async fn set_thread_goal_draft_materializes_long_objective_and_confirms_before_p
             pending_pastes: vec![(whitespace_placeholder.to_string(), " \n\t".to_string())],
             ..Default::default()
         },
-        crate::app_event::ThreadGoalSetMode::ReplaceExisting,
+        crate::app_event::ThreadGoalSetMode::ReplaceExisting { token_budget: None },
     )
     .await;
     assert_eq!(
@@ -5789,7 +5789,7 @@ async fn set_thread_goal_draft_materializes_long_objective_and_confirms_before_p
             ],
             ..Default::default()
         },
-        crate::app_event::ThreadGoalSetMode::ReplaceExisting,
+        crate::app_event::ThreadGoalSetMode::ReplaceExisting { token_budget: None },
     )
     .await;
     let objective = app_server

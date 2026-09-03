@@ -47,6 +47,8 @@ use codex_app_server_protocol::TextElement;
 use codex_app_server_protocol::ThreadDeleteParams;
 use codex_app_server_protocol::ThreadDeleteResponse;
 use codex_app_server_protocol::ThreadDeletedNotification;
+use codex_app_server_protocol::ThreadGoalGetResponse;
+use codex_app_server_protocol::ThreadGoalStatus;
 use codex_app_server_protocol::ThreadHistoryMode;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadLoadedListParams;
@@ -66,6 +68,7 @@ use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnStartedNotification;
 use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::TurnSteerParams;
+use codex_app_server_protocol::TurnSteerResponse;
 use codex_app_server_protocol::UserInput as V2UserInput;
 use codex_app_server_protocol::WarningNotification;
 use codex_core::test_support::all_model_presets;
@@ -415,6 +418,143 @@ async fn turn_start_with_empty_input_runs_model_request() -> Result<()> {
         }),
         "empty turn/start should not synthesize an empty user message: {input:?}"
     );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn grok_goal_budget_limit_stops_before_another_model_follow_up() -> Result<()> {
+    let (release_budget_response, budget_response_gate) = oneshot::channel();
+    let (server, _completions) = start_streaming_sse_server(vec![
+        vec![StreamingSseChunk {
+            gate: None,
+            body: responses::sse(vec![
+                responses::ev_response_created("create-goal"),
+                responses::ev_function_call(
+                    "create-goal-call",
+                    "create_goal",
+                    r#"{"objective":"finish within budget","token_budget":10}"#,
+                ),
+                responses::ev_completed_with_tokens("create-goal", /*total_tokens*/ 1),
+            ]),
+        }],
+        vec![
+            StreamingSseChunk {
+                gate: None,
+                body: responses::sse(vec![
+                    responses::ev_response_created("over-budget-tool"),
+                    responses::ev_function_call("get-goal-call", "get_goal", "{}"),
+                ]),
+            },
+            StreamingSseChunk {
+                gate: Some(budget_response_gate),
+                body: responses::sse(vec![responses::ev_completed_with_tokens(
+                    "over-budget-tool",
+                    /*total_tokens*/ 20,
+                )]),
+            },
+        ],
+    ])
+    .await;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(server.uri())
+        .with_model("grok-4.5")
+        .enable_feature(Feature::Goals)
+        .with_extra_config("[goals]\nmax_goal_token_budget = 100")
+        .write(codex_home.path())?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_managed_config()
+        .build_initialized()
+        .await?;
+    let ThreadStartResponse { thread, .. } = mcp
+        .start_thread(ThreadStartParams {
+            model: Some("grok-4.5".to_string()),
+            ..Default::default()
+        })
+        .await?;
+
+    let TurnStartResponse { turn } = mcp
+        .request(|request_id| ClientRequest::TurnStart {
+            request_id,
+            params: TurnStartParams {
+                thread_id: thread.id.clone(),
+                client_user_message_id: None,
+                input: vec![V2UserInput::Text {
+                    text: "finish the task".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+        })
+        .await?;
+
+    server.wait_for_request_count(/*count*/ 2).await;
+    let steer: TurnSteerResponse = mcp
+        .request(|request_id| ClientRequest::TurnSteer {
+            request_id,
+            params: TurnSteerParams {
+                thread_id: thread.id.clone(),
+                client_user_message_id: Some("budget-steer".to_string()),
+                input: vec![V2UserInput::Text {
+                    text: "preserve this accepted steer".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                responsesapi_client_metadata: None,
+                additional_context: Some(HashMap::from([(
+                    "browser_info".to_string(),
+                    AdditionalContextEntry {
+                        value: "tab one".to_string(),
+                        kind: AdditionalContextKind::Untrusted,
+                    },
+                )])),
+                expected_turn_id: turn.id.clone(),
+            },
+        })
+        .await?;
+    assert_eq!(steer.turn_id, turn.id);
+    release_budget_response
+        .send(())
+        .expect("budget response gate should remain open");
+
+    let committed_steer: ItemCompletedNotification = timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            let notification: ItemCompletedNotification =
+                mcp.read_notification("item/completed").await?;
+            if matches!(
+                &notification.item,
+                ThreadItem::UserMessage { content, .. }
+                    if content.iter().any(|input| matches!(
+                        input,
+                        V2UserInput::Text { text, .. }
+                            if text == "preserve this accepted steer"
+                    ))
+            ) {
+                return Ok::<_, anyhow::Error>(notification);
+            }
+        }
+    })
+    .await??;
+    assert_eq!(committed_steer.turn_id, turn.id);
+
+    let completed: TurnCompletedNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_notification("turn/completed"),
+    )
+    .await??;
+    assert_eq!(completed.turn.id, turn.id);
+    assert_eq!(completed.turn.status, TurnStatus::Interrupted);
+
+    let request_id = mcp
+        .send_raw_request("thread/goal/get", Some(json!({ "threadId": thread.id })))
+        .await?;
+    let goal: ThreadGoalGetResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(request_id)).await??;
+    let goal = goal.goal.context("goal should exist")?;
+    assert_eq!(goal.status, ThreadGoalStatus::BudgetLimited);
+
+    assert_eq!(server.requests().await.len(), 2);
 
     Ok(())
 }

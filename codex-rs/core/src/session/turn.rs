@@ -73,6 +73,7 @@ use codex_async_utils::OrCancelExt;
 use codex_connectors::AppToolPolicyEvaluator;
 use codex_core_plugins::RecommendedPluginCandidatesInput;
 use codex_extension_api::ExtensionData;
+use codex_extension_api::TurnAbortRequest;
 use codex_extension_api::TurnInputContext;
 use codex_extension_api::TurnInputEnvironment;
 use codex_features::Feature;
@@ -501,6 +502,16 @@ pub(crate) async fn run_turn(
                     last_agent_message: sampling_request_last_agent_message,
                     follow_up_text: sampling_request_follow_up_text,
                 } = sampling_request_output;
+                // Process async hooks after sampling and its tools finish, even when an extension
+                // asks to stop before the next model request.
+                drain_async_hook_results(&sess, &turn_context, /*before_user_prompt*/ false).await;
+                if turn_context
+                    .extension_data
+                    .get::<TurnAbortRequest>()
+                    .is_some_and(|request| request.claim())
+                {
+                    return Err(CodexErr::TurnAborted);
+                }
                 if model_needs_follow_up {
                     sess.input_queue
                         .accept_mailbox_delivery_for_current_turn(
@@ -509,8 +520,6 @@ pub(crate) async fn run_turn(
                         )
                         .await;
                 }
-                // Process async hooks only after sampling and its tools have finished.
-                drain_async_hook_results(&sess, &turn_context, /*before_user_prompt*/ false).await;
                 let (has_pending_input, token_status) = async {
                     let has_pending_input =
                         sess.input_queue.has_pending_input(&sess.active_turn).await;

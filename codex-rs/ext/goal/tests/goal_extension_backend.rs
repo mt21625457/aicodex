@@ -24,6 +24,7 @@ use codex_extension_api::ToolCallSource;
 use codex_extension_api::ToolExecutor;
 use codex_extension_api::ToolFinishInput;
 use codex_extension_api::ToolPayload;
+use codex_extension_api::TurnAbortRequest;
 use codex_extension_api::TurnErrorInput;
 use codex_extension_api::TurnStartInput;
 use codex_extension_api::TurnStopInput;
@@ -323,9 +324,15 @@ async fn tool_finish_accounts_active_goal_progress_and_emits_event() -> anyhow::
             ),
         )
         .await;
-    harness
+    let turn_store = harness
         .notify_tool_finish("turn-1", "call-shell", "shell")
         .await;
+    assert_eq!(
+        turn_store
+            .get::<TurnAbortRequest>()
+            .map(|request| request.reason()),
+        None
+    );
 
     let goal = runtime
         .thread_goals()
@@ -458,9 +465,15 @@ async fn spawned_descendant_usage_exhausts_root_goal_budget_once() -> anyhow::Re
     grandchild
         .record_token_usage_with_last("grandchild-turn", &grandchild_usage, &grandchild_usage)
         .await;
-    harness
+    let turn_store = harness
         .notify_tool_finish("turn-1", "call-shell", "shell")
         .await;
+    assert_eq!(
+        turn_store
+            .get::<TurnAbortRequest>()
+            .map(|request| request.reason()),
+        Some(codex_protocol::protocol::TurnAbortReason::BudgetLimited)
+    );
 
     let goal = runtime
         .thread_goals()
@@ -719,6 +732,121 @@ async fn budget_limited_goal_keeps_accounting_after_later_tool_finish() -> anyho
         .await?
         .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
     assert_eq!(35, goal.tokens_used);
+    assert_eq!(codex_state::ThreadGoalStatus::BudgetLimited, goal.status);
+    Ok(())
+}
+
+#[tokio::test]
+async fn terminal_goal_update_revokes_pending_budget_abort_request() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+
+    tool_by_name(&harness.tools(), "create_goal")
+        .handle(tool_call(
+            "create_goal",
+            "call-create-goal",
+            json!({
+                "objective": "finish before aborting",
+                "token_budget": 25,
+            }),
+        ))
+        .await?;
+    harness
+        .record_token_usage(
+            "turn-1",
+            &token_usage(
+                /*input_tokens*/ 20, /*cached_input_tokens*/ 5,
+                /*output_tokens*/ 10, /*reasoning_output_tokens*/ 0,
+                /*total_tokens*/ 30,
+            ),
+        )
+        .await;
+    let turn_store = harness
+        .notify_tool_finish("turn-1", "call-shell", "shell")
+        .await;
+    let request = turn_store
+        .get::<TurnAbortRequest>()
+        .expect("budget exhaustion should request a turn abort");
+    assert!(request.is_active());
+
+    let outcome = harness
+        .goal_service
+        .set_thread_goal(
+            runtime.as_ref(),
+            GoalSetRequest {
+                thread_id,
+                objective: GoalObjectiveUpdate::Keep,
+                status: Some(ThreadGoalStatus::Complete),
+                token_budget: GoalTokenBudgetUpdate::Keep,
+                max_goal_token_budget: None,
+            },
+        )
+        .await?;
+    outcome.apply_runtime_effects(&harness.goal_service).await;
+
+    assert!(!request.is_active());
+    assert_eq!(outcome.goal.status, ThreadGoalStatus::Complete);
+    Ok(())
+}
+
+#[tokio::test]
+async fn new_turn_does_not_accrue_usage_to_budget_limited_goal() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    harness.start_turn("turn-1", &TokenUsage::default()).await;
+
+    tool_by_name(&harness.tools(), "create_goal")
+        .handle(tool_call(
+            "create_goal",
+            "call-create-goal",
+            json!({
+                "objective": "stop when the budget is exhausted",
+                "token_budget": 25,
+            }),
+        ))
+        .await?;
+    harness
+        .record_token_usage(
+            "turn-1",
+            &token_usage(
+                /*input_tokens*/ 20, /*cached_input_tokens*/ 5,
+                /*output_tokens*/ 10, /*reasoning_output_tokens*/ 0,
+                /*total_tokens*/ 30,
+            ),
+        )
+        .await;
+    harness
+        .notify_tool_finish("turn-1", "call-shell-1", "shell")
+        .await;
+    harness.stop_turn("turn-1").await;
+
+    harness.start_turn("turn-2", &TokenUsage::default()).await;
+    harness
+        .record_token_usage(
+            "turn-2",
+            &token_usage(
+                /*input_tokens*/ 100, /*cached_input_tokens*/ 0,
+                /*output_tokens*/ 25, /*reasoning_output_tokens*/ 0,
+                /*total_tokens*/ 125,
+            ),
+        )
+        .await;
+    harness
+        .notify_tool_finish("turn-2", "call-shell-2", "shell")
+        .await;
+    harness.stop_turn("turn-2").await;
+
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("goal should exist"))?;
+    assert_eq!(25, goal.tokens_used);
     assert_eq!(codex_state::ThreadGoalStatus::BudgetLimited, goal.status);
     Ok(())
 }
@@ -1746,14 +1874,19 @@ impl GoalExtensionHarness {
         }
     }
 
-    async fn notify_tool_finish(&self, turn_id: &str, call_id: &str, tool_name: &str) {
+    async fn notify_tool_finish(
+        &self,
+        turn_id: &str,
+        call_id: &str,
+        tool_name: &str,
+    ) -> ExtensionData {
         self.notify_tool_finish_with_outcome(
             turn_id,
             call_id,
             tool_name,
             ToolCallOutcome::Completed { success: true },
         )
-        .await;
+        .await
     }
 
     async fn notify_tool_finish_with_outcome(
@@ -1762,7 +1895,7 @@ impl GoalExtensionHarness {
         call_id: &str,
         tool_name: &str,
         outcome: ToolCallOutcome,
-    ) {
+    ) -> ExtensionData {
         let turn_store = ExtensionData::new(turn_id);
         let tool_name = codex_extension_api::ToolName::plain(tool_name);
         for contributor in self.registry.tool_lifecycle_contributors() {
@@ -1779,6 +1912,7 @@ impl GoalExtensionHarness {
                 })
                 .await;
         }
+        turn_store
     }
 
     async fn notify_turn_error(&self, turn_id: &str, error: CodexErrorInfo) {

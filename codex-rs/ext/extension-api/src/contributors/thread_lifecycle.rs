@@ -61,6 +61,8 @@ pub enum ThreadIdleCause {
     Completed,
     /// The user interrupted the previous turn.
     Interrupted,
+    /// Goal execution stopped at its token budget; independent queued work can run.
+    BudgetLimited,
     /// The previous turn ended with a terminal error.
     Failed,
 }

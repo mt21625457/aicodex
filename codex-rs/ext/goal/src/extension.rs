@@ -44,7 +44,6 @@ use crate::runtime::GoalRuntimeConfig;
 use crate::runtime::GoalRuntimeHandle;
 use crate::spec::CREATE_GOAL_TOOL_NAME;
 use crate::spec::UPDATE_GOAL_TOOL_NAME;
-use crate::steering::budget_limit_steering_item;
 use crate::tool::GoalToolExecutor;
 
 #[derive(Clone, Debug)]
@@ -260,11 +259,7 @@ where
                 return;
             };
             if let Some(goal) = goal
-                && matches!(
-                    goal.status,
-                    codex_state::ThreadGoalStatus::Active
-                        | codex_state::ThreadGoalStatus::BudgetLimited
-                )
+                && goal.status == codex_state::ThreadGoalStatus::Active
             {
                 accounting.mark_turn_goal_active(input.turn_id, goal.goal_id);
             }
@@ -489,14 +484,13 @@ where
             if goal.status != ThreadGoalStatus::BudgetLimited {
                 return;
             }
-            if !runtime
+            let Some(request) = runtime
                 .accounting_state()
-                .mark_budget_limit_reported_if_new(progress.goal_id.as_str())
-            {
+                .request_budget_limit_stop_if_new(progress.goal_id.as_str())
+            else {
                 return;
-            }
-            let item = budget_limit_steering_item(&goal);
-            runtime.inject_active_turn_steering(item).await;
+            };
+            input.turn_store.insert(request);
         })
     }
 }

@@ -417,11 +417,17 @@ async fn starting_a_selected_item_while_active_leaves_it_queued() -> anyhow::Res
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn interrupted_turns_pause_queued_messages_but_failed_turns_drain_them() -> anyhow::Result<()>
-{
+async fn interrupted_turns_pause_queued_messages_but_other_terminal_causes_drain_them()
+-> anyhow::Result<()> {
     let server = start_mock_server().await;
-    let response =
-        responses::mount_sse_once(&server, responses::sse_completed("failed-follow-up")).await;
+    let response = responses::mount_sse_sequence(
+        &server,
+        vec![
+            responses::sse_completed("budget-limited-follow-up"),
+            responses::sse_completed("failed-follow-up"),
+        ],
+    )
+    .await;
     let test = test_codex().build_with_auto_env(&server).await?;
     let thread_id = test.session_configured.thread_id;
     let queue = loaded_thread_queue(&test)?;
@@ -431,12 +437,22 @@ async fn interrupted_turns_pause_queued_messages_but_failed_turns_drain_them() -
         Arc::new(NoopExtensionEventSink),
     );
     let queued = service
-        .enqueue(thread_id, user_input("continue after failure"))
+        .enqueue(thread_id, user_input("continue after budget limit"))
         .await?;
 
     emit_idle_with_cause(&service, thread_id, ThreadIdleCause::Interrupted).await;
     assert_eq!(vec![queued], service.list(thread_id).await?);
 
+    emit_idle_with_cause(&service, thread_id, ThreadIdleCause::BudgetLimited).await;
+    wait_for_event_match(test.codex.as_ref(), |event| {
+        matches!(event, EventMsg::TurnComplete(_)).then_some(())
+    })
+    .await;
+    assert!(service.list(thread_id).await?.is_empty());
+
+    service
+        .enqueue(thread_id, user_input("continue after failure"))
+        .await?;
     emit_idle_with_cause(&service, thread_id, ThreadIdleCause::Failed).await;
     wait_for_event_match(test.codex.as_ref(), |event| {
         matches!(event, EventMsg::TurnComplete(_)).then_some(())
@@ -444,12 +460,12 @@ async fn interrupted_turns_pause_queued_messages_but_failed_turns_drain_them() -
     .await;
     assert!(service.list(thread_id).await?.is_empty());
     assert_eq!(
-        Some("continue after failure"),
+        vec!["continue after budget limit", "continue after failure"],
         response
-            .single_request()
-            .message_input_texts("user")
-            .last()
-            .map(String::as_str)
+            .requests()
+            .iter()
+            .filter_map(|request| request.message_input_texts("user").last().cloned())
+            .collect::<Vec<_>>()
     );
     Ok(())
 }

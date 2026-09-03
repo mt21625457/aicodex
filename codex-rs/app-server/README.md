@@ -811,6 +811,8 @@ Use `thread/goal/set` to create or update the current goal for a materialized th
 
 When `goals.max_goal_token_budget` is configured, new goals default to that limit, larger budgets are rejected, and setting `tokenBudget` to `null` resets the budget to the configured limit instead of removing it.
 
+Set `replaceExisting` to `true` together with a new objective to atomically replace the current goal. Replacement assigns a new goal ID and resets accumulated token and time usage; supply `tokenBudget` when the replacement should preserve or change the previous limit.
+
 ```json
 { "method": "thread/goal/set", "id": 27, "params": {
     "threadId": "thr_123",

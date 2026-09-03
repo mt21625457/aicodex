@@ -147,25 +147,29 @@ impl ThreadGoalRequestProcessor {
         let status = params.status.map(ThreadGoalStatus::to_core);
         let objective = params.objective.as_deref();
 
-        let outcome = self
-            .goal_service
-            .set_thread_goal(
-                &state_db,
-                GoalSetRequest {
-                    thread_id,
-                    objective: objective
-                        .map(GoalObjectiveUpdate::Set)
-                        .unwrap_or(GoalObjectiveUpdate::Keep),
-                    status,
-                    token_budget: match params.token_budget {
-                        Some(token_budget) => GoalTokenBudgetUpdate::Set(token_budget),
-                        None => GoalTokenBudgetUpdate::Keep,
-                    },
-                    max_goal_token_budget,
-                },
-            )
-            .await
-            .map_err(goal_service_error)?;
+        let request = GoalSetRequest {
+            thread_id,
+            objective: objective
+                .map(GoalObjectiveUpdate::Set)
+                .unwrap_or(GoalObjectiveUpdate::Keep),
+            status,
+            token_budget: match params.token_budget {
+                Some(token_budget) => GoalTokenBudgetUpdate::Set(token_budget),
+                None => GoalTokenBudgetUpdate::Keep,
+            },
+            max_goal_token_budget,
+        };
+        let outcome = if params.replace_existing {
+            self.goal_service
+                .replace_thread_goal(&state_db, request)
+                .await
+        } else {
+            self.goal_service.set_thread_goal(&state_db, request).await
+        }
+        .map_err(goal_service_error)?;
+        // Apply the runtime transition immediately after the atomic database write. The active
+        // turn must observe the replacement before persistence or client notification can yield.
+        outcome.apply_runtime_effects(&self.goal_service).await;
         let goal = ThreadGoal::from(outcome.goal.clone());
 
         let persist_result = match self.thread_manager.get_thread(thread_id).await {
@@ -216,7 +220,6 @@ impl ThreadGoalRequestProcessor {
             .await;
         self.emit_thread_goal_updated_ordered(thread_id, goal, listener_command_tx)
             .await;
-        outcome.apply_runtime_effects(&self.goal_service).await;
         Ok(())
     }
 

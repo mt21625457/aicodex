@@ -46,7 +46,7 @@ impl Session {
             if active_turn.is_some() {
                 return;
             }
-            if self.is_interrupted() {
+            if cause != ThreadIdleCause::BudgetLimited && self.is_interrupted() {
                 ThreadIdleCause::Interrupted
             } else {
                 cause

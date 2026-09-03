@@ -13,6 +13,12 @@ pub(crate) use history::HISTORY_ITEM_SCAN_LIMIT;
 pub(crate) use history::HistoryHydrationScope;
 pub(crate) use history::thread_items_page_params;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ThreadGoalWriteMode {
+    UpdateExisting,
+    ReplaceExisting,
+}
+
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::FeedbackAudience;
 use crate::dynamic_tools_mcp::DynamicToolMcpServer;
@@ -1374,6 +1380,7 @@ impl AppServerSession {
         objective: Option<String>,
         status: Option<ThreadGoalStatus>,
         token_budget: Option<Option<i64>>,
+        mode: ThreadGoalWriteMode,
     ) -> Result<ThreadGoalSetResponse> {
         let request_id = self.next_request_id();
         self.client
@@ -1384,6 +1391,7 @@ impl AppServerSession {
                     objective,
                     status,
                     token_budget,
+                    replace_existing: mode == ThreadGoalWriteMode::ReplaceExisting,
                 },
             })
             .await

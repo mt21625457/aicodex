@@ -182,7 +182,7 @@ async fn goal_edit_prompt_preserves_resumable_stopped_statuses() {
 }
 
 #[tokio::test]
-async fn goal_edit_prompt_resets_terminal_status_to_active() {
+async fn goal_edit_prompt_replaces_terminal_goal() {
     let cases = [
         AppThreadGoalStatus::BudgetLimited,
         AppThreadGoalStatus::Complete,
@@ -205,15 +205,11 @@ async fn goal_edit_prompt_resets_terminal_status_to_active() {
         match rx.try_recv() {
             Ok(AppEvent::SetThreadGoalDraft {
                 mode:
-                    crate::app_event::ThreadGoalSetMode::UpdateExisting {
-                        status,
-                        token_budget,
+                    crate::app_event::ThreadGoalSetMode::ReplaceExisting {
+                        token_budget: Some(80_000),
                     },
                 ..
-            }) => {
-                assert_eq!(status, AppThreadGoalStatus::Active);
-                assert_eq!(token_budget, Some(80_000));
-            }
+            }) => {}
             other => panic!("expected SetThreadGoalDraft event, got {other:?}"),
         }
     }
