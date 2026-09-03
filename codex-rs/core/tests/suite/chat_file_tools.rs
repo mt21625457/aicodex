@@ -3,6 +3,10 @@ use codex_core::config::Config;
 use codex_features::Feature;
 use codex_model_provider_info::WireApi;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::permissions::FileSystemAccessMode;
+use codex_protocol::permissions::FileSystemPath;
+use codex_protocol::permissions::FileSystemSandboxEntry;
+use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
@@ -81,6 +85,75 @@ async fn chat_dedicated_write_create_then_edit_succeeds_across_completions() -> 
         .expect("Chat messages");
     assert_tool_result_contains(&final_messages, "write_1", "created");
     assert_tool_result_contains(&final_messages, "edit_1", "completed");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_dedicated_edit_resolves_executor_home_in_sandbox() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let read_name = chat_tool_name(None, "read_file", ChatToolCallKind::Function);
+    let edit_name = chat_tool_name(None, "edit_file", ChatToolCallKind::Function);
+    mount_chat_sse_sequence(
+        &server,
+        vec![
+            chat_sse(vec![json!({
+                "id": "read",
+                "choices": [{"index": 0, "delta": {"tool_calls": [{
+                    "index": 0,
+                    "id": "read_with_home_policy",
+                    "function": {"name": read_name, "arguments": "{\"path\":\"home-policy.txt\"}"}
+                }]}, "finish_reason": "tool_calls"}]
+            })]),
+            chat_sse(vec![json!({
+                "id": "edit",
+                "choices": [{"index": 0, "delta": {"tool_calls": [{
+                    "index": 0,
+                    "id": "edit_with_home_policy",
+                    "function": {"name": edit_name, "arguments": "{\"path\":\"home-policy.txt\",\"old_string\":\"before\",\"new_string\":\"after\"}"}
+                }]}, "finish_reason": "tool_calls"}]
+            })]),
+            chat_sse(vec![json!({
+                "id": "final",
+                "choices": [{"index": 0, "delta": {"content": "done"}, "finish_reason": "stop"}]
+            })]),
+        ],
+    )
+    .await;
+    let mut builder = test_codex()
+        .with_model("gpt-5.2")
+        .with_config(configure_dedicated_chat_provider);
+    let test = builder.build_with_auto_env(&server).await?;
+    let target = test.workspace_path_uri("home-policy.txt")?;
+    test.fs()
+        .write_file(
+            &target,
+            b"before\n".to_vec(),
+            Default::default(),
+            /*sandbox*/ None,
+        )
+        .await?;
+    let mut file_system_policy = PermissionProfile::workspace_write().file_system_sandbox_policy();
+    file_system_policy.entries.push(FileSystemSandboxEntry {
+        path: FileSystemPath::GlobPattern {
+            pattern: "~/.codex/**".to_string(),
+        },
+        access: FileSystemAccessMode::Deny,
+        missing_path_behavior: None,
+    });
+    let permission_profile = PermissionProfile::from_runtime_permissions(
+        &file_system_policy,
+        NetworkSandboxPolicy::Restricted,
+    );
+
+    test.submit_turn_with_permission_profile("edit home-policy.txt", permission_profile)
+        .await?;
+
+    assert_eq!(
+        test.fs()
+            .read_file(&target, Default::default(), /*sandbox*/ None)
+            .await?,
+        b"after\n"
+    );
     Ok(())
 }
 
