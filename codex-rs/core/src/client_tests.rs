@@ -518,6 +518,30 @@ fn store_false_strips_all_item_ids_before_responses_request() {
 }
 
 #[test]
+fn store_false_drops_id_only_official_reasoning_shells() {
+    let mut input = vec![
+        ResponseItem::Reasoning {
+            id: Some(ResponseItemId::from_server(
+                "rs_f5ccf4b0-095a-99a4-9a1f-d7a808fee170".to_string(),
+            )),
+            summary: Vec::new(),
+            content: Some(Vec::new()),
+            encrypted_content: None,
+            internal_chat_message_metadata_passthrough: None,
+        },
+        reasoning_item("rs_server"),
+        output_message("assistant", "hello"),
+    ];
+
+    prepare_response_items_for_request(&mut input, /*store*/ false);
+
+    assert_eq!(input.len(), 2);
+    assert!(matches!(input[0], ResponseItem::Reasoning { .. }));
+    assert_eq!(input[0].id(), None);
+    assert!(matches!(input[1], ResponseItem::Message { .. }));
+}
+
+#[test]
 fn store_true_keeps_type_valid_ids_and_strips_invalid_ids() {
     let mut input = vec![
         reasoning_item("rs_server"),

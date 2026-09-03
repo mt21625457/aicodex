@@ -190,7 +190,15 @@ fn responses_websocket_allowed_for_model(model: &str) -> bool {
     is_openai_gpt_model_slug(model)
 }
 
-pub(crate) fn prepare_response_items_for_request(input: &mut [ResponseItem], store: bool) {
+pub(crate) fn prepare_response_items_for_request(input: &mut Vec<ResponseItem>, store: bool) {
+    if !store {
+        // Official `rs_*` ids are not persisted when store=false. An id-only
+        // reasoning shell still makes compatible providers look the item up
+        // and 404, even after the id field is stripped by a later hop that
+        // re-attaches it. Drop those shells here; keep encrypted / inline
+        // reasoning and strip ids below.
+        input.retain(|item| !is_unreplayable_store_false_reasoning(item));
+    }
     for item in input {
         // `store: false` does not persist item IDs. Replaying locally minted
         // prefixed IDs (for example `rs_<uuid>`) makes OpenAI-compatible
@@ -204,6 +212,29 @@ pub(crate) fn prepare_response_items_for_request(input: &mut [ResponseItem], sto
             item.set_id(/*new_id*/ None);
         }
     }
+}
+
+fn is_unreplayable_store_false_reasoning(item: &ResponseItem) -> bool {
+    let ResponseItem::Reasoning {
+        id,
+        content,
+        encrypted_content,
+        ..
+    } = item
+    else {
+        return false;
+    };
+    let Some(id) = id.as_ref() else {
+        return false;
+    };
+    if !id.has_prefix("rs") {
+        return false;
+    }
+    let has_encrypted = encrypted_content
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty());
+    let has_content = content.as_ref().is_some_and(|value| !value.is_empty());
+    !has_encrypted && !has_content
 }
 
 pub(crate) struct CompactConversationRequestSettings {
@@ -1047,7 +1078,7 @@ impl ModelClient {
         Ok(request)
     }
 
-    fn prepare_response_items_for_request(&self, input: &mut [ResponseItem], store: bool) {
+    fn prepare_response_items_for_request(&self, input: &mut Vec<ResponseItem>, store: bool) {
         prepare_response_items_for_request(input, store);
     }
 
