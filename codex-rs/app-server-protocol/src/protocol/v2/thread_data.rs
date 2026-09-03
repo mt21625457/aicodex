@@ -260,9 +260,9 @@ pub struct Thread {
     /// Origin of the thread (CLI, VSCode, aicodex exec, aicodex app-server, etc.).
     pub source: SessionSource,
     /// Whether the app server accepts direct turn input for this loaded thread.
-    /// Loaded spawned threads, including multi-agent v2 children, report
-    /// `true`. `None` means the capability is unavailable, such as for an
-    /// unloaded stored thread or an ordinary CLI thread.
+    /// Loaded threads, including multi-agent v2 children and ordinary CLI
+    /// threads, report `true`. `None` means the capability is unavailable,
+    /// such as for an unloaded stored thread.
     #[experimental("thread.canAcceptDirectInput")]
     pub can_accept_direct_input: Option<bool>,
     /// Optional analytics source classification for this thread.

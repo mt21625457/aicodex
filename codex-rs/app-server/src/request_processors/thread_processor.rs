@@ -3,7 +3,6 @@ use super::persisted_resume_settings::latest_persisted_resume_settings;
 use super::thread_enrichment::enrich_loaded_threads;
 use super::thread_fork_goal::inherit_thread_goal_snapshot;
 use super::thread_input::can_accept_direct_input;
-use super::thread_input::ensure_direct_input_allowed;
 use super::thread_input::loaded_thread_can_accept_direct_input;
 use super::*;
 use crate::error_code::method_not_found;
@@ -95,7 +94,7 @@ struct ThreadListFilters {
 
 struct ThreadReadView {
     thread: Thread,
-    runtime_lifecycle: ThreadRuntimeLifecycle,
+    runtime_lifecycle: Option<ThreadRuntimeLifecycle>,
     token_usage_info: Option<TokenUsageInfo>,
     token_usage_turn_id: Option<String>,
 }
@@ -2129,7 +2128,6 @@ impl ThreadRequestProcessor {
             before_turn_id,
         } = params;
         let (thread_id, thread) = self.load_thread(&thread_id).await?;
-        ensure_direct_input_allowed(thread.as_ref()).await?;
         let config_snapshot = thread.config_snapshot().await;
         if !matches!(config_snapshot.history_mode, ThreadHistoryMode::Paginated) {
             return Err(invalid_request(
@@ -2348,7 +2346,6 @@ impl ThreadRequestProcessor {
         }
 
         let (thread_id, thread) = self.load_thread(&thread_id).await?;
-        ensure_direct_input_allowed(thread.as_ref()).await?;
         if matches!(
             thread.config_snapshot().await.history_mode,
             ThreadHistoryMode::Paginated
@@ -2402,7 +2399,6 @@ impl ThreadRequestProcessor {
         let ThreadCompactStartParams { thread_id } = params;
 
         let (_, thread) = self.load_thread(&thread_id).await?;
-        ensure_direct_input_allowed(thread.as_ref()).await?;
         self.submit_core_op(request_id, thread.as_ref(), Op::Compact)
             .await
             .map_err(|err| internal_error(format!("failed to start compaction: {err}")))?;
@@ -2499,7 +2495,6 @@ impl ThreadRequestProcessor {
             .transpose()?;
 
         let (_, thread) = self.load_thread(&thread_id).await?;
-        ensure_direct_input_allowed(thread.as_ref()).await?;
 
         // `thread/shellCommand` is app-server's local-host shell escape hatch,
         // not the normal turn-selected shell tool path.
@@ -2534,7 +2529,6 @@ impl ThreadRequestProcessor {
         let event = serde_json::from_value(event)
             .map_err(|err| invalid_request(format!("invalid Guardian denial event: {err}")))?;
         let (_, thread) = self.load_thread(&thread_id).await?;
-        ensure_direct_input_allowed(thread.as_ref()).await?;
 
         self.submit_core_op(
             request_id,
@@ -2855,7 +2849,7 @@ impl ThreadRequestProcessor {
         Ok((
             ThreadReadResponse {
                 thread: view.thread,
-                runtime_lifecycle: Some(view.runtime_lifecycle),
+                runtime_lifecycle: view.runtime_lifecycle,
             },
             replay,
         ))
@@ -2967,21 +2961,15 @@ impl ThreadRequestProcessor {
                 latest_token_usage_turn_id_from_rollout_items(items, thread.turns.as_slice())
             })
         });
-        let runtime_lifecycle = {
-            let thread_state = self
-                .thread_state_manager
-                .thread_state_if_present(thread_id)
-                .await;
-            if let Some(thread_state) = thread_state {
-                let state = thread_state.lock().await;
-                state.runtime_lifecycle_snapshot()
-            } else {
-                ThreadRuntimeLifecycle {
-                    active_turn_id: None,
-                    active_turn_started_at: None,
-                    last_terminal_turn_id: None,
-                }
-            }
+        let runtime_lifecycle = if let Some(thread_state) = self
+            .thread_state_manager
+            .thread_state_if_present(thread_id)
+            .await
+        {
+            let state = thread_state.lock().await;
+            Some(state.runtime_lifecycle_snapshot())
+        } else {
+            None
         };
         Ok(ThreadReadView {
             thread,
@@ -3008,7 +2996,7 @@ impl ThreadRequestProcessor {
                 let (mut thread, _) =
                     thread_from_stored_thread_with_config(stored_thread, &self.config);
                 thread.turns = self
-                    .paginated_thread_full_turns(thread_id)
+                    .paginated_thread_turns(thread_id, items_view)
                     .await
                     .map_err(ThreadReadViewError::JsonRpc)?;
                 return Ok(Some((thread, None)));
@@ -3132,7 +3120,7 @@ impl ThreadRequestProcessor {
                     .await
                     .map_err(|err| thread_read_history_load_error(thread_id, err))?;
                 thread.turns = self
-                    .paginated_thread_full_turns(thread_id)
+                    .paginated_thread_turns(thread_id, items_view)
                     .await
                     .map_err(ThreadReadViewError::JsonRpc)?;
                 return Ok(None);
@@ -3403,11 +3391,12 @@ impl ThreadRequestProcessor {
         }
     }
 
-    // Older clients expect full `thread.turns` from resume and `thread/read(includeTurns=true)`.
+    // Older clients expect `thread.turns` from resume and `thread/read(includeTurns=true)`.
     // Keep this slow compatibility path until all clients page history directly.
-    async fn paginated_thread_full_turns(
+    async fn paginated_thread_turns(
         &self,
         thread_id: ThreadId,
+        items_view: TurnItemsView,
     ) -> Result<Vec<Turn>, JSONRPCErrorError> {
         let mut cursor = None;
         let mut turns = Vec::new();
@@ -3418,7 +3407,7 @@ impl ThreadRequestProcessor {
                     cursor.clone(),
                     Some(THREAD_TURNS_MAX_LIMIT as u32),
                     Some(SortDirection::Asc),
-                    Some(TurnItemsView::Full),
+                    Some(items_view),
                 )
                 .await?;
             turns.extend(page.data);
@@ -4005,7 +3994,10 @@ impl ThreadRequestProcessor {
                     return Ok(());
                 }
                 let materialized_turns = if paginated_resume && include_turns {
-                    match self.paginated_thread_full_turns(thread_id).await {
+                    match self
+                        .paginated_thread_turns(thread_id, TurnItemsView::Full)
+                        .await
+                    {
                         Ok(turns) => Some(turns),
                         Err(error) => {
                             self.outgoing.send_error(request_id, error).await;
@@ -4431,7 +4423,10 @@ impl ThreadRequestProcessor {
                 .pending_resume_goal_state(existing_thread.as_ref())
                 .await;
             let paginated_turns = if paginated_resume && include_turns {
-                Some(self.paginated_thread_full_turns(existing_thread_id).await?)
+                Some(
+                    self.paginated_thread_turns(existing_thread_id, TurnItemsView::Full)
+                        .await?,
+                )
             } else {
                 None
             };
@@ -5264,7 +5259,9 @@ impl ThreadRequestProcessor {
             (thread, ephemeral_token_usage_turn_id)
         };
         if paginated_source && include_turns {
-            thread.turns = self.paginated_thread_full_turns(thread_id).await?;
+            thread.turns = self
+                .paginated_thread_turns(thread_id, TurnItemsView::Full)
+                .await?;
             token_usage_turn_id = Some(restored_token_usage_turn_id(
                 token_usage_history_items
                     .as_deref()

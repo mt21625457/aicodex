@@ -2776,7 +2776,7 @@
         }
       ],
       "default": null,
-      "description": "Lightweight, content-free runtime evidence for lifecycle reconciliation. Older app-server builds omit this field."
+      "description": "Lightweight, content-free runtime evidence for lifecycle reconciliation. Always serialized; `null` means no live snapshot. Older app-server builds may omit the field, and readers still accept that via `#[serde(default)]`."
     },
     "thread": {
       "$ref": "#/definitions/Thread"

@@ -1,6 +1,5 @@
 use super::thread_input::DIRECT_INPUT_TO_MULTI_AGENT_V2_SUBAGENT_ERROR;
 use super::thread_input::can_accept_direct_input;
-use super::thread_input::ensure_direct_input_allowed;
 use super::*;
 use codex_goal_extension::GoalObjectiveUpdate;
 use codex_goal_extension::GoalService;
@@ -285,9 +284,6 @@ impl ThreadGoalRequestProcessor {
         access: GoalAccess,
     ) -> Result<StateDbHandle, JSONRPCErrorError> {
         if let Ok(thread) = self.thread_manager.get_thread(thread_id).await {
-            if matches!(access, GoalAccess::Mutate) {
-                ensure_direct_input_allowed(thread.as_ref()).await?;
-            }
             if thread.rollout_path().is_none() {
                 return Err(invalid_request(format!(
                     "ephemeral thread does not support goals: {thread_id}"

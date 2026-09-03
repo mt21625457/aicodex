@@ -582,21 +582,13 @@ fn thread_resume_response_round_trips_initial_turns_page() {
         .expect("deserialize thread read response");
     assert_eq!(decoded, read_response);
 
-    let null_lifecycle = ThreadReadResponse {
+    let no_live_lifecycle = ThreadReadResponse {
         thread: thread.clone(),
-        runtime_lifecycle: Some(ThreadRuntimeLifecycle {
-            active_turn_id: None,
-            active_turn_started_at: None,
-            last_terminal_turn_id: None,
-        }),
+        runtime_lifecycle: None,
     };
     assert_eq!(
-        serde_json::to_value(null_lifecycle).expect("serialize null lifecycle")["runtimeLifecycle"],
-        json!({
-            "activeTurnId": null,
-            "activeTurnStartedAt": null,
-            "lastTerminalTurnId": null,
-        })
+        serde_json::to_value(no_live_lifecycle).expect("serialize absent live lifecycle")["runtimeLifecycle"],
+        serde_json::Value::Null
     );
 
     let mut legacy_value = value;

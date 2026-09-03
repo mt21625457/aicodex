@@ -1321,7 +1321,7 @@ async fn thread_list_reports_loaded_subagent_direct_input_capability() -> Result
     append_rollout_item_to_path(&parent_rollout_path, &RolloutItem::SessionMeta(parent_meta))
         .await?;
     // Legacy children resume before the root restores the V2 registry from persisted spawn edges.
-    let mut expected = vec![(cli_id.clone(), None, false)];
+    let mut expected = vec![(cli_id.clone(), Some(true), false)];
     let mut threads_to_resume = vec![(cli_id.clone(), SessionSource::Cli, Some(true))];
 
     for (filename_ts, timestamp, version, capability, should_resume) in [

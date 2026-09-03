@@ -7,6 +7,7 @@ import type { ThreadRuntimeLifecycle } from "./ThreadRuntimeLifecycle";
 export type ThreadReadResponse = { thread: Thread,
 /**
  * Lightweight, content-free runtime evidence for lifecycle reconciliation.
- * Older app-server builds omit this field.
+ * Always serialized; `null` means no live snapshot. Older app-server builds
+ * may omit the field, and readers still accept that via `#[serde(default)]`.
  */
 runtimeLifecycle: ThreadRuntimeLifecycle | null, };

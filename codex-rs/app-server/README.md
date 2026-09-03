@@ -195,18 +195,18 @@ Example with notification opt-out:
 - `threadSection/update` — rename an existing custom section and optionally replace its `appearance`; omit appearance to preserve it or pass `null` to clear it. The built-in pinned section cannot be updated.
 - `threadSection/delete` — delete an existing custom section and atomically return its member threads to the unsectioned list; returns `{}`. The built-in pinned section cannot be deleted.
 - `thread/loaded/list` — list the thread ids currently loaded in memory.
-- `thread/read` — read a stored thread by id without resuming it; optionally include turns via `includeTurns`. The returned `thread` includes `status` (`ThreadStatus`), defaulting to `notLoaded` when the thread is not currently loaded. For loaded threads, experimental clients can use `canAcceptDirectInput` to determine whether `turn/start` and `turn/steer` are accepted (`false` for parent-owned Multi-Agent V2 subagents); unloaded stored threads report `null` when that capability is unavailable.
+- `thread/read` — read a stored thread by id without resuming it; optionally include turns via `includeTurns` and item detail via `itemsView` (`full` by default when `includeTurns` is true). The returned `thread` includes `status` (`ThreadStatus`), defaulting to `notLoaded` when the thread is not currently loaded. For loaded threads, experimental clients can use `canAcceptDirectInput` to determine whether `turn/start` and `turn/steer` are accepted (`true` for loaded threads, including multi-agent v2 children); unloaded stored threads report `null` when that capability is unavailable. Unloaded v2 spawn children still have to resume or mutate goals through their parent.
 - `thread/turns/list` — page through a stored thread’s turn history without resuming it; supports cursor-based pagination with `sortDirection`, `itemsView`, `nextCursor`, and `backwardsCursor`.
 - `thread/items/list` — page through persisted thread items without resuming the thread. Pass `turnId` to restrict results to one turn, or omit it to page items across the thread. The active thread store must support item pagination.
 - `thread/searchOccurrences` — experimental; find literal, case-insensitive matches in visible user messages and summary-selected final assistant messages within one paginated thread.
 - `thread/metadata/update` — patch stored thread metadata in sqlite; supports updating persisted `gitInfo` fields and experimental `projectId`, then returns the refreshed `thread`. Omit `projectId` to preserve assignment and pass an empty string to clear it.
 - `thread/section/move` — atomically move a thread into the section identified by `sectionId`, before another thread or at the end when `beforeThreadId` is `null`. Reordering within the same section preserves `sectionEnteredAt`; entering a different section resets it. Set `sectionId` to `null` to remove the thread from its section. Returns `{}` on success.
-- `thread/settings/update` — experimental; queue a partial update to a loaded thread’s next-turn settings without starting a turn or adding transcript items. Omitted fields leave settings unchanged; `serviceTier: null` clears the tier; deprecated `multiAgentMode` is ignored, while Ultra reasoning effort enables proactive multi-agent behavior; `sandboxPolicy` and `permissions` cannot be combined. Parent-owned Multi-Agent V2 subagents reject direct settings updates. Returns `{}` when the update is accepted and emits `thread/settings/updated` with the full effective settings only if they actually change. `turn/start` settings overrides emit the same notification when they change the stored settings.
+- `thread/settings/update` — experimental; queue a partial update to a loaded thread’s next-turn settings without starting a turn or adding transcript items. Omitted fields leave settings unchanged; `serviceTier: null` clears the tier; deprecated `multiAgentMode` is ignored, while Ultra reasoning effort enables proactive multi-agent behavior; `sandboxPolicy` and `permissions` cannot be combined. Loaded threads accept the update, including multi-agent v2 children. Returns `{}` when the update is accepted and emits `thread/settings/updated` with the full effective settings only if they actually change. `turn/start` settings overrides emit the same notification when they change the stored settings.
 - `thread/memoryMode/set` — experimental; set a thread’s persisted memory eligibility to `"enabled"` or `"disabled"` for either a loaded thread or a stored rollout; returns `{}` on success.
 - `memory/reset` — experimental; clear the current `CODEX_HOME/memories` directory and reset persisted memory stage data in sqlite while preserving existing thread memory modes; returns `{}` on success.
-- `thread/goal/set` — create or update the single persisted goal for a materialized thread; returns the current goal and emits `thread/goal/updated`. Parent-owned Multi-Agent V2 subagents reject goal updates, including while unloaded.
+- `thread/goal/set` — create or update the single persisted goal for a materialized thread; returns the current goal and emits `thread/goal/updated`. Loaded threads accept the update, including multi-agent v2 children. Unloaded v2 spawn children still have to mutate goals through their parent.
 - `thread/goal/get` — fetch the current persisted goal for a materialized thread; returns `goal: null` when no goal exists. Available even for parent-owned Multi-Agent V2 subagents.
-- `thread/goal/clear` — clear the current persisted goal for a materialized thread; returns whether a goal was removed and emits `thread/goal/cleared` when state changes. Parent-owned Multi-Agent V2 subagents reject goal clearing, including while unloaded.
+- `thread/goal/clear` — clear the current persisted goal for a materialized thread; returns whether a goal was removed and emits `thread/goal/cleared` when state changes. Loaded threads accept the clear, including multi-agent v2 children. Unloaded v2 spawn children still have to mutate goals through their parent.
 - `thread/goal/updated` — notification emitted whenever a thread goal changes; includes the full current goal.
 - `thread/goal/cleared` — notification emitted whenever a thread goal is removed.
 - `thread/queue/add` — experimental; persist a user turn for automatic FIFO submission when the thread next becomes idle.
@@ -503,14 +503,15 @@ activity can move projects across a cursor.
 
 `thread/list` lets you render a history UI. Results default to `createdAt` (newest first) descending.
 
-For a loaded spawned thread, experimental `canAcceptDirectInput` is `true` when
-the client may call `turn/start` or `turn/steer` on that thread id, including
-multi-agent v2 children. It is `null` when the capability is unavailable or
-inapplicable, including unloaded threads and ordinary CLI threads. Clients
-should keep default conversation input on the parent until the user selects
-the child; that routing is not a server source check. Both `thread/list` and
-`thread/search` derive the capability from loaded thread state, not persisted
-metadata.
+For a loaded thread, experimental `canAcceptDirectInput` is `true` when the
+client may call `turn/start` or `turn/steer` on that thread id, including
+multi-agent v2 children and ordinary CLI threads. It is `null` when the
+capability is unavailable, including unloaded stored threads. Unloaded v2
+spawn children still have to resume or mutate goals through their parent.
+Clients should keep default conversation input on the parent until the user
+selects the child; that routing is not a server source check. Both
+`thread/list` and `thread/search` derive the capability from loaded thread
+state, not persisted metadata.
 
 Pass any combination of:
 
@@ -1865,7 +1866,7 @@ There are additional item-specific events:
 
 ### Errors
 
-Ownership rejections for parent-owned Multi-Agent V2 subagents return JSON-RPC error code `-32600` with message `direct app-server input is not allowed for multi-agent v2 sub-agents`.
+Direct goal mutations for unloaded parent-owned Multi-Agent V2 subagents return JSON-RPC error code `-32600` with message `direct app-server input is not allowed for multi-agent v2 sub-agents`.
 
 `error` event is emitted whenever the server hits an error mid-turn (for example, upstream model errors or quota limits). Carries the same `{ error: { message, codexErrorInfo?, additionalDetails?, misalignment? } }` payload as `turn.status: "failed"` and may precede that terminal notification.
 

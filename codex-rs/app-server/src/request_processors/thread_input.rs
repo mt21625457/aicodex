@@ -1,5 +1,3 @@
-use codex_app_server_protocol::JSONRPCErrorError;
-use codex_core::CodexThread;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -15,7 +13,11 @@ pub(super) const fn loaded_thread_can_accept_direct_input() -> bool {
     true
 }
 
-/// Mirrors the ownership policy in request validation and thread capability responses.
+/// Ownership check for unloaded persisted threads.
+///
+/// Loaded-thread capability responses use [`loaded_thread_can_accept_direct_input`].
+/// This predicate only gates owner-controlled routing for unloaded v2 spawn
+/// children (resume attach and goal mutate).
 pub(super) fn can_accept_direct_input(
     multi_agent_version: Option<MultiAgentVersion>,
     session_source: &SessionSource,
@@ -25,10 +27,4 @@ pub(super) fn can_accept_direct_input(
             session_source,
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
         )
-}
-
-pub(super) async fn ensure_direct_input_allowed(
-    _thread: &CodexThread,
-) -> Result<(), JSONRPCErrorError> {
-    Ok(())
 }
