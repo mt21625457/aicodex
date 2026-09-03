@@ -66,17 +66,12 @@ pub(super) async fn commit_reviewable_mutation(
     let tool_ctx = ToolCtx {
         session: invocation.session.clone(),
         step_context: Arc::clone(&invocation.step_context),
+        cancellation_token: invocation.cancellation_token.clone(),
         call_id: invocation.call_id.clone(),
         tool_name: invocation.tool_name.clone(),
     };
     let result = orchestrator
-        .run(
-            &mut runtime,
-            &request,
-            &tool_ctx,
-            invocation.turn.as_ref(),
-            invocation.turn.approval_policy(),
-        )
+        .run(&mut runtime, &request, &tool_ctx)
         .await
         .map(|result| result.output);
     let (event_result, delta, failure) = match result {

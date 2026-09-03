@@ -30,6 +30,19 @@ v2_enum_from_core!(
     }
 );
 
+v2_enum_from_core!(
+    #[ts(rename_all = "camelCase")]
+    pub enum McpServerConnectionStatus from codex_protocol::mcp::McpServerConnectionStatus {
+        NotStarted,
+        Starting,
+        Connected,
+        AuthenticationRequired,
+        Failed,
+        Cancelled,
+        Disabled
+    }
+);
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -61,6 +74,8 @@ pub enum McpServerStatusDetail {
 #[ts(export_to = "v2/")]
 pub struct McpServerStatus {
     pub name: String,
+    /// Current thread-runtime connection state; null when unavailable or the configuration changed.
+    pub runtime_status: Option<McpServerConnectionStatus>,
     pub plugin_id: Option<String>,
     pub server_info: Option<McpServerInfo>,
     pub tools: std::collections::HashMap<String, McpTool>,
@@ -740,9 +755,19 @@ pub enum McpServerElicitationRequest {
         message: String,
         requested_schema: McpElicitationSchema,
     },
+    // TODO(victor): Deprecate once migrated to `openai/elicitation/create`.
     #[serde(rename = "openai/form", rename_all = "camelCase")]
     #[ts(rename = "openai/form", rename_all = "camelCase")]
     OpenAiForm {
+        #[serde(rename = "_meta")]
+        #[ts(rename = "_meta")]
+        meta: Option<JsonValue>,
+        message: String,
+        requested_schema: JsonValue,
+    },
+    #[serde(rename = "openaiForm", rename_all = "camelCase")]
+    #[ts(rename = "openaiForm", rename_all = "camelCase")]
+    OpenAiElicitationForm {
         #[serde(rename = "_meta")]
         #[ts(rename = "_meta")]
         meta: Option<JsonValue>,
@@ -780,6 +805,15 @@ impl TryFrom<CoreElicitationRequest> for McpServerElicitationRequest {
                 message,
                 requested_schema,
             } => Ok(Self::OpenAiForm {
+                meta,
+                message,
+                requested_schema,
+            }),
+            CoreElicitationRequest::OpenAiElicitationForm {
+                meta,
+                message,
+                requested_schema,
+            } => Ok(Self::OpenAiElicitationForm {
                 meta,
                 message,
                 requested_schema,

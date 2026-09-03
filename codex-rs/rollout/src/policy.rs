@@ -3,6 +3,7 @@ use crate::protocol::EventMsg;
 use codex_extension_items::ExtensionItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::SubAgentActivityKind;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_utils_string::truncate_middle_chars;
 
@@ -34,9 +35,11 @@ pub fn is_persisted_rollout_item_with_mode(
         RolloutItem::EventMsg(ev) => {
             should_persist_event_msg_with_mode(ev, history_mode, event_mode)
         }
+        RolloutItem::RealtimeItem(_) => matches!(history_mode, ThreadHistoryMode::Paginated),
         // Persist Codex executive markers so we can analyze flows (e.g., compaction, API turns).
         RolloutItem::Compacted(_)
         | RolloutItem::TurnContext(_)
+        | RolloutItem::TokenUsageRecord(_)
         | RolloutItem::WorldState(_)
         | RolloutItem::SecurityRiskScore(_)
         | RolloutItem::SessionMeta(_) => true,
@@ -150,11 +153,19 @@ pub fn should_persist_event_msg_with_mode(
     match ev {
         EventMsg::ItemCompleted(event) => {
             // Paginated rollouts store TurnItems.
-            // Legacy rollouts keep only items with no raw ResponseItem or legacy equivalent.
+            // Legacy rollouts keep only items with no lossless raw ResponseItem or legacy
+            // equivalent.
             matches!(history_mode, ThreadHistoryMode::Paginated)
                 || matches!(
                     event.item,
-                    TurnItem::Plan(_) | TurnItem::Extension(ExtensionItem::Sleep(_))
+                    TurnItem::FunctionCallOutput(_)
+                        | TurnItem::Plan(_)
+                        | TurnItem::Extension(ExtensionItem::Sleep(_))
+                )
+                || matches!(
+                    &event.item,
+                    TurnItem::SubAgentActivity(item)
+                        if item.kind == SubAgentActivityKind::Completed
                 )
         }
         EventMsg::TokenCount(_)
@@ -177,8 +188,13 @@ pub fn should_persist_event_msg_with_mode(
         | EventMsg::ContextCompacted(_)
         | EventMsg::McpToolCallEnd(_)
         | EventMsg::WebSearchEnd(_)
-        | EventMsg::ImageGenerationEnd(_)
-        | EventMsg::SubAgentActivity(_) => matches!(history_mode, ThreadHistoryMode::Legacy),
+        | EventMsg::ImageGenerationEnd(_) => {
+            matches!(history_mode, ThreadHistoryMode::Legacy)
+        }
+        EventMsg::SubAgentActivity(event) => {
+            matches!(history_mode, ThreadHistoryMode::Legacy)
+                && event.kind != SubAgentActivityKind::Completed
+        }
 
         // Extended history keeps terminal details that are useful for full-fidelity replay but
         // are too verbose for the default rollout representation.
@@ -199,6 +215,8 @@ pub fn should_persist_event_msg_with_mode(
 
         // Transient, non-durable events.
         EventMsg::Warning(_)
+        | EventMsg::AuthRecoveryStarted(_)
+        | EventMsg::AuthRecoveryCompleted(_)
         | EventMsg::GuardianWarning(_)
         | EventMsg::RealtimeConversationStarted(_)
         | EventMsg::RealtimeConversationSdp(_)

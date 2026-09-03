@@ -91,7 +91,7 @@ fn extract_log_field_before<'a>(line: &'a str, key: &str, next_key: &str) -> Opt
 }
 
 fn assert_json_log_field(line: &str, key: &str, expected: Value) -> Result<(), String> {
-    let raw = extract_log_field_before(line, key, " duration_ms=")
+    let raw = extract_log_field_before(line, key, " output=")
         .ok_or_else(|| format!("missing {key} field"))?;
     let actual = serde_json::from_str::<Value>(raw)
         .map_err(|err| format!("invalid {key} field `{raw}`: {err}"))?;
@@ -155,7 +155,7 @@ fn assert_json_log_field_handles_spaces_inside_json_strings() {
     let line = concat!(
         "event.name=\"codex.tool_result\" ",
         "arguments={\"command\":\"/bin/echo shell\",\"timeout_ms\":null} ",
-        "duration_ms=1"
+        "output=ok"
     );
 
     assert_json_log_field(

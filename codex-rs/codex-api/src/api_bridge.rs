@@ -15,6 +15,7 @@ use codex_protocol::error::ConnectionFailedError;
 use codex_protocol::error::RetryLimitReachedError;
 use codex_protocol::error::UnexpectedResponseError;
 use codex_protocol::error::UsageLimitReachedError;
+use codex_protocol::protocol::MisalignmentErrorDetails;
 use http::HeaderMap;
 use serde::Deserialize;
 use serde_json::Value;
@@ -35,6 +36,13 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
         ApiError::ProviderMedia { kind, message } => map_provider_media_error(kind, message),
         ApiError::Retryable { message, delay } => {
             let error = CodexErr::Stream(message);
+            match delay {
+                Some(delay) => error.with_retry_delay(delay),
+                None => error,
+            }
+        }
+        ApiError::RateLimitExceeded { message, delay } => {
+            let error = CodexErr::new(CodexErrorDetails::RateLimitExceeded(message));
             match delay {
                 Some(delay) => error.with_retry_delay(delay),
                 None => error,
@@ -62,9 +70,13 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
         ApiError::CyberPolicy { message } => {
             CodexErr::new(CodexErrorDetails::CyberPolicy { message })
         }
-        ApiError::MisalignmentPolicyViolation { message } => {
-            CodexErr::new(CodexErrorDetails::MisalignmentPolicyViolation { message })
-        }
+        ApiError::MisalignmentPolicyViolation {
+            message,
+            misalignment,
+        } => CodexErr::new(CodexErrorDetails::MisalignmentPolicyViolation {
+            message,
+            misalignment,
+        }),
         ApiError::Transport(transport) => match transport {
             TransportError::Http {
                 status,
@@ -109,6 +121,9 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
                         });
                     return CodexErr::new(CodexErrorDetails::MisalignmentPolicyViolation {
                         message,
+                        misalignment: error.get("misalignment").cloned().and_then(|details| {
+                            serde_json::from_value::<MisalignmentErrorDetails>(details).ok()
+                        }),
                     });
                 }
 

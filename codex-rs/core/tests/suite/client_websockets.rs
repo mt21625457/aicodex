@@ -155,6 +155,55 @@ fn websocket_connection_metadata(harness: &WebsocketTestHarness) -> CodexRespons
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_websocket_preserves_credit_usage_metadata() {
+    skip_if_no_network!();
+
+    let mut completed = ev_completed("resp-1");
+    completed["response"]["usage_metadata"] = json!({ "amount": "0.12345678901234567890" });
+    let expected_metadata = completed["response"]["usage"].clone();
+    let server =
+        start_websocket_server(vec![vec![vec![ev_response_created("resp-1"), completed]]]).await;
+    let harness = websocket_harness_for_codex_backend(&server).await;
+    let mut client_session = harness.client.new_session();
+    let prompt = prompt_with_input(vec![message_item("hello")]);
+    let responses_metadata = turn_metadata(&harness, /*turn_id*/ None);
+    let mut stream = client_session
+        .stream(
+            &prompt,
+            &harness.model_info,
+            &harness.session_telemetry,
+            harness.effort.clone(),
+            harness.summary,
+            /*service_tier*/ None,
+            &responses_metadata,
+            &InferenceTraceContext::disabled(),
+        )
+        .await
+        .expect("websocket stream failed");
+
+    let mut usage_metadata = None;
+    while let Some(event) = stream.next().await {
+        if let ResponseEvent::Completed {
+            usage_metadata: metadata,
+            ..
+        } = event.expect("websocket stream failed")
+        {
+            usage_metadata = metadata;
+            break;
+        }
+    }
+    assert_eq!(
+        usage_metadata,
+        Some(codex_protocol::ResponseUsageMetadata {
+            amount: Some("0.12345678901234567890".to_string()),
+            metadata: Some(expected_metadata),
+        }),
+    );
+    assert_eq!(server.single_connection().len(), 1);
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn responses_websocket_streams_request() {
     skip_if_no_network!();
 
@@ -230,7 +279,7 @@ async fn responses_websocket_omits_routing_hint_for_provider_with_own_credential
 
     let mut provider = websocket_provider(&server);
     provider.name = ModelProviderInfo::create_openai_provider(/*base_url*/ None).name;
-    provider.experimental_bearer_token = Some("provider-specific-token".to_string());
+    provider.experimental_bearer_token = Some("provider-specific-token".into());
     let harness = websocket_harness_with_provider_options_and_auth(
         provider,
         /*runtime_metrics_enabled*/ false,
@@ -255,7 +304,7 @@ async fn responses_websocket_omits_routing_hint_for_provider_with_own_credential
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn responses_websocket_store_false_omits_all_item_ids_without_mutating_prompt() {
+async fn responses_websocket_store_false_preserves_type_valid_ids_without_mutating_prompt() {
     skip_if_no_network!();
 
     let server = start_websocket_server(vec![vec![vec![
@@ -296,7 +345,7 @@ async fn responses_websocket_store_false_omits_all_item_ids_without_mutating_pro
     let body = connection.first().expect("missing request").body_json();
     assert_eq!(body["store"], serde_json::Value::Bool(false));
     assert_eq!(body["input"].as_array().map(Vec::len), Some(3));
-    assert_eq!(body["input"][0].get("id"), None);
+    assert_eq!(body["input"][0]["id"].as_str(), Some("msg_existing"));
     assert_eq!(body["input"][1].get("id"), None);
     assert_eq!(body["input"][2].get("id"), None);
     assert_eq!(
@@ -517,7 +566,11 @@ async fn responses_websocket_preconnect_does_not_replace_turn_trace_payload() {
     let mut client_session = harness.client.new_session();
     let responses_metadata = websocket_connection_metadata(&harness);
     client_session
-        .preconnect_websocket(&harness.session_telemetry, &responses_metadata)
+        .preconnect_websocket(
+            &harness.model_info,
+            &harness.session_telemetry,
+            &responses_metadata,
+        )
         .await
         .expect("websocket preconnect failed");
     let prompt = prompt_with_input(vec![message_item("hello")]);
@@ -554,7 +607,11 @@ async fn responses_websocket_preconnect_reuses_connection() {
     let mut client_session = harness.client.new_session();
     let responses_metadata = websocket_connection_metadata(&harness);
     client_session
-        .preconnect_websocket(&harness.session_telemetry, &responses_metadata)
+        .preconnect_websocket(
+            &harness.model_info,
+            &harness.session_telemetry,
+            &responses_metadata,
+        )
         .await
         .expect("websocket preconnect failed");
     let prompt = prompt_with_input(vec![message_item("hello")]);
@@ -926,7 +983,11 @@ async fn responses_websocket_preconnect_is_reused_even_with_header_changes() {
     let mut client_session = harness.client.new_session();
     let preconnect_metadata = websocket_connection_metadata(&harness);
     client_session
-        .preconnect_websocket(&harness.session_telemetry, &preconnect_metadata)
+        .preconnect_websocket(
+            &harness.model_info,
+            &harness.session_telemetry,
+            &preconnect_metadata,
+        )
         .await
         .expect("websocket preconnect failed");
     let prompt = prompt_with_input(vec![message_item("hello")]);
@@ -1150,7 +1211,11 @@ async fn responses_websocket_preconnect_runs_when_only_v2_feature_enabled() {
     let mut client_session = harness.client.new_session();
     let responses_metadata = websocket_connection_metadata(&harness);
     client_session
-        .preconnect_websocket(&harness.session_telemetry, &responses_metadata)
+        .preconnect_websocket(
+            &harness.model_info,
+            &harness.session_telemetry,
+            &responses_metadata,
+        )
         .await
         .expect("websocket preconnect failed");
 
@@ -1889,6 +1954,65 @@ async fn responses_websocket_uses_incremental_create_on_prefix() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_lite_websocket_uses_incremental_create_on_prefix() {
+    skip_if_no_network!();
+
+    let server = start_websocket_server(vec![vec![
+        vec![
+            ev_response_created("resp-1"),
+            ev_assistant_message("msg_1", "assistant output"),
+            ev_completed("resp-1"),
+        ],
+        vec![ev_response_created("resp-2"), ev_completed("resp-2")],
+    ]])
+    .await;
+
+    let mut harness = websocket_harness(&server).await;
+    harness.model_info.use_responses_lite = true;
+    let mut client_session = harness.client.new_session();
+    let mut initial_item = message_item("hello");
+    initial_item.set_id(Some(ResponseItemId::with_suffix("msg", "supplied")));
+    let prompt_one = prompt_with_input_and_instructions(vec![initial_item.clone()], "base");
+    let prompt_two = prompt_with_input_and_instructions(
+        vec![
+            initial_item,
+            assistant_message_item("1", "assistant output"),
+            message_item("second"),
+        ],
+        "base",
+    );
+
+    stream_until_complete(&mut client_session, &harness, &prompt_one).await;
+    stream_until_complete(&mut client_session, &harness, &prompt_two).await;
+
+    let connection = server.single_connection();
+    assert_eq!(connection.len(), 2);
+    let first = connection.first().expect("missing request").body_json();
+    let second = connection.get(1).expect("missing request").body_json();
+    let first_input = first["input"].as_array().expect("request input");
+
+    assert_eq!(first_input.len(), 3);
+    assert!(
+        first_input[0]["id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("at_"))
+    );
+    assert!(
+        first_input[1]["id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("msg_"))
+    );
+    assert_eq!(first_input[2]["id"], "msg_supplied");
+    assert_eq!(second["previous_response_id"].as_str(), Some("resp-1"));
+    assert_eq!(
+        second["input"],
+        serde_json::to_value(&prompt_two.input[2..]).expect("serialize incremental items")
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn responses_websocket_forwards_turn_metadata_on_initial_and_incremental_create() {
     skip_if_no_network!();
 
@@ -2585,6 +2709,7 @@ async fn websocket_harness_with_provider_options_and_auth(
         SessionSource::Exec,
         "test_originator".to_string(),
         config.model_verbosity,
+        config.features.enabled(Feature::ContentItemKinds),
         /*enable_request_compression*/ false,
         runtime_metrics_enabled,
         /*beta_features_header*/ None,

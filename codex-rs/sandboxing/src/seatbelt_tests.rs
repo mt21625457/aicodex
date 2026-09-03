@@ -137,6 +137,41 @@ fn base_policy_allows_node_cpu_sysctls() {
 }
 
 #[test]
+fn seatbelt_allows_semaphore_limit_sysconf() {
+    let workspace = TempDir::new().expect("temp workspace");
+    for policy in [
+        SandboxPolicy::new_read_only_policy(),
+        SandboxPolicy::new_workspace_write_policy(),
+    ] {
+        // getconf calls the same sysconf used by Python's ProcessPoolExecutor.
+        let args = create_seatbelt_command_args_for_legacy_policy(
+            vec!["/usr/bin/getconf".to_string(), "SEM_NSEMS_MAX".to_string()],
+            &policy,
+            workspace.path(),
+            /*enforce_managed_network*/ false,
+            /*network*/ None,
+        )
+        .expect("create seatbelt args");
+        let output = Command::new(MACOS_PATH_TO_SEATBELT_EXECUTABLE)
+            .args(args)
+            .current_dir(workspace.path())
+            .output()
+            .expect("execute semaphore limit query under seatbelt");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !output.status.success()
+            && stderr.contains("sandbox-exec: sandbox_apply: Operation not permitted")
+        {
+            eprintln!("skipping semaphore limit query: nested Seatbelt is unavailable");
+            return;
+        }
+        assert!(
+            output.status.success(),
+            "semaphore limit query should succeed under {policy:?}: {stderr}"
+        );
+    }
+}
+
+#[test]
 fn base_policy_allows_kmp_registration_shm_read_create_and_unlink() {
     let expected = r##"(allow ipc-posix-shm-read-data
   ipc-posix-shm-write-create
@@ -221,6 +256,173 @@ fn filesystem_helper_platform_defaults_do_not_grant_applications_directory() {
         !denied.status.success() && denied_stderr.contains("Operation not permitted"),
         "filesystem helper platform defaults should not grant /Applications: {denied_stderr}"
     );
+}
+
+#[test]
+fn process_platform_defaults_allow_scratch_without_granting_it_to_filesystem_helpers() {
+    let workspace = tempfile::Builder::new()
+        .prefix("codex-seatbelt-approved-project-")
+        .tempdir_in("/private/tmp")
+        .expect("approved project directory");
+    let approved_file = workspace.path().join("approved.txt");
+    fs::write(&approved_file, "approved-project").expect("write approved project file");
+    let workspace_root = AbsolutePathBuf::from_absolute_path(workspace.path())
+        .expect("workspace path should be absolute");
+    let file_system_policy = FileSystemSandboxPolicy::restricted(vec![
+        FileSystemSandboxEntry::new(
+            FileSystemPath::Path {
+                path: workspace_root.into(),
+            },
+            FileSystemAccessMode::Read,
+        ),
+        FileSystemSandboxEntry::new(
+            FileSystemPath::Special {
+                value: FileSystemSpecialPath::Minimal,
+            },
+            FileSystemAccessMode::Read,
+        ),
+    ]);
+
+    let sandboxed_args = |command: Vec<String>, profile: MacosSeatbeltProfile| {
+        create_seatbelt_command_args_with_profile(
+            CreateSeatbeltCommandArgsParams {
+                command,
+                file_system_sandbox_policy: &file_system_policy,
+                network_sandbox_policy: NetworkSandboxPolicy::Restricted,
+                sandbox_policy_cwd: workspace.path(),
+                enforce_managed_network: false,
+                managed_network: None,
+                environment_id: None,
+                network: None,
+                extra_allow_unix_sockets: &[],
+            },
+            profile,
+        )
+        .expect("build restricted seatbelt command")
+    };
+
+    let scratch_grants = [
+        (
+            "/tmp",
+            r#"(allow file-read* file-test-existence file-write* (subpath "/tmp"))"#,
+        ),
+        (
+            "/private/tmp",
+            r#"(allow file-read* file-write* (subpath "/private/tmp"))"#,
+        ),
+        (
+            "/var/tmp",
+            r#"(allow file-read* file-write* (subpath "/var/tmp"))"#,
+        ),
+        (
+            "/private/var/tmp",
+            r#"(allow file-read* file-write* (subpath "/private/var/tmp"))"#,
+        ),
+    ];
+
+    for profile in [
+        MacosSeatbeltProfile::Process,
+        MacosSeatbeltProfile::FileSystemHelper,
+    ] {
+        let args = sandboxed_args(vec!["/usr/bin/true".to_string()], profile);
+        let policy = seatbelt_policy_arg(&args);
+
+        for (scratch_root, scratch_grant) in scratch_grants {
+            match profile {
+                MacosSeatbeltProfile::Process => assert!(
+                    policy.contains(scratch_grant),
+                    "processes should retain scratch read/write access to {scratch_root}"
+                ),
+                MacosSeatbeltProfile::FileSystemHelper => assert!(
+                    !policy.contains(&format!(r#"(subpath "{scratch_root}")"#)),
+                    "filesystem helpers should not inherit scratch access to {scratch_root}"
+                ),
+            }
+        }
+    }
+
+    let run_sandboxed = |command: Vec<String>, profile: MacosSeatbeltProfile| {
+        Command::new(MACOS_PATH_TO_SEATBELT_EXECUTABLE)
+            .args(sandboxed_args(command, profile))
+            .current_dir(workspace.path())
+            .output()
+            .expect("run restricted seatbelt command")
+    };
+
+    for scratch_root in ["/private/tmp", "/private/var/tmp"] {
+        let scratch = tempfile::Builder::new()
+            .prefix("codex-seatbelt-process-scratch-")
+            .tempdir_in(scratch_root)
+            .expect("scratch directory");
+        let scratch_file = scratch.path().join("scratch.txt");
+        let process_result = run_sandboxed(
+            vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "printf '%s' 'scratch-access' > \"$1\" && /bin/cat \"$1\"".to_string(),
+                "seatbelt-scratch".to_string(),
+                scratch_file.display().to_string(),
+            ],
+            MacosSeatbeltProfile::Process,
+        );
+        let process_stderr = String::from_utf8_lossy(&process_result.stderr);
+        if !process_result.status.success()
+            && process_stderr.contains("sandbox-exec: sandbox_apply: Operation not permitted")
+        {
+            eprintln!(
+                "nested Seatbelt is unavailable; generated policies verified every scratch path"
+            );
+            break;
+        }
+        assert!(
+            process_result.status.success(),
+            "processes should retain scratch read/write access to {scratch_root}: {process_stderr}"
+        );
+        assert_eq!(process_result.stdout, b"scratch-access");
+
+        let helper_result = run_sandboxed(
+            vec!["/bin/cat".to_string(), scratch_file.display().to_string()],
+            MacosSeatbeltProfile::FileSystemHelper,
+        );
+        let helper_stderr = String::from_utf8_lossy(&helper_result.stderr);
+        assert!(
+            !helper_result.status.success() && helper_stderr.contains("Operation not permitted"),
+            "filesystem helpers should not inherit scratch access to {scratch_root}: {helper_stderr}"
+        );
+
+        if scratch_root == "/private/tmp" {
+            let approved_read = run_sandboxed(
+                vec!["/bin/cat".to_string(), approved_file.display().to_string()],
+                MacosSeatbeltProfile::FileSystemHelper,
+            );
+            let approved_stderr = String::from_utf8_lossy(&approved_read.stderr);
+            assert!(
+                approved_read.status.success(),
+                "filesystem helpers should read files in the approved project: {approved_stderr}"
+            );
+            assert_eq!(approved_read.stdout, b"approved-project");
+
+            let canonicalized = run_sandboxed(
+                vec![
+                    "/bin/realpath".to_string(),
+                    approved_file.display().to_string(),
+                ],
+                MacosSeatbeltProfile::FileSystemHelper,
+            );
+            let canonicalize_stderr = String::from_utf8_lossy(&canonicalized.stderr);
+            assert!(
+                canonicalized.status.success(),
+                "filesystem helpers should canonicalize approved project files: {canonicalize_stderr}"
+            );
+            let expected_path = approved_file
+                .canonicalize()
+                .expect("canonicalize approved project file");
+            assert_eq!(
+                canonicalized.stdout,
+                format!("{}\n", expected_path.display()).as_bytes()
+            );
+        }
+    }
 }
 
 #[test]

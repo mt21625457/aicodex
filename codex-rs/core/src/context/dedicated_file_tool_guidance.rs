@@ -1,9 +1,14 @@
 use super::ContextualUserFragment;
+use codex_protocol::models::ContentItemKind;
 
 /// Bounded guidance emitted only when all dedicated file tools are callable.
 pub(crate) struct DedicatedFileToolGuidance;
 
 impl ContextualUserFragment for DedicatedFileToolGuidance {
+    fn content_kind(&self) -> ContentItemKind {
+        ContentItemKind("file_tools.guidance".to_string())
+    }
+
     fn role(&self) -> &'static str {
         "developer"
     }

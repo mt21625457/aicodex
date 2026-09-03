@@ -13,6 +13,7 @@ use codex_app_server::in_process::InProcessStartArgs;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ContextTokenUsageSource;
+use codex_app_server_protocol::DeprecationNoticeNotification;
 use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::InitializeParams;
 use codex_app_server_protocol::JSONRPCError;
@@ -155,10 +156,7 @@ async fn thread_read_returns_summary_without_turns() -> Result<()> {
     assert_eq!(thread.git_info, None);
     assert_eq!(thread.turns.len(), 0);
     assert_eq!(thread.status, ThreadStatus::NotLoaded);
-    let runtime_lifecycle = runtime_lifecycle.expect("thread/read runtime lifecycle");
-    assert_eq!(runtime_lifecycle.active_turn_id, None);
-    assert_eq!(runtime_lifecycle.active_turn_started_at, None);
-    assert_eq!(runtime_lifecycle.last_terminal_turn_id, None);
+    assert_eq!(runtime_lifecycle, None);
 
     Ok(())
 }
@@ -221,6 +219,10 @@ async fn thread_read_can_include_turns() -> Result<()> {
         other => panic!("expected user message item, got {other:?}"),
     }
     assert_eq!(thread.status, ThreadStatus::NotLoaded);
+    assert!(
+        !mcp.pending_notification_methods()
+            .contains(&"deprecationNotice".to_string())
+    );
 
     Ok(())
 }
@@ -316,6 +318,32 @@ async fn paginated_stored_thread_routes_projected_turns() -> Result<()> {
         timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(read_id)).await??;
     assert_eq!(thread.history_mode, ThreadHistoryMode::Paginated);
     assert!(thread.turns.is_empty());
+    assert!(
+        !mcp.pending_notification_methods()
+            .contains(&"deprecationNotice".to_string())
+    );
+
+    let full_read_id = mcp
+        .send_thread_read_request(ThreadReadParams {
+            thread_id: conversation_id.clone(),
+            include_turns: true,
+            items_view: None,
+        })
+        .await?;
+    let notice: DeprecationNoticeNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_notification("deprecationNotice"),
+    )
+    .await??;
+    assert_eq!(
+        notice,
+        DeprecationNoticeNotification {
+            summary: "Full-history hydration is deprecated for paginated threads; omit `includeTurns` or set it to `false`, then page with `thread/turns/list` and `thread/items/list`.".to_string(),
+            details: None,
+        }
+    );
+    let _: ThreadReadResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(full_read_id)).await??;
 
     let list_id = mcp
         .send_thread_list_request(ThreadListParams {
@@ -1659,6 +1687,7 @@ async fn thread_read_include_turns_rejects_unmaterialized_loaded_thread() -> Res
     let start_id = mcp
         .send_thread_start_request_with_auto_env(ThreadStartParams {
             model: Some("mock-model".to_string()),
+            history_mode: Some(ThreadHistoryMode::Legacy),
             ..Default::default()
         })
         .await?;
@@ -1920,6 +1949,97 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
     } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(read_id)).await??;
     assert_eq!(unloaded_thread.turns, expected_full_turns);
 
+    let expected_summary_turns = vec![
+        Turn {
+            id: "turn-1".to_string(),
+            items: vec![
+                ThreadItem::UserMessage {
+                    id: "user-1".to_string(),
+                    client_id: None,
+                    content: Vec::new(),
+                    transcript_metadata: None,
+                },
+                ThreadItem::AgentMessage {
+                    id: "agent-1".to_string(),
+                    text: "first".to_string(),
+                    phase: None,
+                    memory_citation: None,
+                    transcript_metadata: None,
+                    delivery: None,
+                },
+            ],
+            items_view: TurnItemsView::Summary,
+            status: TurnStatus::Completed,
+            error: None,
+            started_at: Some(10),
+            completed_at: Some(20),
+            duration_ms: Some(10_000),
+        },
+        Turn {
+            id: "turn-2".to_string(),
+            items: vec![ThreadItem::UserMessage {
+                id: "user-2".to_string(),
+                client_id: None,
+                content: Vec::new(),
+                transcript_metadata: None,
+            }],
+            items_view: TurnItemsView::Summary,
+            status: TurnStatus::Interrupted,
+            error: None,
+            started_at: Some(10),
+            completed_at: None,
+            duration_ms: None,
+        },
+    ];
+    let expected_not_loaded_turns = vec![
+        Turn {
+            id: "turn-1".to_string(),
+            items: Vec::new(),
+            items_view: TurnItemsView::NotLoaded,
+            status: TurnStatus::Completed,
+            error: None,
+            started_at: Some(10),
+            completed_at: Some(20),
+            duration_ms: Some(10_000),
+        },
+        Turn {
+            id: "turn-2".to_string(),
+            items: Vec::new(),
+            items_view: TurnItemsView::NotLoaded,
+            status: TurnStatus::Interrupted,
+            error: None,
+            started_at: Some(10),
+            completed_at: None,
+            duration_ms: None,
+        },
+    ];
+
+    let summary_read_id = mcp
+        .send_thread_read_request(ThreadReadParams {
+            thread_id: thread_id.to_string(),
+            include_turns: true,
+            items_view: Some(TurnItemsView::Summary),
+        })
+        .await?;
+    let ThreadReadResponse {
+        thread: unloaded_summary,
+        ..
+    } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(summary_read_id)).await??;
+    assert_eq!(unloaded_summary.turns, expected_summary_turns);
+
+    let not_loaded_read_id = mcp
+        .send_thread_read_request(ThreadReadParams {
+            thread_id: thread_id.to_string(),
+            include_turns: true,
+            items_view: Some(TurnItemsView::NotLoaded),
+        })
+        .await?;
+    let ThreadReadResponse {
+        thread: unloaded_not_loaded,
+        ..
+    } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(not_loaded_read_id)).await??;
+    assert_eq!(unloaded_not_loaded.turns, expected_not_loaded_turns);
+
     let legacy_resume_id = mcp
         .send_thread_resume_request(ThreadResumeParams {
             thread_id: thread_id.to_string(),
@@ -1931,6 +2051,19 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
         ..
     } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(legacy_resume_id)).await??;
     assert_eq!(legacy_thread.turns, expected_full_turns);
+
+    let live_summary_id = mcp
+        .send_thread_read_request(ThreadReadParams {
+            thread_id: thread_id.to_string(),
+            include_turns: true,
+            items_view: Some(TurnItemsView::Summary),
+        })
+        .await?;
+    let ThreadReadResponse {
+        thread: live_summary,
+        ..
+    } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(live_summary_id)).await??;
+    assert_eq!(live_summary.turns, expected_summary_turns);
 
     let initial_page_resume_id = mcp
         .send_thread_resume_request(ThreadResumeParams {

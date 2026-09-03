@@ -47,6 +47,7 @@ use codex_app_server_protocol::TextElement;
 use codex_app_server_protocol::ThreadDeleteParams;
 use codex_app_server_protocol::ThreadDeleteResponse;
 use codex_app_server_protocol::ThreadDeletedNotification;
+use codex_app_server_protocol::ThreadHistoryMode;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadLoadedListResponse;
@@ -96,6 +97,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::Path;
 use tempfile::TempDir;
+use test_case::test_case;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 use wiremock::ResponseTemplate;
@@ -215,15 +217,124 @@ async fn received_response_input_images(server: &wiremock::MockServer) -> Result
 }
 
 #[tokio::test]
+async fn turn_start_omits_notification_media_without_changing_model_input() -> Result<()> {
+    let responses = vec![create_final_assistant_message_sse_response("Done")?];
+    let server = create_mock_responses_server_sequence_unchecked(responses).await;
+
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri())
+        .enable_feature(Feature::OmitAppServerNotificationMedia)
+        .write(codex_home.path())?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+
+    let ThreadStartResponse { thread, .. } = mcp
+        .start_thread(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            experimental_raw_events: true,
+            ..Default::default()
+        })
+        .await?;
+
+    let _: TurnStartResponse = mcp
+        .request(|request_id| ClientRequest::TurnStart {
+            request_id,
+            params: TurnStartParams {
+                thread_id: thread.id,
+                input: vec![
+                    V2UserInput::Text {
+                        text: "Describe this image".to_string(),
+                        text_elements: Vec::new(),
+                    },
+                    V2UserInput::Image {
+                        url: TINY_PNG_DATA_URL.to_string(),
+                        detail: None,
+                    },
+                ],
+                ..Default::default()
+            },
+        })
+        .await?;
+
+    let mut user_message_notifications = Vec::new();
+    timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            let notification = mcp
+                .read_stream_until_matching_notification(
+                    "item notification or turn completion",
+                    |notification| {
+                        matches!(
+                            notification.method.as_str(),
+                            "item/started"
+                                | "item/completed"
+                                | "rawResponseItem/completed"
+                                | "turn/completed"
+                        )
+                    },
+                )
+                .await?;
+            if notification.method == "turn/completed" {
+                return Ok::<(), anyhow::Error>(());
+            }
+
+            let params = notification.params.context("item notification params")?;
+            let item = &params["item"];
+            let item_type = item["type"].as_str();
+            if item_type == Some("userMessage")
+                || (item_type == Some("message") && item["role"] == "user")
+            {
+                let content = item["content"].as_array().context("user message content")?;
+                if !content
+                    .iter()
+                    .any(|item| item["text"] == "Describe this image")
+                {
+                    continue;
+                }
+                assert_eq!(content.len(), 1);
+                assert!(matches!(
+                    content[0]["type"].as_str(),
+                    Some("text" | "input_text")
+                ));
+                user_message_notifications.push(notification.method);
+            }
+        }
+    })
+    .await??;
+
+    user_message_notifications.sort();
+    assert_eq!(
+        user_message_notifications,
+        vec![
+            "item/completed",
+            "item/started",
+            "rawResponseItem/completed"
+        ]
+    );
+
+    let model_input_images = received_response_input_images(&server).await?;
+    assert_eq!(model_input_images.len(), 1);
+    assert_eq!(model_input_images[0]["image_url"], TINY_PNG_DATA_URL);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn turn_start_with_empty_input_runs_model_request() -> Result<()> {
     let responses = vec![create_final_assistant_message_sse_response("Done")?];
     let server = create_mock_responses_server_sequence_unchecked(responses).await;
 
     let codex_home = TempDir::new()?;
-    MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
+    MockResponsesConfig::new(&server.uri())
+        .with_root_config(&format!("chatgpt_base_url = \"{}\"", server.uri()))
+        .write(codex_home.path())?;
+    mount_analytics_capture(&server, codex_home.path()).await?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
+        .without_managed_config()
         .build_initialized()
         .await?;
 
@@ -267,6 +378,15 @@ async fn turn_start_with_empty_input_runs_model_request() -> Result<()> {
         &completed.turn.items[..],
         [ThreadItem::AgentMessage { text, .. }] if text == "Done"
     ));
+
+    let event = wait_for_analytics_event(&server, DEFAULT_READ_TIMEOUT, "codex_turn_event").await?;
+    assert_eq!(
+        (
+            event["event_params"]["turn_id"].as_str(),
+            event["event_params"].get("root_turn_id"),
+        ),
+        (Some(turn.id.as_str()), Some(&Value::Null))
+    );
 
     let requests = server
         .received_requests()
@@ -345,6 +465,7 @@ async fn turn_start_steers_active_turn_and_returns_active_turn_id() -> Result<()
                     text: "start".to_string(),
                     text_elements: Vec::new(),
                 }],
+                turn_trigger: Some("user".to_string()),
                 ..Default::default()
             },
         })
@@ -365,6 +486,7 @@ async fn turn_start_steers_active_turn_and_returns_active_turn_id() -> Result<()
                     text: "steer".to_string(),
                     text_elements: Vec::new(),
                 }],
+                turn_trigger: Some("goal".to_string()),
                 ..Default::default()
             },
         })
@@ -379,6 +501,18 @@ async fn turn_start_steers_active_turn_and_returns_active_turn_id() -> Result<()
         mcp.read_stream_until_notification_message("turn/completed"),
     )
     .await??;
+
+    let requests = server.requests().await;
+    assert_eq!(requests.len(), 2);
+    for request in requests {
+        let body: Value = serde_json::from_slice(&request)?;
+        let turn_metadata: Value = serde_json::from_str(
+            body["client_metadata"]["x-codex-turn-metadata"]
+                .as_str()
+                .context("expected x-codex-turn-metadata")?,
+        )?;
+        assert_eq!(turn_metadata["turn_trigger"].as_str(), Some("user"));
+    }
     Ok(())
 }
 
@@ -630,7 +764,7 @@ async fn turn_start_emits_thread_scoped_warning_notification_for_trimmed_skills(
         .as_str()
         .expect("model slug should be present")
         .to_string();
-    entry["context_window"] = serde_json::Value::from(100);
+    entry["context_window"] = serde_json::Value::from(3_000);
     std::fs::write(&cache_path, serde_json::to_string_pretty(&cache)?)?;
     let config_path = codex_home.path().join("config.toml");
     let config = std::fs::read_to_string(&config_path)?;
@@ -673,7 +807,7 @@ async fn turn_start_emits_thread_scoped_warning_notification_for_trimmed_skills(
     assert_eq!(warning.thread_id.as_deref(), Some(thread.id.as_str()));
     assert_eq!(
         warning.message,
-        "Exceeded skills context budget. All skill descriptions were removed and 7 additional skills were not included in the model-visible skills list."
+        "Exceeded skills context budget. All skill descriptions were removed and 3 additional skills were not included in the model-visible skills list."
     );
 
     timeout(
@@ -709,7 +843,7 @@ async fn turn_start_sends_service_tier_id_to_model_request() -> Result<()> {
         responses::ev_assistant_message("msg-1", "Done"),
         responses::ev_completed("resp-1"),
     ]);
-    let response_mock = responses::mount_sse_once(&server, body).await;
+    let response_mock = responses::mount_sse_once(&server, body.clone()).await;
 
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
@@ -736,7 +870,7 @@ async fn turn_start_sends_service_tier_id_to_model_request() -> Result<()> {
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
-                thread_id: thread.id,
+                thread_id: thread.id.clone(),
                 service_tier: Some(Some(service_tier_id.clone())),
                 input: vec![V2UserInput::Text {
                     text: "Hello".to_string(),
@@ -757,30 +891,83 @@ async fn turn_start_sends_service_tier_id_to_model_request() -> Result<()> {
         json!(service_tier_id)
     );
 
+    for (service_tier_for_turn, expected_service_tier) in [
+        (Some("default".to_string()), None),
+        (None, Some(json!(service_tier_id))),
+    ] {
+        let response_mock = responses::mount_sse_once(&server, body.clone()).await;
+        mcp.start_turn_and_wait_for_completion(TurnStartParams {
+            thread_id: thread.id.clone(),
+            service_tier_for_turn,
+            input: vec![V2UserInput::Text {
+                text: "Hello again".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+        assert_eq!(
+            response_mock
+                .single_request()
+                .body_json()
+                .get("service_tier")
+                .cloned(),
+            expected_service_tier
+        );
+    }
+
     Ok(())
 }
 
+#[test_case(None, None, None; "without_usage_metadata")]
+#[test_case(Some(json!({})), None, None; "without_amount")]
+#[test_case(Some(json!({ "amount": null })), None, None; "null_amount")]
+#[test_case(Some(json!({ "amount": "0" })), Some("0"), None; "zero_amount")]
+#[test_case(
+    Some(json!({ "amount": "0.12345678901234567890" })),
+    Some("0.12345678901234567890"),
+    Some(json!({ "label": "example", "items": [0, null, true] }));
+    "exact_amount"
+)]
+#[test_case(None, None, Some(json!(null)); "null_extra")]
+#[test_case(None, None, Some(json!(0)); "zero_extra")]
+#[test_case(None, None, Some(json!({ "label": "example" })); "nested_extra")]
 #[tokio::test]
-async fn turn_start_emits_raw_response_completed_with_upstream_usage() -> Result<()> {
+async fn turn_start_emits_raw_response_completed_with_upstream_usage(
+    upstream_metadata: Option<Value>,
+    expected_amount: Option<&str>,
+    extra: Option<Value>,
+) -> Result<()> {
     let server = responses::start_mock_server().await;
+    let mut completed = json!({
+        "type": "response.completed",
+        "response": {
+            "id": "resp-1",
+            "usage": {
+                "input_tokens": 30,
+                "input_tokens_details": { "cached_tokens": 11 },
+                "output_tokens": 7,
+                "output_tokens_details": { "reasoning_tokens": 3 },
+                "total_tokens": 37
+            }
+        }
+    });
+    if let Some(metadata) = upstream_metadata {
+        completed["response"]["usage_metadata"] = metadata;
+    }
+    if let Some(extra) = extra {
+        completed["response"]["usage"]["extra"] = extra;
+    }
+    let expected_metadata = json!({
+        "amount": expected_amount,
+        "metadata": completed["response"]["usage"],
+    });
     let body = responses::sse(vec![
         responses::ev_response_created("resp-1"),
         responses::ev_assistant_message("msg-1", "Done"),
-        json!({
-            "type": "response.completed",
-            "response": {
-                "id": "resp-1",
-                "usage": {
-                    "input_tokens": 30,
-                    "input_tokens_details": { "cached_tokens": 11 },
-                    "output_tokens": 7,
-                    "output_tokens_details": { "reasoning_tokens": 3 },
-                    "total_tokens": 37
-                }
-            }
-        }),
+        completed,
     ]);
-    responses::mount_sse_once(&server, body).await;
+    let response_mock = responses::mount_sse_once(&server, body).await;
 
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
@@ -817,6 +1004,13 @@ async fn turn_start_emits_raw_response_completed_with_upstream_usage() -> Result
         mcp.read_stream_until_notification_message("rawResponse/completed"),
     )
     .await??;
+    assert_eq!(
+        notification
+            .params
+            .as_ref()
+            .and_then(|params| params.get("usageMetadata")),
+        Some(&expected_metadata),
+    );
     let notification: codex_app_server_protocol::ServerNotification = notification.try_into()?;
     let codex_app_server_protocol::ServerNotification::RawResponseCompleted(notification) =
         notification
@@ -830,6 +1024,7 @@ async fn turn_start_emits_raw_response_completed_with_upstream_usage() -> Result
             thread_id: thread.id,
             turn_id: turn.id,
             response_id: "resp-1".to_string(),
+            usage_metadata: serde_json::from_value(expected_metadata)?,
             usage: Some(TokenUsageBreakdown {
                 total_tokens: 37,
                 input_tokens: 30,
@@ -841,6 +1036,7 @@ async fn turn_start_emits_raw_response_completed_with_upstream_usage() -> Result
         }
     );
 
+    response_mock.single_request();
     Ok(())
 }
 
@@ -997,6 +1193,7 @@ async fn turn_start_tracks_thread_originator_in_analytics() -> Result<()> {
     assert_eq!(event["event_params"]["thread_id"], thread.id);
     assert_eq!(event["event_params"]["session_id"], thread.session_id);
     assert_eq!(event["event_params"]["turn_id"], turn.id);
+    assert_eq!(event["event_params"]["root_turn_id"], turn.id);
     assert_eq!(
         event["event_params"]["app_server_client"]["product_client_id"],
         "codex_work_desktop"
@@ -1097,7 +1294,7 @@ async fn code_mode_exec_emits_correlated_production_analytics() -> Result<()> {
         .await?;
     let params = ThreadStartParams::default();
     let thread = app_server.start_thread(params).await?;
-    app_server
+    let turn = app_server
         .start_turn_and_wait_for_completion(TurnStartParams {
             thread_id: thread.thread.id,
             input: vec![V2UserInput::Text {
@@ -1116,12 +1313,21 @@ async fn code_mode_exec_emits_correlated_production_analytics() -> Result<()> {
     .await?;
     assert_eq!(
         json!({
+            "turnId": event["event_params"]["turn_id"],
+            "rootTurnId": event["event_params"]["root_turn_id"],
             "tool": event["event_params"]["tool_name"],
             "origin": event["event_params"]["originating_response_id"],
             "subsequent": event["event_params"]["subsequent_response_id"],
             "hasCell": event["event_params"]["cell_id"].as_str().is_some(),
         }),
-        json!({"tool":"exec","origin":"resp-1","subsequent":"resp-2","hasCell":true})
+        json!({
+            "turnId": turn.turn.id,
+            "rootTurnId": turn.turn.id,
+            "tool": "exec",
+            "origin": "resp-1",
+            "subsequent": "resp-2",
+            "hasCell": true,
+        })
     );
 
     Ok(())
@@ -1171,7 +1377,10 @@ async fn turn_profile_tracks_blocking_tool_and_follow_up_sampling() -> Result<()
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri())
         .enable_feature(Feature::Goals)
-        .with_root_config(&format!("chatgpt_base_url = \"{}\"", server.uri()))
+        .with_root_config(&format!(
+            "chatgpt_base_url = \"{}\"\ntools.update_plan.enabled = true",
+            server.uri()
+        ))
         .write(codex_home.path())?;
     mount_analytics_capture(&server, codex_home.path()).await?;
 
@@ -1188,7 +1397,7 @@ async fn turn_profile_tracks_blocking_tool_and_follow_up_sampling() -> Result<()
         })
         .await?;
 
-    let _: TurnStartResponse = mcp
+    let TurnStartResponse { turn: first_turn } = mcp
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
@@ -1240,6 +1449,8 @@ async fn turn_profile_tracks_blocking_tool_and_follow_up_sampling() -> Result<()
     let params = &event["event_params"];
     assert_eq!(
         json!({
+            "turnId": params["turn_id"],
+            "rootTurnId": params["root_turn_id"],
             "toolBlockingIsPositive": params["tool_blocking_ms"]
                 .as_u64()
                 .is_some_and(|duration| duration > 0),
@@ -1250,6 +1461,8 @@ async fn turn_profile_tracks_blocking_tool_and_follow_up_sampling() -> Result<()
             "status": params["status"],
         }),
         json!({
+            "turnId": first_turn.id,
+            "rootTurnId": first_turn.id,
             "toolBlockingIsPositive": true,
             "samplingRequestCount": 2,
             "samplingRetryCount": 0,
@@ -1285,8 +1498,15 @@ async fn turn_profile_tracks_blocking_tool_and_follow_up_sampling() -> Result<()
         })
         .await?;
         let success = tool_name != "view_image";
+        let turn_id = if call_id == "call1" {
+            &first_turn.id
+        } else {
+            &second_turn.turn.id
+        };
         assert_eq!(
             json!({
+                "turnId": event["event_params"]["turn_id"],
+                "rootTurnId": event["event_params"]["root_turn_id"],
                 "tool": event["event_params"]["tool_name"],
                 "success": event["event_params"]["success"],
                 "status": event["event_params"]["terminal_status"],
@@ -1295,6 +1515,8 @@ async fn turn_profile_tracks_blocking_tool_and_follow_up_sampling() -> Result<()
                     .is_some(),
             }),
             json!({
+                "turnId": turn_id,
+                "rootTurnId": turn_id,
                 "tool": tool_name,
                 "success": success,
                 "status": if success { "completed" } else { "failed" },
@@ -1323,10 +1545,11 @@ async fn turn_profile_tracks_blocking_tool_and_follow_up_sampling() -> Result<()
         .await?;
     assert_eq!(
         json!({
+            "rootTurnId": second_turn_event["event_params"]["root_turn_id"],
             "total": second_turn_event["event_params"]["total_tool_call_count"],
             "dynamic": second_turn_event["event_params"]["dynamic_tool_call_count"],
         }),
-        json!({"total": 5, "dynamic": 0})
+        json!({"rootTurnId": second_turn.turn.id, "total": 5, "dynamic": 0})
     );
 
     Ok(())
@@ -1410,15 +1633,15 @@ async fn turn_start_rejects_combined_oversized_text_input() -> Result<()> {
 
     let turn_req = mcp
         .send_turn_start_request(TurnStartParams {
-            thread_id: thread.id,
+            thread_id: thread.id.clone(),
             client_user_message_id: None,
             input: vec![
                 V2UserInput::Text {
-                    text: first,
+                    text: first.clone(),
                     text_elements: Vec::new(),
                 },
                 V2UserInput::Text {
-                    text: second,
+                    text: second.clone(),
                     text_elements: Vec::new(),
                 },
             ],
@@ -1440,6 +1663,30 @@ async fn turn_start_rejects_combined_oversized_text_input() -> Result<()> {
     assert_eq!(data["input_error_code"], INPUT_TOO_LARGE_ERROR_CODE);
     assert_eq!(data["max_chars"], MAX_USER_INPUT_TEXT_CHARS);
     assert_eq!(data["actual_chars"], actual_chars);
+
+    let tool_req = mcp
+        .send_raw_request(
+            "turn/start",
+            Some(json!({
+                "threadId": thread.id,
+                "input": [],
+                "toolOutput": {
+                    "name": "send_message_to_thread",
+                    "output": [
+                        { "type": "input_text", "text": first },
+                        { "type": "input_text", "text": second },
+                    ],
+                },
+            })),
+        )
+        .await?;
+    let err: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(tool_req)),
+    )
+    .await??;
+    assert_eq!(err.error.code, INVALID_PARAMS_ERROR_CODE);
+    assert_eq!(err.error.data, Some(data));
 
     let turn_started = tokio::time::timeout(
         std::time::Duration::from_millis(250),
@@ -1596,6 +1843,227 @@ allow_local_binding = false
     )
     .await??;
 
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn turn_start_enforces_managed_network_sandbox() -> Result<()> {
+    skip_if_remote!(
+        Ok(()),
+        "network probe uses a host-local test executable and loopback server"
+    );
+
+    let server = responses::start_mock_server().await;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri())
+        .enable_feature(Feature::NetworkProxy)
+        .enable_feature(Feature::UnifiedExec)
+        .write(codex_home.path())?;
+    std::fs::write(
+        codex_home.path().join("requirements.toml"),
+        r#"
+default_permissions = "managed-network"
+
+[allowed_permission_profiles]
+managed-network = true
+":read-only" = true
+
+[permissions.managed-network]
+extends = ":read-only"
+
+[permissions.managed-network.network]
+enabled = true
+allow_local_binding = false
+allow_upstream_proxy = false
+
+[permissions.managed-network.network.domains]
+"127.0.0.2" = "allow"
+"#,
+    )?;
+
+    let mut app_server = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let ThreadStartResponse { thread, .. } = app_server
+        .start_thread(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            ..Default::default()
+        })
+        .await?;
+
+    // A different loopback address avoids confusing the host's target port with
+    // a coincidentally equal 127.0.0.1 listener port inside the sandbox namespace.
+    let listener = tokio::net::TcpListener::bind("127.0.0.2:0").await?;
+    let target = listener.local_addr()?;
+    let router = axum::Router::new().route(
+        "/sandbox",
+        axum::routing::get(|| async { "sandbox proxy response" }),
+    );
+    // Keep the real origin listening throughout both the proxied and direct
+    // requests, and clean it up even if an assertion fails.
+    let _origin = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+        axum::serve(listener, router).await
+    }));
+    let test_executable = std::env::current_exe()?;
+    let test_executable = test_executable
+        .to_str()
+        .context("integration test executable path must be UTF-8")?;
+    // Libtest selectors omit the integration crate name.
+    let (_, test_module) = module_path!()
+        .split_once("::")
+        .context("network sandbox test must be in an integration test module")?;
+    let child_test = format!("{test_module}::managed_network_sandbox_probe");
+    let target_env = format!("CODEX_TEST_MANAGED_NETWORK_TARGET={target}");
+    let command = shlex::try_join([
+        "env",
+        &target_env,
+        test_executable,
+        "--exact",
+        &child_test,
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1",
+    ])?;
+    let call_id = "managed-network-probe";
+    let probe_timeout = std::time::Duration::from_secs(/*secs*/ 30);
+    let _command_response = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_response_created("resp-network-command"),
+            responses::ev_exec_command_call_with_args(
+                call_id,
+                &json!({
+                    "cmd": command,
+                    "shell": "/bin/sh",
+                    "login": false,
+                    "yield_time_ms": probe_timeout.as_millis(),
+                }),
+            ),
+            responses::ev_completed("resp-network-command"),
+        ]),
+    )
+    .await;
+    let final_response = responses::mount_sse_once(
+        &server,
+        create_final_assistant_message_sse_response("Network probe complete")?,
+    )
+    .await;
+
+    let _: TurnStartResponse = app_server
+        .request(|request_id| ClientRequest::TurnStart {
+            request_id,
+            params: TurnStartParams {
+                thread_id: thread.id,
+                input: vec![V2UserInput::Text {
+                    text: "Verify managed sandbox networking".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                permissions: Some("managed-network".to_string()),
+                ..Default::default()
+            },
+        })
+        .await?;
+
+    let expected_output = "proxied request succeeded; direct access blocked\n";
+    timeout(probe_timeout, async {
+        loop {
+            let completed: ItemCompletedNotification =
+                app_server.read_notification("item/completed").await?;
+            if let ThreadItem::CommandExecution {
+                id,
+                status,
+                exit_code,
+                ..
+            } = completed.item
+                && id == call_id
+            {
+                assert_eq!(
+                    (status, exit_code),
+                    (CommandExecutionStatus::Completed, Some(0))
+                );
+                break;
+            }
+        }
+        anyhow::Ok(())
+    })
+    .await??;
+    let completed: TurnCompletedNotification = timeout(
+        probe_timeout,
+        app_server.read_notification("turn/completed"),
+    )
+    .await??;
+    assert_eq!(completed.turn.status, TurnStatus::Completed);
+    // Early stdout can reach the tool-result buffer before the separate event
+    // subscriber attaches, so verify it in the model continuation instead.
+    // The marker also proves the child ran: libtest succeeds if no selector matches.
+    let output = final_response
+        .single_request()
+        .function_call_output_text(call_id)
+        .context("model continuation should contain the sandboxed command output")?;
+    assert!(
+        output.contains(expected_output),
+        "unexpected tool output: {output}"
+    );
+
+    Ok(())
+}
+
+/// Runs as the model-controlled command inside app-server's managed network sandbox.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "invoked through app-server's managed network sandbox"]
+fn managed_network_sandbox_probe() -> Result<()> {
+    use std::io::ErrorKind;
+    use std::io::Read;
+    use std::io::Write;
+    use std::net::SocketAddr;
+    use std::net::TcpStream;
+    use std::time::Duration;
+
+    let target: SocketAddr = std::env::var("CODEX_TEST_MANAGED_NETWORK_TARGET")?.parse()?;
+    let proxy = url::Url::parse(&std::env::var("HTTP_PROXY")?)?;
+    let proxy_address = SocketAddr::new(
+        proxy.host_str().context("missing proxy host")?.parse()?,
+        proxy
+            .port_or_known_default()
+            .context("missing proxy port")?,
+    );
+    let proxy_timeout = Duration::from_secs(/*secs*/ 5);
+    let mut connection = TcpStream::connect_timeout(&proxy_address, proxy_timeout)?;
+    connection.set_read_timeout(Some(proxy_timeout))?;
+    connection.set_write_timeout(Some(proxy_timeout))?;
+    // HTTP/1.0 keeps this small fixture response close-delimited, without chunked encoding.
+    write!(
+        connection,
+        "GET http://{target}/sandbox HTTP/1.0\r\nHost: {target}\r\nConnection: close\r\n\r\n"
+    )?;
+    let mut response = String::new();
+    connection
+        .take(/*limit*/ 4096)
+        .read_to_string(&mut response)?;
+    let (headers, body) = response
+        .split_once("\r\n\r\n")
+        .context("incomplete proxy HTTP response")?;
+    let status = headers
+        .split_whitespace()
+        .nth(/*n*/ 1)
+        .context("missing HTTP response status")?;
+    assert_eq!((status, body), ("200", "sandbox proxy response"));
+
+    let direct_error = TcpStream::connect_timeout(&target, Duration::from_secs(/*secs*/ 2))
+        .expect_err("sandbox allowed direct host access");
+    assert!(
+        matches!(
+            direct_error.kind(),
+            ErrorKind::ConnectionRefused
+                | ErrorKind::NetworkUnreachable
+                | ErrorKind::PermissionDenied
+        ),
+        "unexpected direct connection error: {direct_error}"
+    );
+    println!("proxied request succeeded; direct access blocked");
     Ok(())
 }
 
@@ -2898,6 +3366,8 @@ async fn turn_start_explicit_local_environment_updates_legacy_cwd_between_turns(
                     text: "first turn".to_string(),
                     text_elements: Vec::new(),
                 }],
+                turn_trigger: None,
+                tool_output: None,
                 responsesapi_client_metadata: None,
                 additional_context: None,
                 cwd: Some(first_cwd.clone()),
@@ -2916,10 +3386,12 @@ async fn turn_start_explicit_local_environment_updates_legacy_cwd_between_turns(
                 effort: Some(ReasoningEffort::Medium),
                 summary: Some(ReasoningSummary::Auto),
                 service_tier: None,
+                service_tier_for_turn: None,
                 personality: None,
                 output_schema: None,
                 collaboration_mode: None,
                 multi_agent_mode: None,
+                cyber_access_program: None,
             },
         })
         .await?;
@@ -2947,6 +3419,8 @@ async fn turn_start_explicit_local_environment_updates_legacy_cwd_between_turns(
                     text: "second turn".to_string(),
                     text_elements: Vec::new(),
                 }],
+                turn_trigger: None,
+                tool_output: None,
                 responsesapi_client_metadata: None,
                 additional_context: None,
                 cwd: None,
@@ -2960,10 +3434,12 @@ async fn turn_start_explicit_local_environment_updates_legacy_cwd_between_turns(
                 effort: Some(ReasoningEffort::Medium),
                 summary: Some(ReasoningSummary::Auto),
                 service_tier: None,
+                service_tier_for_turn: None,
                 personality: None,
                 output_schema: None,
                 collaboration_mode: None,
                 multi_agent_mode: None,
+                cyber_access_program: None,
             },
         })
         .await?;
@@ -3715,6 +4191,7 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
     const CHILD_PROMPT: &str = "child: do work";
     const PARENT_PROMPT: &str = "spawn a child and continue";
     const SPAWN_CALL_ID: &str = "spawn-call-1";
+    const CHILD_PLAN_CALL_ID: &str = "child-plan-call";
     const REQUESTED_MODEL: &str = "gpt-5.2";
     const REQUESTED_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::Low;
 
@@ -3739,15 +4216,29 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
         ]),
     )
     .await;
-    let _child_turn = responses::mount_sse_once_match(
+    let child_turn = responses::mount_sse_once_match(
         &server,
         |req: &wiremock::Request| {
             body_contains(req, CHILD_PROMPT) && !body_contains(req, SPAWN_CALL_ID)
         },
         responses::sse(vec![
             responses::ev_response_created("resp-child-1"),
-            responses::ev_assistant_message("msg-child-1", "child done"),
+            responses::ev_function_call(
+                CHILD_PLAN_CALL_ID,
+                "update_plan",
+                &json!({"plan": [{"step": "child work", "status": "completed"}]}).to_string(),
+            ),
             responses::ev_completed("resp-child-1"),
+        ]),
+    )
+    .await;
+    let _child_follow_up = responses::mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, CHILD_PLAN_CALL_ID),
+        responses::sse(vec![
+            responses::ev_response_created("resp-child-2"),
+            responses::ev_assistant_message("msg-child-2", "child done"),
+            responses::ev_completed("resp-child-2"),
         ]),
     )
     .await;
@@ -3765,7 +4256,12 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri())
         .enable_feature(Feature::Collab)
+        .with_root_config(&format!(
+            "chatgpt_base_url = \"{}\"\ntools.update_plan.enabled = true",
+            server.uri()
+        ))
         .write(codex_home.path())?;
+    mount_analytics_capture(&server, codex_home.path()).await?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
@@ -3884,6 +4380,43 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
     assert_eq!(turn_completed.thread_id, thread.id);
     assert_eq!(turn_completed.turn.id, turn.turn.id);
 
+    let child_turn_event =
+        wait_for_matching_analytics_event(&server, DEFAULT_READ_TIMEOUT, |event| {
+            event["event_type"] == "codex_turn_event"
+                && event["event_params"]["thread_id"] == receiver_thread_id
+        })
+        .await?;
+    let child_tool_event =
+        wait_for_matching_analytics_event(&server, DEFAULT_READ_TIMEOUT, |event| {
+            event["event_type"] == "codex_control_tool_call_event"
+                && event["event_params"]["item_id"] == CHILD_PLAN_CALL_ID
+        })
+        .await?;
+    let child_request = child_turn
+        .requests()
+        .into_iter()
+        .find(|request| request.body_json()["client_metadata"]["thread_id"] == receiver_thread_id)
+        .context("child should issue a model request")?
+        .body_json();
+    let child_turn_id = child_request["client_metadata"]["turn_id"]
+        .as_str()
+        .context("child request should have a turn id")?;
+    assert_ne!(child_turn_id, turn.turn.id);
+    for event in [child_turn_event, child_tool_event] {
+        assert_eq!(
+            json!({
+                "thread_id": event["event_params"]["thread_id"],
+                "turn_id": event["event_params"]["turn_id"],
+                "root_turn_id": event["event_params"]["root_turn_id"],
+            }),
+            json!({
+                "thread_id": receiver_thread_id,
+                "turn_id": child_turn_id,
+                "root_turn_id": turn.turn.id,
+            })
+        );
+    }
+
     // Reuse this live spawn setup to cover thread/delete's ThreadManager descendant path.
     let _: ThreadDeleteResponse = mcp
         .request(|request_id| ClientRequest::ThreadDelete {
@@ -3919,8 +4452,12 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
     Ok(())
 }
 
+#[test_case(ThreadHistoryMode::Legacy; "legacy")]
+#[test_case(ThreadHistoryMode::Paginated; "paginated")]
 #[tokio::test]
-async fn direct_input_to_multi_agent_v2_subagent_starts_follow_up_turn() -> Result<()> {
+async fn direct_input_to_multi_agent_v2_subagent_starts_follow_up_turn(
+    history_mode: ThreadHistoryMode,
+) -> Result<()> {
     const CHILD_PROMPT: &str = "child: do work";
     const PARENT_PROMPT: &str = "spawn a child and continue";
     const FOLLOW_UP: &str = "direct app-server turn";
@@ -3983,6 +4520,8 @@ async fn direct_input_to_multi_agent_v2_subagent_starts_follow_up_turn() -> Resu
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri())
         .enable_feature(Feature::MultiAgentV2)
+        .enable_feature(Feature::Goals)
+        .enable_feature(Feature::RealtimeConversation)
         .with_root_config(&format!("chatgpt_base_url = \"{}\"", server.uri()))
         .write(codex_home.path())?;
     write_models_cache(codex_home.path())?;
@@ -3996,6 +4535,7 @@ async fn direct_input_to_multi_agent_v2_subagent_starts_follow_up_turn() -> Resu
     let ThreadStartResponse { thread, .. } = mcp
         .start_thread(ThreadStartParams {
             model: Some("gpt-5.4".to_string()),
+            history_mode: Some(history_mode),
             ..Default::default()
         })
         .await?;
@@ -4065,7 +4605,7 @@ async fn direct_input_to_multi_agent_v2_subagent_starts_follow_up_turn() -> Resu
                 cwd: None,
                 use_state_db_only: true,
                 search_term: None,
-                parent_thread_id: None,
+                parent_thread_id: Some(thread.id.clone()),
                 ancestor_thread_id: None,
             },
         })
@@ -4084,6 +4624,7 @@ async fn direct_input_to_multi_agent_v2_subagent_starts_follow_up_turn() -> Resu
             }
         )
     ));
+    assert_eq!(listed_child.history_mode, history_mode);
     assert_eq!(listed_child.can_accept_direct_input, Some(true));
 
     let ThreadReadResponse {

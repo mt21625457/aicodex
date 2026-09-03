@@ -11,6 +11,7 @@ use codex_exec_server::Environment;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_tools::UnifiedExecShellMode;
 use serde::Deserialize;
+use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -24,6 +25,106 @@ pub use exec_command::ExecCommandHandler;
 pub(crate) use exec_command::ExecCommandHandlerOptions;
 pub use write_stdin::WriteStdinHandler;
 
+use crate::function_tool::FunctionCallError;
+use crate::tools::registry::CoreToolRuntime;
+use crate::tools::registry::PreToolUsePayload;
+use codex_tools::CLAUDE_BASH_TOOL_NAME;
+use codex_tools::JsonSchema;
+use codex_tools::ResponsesApiTool;
+use codex_tools::ToolExecutor;
+use codex_tools::ToolName;
+use codex_tools::ToolSpec;
+
+pub(crate) struct ClaudeBashHandler {
+    inner: ExecCommandHandler,
+}
+
+impl ClaudeBashHandler {
+    pub(crate) fn new(options: ExecCommandHandlerOptions) -> Self {
+        Self {
+            inner: ExecCommandHandler::new(options),
+        }
+    }
+}
+
+impl ToolExecutor<ToolInvocation> for ClaudeBashHandler {
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain(CLAUDE_BASH_TOOL_NAME)
+    }
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::Function(ResponsesApiTool {
+            name: CLAUDE_BASH_TOOL_NAME.to_string(),
+            description: "Claude native bash runtime.".to_string(),
+            strict: false,
+            defer_loading: None,
+            parameters: JsonSchema::default(),
+            output_schema: None,
+        })
+    }
+
+    fn handle<'a>(&'a self, mut invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
+        Box::pin(async move {
+            let ToolPayload::Function { arguments } = &invocation.payload else {
+                return Err(FunctionCallError::RespondToModel(
+                    "Claude bash received an unsupported payload".to_string(),
+                ));
+            };
+            let mut arguments: Value = serde_json::from_str(arguments).map_err(|err| {
+                FunctionCallError::RespondToModel(format!(
+                    "failed to parse Claude bash arguments: {err}"
+                ))
+            })?;
+            let Value::Object(arguments) = &mut arguments else {
+                return Err(FunctionCallError::RespondToModel(
+                    "Claude bash arguments must be an object".to_string(),
+                ));
+            };
+            let Some(command) = arguments.remove("command") else {
+                return Err(FunctionCallError::RespondToModel(
+                    "Claude bash requires a string `command`".to_string(),
+                ));
+            };
+            if !command.is_string() {
+                return Err(FunctionCallError::RespondToModel(
+                    "Claude bash requires a string `command`".to_string(),
+                ));
+            }
+            arguments.insert("cmd".to_string(), command);
+            invocation.payload = ToolPayload::Function {
+                arguments: serde_json::to_string(arguments).map_err(|err| {
+                    FunctionCallError::RespondToModel(format!(
+                        "failed to serialize Claude bash arguments: {err}"
+                    ))
+                })?,
+            };
+            self.inner.handle(invocation).await
+        })
+    }
+}
+
+impl CoreToolRuntime for ClaudeBashHandler {
+    fn matches_kind(&self, payload: &ToolPayload) -> bool {
+        matches!(payload, ToolPayload::Function { .. })
+    }
+
+    fn pre_tool_use_payload(&self, invocation: &ToolInvocation) -> Option<PreToolUsePayload> {
+        let ToolPayload::Function { arguments } = &invocation.payload else {
+            return None;
+        };
+        serde_json::from_str::<Value>(arguments)
+            .ok()
+            .and_then(|arguments| arguments.get("command").cloned())
+            .map(|command| PreToolUsePayload {
+                tool_name: HookToolName::bash(),
+                tool_input: serde_json::json!({ "command": command }),
+            })
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct ExecCommandArgs {
     pub(crate) cmd: String,
@@ -35,6 +136,8 @@ pub(crate) struct ExecCommandArgs {
     tty: bool,
     #[serde(default = "default_exec_yield_time_ms")]
     yield_time_ms: u64,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
     #[serde(default)]
     max_output_tokens: Option<usize>,
     #[serde(default)]

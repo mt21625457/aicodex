@@ -1,6 +1,7 @@
 use super::ContextualUserFragment;
 use crate::config::MULTI_AGENT_USAGE_HINT_MAX_TOKENS;
 use crate::config::truncate_text_to_token_budget;
+use codex_protocol::models::ContentItemKind;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Configured multi-agent instructions emitted as a standalone developer message.
@@ -17,6 +18,10 @@ impl MultiAgentUsageHint {
 }
 
 impl ContextualUserFragment for MultiAgentUsageHint {
+    fn content_kind(&self) -> ContentItemKind {
+        ContentItemKind("multi_agent.usage_hint".to_string())
+    }
+
     fn role(&self) -> &'static str {
         "developer"
     }

@@ -409,6 +409,7 @@ impl ChatStreamState {
             .send(Ok(ResponseEvent::Completed {
                 response_id: self.response_id.clone().unwrap_or_default(),
                 token_usage: self.usage.as_ref().map(ChatUsage::token_usage),
+                usage_metadata: None,
                 end_turn: finish_reason
                     .as_deref()
                     .map(|reason| reason != "tool_calls"),

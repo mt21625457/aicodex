@@ -17,6 +17,7 @@ use wiremock::matchers::method;
 use wiremock::matchers::path;
 
 use crate::session::tests::make_session_and_context;
+use crate::session::tests::update_turn_settings_for_test;
 use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
@@ -152,7 +153,7 @@ async fn handler_calls_openai_search_endpoint_and_returns_search_output() {
         .await
         .expect("web search should succeed");
 
-    assert_eq!(output.log_preview(), "[openai web search output]");
+    assert_eq!(output.log_output(), "[openai web search output]");
     assert!(output.contains_external_context());
     let response = output.to_response_item(
         "call-web-search",
@@ -231,10 +232,12 @@ async fn kimi_handler_calls_moonshot_and_returns_bounded_external_context() {
     config.moonshot_search.base_url = Some(format!("{}/v1/search", server.uri()));
     config.moonshot_search.api_key = Some("moonshot-test-token".to_string());
     turn.config = Arc::new(config);
-    Arc::make_mut(&mut turn.model_info).slug = "gateway:k3".to_string();
+    update_turn_settings_for_test(&mut turn, |settings| {
+        Arc::make_mut(&mut settings.model_info).slug = "gateway:k3".to_string();
+    });
     let mut provider =
         create_oss_provider_with_base_url(&format!("{}/v1", server.uri()), WireApi::Claude);
-    provider.experimental_bearer_token = Some("provider-token".to_string());
+    provider.experimental_bearer_token = Some("provider-token".to_string().into());
     turn.provider = create_model_provider(provider, /*auth_manager*/ None);
     let session = Arc::new(session);
     let turn = Arc::new(turn);
@@ -259,7 +262,7 @@ async fn kimi_handler_calls_moonshot_and_returns_bounded_external_context() {
         .await
         .expect("Moonshot search should succeed");
 
-    assert_eq!(output.log_preview(), "[moonshot web search output]");
+    assert_eq!(output.log_output(), "[moonshot web search output]");
     assert!(output.contains_external_context());
     let response = output.to_response_item(
         "call-moonshot",

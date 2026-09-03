@@ -5,6 +5,8 @@ use codex_exec_server_protocol::JSONRPCErrorError;
 use codex_utils_path_uri::PathUri;
 use tokio::io;
 
+use crate::CapabilityRootsDiscoverParams;
+use crate::CapabilityRootsDiscoverResponse;
 use crate::ConditionalWritePrecondition;
 use crate::CopyOptions;
 use crate::CreateDirectoryOptions;
@@ -45,6 +47,22 @@ pub struct SandboxedFileSystem {
 }
 
 impl SandboxedFileSystem {
+    #[tracing::instrument(
+        name = "capability_roots.discover_v1",
+        skip_all,
+        fields(root_count = params.roots.len())
+    )]
+    pub(crate) async fn discover_capability_roots(
+        &self,
+        params: CapabilityRootsDiscoverParams,
+        sandbox: &FileSystemSandboxContext,
+    ) -> FileSystemResult<CapabilityRootsDiscoverResponse> {
+        self.run_sandboxed(sandbox, FsHelperRequest::DiscoverCapabilityRoots(params))
+            .await?
+            .expect_capability_roots_discover()
+            .map_err(map_sandbox_error)
+    }
+
     pub(crate) async fn open_file_for_read(
         &self,
         path: &PathUri,
