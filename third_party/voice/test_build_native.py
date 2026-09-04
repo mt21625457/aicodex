@@ -119,6 +119,42 @@ class NativeBuildTests(unittest.TestCase):
         )
         self.assertEqual(result.stdout, "linked")
 
+    @unittest.skipIf(os.name == "nt", "Unix install paths; Windows layout is unchanged")
+    def test_cmake_installs_relative_library_paths(self):
+        for argument, tool in (
+            ("cc", "cc"),
+            ("cxx", "c++"),
+            ("cmake", "cmake"),
+            ("make", "make"),
+        ):
+            setattr(self.args, argument, Path(shutil.which(tool)))
+        source = self.root / "library-source"
+        source.mkdir()
+        (source / "CMakeLists.txt").write_text(
+            "cmake_minimum_required(VERSION 3.15)\nproject(relative_paths LANGUAGES C)\n"
+            "add_library(fixture SHARED fixture.c)\ninstall(TARGETS fixture DESTINATION lib)\n"
+        )
+        (source / "fixture.c").write_text("int fixture(void) { return 42; }\n")
+        build = NativeBuild(self.args, self.environment)
+        build.output.mkdir()
+        build.sources = {"fixture": source}
+        build.cmake("fixture", [], bootstrap=True)
+        if sys.platform == "darwin":
+            from macos_runtime import inspect
+
+            metadata = inspect(build.tools / "lib/libfixture.dylib", self.args.target)
+            self.assertEqual(
+                (metadata.identity, metadata.rpaths),
+                ("@rpath/libfixture.dylib", ("@loader_path",)),
+            )
+        else:
+            from linux_runtime import inspect
+
+            metadata = inspect(build.tools / "lib/libfixture.so", self.args.target)
+            self.assertEqual(
+                (metadata.identity, metadata.rpaths), ("libfixture.so", ("29=$ORIGIN",))
+            )
+
     def test_build_refuses_existing_output_before_reading_sources(self):
         self.args.output.mkdir()
         (self.args.output / "keep").write_text("untouched")
@@ -178,7 +214,12 @@ class NativeBuildTests(unittest.TestCase):
         else:
             self.assertEqual(
                 shlex.split(build.environment["LDFLAGS"]),
-                [f"-L{build.prefix / 'lib'}", f"-Wl,-rpath,{build.prefix / 'lib'}"],
+                [
+                    f"-L{build.prefix / 'lib'}",
+                    "-Wl,-rpath,$ORIGIN:$ORIGIN/.."
+                    if build.args.target.endswith("unknown-linux-gnu")
+                    else f"-Wl,-rpath,{build.prefix / 'lib'}",
+                ],
             )
 
     def test_windows_paths_use_cygpath_and_propagate_failure(self):
@@ -207,9 +248,10 @@ class NativeBuildTests(unittest.TestCase):
             with self.subTest(architecture=architecture):
                 self.args.target = f"{architecture}-pc-windows-msvc"
                 self.args.output = self.root / architecture
-                with patch(
-                    "build_native.platform.system", return_value="Windows"
-                ), patch("build_native.platform.machine", return_value=architecture):
+                with (
+                    patch("build_native.platform.system", return_value="Windows"),
+                    patch("build_native.platform.machine", return_value=architecture),
+                ):
                     build = NativeBuild(self.args, self.environment)
                 self.assertEqual(
                     build.environment["USERPROFILE"], self.environment["USERPROFILE"]
@@ -222,20 +264,23 @@ class NativeBuildTests(unittest.TestCase):
                         "-ID:/private/include -LD:/private/lib -lffi\n"
                     )
 
-                with patch(
-                    "build_native.prepare_sources",
-                    side_effect=lambda *args: (build.output / "build").mkdir(),
-                ), patch.object(build, "cmake") as cmake, patch.object(
-                    build, "meson"
-                ), patch.object(
-                    build, "run", side_effect=record
-                ), patch.object(
-                    build,
-                    "posix_path",
-                    side_effect=lambda path: "/cygdrive/d/" + path.name,
-                ), patch(
-                    "build_native.subprocess.check_output",
-                    return_value="/usr/share/automake-1.18\n",
+                with (
+                    patch(
+                        "build_native.prepare_sources",
+                        side_effect=lambda *args: (build.output / "build").mkdir(),
+                    ),
+                    patch.object(build, "cmake") as cmake,
+                    patch.object(build, "meson"),
+                    patch.object(build, "run", side_effect=record),
+                    patch.object(
+                        build,
+                        "posix_path",
+                        side_effect=lambda path: "/cygdrive/d/" + path.name,
+                    ),
+                    patch(
+                        "build_native.subprocess.check_output",
+                        return_value="/usr/share/automake-1.18\n",
+                    ),
                 ):
                     build.build()
                 opus_options = next(

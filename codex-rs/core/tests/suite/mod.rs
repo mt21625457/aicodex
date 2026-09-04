@@ -74,6 +74,7 @@ mod git_enrichment;
 mod guardian_authorization;
 mod guardian_history;
 mod guardian_mcp_elicitation;
+mod guardian_retained_context;
 #[cfg(not(target_os = "windows"))]
 mod guardian_review;
 #[cfg(not(target_os = "windows"))]
@@ -136,6 +137,7 @@ mod request_permissions;
 mod request_permissions_tool;
 mod request_plugin_install;
 mod request_user_input;
+mod request_user_input_async;
 mod responses_api_proxy_headers;
 mod responses_lite;
 #[cfg(target_os = "linux")]
@@ -151,7 +153,6 @@ mod rollout_list_find;
 mod safety_buffering;
 mod safety_check_downgrade;
 mod search_tool;
-mod send_user_message_async;
 mod settings_commits;
 mod settings_constraints;
 mod shell_snapshot;

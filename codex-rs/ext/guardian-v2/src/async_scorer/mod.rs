@@ -1,6 +1,8 @@
 mod action;
+mod approval;
 mod authorization;
 mod config;
+mod coverage;
 mod extension;
 mod metrics;
 mod review_evidence;
@@ -15,8 +17,8 @@ pub(crate) use config::GuardianV2Config;
 pub use extension::StrictReviewReason;
 pub(crate) use extension::install;
 pub(crate) use transcript::MAX_TOOL_ENTRY_TOKENS;
+pub(crate) use transcript::RenderedContext;
 pub(crate) use transcript::RenderedImages;
-pub(crate) use transcript::RenderedTranscript;
 pub(crate) use transcript::TranscriptConfig;
 pub(crate) use transcript::TranscriptSource;
 pub(crate) use transcript::truncate_entry;

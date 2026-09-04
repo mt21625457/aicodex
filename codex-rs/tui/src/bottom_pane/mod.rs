@@ -61,6 +61,7 @@ mod actionable_banner;
 mod app_link_view;
 mod apply_patch_header;
 mod approval_overlay;
+mod hook_status;
 mod mcp_server_elicitation;
 mod multi_select_picker;
 mod request_user_input;
@@ -136,6 +137,7 @@ pub(crate) use list_selection_view::popup_content_width;
 pub(crate) use list_selection_view::side_by_side_layout_widths;
 pub(crate) use memories_settings_view::MemoriesSettingsView;
 use slash_commands::ServiceTierCommand;
+mod feedback_note_view;
 mod feedback_view;
 mod hooks_browser_view;
 pub(crate) use feedback_view::FeedbackAudience;
@@ -165,7 +167,7 @@ mod selection_tabs;
 mod startup;
 mod textarea;
 mod unified_exec_footer;
-pub(crate) use feedback_view::FeedbackNoteView;
+pub(crate) use feedback_note_view::FeedbackNoteView;
 pub(crate) use hooks_browser_view::HooksBrowserView;
 pub(crate) use selection_tabs::SelectionTab;
 
@@ -208,6 +210,7 @@ pub(crate) use chat_composer_history::HistoryEntry;
 
 use crate::status_indicator_widget::StatusDetailsCapitalization;
 use crate::status_indicator_widget::StatusIndicatorWidget;
+#[cfg(test)]
 pub(crate) use experimental_features_view::ExperimentalFeatureItem;
 pub(crate) use experimental_features_view::ExperimentalFeaturesView;
 pub(crate) use list_selection_view::SELECTION_TOGGLE_BLOCKED_PREFIX;
@@ -248,6 +251,8 @@ pub(crate) struct BottomPane {
 
     /// Inline status indicator shown above the composer while a task is running.
     status: Option<StatusIndicatorWidget>,
+    /// Running-hook summary supplied by the lifecycle owner after its reveal delay.
+    hook_status_message: Option<String>,
     inline_banner: Option<actionable_banner::InlineBanner>,
     /// Streaming may drop the row without losing its elapsed time or modal pause.
     status_timer: crate::status_indicator_widget::StatusTimer,
@@ -321,6 +326,7 @@ impl BottomPane {
             disable_paste_burst,
             is_task_running: false,
             status: None,
+            hook_status_message: None,
             inline_banner: None,
             status_timer: crate::status_indicator_widget::StatusTimer::default(),
             unified_exec_footer: UnifiedExecFooter::new(),
@@ -563,6 +569,11 @@ impl BottomPane {
         self.status_timer.reset(elapsed);
     }
 
+    pub(crate) fn set_status_timer_origin(&mut self, started_at: Option<Instant>) {
+        self.status_timer.display_started_at = started_at;
+        self.request_redraw();
+    }
+
     pub fn skills(&self) -> Option<&Vec<SkillMetadata>> {
         self.composer.skills()
     }
@@ -728,14 +739,15 @@ impl BottomPane {
             if self.handle_inline_banner_key(key_event) {
                 return InputResult::None;
             }
-            // If a task is running and a status line is visible, allow the
-            // configured action to interrupt even while the composer has focus.
+            // Allow the configured interrupt while a task is running, even when its
+            // status row is hidden or the composer has focus.
             // When a popup is active, prefer dismissing it over interrupting the task.
-            if self.should_interrupt_running_task(key_event)
-                && let Some(status) = &self.status
-            {
-                // Send Op::Interrupt
-                status.interrupt();
+            if self.should_interrupt_running_task(key_event) {
+                if let Some(status) = &self.status {
+                    status.interrupt();
+                } else {
+                    self.app_event_tx.interrupt();
+                }
                 self.request_redraw();
                 return InputResult::None;
             }
@@ -864,10 +876,10 @@ impl BottomPane {
     }
 
     fn schedule_active_view_frame(&self) {
-        if let Some(delay) = self
-            .active_view()
-            .and_then(BottomPaneView::next_frame_delay)
-        {
+        if let Some(delay) = self.active_view().map_or_else(
+            || self.composer.footer_flash_delay(),
+            BottomPaneView::next_frame_delay,
+        ) {
             self.request_redraw_in(delay);
         }
     }
@@ -1434,13 +1446,29 @@ impl BottomPane {
         }
     }
 
-    /// Copy unified-exec summary text into the active status row, if any.
+    /// Update hook activity after the lifecycle reveal delay, even outside a turn.
+    pub(crate) fn set_hook_status_message(&mut self, message: Option<String>) {
+        if self.hook_status_message == message {
+            return;
+        }
+
+        self.hook_status_message = message;
+        if self.hook_status_message.is_some() && self.status.is_none() && self.is_task_running() {
+            self.ensure_status_indicator();
+        } else {
+            self.sync_status_inline_message();
+            self.request_redraw();
+        }
+    }
+
+    /// Copy background activity and hook text into the active status row, if any.
     ///
     /// This keeps status-line inline text synchronized without forcing the
     /// standalone unified-exec footer row to be visible.
     fn sync_status_inline_message(&mut self) {
         if let Some(status) = self.status.as_mut() {
             status.update_inline_message(self.unified_exec_footer.summary_text());
+            status.update_hook_status_message(self.hook_status_message.clone());
         }
     }
 
@@ -1473,7 +1501,6 @@ impl BottomPane {
             && !(is_agent_command && key_event.code == KeyCode::Esc)
             && self.no_modal_or_popup_active()
             && !self.composer_should_handle_vim_insert_escape(key_event)
-            && self.status_widget().is_some()
     }
 
     pub(crate) fn terminal_title_requires_action(&self) -> bool {
@@ -1877,6 +1904,17 @@ impl BottomPane {
                     RenderableItem::Owned(Box::new(status.with_timer(&self.status_timer))),
                 );
             }
+            if self.status.is_none()
+                && let Some(message) = &self.hook_status_message
+            {
+                flex.push(
+                    /*flex*/ 0,
+                    RenderableItem::Owned(Box::new(hook_status::HookStatus {
+                        message,
+                        animations_enabled: self.animations_enabled,
+                    })),
+                );
+            }
             // Avoid double-surfacing the same summary and avoid adding an extra
             // row while the status line is already visible.
             if self.status_widget().is_none() && !self.unified_exec_footer.is_empty() {
@@ -1889,8 +1927,9 @@ impl BottomPane {
             let has_pending_input = !self.pending_input_preview.queued_messages.is_empty()
                 || !self.pending_input_preview.pending_steers.is_empty()
                 || !self.pending_input_preview.rejected_steers.is_empty();
-            let has_status_or_footer =
-                self.status_widget().is_some() || !self.unified_exec_footer.is_empty();
+            let has_status_or_footer = self.status_widget().is_some()
+                || self.hook_status_message.is_some()
+                || !self.unified_exec_footer.is_empty();
             let has_inline_previews = has_pending_thread_approvals || has_pending_input;
             if has_inline_previews && has_status_or_footer {
                 flex.push(/*flex*/ 0, RenderableItem::Owned("".into()));
@@ -1926,6 +1965,12 @@ impl BottomPane {
 
     pub(crate) fn set_status_line(&mut self, status_line: Option<Line<'static>>) {
         if self.composer.set_status_line(status_line) {
+            self.request_redraw();
+        }
+    }
+
+    pub(crate) fn set_luna_reserve_active(&mut self, active: bool) {
+        if self.composer.set_luna_reserve_active(active) {
             self.request_redraw();
         }
     }
@@ -3169,6 +3214,13 @@ mod tests {
             matches!(rx.try_recv(), Ok(AppEvent::CodexOp(Op::Interrupt))),
             "expected Esc to send Op::Interrupt while a task is running"
         );
+
+        pane.hide_status_indicator();
+        pane.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppEvent::CodexOp(Op::Interrupt))
+        ));
     }
 
     #[test]
@@ -3193,6 +3245,13 @@ mod tests {
             matches!(rx.try_recv(), Ok(AppEvent::CodexOp(Op::Interrupt))),
             "expected configured key to interrupt while `/subagents` is being edited"
         );
+
+        pane.hide_status_indicator();
+        pane.handle_key_event(KeyEvent::new(KeyCode::F(12), KeyModifiers::NONE));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppEvent::CodexOp(Op::Interrupt))
+        ));
     }
 
     #[test]

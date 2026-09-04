@@ -123,12 +123,12 @@ impl ChatWidget {
     }
 
     pub(crate) fn set_world_writable_warning_acknowledged(&mut self, acknowledged: bool) {
-        self.config.notices.hide_world_writable_warning = Some(acknowledged);
+        self.local_settings.notices.hide_world_writable_warning = Some(acknowledged);
     }
 
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     pub(crate) fn world_writable_warning_hidden(&self) -> bool {
-        self.config
+        self.local_settings
             .notices
             .hide_world_writable_warning
             .unwrap_or(false)
@@ -217,10 +217,13 @@ impl ChatWidget {
         // Account-update notifications are the identity boundary. The visible account fields can
         // be identical across two accounts, so always invalidate account-scoped requests and data.
         self.model_popup_request_id = None;
+        self.invalidate_permission_discovery();
         self.invalidate_connector_scope();
         self.clear_pending_token_activity_refreshes();
         self.clear_pending_rate_limit_reset_requests();
         self.clear_backend_banner();
+        self.luna_reserve_notice_account_id = None;
+        self.automatic_model_switch_state = backend_banners::AutomaticModelSwitchState::default();
         self.input_queue.rate_limit_recovery_pending = false;
         self.add_credits_nudge_email_in_flight = None;
         self.codex_rate_limit_reached_type = None;
@@ -256,11 +259,19 @@ impl ChatWidget {
 
     /// Set the syntax theme override in the widget's config copy.
     pub(crate) fn set_tui_theme(&mut self, theme: Option<String>) {
-        self.config.tui_theme = theme;
+        self.local_settings.tui.theme = theme;
     }
 
     /// Set the model in the widget's config copy and stored collaboration mode.
     pub(crate) fn set_model(&mut self, model: &str) {
+        if model != self.current_model() {
+            if self.current_model() == crate::model_catalog::LUNA_RESERVE_MODEL {
+                self.clear_reserve_return();
+            } else {
+                self.automatic_model_switch_state =
+                    backend_banners::AutomaticModelSwitchState::default();
+            }
+        }
         self.current_collaboration_mode = self.current_collaboration_mode.with_updates(
             Some(model.to_string()),
             /*effort*/ None,
@@ -431,6 +442,8 @@ impl ChatWidget {
     pub(super) fn refresh_model_display(&mut self) {
         let effective = self.effective_collaboration_mode();
         self.session_header.set_model(effective.model());
+        self.bottom_pane
+            .set_astra_sparkle(effective.model(), &self.local_settings.tui);
         // Keep composer paste affordances aligned with the currently effective model.
         self.sync_image_paste_enabled();
         self.sync_service_tier_commands();
@@ -452,9 +465,11 @@ impl ChatWidget {
         self.sync_backend_banner_view();
         self.refresh_model_display();
         self.refresh_status_line();
+        self.refresh_open_model_picker();
     }
 
     fn apply_thread_settings(&mut self, mut settings: ThreadSettings) {
+        self.invalidate_permission_discovery();
         let cwd_changed = self.config.cwd != settings.cwd;
         self.apply_thread_settings_cwd(settings.cwd.clone());
         self.config.model_provider_id = settings.model_provider.clone();
@@ -551,7 +566,7 @@ impl ChatWidget {
         if model.is_empty() {
             DEFAULT_MODEL_DISPLAY_NAME
         } else {
-            model
+            crate::model_catalog::model_display_name(model)
         }
     }
 

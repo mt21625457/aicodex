@@ -22,6 +22,7 @@ async fn resolve_runtime_model_provider_base_url(provider: &ModelProviderInfo) -
 
 fn spawn_startup_thread_start(
     app_server: &AppServerSession,
+    local_settings: crate::local_settings::LocalSettings,
     config: Config,
     app_event_tx: AppEventSender,
 ) {
@@ -32,6 +33,7 @@ fn spawn_startup_thread_start(
     tokio::spawn(async move {
         let result = crate::app_server_session::start_thread_with_request_handle(
             request_handle,
+            &local_settings,
             config,
             thread_params_mode,
             remote_cwd_override,
@@ -123,14 +125,19 @@ impl App {
             Ok(())
         }
 
+        let mut local_settings = crate::local_settings::LocalSettings::from(&config);
         let startup_started_at = Instant::now();
         let (app_event_tx, mut app_event_rx) = unbounded_channel();
         let app_event_tx = AppEventSender::new(app_event_tx);
-        emit_project_config_warnings(&app_event_tx, &config);
+        if let Some(message) = project_config_warning(&config) {
+            app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+                history_cell::StartupWarningsCell::new(vec![message]),
+            )));
+        }
         emit_system_bwrap_warning(&app_event_tx, &config);
         tui.set_notification_settings(
-            config.tui_notifications.method,
-            config.tui_notifications.condition,
+            local_settings.tui.notification_settings.method,
+            local_settings.tui.notification_settings.condition,
         );
 
         let harness_overrides =
@@ -145,6 +152,11 @@ impl App {
                 Err(err) => return shutdown_on_startup_error(app_server, err).await,
             },
         };
+        tracing::debug!(
+            has_platform_family = app_server.app_server_platform_family().is_some(),
+            has_platform_os = app_server.app_server_platform_os().is_some(),
+            "connected app-server platform"
+        );
         let bootstrap_ms = bootstrap.duration.as_millis();
         if matches!(
             &session_selection,
@@ -171,6 +183,7 @@ impl App {
         let exit_info = handle_model_migration_prompt_if_needed(
             tui,
             &mut config,
+            &local_settings,
             model.as_str(),
             &app_event_tx,
             &available_models,
@@ -205,7 +218,10 @@ impl App {
         {
             tracing::warn!(%error, "TUI task delegation is unavailable without its MCP server");
         }
-        let model_catalog = Arc::new(ModelCatalog::new(available_models.clone()));
+        let model_catalog = Arc::new(
+            ModelCatalog::new(available_models.clone())
+                .with_collaboration_modes(bootstrap.collaboration_modes),
+        );
         let feedback_audience = bootstrap.feedback_audience;
         let auth_mode = bootstrap.auth_mode;
         let has_chatgpt_account = bootstrap.has_chatgpt_account;
@@ -226,8 +242,9 @@ impl App {
             serde_json::from_value(serde_json::json!("cli"))
                 .unwrap_or_else(|err| panic!("cli session source should deserialize: {err}")),
         );
-        if config
-            .tui_status_line
+        if local_settings
+            .tui
+            .status_line
             .as_ref()
             .is_some_and(|cmd| !cmd.is_empty())
         {
@@ -273,7 +290,12 @@ impl App {
             | SessionSelection::Exit
             | SessionSelection::AgentsOverview => {
                 if !start_in_agents_overview {
-                    spawn_startup_thread_start(&app_server, config.clone(), app_event_tx.clone());
+                    spawn_startup_thread_start(
+                        &app_server,
+                        local_settings.clone(),
+                        config.clone(),
+                        app_event_tx.clone(),
+                    );
                 }
                 // Count a startup tooltip once the initial chat widget can render it.
                 let startup_tooltip_override = if start_in_agents_overview {
@@ -283,7 +305,7 @@ impl App {
                         .run_until(
                             tui,
                             prepare_startup_tooltip_override(
-                                &mut config,
+                                &mut local_settings,
                                 &available_models,
                                 is_first_run,
                             ),
@@ -295,6 +317,7 @@ impl App {
                     }
                 };
                 let init = crate::chatwidget::ChatWidgetInit {
+                    local_settings: local_settings.clone(),
                     config: config.clone(),
                     frame_requester: tui.frame_requester(),
                     app_event_tx: app_event_tx.clone(),
@@ -307,6 +330,7 @@ impl App {
                     ),
                     enhanced_keys_supported,
                     has_chatgpt_account,
+                    requires_openai_auth,
                     has_codex_backend_auth,
                     model_catalog: model_catalog.clone(),
                     feedback: feedback.clone(),
@@ -339,6 +363,7 @@ impl App {
                     .run_until(
                         tui,
                         app_server.resume_thread(
+                            &local_settings,
                             config.clone(),
                             target_session.thread_id,
                             model_settings,
@@ -366,6 +391,7 @@ impl App {
                     return Ok(cancel_session_start(app_server).await);
                 };
                 let init = crate::chatwidget::ChatWidgetInit {
+                    local_settings: local_settings.clone(),
                     config: config.clone(),
                     frame_requester: tui.frame_requester(),
                     app_event_tx: app_event_tx.clone(),
@@ -378,6 +404,7 @@ impl App {
                     ),
                     enhanced_keys_supported,
                     has_chatgpt_account,
+                    requires_openai_auth,
                     has_codex_backend_auth,
                     model_catalog: model_catalog.clone(),
                     feedback: feedback.clone(),
@@ -403,7 +430,11 @@ impl App {
                 let forked = match startup_draft
                     .run_until(
                         tui,
-                        app_server.fork_thread(config.clone(), target_session.thread_id),
+                        app_server.fork_thread(
+                            &local_settings,
+                            config.clone(),
+                            target_session.thread_id,
+                        ),
                     )
                     .await
                 {
@@ -427,6 +458,7 @@ impl App {
                     return Ok(cancel_session_start(app_server).await);
                 };
                 let init = crate::chatwidget::ChatWidgetInit {
+                    local_settings: local_settings.clone(),
                     config: config.clone(),
                     frame_requester: tui.frame_requester(),
                     app_event_tx: app_event_tx.clone(),
@@ -439,6 +471,7 @@ impl App {
                     ),
                     enhanced_keys_supported,
                     has_chatgpt_account,
+                    requires_openai_auth,
                     has_codex_backend_auth,
                     model_catalog: model_catalog.clone(),
                     feedback: feedback.clone(),
@@ -467,23 +500,26 @@ impl App {
             .maybe_prompt_windows_sandbox_enable(should_prompt_windows_sandbox_nux_at_startup);
 
         let file_search = FileSearchManager::new(config.cwd.to_path_buf(), app_event_tx.clone());
-        let runtime_keymap = RuntimeKeymap::from_config(&config.tui_keymap).map_err(|err| {
-            color_eyre::eyre::eyre!(
-                "Invalid `tui.keymap` configuration: {err}\n\
+        let runtime_keymap =
+            RuntimeKeymap::from_config(&local_settings.tui.keymap).map_err(|err| {
+                color_eyre::eyre::eyre!(
+                    "Invalid `tui.keymap` configuration: {err}\n\
 Fix the config and retry.\n\
 See the Codex keymap documentation for supported actions and examples."
-            )
-        })?;
+                )
+            })?;
         #[cfg(not(debug_assertions))]
         let upgrade_version = crate::updates::get_upgrade_version(&config);
 
         let mut app = Self {
+            feature_write_lock: Arc::default(),
             model_catalog,
             session_telemetry: session_telemetry.clone(),
             app_event_tx,
             chat_widget,
             workspace_command_runner: Some(workspace_command_runner),
             config,
+            local_settings,
             launch_cwd,
             runtime_working_directory_override: None,
             state_db,
@@ -523,6 +559,7 @@ See the Codex keymap documentation for supported actions and examples."
             windows_sandbox: WindowsSandboxState::default(),
             thread_event_channels: HashMap::new(),
             temporary_structured_requests: HashMap::new(),
+            pending_thread_titles: HashSet::new(),
             thread_event_listener_tasks: HashMap::new(),
             agent_navigation: AgentNavigationState::default(),
             agents_overview: Default::default(),
@@ -551,6 +588,8 @@ See the Codex keymap documentation for supported actions and examples."
         }
         if start_in_agents_overview {
             app.open_agents_overview(&app_server);
+        } else if !matches!(app.app_server_target, AppServerTarget::Embedded) {
+            app.refresh_agents_overview_threads(&app_server);
         }
         if let Some(entry) = startup_hooks_browser {
             app.chat_widget.open_hooks_browser(entry);
@@ -599,7 +638,7 @@ See the Codex keymap documentation for supported actions and examples."
                 != WindowsSandboxLevel::Disabled
                 && managed_filesystem_sandbox_is_restricted(&startup_permission_profile)
                 && !app
-                    .config
+                    .local_settings
                     .notices
                     .hide_world_writable_warning
                     .unwrap_or(false);
@@ -677,6 +716,11 @@ See the Codex keymap documentation for supported actions and examples."
         // already has data and available reset credits can be surfaced, without
         // delaying the initial frame render.
         if requires_openai_auth && has_chatgpt_account {
+            crate::daybreak::prefetch_notice(
+                &app.config,
+                &app_server,
+                app.chat_widget.cyber_policy_notice.clone(),
+            );
             let reset_hint_request_id = app.chat_widget.start_rate_limit_reset_startup_check();
             app.refresh_rate_limits(
                 &app_server,
@@ -720,6 +764,7 @@ See the Codex keymap documentation for supported actions and examples."
                     reconnect = Some(Box::pin(reconnect::reconnect(
                         app.app_server_target.clone(),
                         app.config.clone(),
+                        app.local_settings.clone(),
                         app.current_displayed_thread_id(),
                         app_server.remote_cwd_override().map(Path::to_path_buf),
                         app_server.thread_tool_transport(),
@@ -741,6 +786,10 @@ See the Codex keymap documentation for supported actions and examples."
                             && has_pending_app_events
                         || (!waiting_for_initial_session_configured
                             && app.has_queued_startup_protected_request());
+                let rate_limit_poll_deadline = app
+                    .chat_widget
+                    .rate_limit_refresh_interval()
+                    .and_then(|interval| app.rate_limit_refresh_state.poll_deadline(interval));
                 let control = select! {
                     Some(event) = app_event_rx.recv() => {
                         let is_initial_session_header = matches!(
@@ -850,6 +899,17 @@ See the Codex keymap documentation for supported actions and examples."
                         AppRunControl::Continue
                     }
                     () = async {
+                        match rate_limit_poll_deadline {
+                            Some(deadline) => {
+                                tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                            }
+                            None => std::future::pending().await,
+                        }
+                    }, if listen_for_app_server_events => {
+                        app.refresh_rate_limits(&app_server, RateLimitRefreshOrigin::Periodic);
+                        AppRunControl::Continue
+                    }
+                    () = async {
                         match app.chat_widget.terminal_title_next_refresh {
                             Some(deadline) => {
                                 tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
@@ -858,6 +918,7 @@ See the Codex keymap documentation for supported actions and examples."
                         }
                     } => {
                         app.chat_widget.refresh_goal_status_indicator_for_time_tick();
+                        app.chat_widget.refresh_thread_title_progress_for_time_tick();
                         app.chat_widget.refresh_terminal_title();
                         AppRunControl::Continue
                     }

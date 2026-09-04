@@ -32,6 +32,7 @@ use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_skills::SkillError;
+use codex_utils_git_discovery::GitRootDiscovery;
 use std::sync::OnceLock;
 use tokio::sync::Semaphore;
 
@@ -249,6 +250,13 @@ impl SessionConfiguration {
             approval_policy: self.step_settings.approval_policy.value(),
             approvals_reviewer: self.step_settings.approvals_reviewer,
             permission_profile: self.effective_permission_profile(&environment_selections),
+            full_access: codex_protocol::protocol::has_full_access(
+                self.step_settings.approval_policy.value(),
+                &self.permission_profile(),
+                environment_selections
+                    .iter()
+                    .map(|environment| &environment.config),
+            ),
             active_permission_profile: permission_profile.active_permission_profile(),
             environments: TurnEnvironmentSelections::new(
                 self.legacy_fallback_cwd.clone(),
@@ -611,6 +619,7 @@ impl Session {
             request_kind,
         );
         CodexResponsesMetadata {
+            guardian_ticket: turn_context.guardian_ticket.clone(),
             window_number: Some(window_number),
             context_window_id: Some(context_window_id),
             history_ingest_requested: turn_context
@@ -636,6 +645,7 @@ impl Session {
         installation_id: String,
         auth_manager: Arc<AuthManager>,
         models_manager: SharedModelsManager,
+        git_root_discovery: Arc<GitRootDiscovery>,
         model_info: ModelInfo,
         exec_policy: Arc<ExecPolicyManager>,
         tx_event: Sender<Event>,
@@ -823,11 +833,18 @@ impl Session {
         thread_extension_init.insert(codex_extension_api::ThreadOriginator(
             session_configuration.originator.clone(),
         ));
+        // Publish the already resolved model before extensions make startup decisions.
+        // Turn construction refreshes this attachment when the selected model changes.
+        thread_extension_init.insert(model_info);
         let mcp_thread_init = thread_extension_init.clone();
         let thread_extension_data = codex_extension_api::ExtensionData::new_with_init(
             thread_id.to_string(),
             thread_extension_init,
         );
+        // Select the answer path once, before extensions or tool handlers observe the thread.
+        thread_extension_data.insert(crate::context::GuardianReviewEvidence::from_features(
+            &config.features,
+        ));
         // Kick off independent async setup tasks in parallel to reduce startup latency.
         //
         // - initialize thread persistence with new or resumed session info
@@ -1249,6 +1266,9 @@ impl Session {
                 session_configuration.clone(),
                 initial_auto_compact_window_ids,
             );
+            if config.features.enabled(Feature::GuardianThreadContext) {
+                state.history.enable_user_message_retention();
+            }
             state.base_instructions_provenance = base_instructions_provenance.clone();
             let managed_network_requirements_configured = config
                 .config_layer_stack
@@ -1360,6 +1380,7 @@ impl Session {
                     | RolloutItem::WorldState(_)
                     | RolloutItem::RealtimeItem(_)
                     | RolloutItem::TokenUsageRecord(_)
+                    | RolloutItem::RetainedContext(_)
                     | RolloutItem::SecurityRiskScore(_) => {}
                 }
             }
@@ -1411,6 +1432,7 @@ impl Session {
                 .with_legacy_custom_ca_fallback(),
                 session_telemetry,
                 models_manager: Arc::clone(&models_manager),
+                git_root_discovery,
                 tool_approvals: Mutex::new(ApprovalStore::default()),
                 guardian_rejection_circuit_breaker: Mutex::new(Default::default()),
                 runtime_handle: tokio::runtime::Handle::current(),

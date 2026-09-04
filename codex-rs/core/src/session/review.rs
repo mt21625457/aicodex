@@ -140,6 +140,7 @@ pub(super) async fn spawn_review_thread(
     extension_data.insert(parent_turn_context.skills_snapshot().as_ref().clone());
 
     let review_turn_context = TurnContext {
+        guardian_ticket: None,
         sub_id: review_turn_id.clone(),
         trace_id: current_span_trace_id(),
         realtime_active: parent_turn_context.realtime_active,
@@ -182,6 +183,7 @@ pub(super) async fn spawn_review_thread(
 
     // Seed the child task with the review prompt as the initial user message.
     let input = vec![TurnInput::UserInput {
+        acceptance_order: None,
         content: vec![UserInput::Text {
             text: review_prompt,
             // Review prompt is synthesized; no UI element ranges to preserve.
@@ -191,7 +193,8 @@ pub(super) async fn spawn_review_thread(
     }];
     let tc = Arc::new(review_turn_context);
     if tc.environments.single_local_environment_cwd().is_some() {
-        tc.turn_metadata_state.spawn_git_enrichment_task();
+        tc.turn_metadata_state
+            .spawn_git_enrichment_task(Arc::clone(&sess.services.git_root_discovery));
     }
     // TODO(ccunningham): Review turns currently rely on `spawn_task` for TurnComplete but do not
     // emit a parent TurnStarted. Consider giving review a full parent turn lifecycle

@@ -23,7 +23,10 @@ use codex_cloud_tasks::Cli as CloudTasksCli;
 use codex_exec::Cli as ExecCli;
 use codex_exec::Command as ExecCommand;
 use codex_exec::ReviewArgs;
+use codex_exec_server::ExecServerRuntimePaths;
 use codex_execpolicy::ExecPolicyCheckCommand;
+use codex_http_client::HttpClientFactory;
+use codex_http_client::OutboundProxyPolicy;
 use codex_responses_api_proxy::Args as ResponsesApiProxyArgs;
 use codex_rollout_trace::REDUCED_STATE_FILE_NAME;
 use codex_rollout_trace::replay_bundle;
@@ -43,12 +46,24 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use supports_color::Stream;
 
+#[cfg(all(
+    target_os = "linux",
+    target_env = "musl",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+#[global_allocator]
+static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod app_cmd;
 mod cloud_config;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod desktop_app;
 mod doctor;
+#[cfg(test)]
+#[path = "exec_server_args_tests.rs"]
+mod exec_server_args_tests;
+mod exec_server_auth;
 mod exec_server_telemetry;
 mod marketplace_cmd;
 mod mcp_cmd;
@@ -634,6 +649,17 @@ struct ExecServerCommand {
     )]
     remote: Option<String>,
 
+    /// Transport used for the remote executor connection.
+    #[arg(
+        long = "remote-transport",
+        value_enum,
+        default_value_t = ExecServerRemoteTransport::Noise,
+        requires = "exec_server_remote",
+        requires_if("direct", "aws_sigv4"),
+        global = true
+    )]
+    remote_transport: ExecServerRemoteTransport,
+
     /// Environment id to attach to when registering remotely.
     #[arg(long = "environment-id", value_name = "ID", global = true)]
     environment_id: Option<String>,
@@ -646,9 +672,42 @@ struct ExecServerCommand {
     #[arg(
         long = "use-agent-identity-auth",
         requires = "exec_server_remote",
+        conflicts_with = "aws_sigv4",
         global = true
     )]
     use_agent_identity_auth: bool,
+
+    /// Sign Direct registration and WebSocket handshake requests with AWS SigV4.
+    #[arg(long = "aws-sigv4", requires = "exec_server_remote", global = true)]
+    aws_sigv4: bool,
+
+    /// AWS profile used for SigV4 authentication.
+    #[arg(
+        long = "aws-profile",
+        value_name = "PROFILE",
+        requires = "aws_sigv4",
+        global = true
+    )]
+    aws_profile: Option<String>,
+
+    /// AWS signing region. Uses the SDK region chain when omitted.
+    #[arg(
+        long = "aws-region",
+        value_name = "REGION",
+        requires = "aws_sigv4",
+        global = true
+    )]
+    aws_region: Option<String>,
+
+    /// AWS signing service.
+    #[arg(
+        long = "aws-service",
+        value_name = "SERVICE",
+        default_value = "execute-api",
+        requires = "aws_sigv4",
+        global = true
+    )]
+    aws_service: String,
 
     /// Exit when the parent-owned standard-input pipe closes.
     #[arg(
@@ -658,6 +717,37 @@ struct ExecServerCommand {
         global = true
     )]
     exit_on_stdin_close: bool,
+}
+
+impl ExecServerCommand {
+    fn validate_remote_transport(&self) -> anyhow::Result<()> {
+        match (self.remote_transport, self.aws_sigv4) {
+            (ExecServerRemoteTransport::Noise, true) => {
+                anyhow::bail!("--aws-sigv4 requires --remote-transport direct");
+            }
+            (ExecServerRemoteTransport::Direct, false) => {
+                anyhow::bail!("--remote-transport direct requires --aws-sigv4");
+            }
+            (ExecServerRemoteTransport::Noise, false)
+            | (ExecServerRemoteTransport::Direct, true) => {}
+        }
+        if self.remote_transport == ExecServerRemoteTransport::Direct
+            && matches!(
+                self.command.as_ref(),
+                Some(ExecServerSubcommand::Forward { .. })
+            )
+        {
+            anyhow::bail!("direct exec-server transport does not support forwarding");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+enum ExecServerRemoteTransport {
+    #[default]
+    Noise,
+    Direct,
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -1036,6 +1126,7 @@ fn stage_str(stage: Stage) -> &'static str {
 }
 
 fn main() -> anyhow::Result<()> {
+    codex_build_info::initialize!();
     let remote_control_disabled = codex_app_server::take_remote_control_disabled_env();
     arg0_dispatch_or_else(move |arg0_paths: Arg0DispatchPaths| async move {
         cli_main(arg0_paths, remote_control_disabled).await?;
@@ -1054,6 +1145,7 @@ async fn cli_main(
         mut interactive,
         subcommand,
     } = MultitoolCli::parse();
+    reject_unsupported_worktree_for_subcommand(interactive.shared.worktree, &subcommand)?;
     // Fold --enable/--disable into config overrides so they flow to all subcommands.
     let toggle_overrides = feature_toggles.to_overrides()?;
     root_config_overrides.raw_overrides.extend(toggle_overrides);
@@ -1127,7 +1219,7 @@ async fn cli_main(
                         /*remote*/ None,
                         root_remote_auth_token_env.clone(),
                     )?;
-                    #[cfg(not(unix))]
+                    #[cfg(not(any(unix, windows)))]
                     anyhow::bail!("`codex agents` requires `--remote` on this platform");
                 }
                 interactive.agents_overview = true;
@@ -1851,22 +1943,22 @@ fn profile_v2_for_subcommand<'a>(
 }
 
 async fn run_exec_server_command(
-    cmd: ExecServerCommand,
+    mut cmd: ExecServerCommand,
     arg0_paths: &Arg0DispatchPaths,
     root_config_overrides: &CliConfigOverrides,
     strict_config: bool,
 ) -> anyhow::Result<()> {
+    cmd.validate_remote_transport()?;
     let codex_self_exe = arg0_paths
         .codex_self_exe
         .clone()
         .ok_or_else(|| anyhow::anyhow!("Codex executable path is not configured"))?;
-    let runtime_paths = codex_exec_server::ExecServerRuntimePaths::new(
-        codex_self_exe,
-        arg0_paths.codex_linux_sandbox_exe.clone(),
-    )?;
-    if let Some(base_url) = cmd.remote {
+    let runtime_paths =
+        ExecServerRuntimePaths::new(codex_self_exe, arg0_paths.codex_linux_sandbox_exe.clone())?;
+    if let Some(base_url) = cmd.remote.take() {
         let environment_id = cmd
             .environment_id
+            .take()
             .ok_or_else(|| anyhow::anyhow!("--environment-id is required when --remote is set"))?;
         let config = load_exec_server_config(
             root_config_overrides,
@@ -1874,13 +1966,27 @@ async fn run_exec_server_command(
             /*enable_workload_identity*/ true,
         )
         .await?;
+        let direct_transport = cmd.remote_transport == ExecServerRemoteTransport::Direct;
         let (_otel, telemetry) = exec_server_telemetry::init(Some(&config));
-        let auth_provider =
+        let auth_provider = if cmd.aws_sigv4 {
+            exec_server_auth::aws_sigv4_auth_provider(codex_aws_auth::AwsAuthConfig {
+                profile: cmd.aws_profile,
+                region: cmd.aws_region,
+                service: cmd.aws_service,
+            })
+            .await?
+        } else {
             load_exec_server_remote_auth_provider(&config, &base_url, cmd.use_agent_identity_auth)
-                .await?;
-        let mut remote_config = codex_exec_server::RemoteEnvironmentConfig::new(
+                .await?
+        };
+        let mut remote_config = codex_exec_server::RemoteEnvironmentConfig::new_with_transport(
             base_url,
             environment_id,
+            if direct_transport {
+                codex_exec_server::RemoteEnvironmentTransport::Direct
+            } else {
+                codex_exec_server::RemoteEnvironmentTransport::Noise
+            },
             auth_provider,
             config.http_client_factory(),
         )?;
@@ -1895,6 +2001,13 @@ async fn run_exec_server_command(
             exec_server_telemetry::ParentLifetime::Independent
         };
         let (shutdown_sender, shutdown_receiver) = tokio::sync::oneshot::channel();
+        #[cfg(target_os = "macos")]
+        let runtime_paths = runtime_paths.with_allowed_symlinked_codex_home(
+            codex_config::allowed_symlinked_codex_home(
+                &config.config_layer_stack,
+                &config.codex_home,
+            ),
+        );
         exec_server_telemetry::run_until_shutdown(
             async move {
                 let shutdown = async move {
@@ -1918,12 +2031,12 @@ async fn run_exec_server_command(
                         .await
                     }
                 }
+                .map_err(anyhow::Error::new)
             },
             parent_lifetime,
             exec_server_telemetry::ShutdownBehavior::Graceful(shutdown_sender),
         )
-        .await?;
-        Ok(())
+        .await
     } else {
         let config_result = load_exec_server_config(
             root_config_overrides,
@@ -1937,33 +2050,33 @@ async fn run_exec_server_command(
             config_result.ok()
         };
         let (_otel, telemetry) = exec_server_telemetry::init(config.as_ref());
+        #[cfg(target_os = "macos")]
+        let runtime_paths =
+            runtime_paths.with_allowed_symlinked_codex_home(config.as_ref().and_then(|config| {
+                codex_config::allowed_symlinked_codex_home(
+                    &config.config_layer_stack,
+                    &config.codex_home,
+                )
+            }));
         let http_client_factory = config
             .as_ref()
-            .map(codex_core::config::Config::http_client_factory)
-            .unwrap_or_else(|| {
-                codex_http_client::HttpClientFactory::new(
-                    codex_http_client::OutboundProxyPolicy::ReqwestDefault,
-                )
-            });
+            .map(Config::http_client_factory)
+            .unwrap_or_else(|| HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault));
         let listen_url = cmd
             .listen
             .unwrap_or_else(|| codex_exec_server::DEFAULT_LISTEN_URL.to_string());
-        exec_server_telemetry::run_until_shutdown(
-            async move {
-                codex_exec_server::run_main_with_telemetry(
-                    &listen_url,
-                    runtime_paths,
-                    telemetry,
-                    http_client_factory,
-                    cmd.request_dispatch_mode,
-                )
-                .await
-            },
+        let run = exec_server_telemetry::run_until_shutdown(
+            codex_exec_server::run_main_with_telemetry(
+                &listen_url,
+                runtime_paths,
+                telemetry,
+                http_client_factory,
+                cmd.request_dispatch_mode,
+            ),
             exec_server_telemetry::ParentLifetime::Independent,
             exec_server_telemetry::ShutdownBehavior::Immediate,
-        )
-        .await
-        .map_err(anyhow::Error::from_boxed)
+        );
+        run.await.map_err(anyhow::Error::from_boxed)
     }
 }
 
@@ -2378,6 +2491,42 @@ fn reject_remote_mode_for_subcommand(
     Ok(())
 }
 
+fn reject_unsupported_worktree_for_subcommand(
+    root_worktree: bool,
+    subcommand: &Option<Subcommand>,
+) -> anyhow::Result<()> {
+    let subcommand_worktree = match subcommand {
+        Some(Subcommand::Exec(command)) => command.shared.worktree,
+        Some(Subcommand::Resume(command)) => command.config_overrides.0.shared.worktree,
+        Some(Subcommand::Fork(command)) => command.config_overrides.0.shared.worktree,
+        Some(Subcommand::Archive(command)) | Some(Subcommand::Unarchive(command)) => {
+            command.config_overrides.shared.worktree
+        }
+        Some(Subcommand::Delete(command)) => command.session.config_overrides.shared.worktree,
+        Some(Subcommand::Queue(command)) => command.config_overrides.shared.worktree,
+        _ => false,
+    };
+
+    if !root_worktree && !subcommand_worktree {
+        return Ok(());
+    }
+
+    match subcommand {
+        Some(Subcommand::Exec(command)) => match &command.command {
+            None | Some(ExecCommand::Fork(_)) => Ok(()),
+            Some(ExecCommand::Resume(_)) => anyhow::bail!(
+                "`--worktree` cannot resume an existing session; use `codex exec fork --worktree`"
+            ),
+            Some(ExecCommand::Review(_)) => {
+                anyhow::bail!("`--worktree` is not supported for code review")
+            }
+        },
+        _ => {
+            anyhow::bail!("`--worktree` currently supports only `codex exec` and `codex exec fork`")
+        }
+    }
+}
+
 fn reject_root_strict_config_for_subcommand(
     strict_config: bool,
     subcommand: &Option<Subcommand>,
@@ -2583,7 +2732,7 @@ async fn run_interactive_tui(
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     if interactive.agents_overview && remote.is_none() {
         if !std::io::stdin().is_terminal() {
             return Ok(AppExitInfo::fatal("stdin is not a terminal"));
@@ -3192,6 +3341,66 @@ mod tests {
         assert!(
             MultitoolCli::try_parse_from(["codex", "--profile", "nested/work", "resume"]).is_err()
         );
+    }
+
+    #[test]
+    fn exec_worktree_flag_supports_root_local_and_nested_fork_positions() {
+        let arguments = [
+            vec!["codex", "--worktree", "exec", "hello"],
+            vec!["codex", "exec", "--worktree", "hello"],
+            vec![
+                "codex",
+                "exec",
+                "fork",
+                "--worktree",
+                "019f1234-5678-7000-8000-000000000001",
+            ],
+        ];
+
+        for arguments in arguments {
+            let cli = MultitoolCli::try_parse_from(&arguments).expect("parse worktree command");
+            assert!(
+                reject_unsupported_worktree_for_subcommand(
+                    cli.interactive.shared.worktree,
+                    &cli.subcommand,
+                )
+                .is_ok(),
+                "headless worktree command should be accepted: {arguments:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn worktree_flag_rejects_unsupported_session_and_management_commands() {
+        let arguments = [
+            vec!["codex", "--worktree"],
+            vec!["codex", "--worktree", "login"],
+            vec!["codex", "exec", "resume", "--worktree", "session"],
+            vec!["codex", "exec", "review", "--worktree"],
+            vec!["codex", "resume", "--worktree", "session"],
+            vec!["codex", "archive", "session", "--worktree"],
+            vec![
+                "codex",
+                "queue",
+                "--thread",
+                "session",
+                "--message",
+                "hi",
+                "--worktree",
+            ],
+        ];
+
+        for arguments in arguments {
+            let cli = MultitoolCli::try_parse_from(&arguments).expect("parse shared worktree flag");
+            assert!(
+                reject_unsupported_worktree_for_subcommand(
+                    cli.interactive.shared.worktree,
+                    &cli.subcommand,
+                )
+                .is_err(),
+                "unsupported command must be rejected: {arguments:?}",
+            );
+        }
     }
 
     #[test]

@@ -196,6 +196,8 @@ async fn thread_resume_paginated_model_context_preserves_original_metadata() -> 
         &RolloutItem::Compacted(CompactedItem {
             message: "compacted history".to_string(),
             replacement_history: Some(Vec::new()),
+            retained_context: None,
+            guardian_history: None,
             mcp_resource_origins: None,
             window_number: Some(1),
             first_window_id: None,
@@ -3835,6 +3837,7 @@ async fn thread_resume_token_usage_replay_ignores_stale_interrupted_tail_turn() 
                 phase: None,
                 memory_citation: None,
                 delivery: None,
+                questions: None,
             }))?,
         })
         .to_string(),
@@ -3922,6 +3925,7 @@ async fn thread_resume_token_usage_replay_can_belong_to_interrupted_turn() -> Re
                 phase: None,
                 memory_citation: None,
                 delivery: None,
+                questions: None,
             }))?,
         })
         .to_string(),
@@ -4158,6 +4162,7 @@ async fn thread_resume_prefers_persisted_git_metadata_for_local_threads() -> Res
         .send_thread_metadata_update_request(ThreadMetadataUpdateParams {
             thread_id: thread_id.clone(),
             project_id: None,
+            daybreak_enabled: None,
             git_info: Some(ThreadMetadataGitInfoUpdateParams {
                 sha: None,
                 branch: Some(Some("feature/pr-branch".to_string())),
@@ -4232,6 +4237,7 @@ async fn thread_resume_and_read_interrupt_incomplete_rollout_turn_when_thread_is
                 phase: None,
                 memory_citation: None,
                 delivery: None,
+                questions: None,
             }))?,
         })
         .to_string(),
