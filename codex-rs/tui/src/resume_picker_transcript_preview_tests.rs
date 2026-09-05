@@ -18,6 +18,7 @@ use codex_protocol::protocol::AgentMessageEvent;
 use codex_protocol::protocol::ThreadRolledBackEvent;
 use codex_protocol::protocol::UserMessageEvent;
 use codex_rollout::CompactedItem;
+use codex_rollout::RolloutLine;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use tempfile::tempdir;
@@ -42,6 +43,7 @@ fn rollout_agent_message(text: &str) -> RolloutItem {
         phase: None,
         memory_citation: None,
         delivery: None,
+        questions: None,
     }))
 }
 
@@ -73,6 +75,8 @@ fn legacy_transcript_preview_scans_tail_across_compaction() {
             RolloutItem::Compacted(CompactedItem {
                 message: String::from("summary that is not transcript text"),
                 replacement_history: None,
+                retained_context: None,
+                guardian_history: None,
                 mcp_resource_origins: None,
                 window_number: None,
                 first_window_id: None,
@@ -206,6 +210,8 @@ fn legacy_transcript_preview_falls_back_for_oversized_hidden_record() {
             RolloutItem::Compacted(CompactedItem {
                 message: "x".repeat(MAX_LEGACY_TRANSCRIPT_PREVIEW_SCAN_BYTES),
                 replacement_history: None,
+                retained_context: None,
+                guardian_history: None,
                 mcp_resource_origins: None,
                 window_number: None,
                 first_window_id: None,
@@ -235,6 +241,8 @@ fn legacy_transcript_preview_falls_back_when_scan_budget_is_exhausted() {
     let compacted = RolloutItem::Compacted(CompactedItem {
         message: "x".repeat(MAX_LEGACY_TRANSCRIPT_PREVIEW_SCAN_BYTES / 8),
         replacement_history: None,
+        retained_context: None,
+        guardian_history: None,
         mcp_resource_origins: None,
         window_number: None,
         first_window_id: None,
@@ -267,6 +275,7 @@ fn transcript_preview_reverse_scan_stops_before_older_items() {
         memory_citation: None,
         transcript_metadata: None,
         delivery: None,
+        questions: None,
     };
     let mut lines = Vec::new();
 

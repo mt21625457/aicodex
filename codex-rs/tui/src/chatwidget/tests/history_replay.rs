@@ -381,6 +381,7 @@ async fn replayed_nested_review_prompts_do_not_render_or_seed_composer_history()
                         memory_citation: None,
                         transcript_metadata: None,
                         delivery: None,
+                        questions: None,
                     },
                 ],
                 ..app_server_turn(

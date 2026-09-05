@@ -140,10 +140,16 @@ async fn thread_read_returns_summary_without_turns() -> Result<()> {
             items_view: None,
         })
         .await?;
+    let response: Value = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(read_id)).await??;
+    assert_eq!(response["thread"].get("model"), Some(&Value::Null));
+    assert_eq!(
+        response["thread"].get("reasoningEffort"),
+        Some(&Value::Null)
+    );
     let ThreadReadResponse {
         thread,
         runtime_lifecycle,
-    } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(read_id)).await??;
+    } = serde_json::from_value(response)?;
 
     assert_eq!(thread.id, conversation_id);
     assert_eq!(thread.preview, preview);
@@ -157,6 +163,17 @@ async fn thread_read_returns_summary_without_turns() -> Result<()> {
     assert_eq!(thread.turns.len(), 0);
     assert_eq!(thread.status, ThreadStatus::NotLoaded);
     assert_eq!(runtime_lifecycle, None);
+
+    let list_id = mcp.send_raw_request("thread/list", Some(json!({}))).await?;
+    let response: Value = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(list_id)).await??;
+    let listed = response["data"]
+        .as_array()
+        .expect("thread list")
+        .iter()
+        .find(|listed| listed["id"] == conversation_id)
+        .expect("stored thread should be listed");
+    assert_eq!(listed.get("model"), Some(&Value::Null));
+    assert_eq!(listed.get("reasoningEffort"), Some(&Value::Null));
 
     Ok(())
 }
@@ -347,6 +364,7 @@ async fn paginated_stored_thread_routes_projected_turns() -> Result<()> {
 
     let list_id = mcp
         .send_thread_list_request(ThreadListParams {
+            originators: None,
             cursor: None,
             limit: Some(50),
             sort_key: None,
@@ -649,6 +667,7 @@ async fn thread_search_occurrences_reads_paginated_projection() -> Result<()> {
                         phase: Some(MessagePhase::Commentary),
                         memory_citation: None,
                         delivery: None,
+                        questions: None,
                     }),
                 ),
                 paginated_completed_item(
@@ -662,6 +681,7 @@ async fn thread_search_occurrences_reads_paginated_projection() -> Result<()> {
                         phase: Some(MessagePhase::FinalAnswer),
                         memory_citation: None,
                         delivery: None,
+                        questions: None,
                     }),
                 ),
                 paginated_turn_completed("turn-1"),
@@ -1048,6 +1068,7 @@ async fn thread_list_includes_store_thread_without_rollout_path() -> Result<()> 
         .request(ClientRequest::ThreadList {
             request_id: RequestId::Integer(1),
             params: ThreadListParams {
+                originators: None,
                 cursor: None,
                 limit: Some(10),
                 sort_key: None,
@@ -1432,6 +1453,7 @@ async fn paginated_thread_name_set_is_reflected_in_read_list_and_metadata_resume
     // List should also surface the name.
     let list_id = mcp
         .send_thread_list_request(ThreadListParams {
+            originators: None,
             cursor: None,
             limit: Some(50),
             sort_key: None,
@@ -1598,6 +1620,14 @@ async fn thread_read_and_list_surface_recorded_model_metadata() -> Result<()> {
         .and_then(Value::as_object)
         .expect("thread/read result.thread must be an object");
     assert_eq!(
+        read_thread_json.get("model"),
+        read_thread_json.get("modelId")
+    );
+    assert_eq!(
+        read_thread_json.get("reasoningEffort"),
+        read_thread_json.get("effort")
+    );
+    assert_eq!(
         read_thread_json.get("modelId").and_then(Value::as_str),
         Some("gpt-5.2"),
         "thread/read must serialize the recorded model id"
@@ -1615,6 +1645,7 @@ async fn thread_read_and_list_surface_recorded_model_metadata() -> Result<()> {
 
     let list_id = mcp
         .send_thread_list_request(ThreadListParams {
+            originators: None,
             cursor: None,
             limit: Some(50),
             sort_key: None,
@@ -1654,6 +1685,11 @@ async fn thread_read_and_list_surface_recorded_model_metadata() -> Result<()> {
         .find(|candidate| candidate.get("id").and_then(Value::as_str) == Some(thread.id.as_str()))
         .and_then(Value::as_object)
         .expect("thread/list should include the created thread as an object");
+    assert_eq!(listed_json.get("model"), listed_json.get("modelId"));
+    assert_eq!(
+        listed_json.get("reasoningEffort"),
+        listed_json.get("effort")
+    );
     assert_eq!(
         listed_json.get("modelId").and_then(Value::as_str),
         Some("gpt-5.2"),
@@ -1855,6 +1891,7 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
                         phase: None,
                         memory_citation: None,
                         delivery: None,
+                        questions: None,
                     }),
                 ),
                 paginated_completed_item(
@@ -1910,6 +1947,7 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
                 memory_citation: None,
                 transcript_metadata: None,
                 delivery: None,
+                questions: None,
             },
         ],
         items_view: TurnItemsView::Full,
@@ -1960,6 +1998,7 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
                     transcript_metadata: None,
                 },
                 ThreadItem::AgentMessage {
+                    questions: None,
                     id: "agent-1".to_string(),
                     text: "first".to_string(),
                     phase: None,
@@ -2205,6 +2244,7 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
                     memory_citation: None,
                     transcript_metadata: None,
                     delivery: None,
+                    questions: None,
                 },
             ],
             items_view: TurnItemsView::Summary,
@@ -2454,6 +2494,7 @@ fn append_agent_message(path: &Path, timestamp: &str, text: &str) -> anyhow::Res
                 phase: None,
                 memory_citation: None,
                 delivery: None,
+                questions: None,
             }))?,
         })
     )?;

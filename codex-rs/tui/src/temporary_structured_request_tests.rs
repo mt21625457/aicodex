@@ -22,6 +22,7 @@ fn agent_message_notification(turn_id: &str, text: &str) -> ServerNotification {
             memory_citation: None,
             transcript_metadata: None,
             delivery: None,
+            questions: None,
         },
         thread_id: "thread-1".to_string(),
         turn_id: turn_id.to_string(),

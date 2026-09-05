@@ -535,6 +535,7 @@ pub(crate) fn build_claude_messages_request(
                 }
             }
             ResponseItem::ToolSearchCall { .. }
+            | ResponseItem::ConfigurationUpdate { .. }
             | ResponseItem::ToolSearchOutput { .. }
             | ResponseItem::AdditionalTools { .. }
             | ResponseItem::WebSearchCall { .. }
@@ -3202,16 +3203,23 @@ mod tests {
     #[test]
     fn builds_claude_request_with_thinking_and_service_tier() {
         let prompt = Prompt {
-            input: vec![ResponseItem::Message {
-                id: None,
-                role: "user".to_string(),
-                content: vec![ContentItem::InputText {
-                    text: "think".to_string(),
-                }],
-                phase: None,
+            input: vec![
+                ResponseItem::ConfigurationUpdate {
+                    reasoning: codex_protocol::models::ConfigurationReasoning {
+                        effort: ReasoningEffortConfig::High,
+                    },
+                },
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: "think".to_string(),
+                    }],
+                    phase: None,
 
-                internal_chat_message_metadata_passthrough: None,
-            }],
+                    internal_chat_message_metadata_passthrough: None,
+                },
+            ],
             base_instructions: BaseInstructions {
                 text: String::new(),
                 provenance: None,

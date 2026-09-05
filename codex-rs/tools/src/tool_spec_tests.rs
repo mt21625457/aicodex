@@ -478,6 +478,7 @@ fn create_tools_json_for_claude_messages_flattens_supported_tools() {
             ),
         },
         ToolSpec::Freeform(FreeformTool {
+            defer_loading: None,
             name: "apply_patch".to_string(),
             description: "Apply a patch".to_string(),
             format: FreeformToolFormat {
@@ -1578,6 +1579,7 @@ fn claude_mcp_server_debug_redacts_authorization_token() {
 #[test]
 fn create_tools_json_for_claude_messages_exec_contains_code_mode_contract() {
     let result = create_tools_json_for_claude_messages(&[ToolSpec::Freeform(FreeformTool {
+        defer_loading: None,
         name: "exec".to_string(),
         description: "Run JavaScript in Code Mode.".to_string(),
         format: FreeformToolFormat {

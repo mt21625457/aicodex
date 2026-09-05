@@ -394,6 +394,7 @@ pub(crate) fn build_chat_completions_request_for_provider(
                 ));
             }
             ResponseItem::AdditionalTools { .. }
+            | ResponseItem::ConfigurationUpdate { .. }
             | ResponseItem::ToolSearchCall { .. }
             | ResponseItem::ToolSearchOutput { .. }
             | ResponseItem::WebSearchCall { .. }

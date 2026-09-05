@@ -1,5 +1,6 @@
 use anyhow::Context;
 use anyhow::Result;
+use app_test_support::ChatGptAuthFixture;
 use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
 use app_test_support::create_apply_patch_sse_response;
@@ -13,6 +14,7 @@ use app_test_support::create_mock_responses_server_sequence_unchecked;
 use app_test_support::create_request_user_input_sse_response;
 use app_test_support::format_with_current_shell_display;
 use app_test_support::to_response;
+use app_test_support::write_chatgpt_auth;
 use app_test_support::write_mock_responses_config_toml_with_chatgpt_base_url;
 use app_test_support::write_models_cache;
 use codex_app_server::INPUT_TOO_LARGE_ERROR_CODE;
@@ -28,6 +30,7 @@ use codex_app_server_protocol::CollabAgentToolCallStatus;
 use codex_app_server_protocol::CommandExecutionApprovalDecision;
 use codex_app_server_protocol::CommandExecutionRequestApprovalResponse;
 use codex_app_server_protocol::CommandExecutionStatus;
+use codex_app_server_protocol::CyberAccessProgram;
 use codex_app_server_protocol::FileChangeApprovalDecision;
 use codex_app_server_protocol::FileChangePatchUpdatedNotification;
 use codex_app_server_protocol::FileChangeRequestApprovalResponse;
@@ -53,6 +56,8 @@ use codex_app_server_protocol::ThreadHistoryMode;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadLoadedListResponse;
+use codex_app_server_protocol::ThreadMetadataUpdateParams;
+use codex_app_server_protocol::ThreadMetadataUpdateResponse;
 use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadSettingsUpdatedNotification;
@@ -75,6 +80,7 @@ use codex_core::test_support::all_model_presets;
 use codex_exec_server::LOCAL_ENVIRONMENT_ID;
 use codex_features::FEATURES;
 use codex_features::Feature;
+use codex_login::AuthCredentialsStoreMode;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::MultiAgentMode;
@@ -583,9 +589,21 @@ async fn turn_start_steers_active_turn_and_returns_active_turn_id() -> Result<()
     ])
     .await;
     let codex_home = TempDir::new()?;
-    MockResponsesConfig::new(server.uri()).write(codex_home.path())?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!(
+            "model = \"gpt-5.5\"\napproval_policy = \"never\"\nopenai_base_url = \"{}/v1\"\ncli_auth_credentials_store = \"file\"\n[features]\nenable_request_compression = false\n",
+            server.uri()
+        ),
+    )?;
+    write_chatgpt_auth(
+        codex_home.path(),
+        ChatGptAuthFixture::new("chatgpt-test-token").plan_type("pro"),
+        AuthCredentialsStoreMode::File,
+    )?;
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
+        .without_managed_config()
         .build_initialized()
         .await?;
 
@@ -606,6 +624,7 @@ async fn turn_start_steers_active_turn_and_returns_active_turn_id() -> Result<()
                     text_elements: Vec::new(),
                 }],
                 turn_trigger: Some("user".to_string()),
+                cyber_access_program: Some(CyberAccessProgram::DaybreakBlue),
                 ..Default::default()
             },
         })
@@ -615,6 +634,27 @@ async fn turn_start_steers_active_turn_and_returns_active_turn_id() -> Result<()
         mcp.read_stream_until_notification_message("turn/started"),
     )
     .await??;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        server.wait_for_request_count(/*count*/ 1),
+    )
+    .await?;
+
+    let updated: ThreadMetadataUpdateResponse = mcp
+        .request(|request_id| ClientRequest::ThreadMetadataUpdate {
+            request_id,
+            params: ThreadMetadataUpdateParams {
+                thread_id: thread.id.clone(),
+                project_id: None,
+                git_info: None,
+                daybreak_enabled: Some(false),
+            },
+        })
+        .await?;
+    assert_eq!(
+        (updated.thread.id, updated.thread.daybreak_enabled),
+        (thread.id.clone(), Some(false))
+    );
 
     let TurnStartResponse { turn: steered_turn } = mcp
         .request(|request_id| ClientRequest::TurnStart {
@@ -627,6 +667,7 @@ async fn turn_start_steers_active_turn_and_returns_active_turn_id() -> Result<()
                     text_elements: Vec::new(),
                 }],
                 turn_trigger: Some("goal".to_string()),
+                cyber_access_program: Some(CyberAccessProgram::Standard),
                 ..Default::default()
             },
         })
@@ -646,6 +687,7 @@ async fn turn_start_steers_active_turn_and_returns_active_turn_id() -> Result<()
     assert_eq!(requests.len(), 2);
     for request in requests {
         let body: Value = serde_json::from_slice(&request)?;
+        assert_eq!(body["access_programs"], json!({"cyber": "daybreak_blue"}));
         let turn_metadata: Value = serde_json::from_str(
             body["client_metadata"]["x-codex-turn-metadata"]
                 .as_str()
@@ -1314,10 +1356,11 @@ async fn turn_start_tracks_thread_originator_in_analytics() -> Result<()> {
                     url: TINY_PNG_DATA_URL.to_string(),
                     detail: None,
                 }],
-                responsesapi_client_metadata: Some(HashMap::from([(
-                    "workspace_kind".to_string(),
-                    "projectless".to_string(),
-                )])),
+                turn_trigger: Some("user".to_string()),
+                responsesapi_client_metadata: Some(HashMap::from([
+                    ("workspace_kind".to_string(), "projectless".to_string()),
+                    ("source".to_string(), "composer".to_string()),
+                ])),
                 ..Default::default()
             },
         })
@@ -1334,6 +1377,26 @@ async fn turn_start_tracks_thread_originator_in_analytics() -> Result<()> {
     assert_eq!(event["event_params"]["session_id"], thread.session_id);
     assert_eq!(event["event_params"]["turn_id"], turn.id);
     assert_eq!(event["event_params"]["root_turn_id"], turn.id);
+    let request = response_mock.requests()[0].body_json();
+    let request_metadata: Value = serde_json::from_str(
+        request["client_metadata"]["x-codex-turn-metadata"]
+            .as_str()
+            .context("expected turn metadata")?,
+    )?;
+    assert_eq!(
+        json!({
+            "eventTrigger": event["event_params"]["turn_trigger"],
+            "eventSource": event["event_params"]["codex_turn_source"],
+            "requestTrigger": request_metadata["turn_trigger"],
+            "requestSource": request_metadata["source"],
+        }),
+        json!({
+            "eventTrigger": "user",
+            "eventSource": "composer",
+            "requestTrigger": "user",
+            "requestSource": "composer",
+        })
+    );
     assert_eq!(
         event["event_params"]["app_server_client"]["product_client_id"],
         "codex_work_desktop"
@@ -4661,7 +4724,6 @@ async fn direct_input_to_multi_agent_v2_subagent_starts_follow_up_turn(
     MockResponsesConfig::new(&server.uri())
         .enable_feature(Feature::MultiAgentV2)
         .enable_feature(Feature::Goals)
-        .enable_feature(Feature::RealtimeConversation)
         .with_root_config(&format!("chatgpt_base_url = \"{}\"", server.uri()))
         .write(codex_home.path())?;
     write_models_cache(codex_home.path())?;
@@ -4731,6 +4793,7 @@ async fn direct_input_to_multi_agent_v2_subagent_starts_follow_up_turn(
         .request(|request_id| ClientRequest::ThreadList {
             request_id,
             params: codex_app_server_protocol::ThreadListParams {
+                originators: None,
                 cursor: None,
                 limit: Some(10),
                 sort_key: None,

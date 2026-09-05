@@ -117,6 +117,7 @@ async fn assert_standalone_web_search_round_trips_output(
             .with_model_provider("openai-custom")
             .with_provider_name("OpenAI")
             .with_provider_base_url(&format!("{}/api/codex", server.uri()))
+            .with_provider_config("supports_standalone_web_search = true")
             .with_provider_config("requires_openai_auth = true"),
         WebSearchProvider::CustomResponses => config
             .with_model_provider("custom-responses")

@@ -317,8 +317,8 @@ fn anthropic_auth_for_provider(
     let auth_token = if api_key.is_none() {
         provider
             .experimental_bearer_token
-            .clone()
-            .map(|token| token.into_inner())
+            .as_deref()
+            .cloned()
             .or_else(|| {
                 provider
                     .auth

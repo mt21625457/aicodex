@@ -75,12 +75,19 @@ fn first_party_file_tool(name: &str) -> ToolSpec {
 #[test]
 fn serializes_complete_text_request() {
     let prompt = Prompt {
-        input: vec![message(
-            "user",
-            vec![ContentItem::InputText {
-                text: "hello".to_string(),
-            }],
-        )],
+        input: vec![
+            ResponseItem::ConfigurationUpdate {
+                reasoning: codex_protocol::models::ConfigurationReasoning {
+                    effort: ReasoningEffort::High,
+                },
+            },
+            message(
+                "user",
+                vec![ContentItem::InputText {
+                    text: "hello".to_string(),
+                }],
+            ),
+        ],
         base_instructions: BaseInstructions {
             text: "be concise".to_string(),
             provenance: None,

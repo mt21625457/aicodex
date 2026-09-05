@@ -1243,7 +1243,7 @@ async fn startup_draft_handoff_keeps_vim_insert_mode_for_nonempty_drafts() {
         let startup_draft = startup_chat.bottom_pane.composer_draft_snapshot();
 
         let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-        chat.config.tui_vim_mode_default = true;
+        chat.local_settings.tui.vim_mode_default = true;
         chat.bottom_pane.set_vim_enabled(/*enabled*/ true);
         chat.restore_startup_draft(startup_draft);
         chat.bottom_pane
@@ -1761,9 +1761,10 @@ async fn restore_thread_input_state_applies_running_state_policy() {
             ..Default::default()
         }),
         safety_buffering_prompt: Some(UserMessage::from("buffered prompt")),
-        pending_steers: VecDeque::from([UserMessage::from("submitted to the interrupted turn")]),
-        pending_steer_history_records: VecDeque::from([pending_history.clone()]),
-        pending_steer_compare_keys: VecDeque::new(),
+        pending_steers: VecDeque::from([PendingSteer {
+            history_record: pending_history.clone(),
+            ..pending_steer("submitted to the interrupted turn")
+        }]),
         rejected_steers_queue: VecDeque::new(),
         rejected_steer_history_records: VecDeque::new(),
         queued_user_messages: VecDeque::from([UserMessage::from("already queued").into()]),

@@ -493,6 +493,16 @@ enum GetAccountTokenUsageParamsTypeScript {
     Undefined,
 }
 
+/// Preserve omitted/undefined params while exporting the new usage capability type.
+#[allow(dead_code)]
+#[derive(TS)]
+#[ts(untagged)]
+enum GetAccountRateLimitsParamsTypeScript {
+    Params(v2::GetAccountRateLimitsParams),
+    #[ts(type = "undefined")]
+    Undefined,
+}
+
 client_request_definitions! {
     Initialize => "initialize" {
         params: v1::InitializeParams,
@@ -1232,7 +1242,7 @@ client_request_definitions! {
     },
 
     GetAccountRateLimits => "account/rateLimits/read" {
-        params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
+        params: #[ts(optional, as = "Option<GetAccountRateLimitsParamsTypeScript>", inline)] #[serde(default, skip_serializing_if = "Option::is_none")] v2::NullableGetAccountRateLimitsParams,
         serialization: None,
         response: v2::GetAccountRateLimitsResponse,
     },
@@ -3119,6 +3129,8 @@ mod tests {
             request_id: RequestId::Integer(7),
             response: v2::ThreadStartResponse {
                 thread: v2::Thread {
+                    originator: None,
+                    environments: None,
                     id: "67e55044-10b1-426f-9247-bb680e5fe0c8".to_string(),
                     extra: None,
                     session_id: "67e55044-10b1-426f-9247-bb680e5fe0c7".to_string(),
@@ -3134,6 +3146,8 @@ mod tests {
                     model_id: None,
                     wire_api: None,
                     effort: None,
+                    model: None,
+                    reasoning_effort: None,
                     created_at: 1,
                     updated_at: 2,
                     recency_at: Some(3),
@@ -3148,6 +3162,7 @@ mod tests {
                     agent_role: None,
                     git_info: None,
                     name: None,
+                    daybreak_enabled: None,
                     turns: Vec::new(),
                 },
                 model: "gpt-5".to_string(),
@@ -3178,6 +3193,7 @@ mod tests {
                 "response": {
                     "thread": {
                         "id": "67e55044-10b1-426f-9247-bb680e5fe0c8",
+                        "environments": null,
                         "extra": null,
                         "sessionId": "67e55044-10b1-426f-9247-bb680e5fe0c7",
                         "forkedFromId": null,
@@ -3192,6 +3208,8 @@ mod tests {
                         "modelId": null,
                         "wireApi": null,
                         "effort": null,
+                        "model": null,
+                        "reasoningEffort": null,
                         "createdAt": 1,
                         "updatedAt": 2,
                         "recencyAt": 3,
@@ -3201,6 +3219,7 @@ mod tests {
                         "path": null,
                         "cwd": absolute_path_string("tmp"),
                         "cliVersion": "0.0.0",
+                        "originator": null,
                         "source": "exec",
                         "canAcceptDirectInput": null,
                         "threadSource": null,
@@ -3208,6 +3227,7 @@ mod tests {
                         "agentRole": null,
                         "gitInfo": null,
                         "name": null,
+                        "daybreakEnabled": null,
                         "turns": []
                     },
                     "model": "gpt-5",

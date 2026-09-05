@@ -40,6 +40,7 @@ fn agent_status_uses_bounded_buffered_activity() {
                 memory_citation: None,
                 transcript_metadata: None,
                 delivery: None,
+                questions: None,
             },
             thread_id: "thread-child".to_string(),
             turn_id: "turn-1".to_string(),

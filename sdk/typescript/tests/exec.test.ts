@@ -327,18 +327,18 @@ describe("CodexExec", () => {
     });
   });
 
-  it("falls back to the legacy binary layout", async () => {
+  it("falls back to the legacy AICodex binary layout", async () => {
     const { resolveNativePackage } = await import("../src/exec");
     const vendorRoot = mkdtempSync(path.join(tmpdir(), "codex-sdk-vendor-"));
     const packageRoot = path.join(vendorRoot, "x86_64-unknown-linux-musl");
-    const binDir = path.join(packageRoot, "codex");
+    const binDir = path.join(packageRoot, "aicodex");
     const pathDir = path.join(packageRoot, "path");
     mkdirSync(binDir, { recursive: true });
     mkdirSync(pathDir, { recursive: true });
-    writeFileSync(path.join(binDir, "codex"), "");
+    writeFileSync(path.join(binDir, "aicodex"), "");
 
-    expect(resolveNativePackage(vendorRoot, "x86_64-unknown-linux-musl", "codex")).toEqual({
-      executablePath: path.join(binDir, "codex"),
+    expect(resolveNativePackage(vendorRoot, "x86_64-unknown-linux-musl", "aicodex")).toEqual({
+      executablePath: path.join(binDir, "aicodex"),
       pathDirs: [pathDir],
     });
   });

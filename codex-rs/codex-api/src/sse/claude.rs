@@ -528,7 +528,9 @@ impl ClaudeStreamState {
                     self.usage.merge(usage);
                 }
                 tx_event
-                    .send(Ok(ResponseEvent::Created))
+                    .send(Ok(ResponseEvent::Created {
+                        guardian_ticket: None,
+                    }))
                     .await
                     .map_err(|err| ApiError::Stream(err.to_string()))?;
             }
@@ -2078,7 +2080,7 @@ mod tests {
             events.as_slice(),
             [
                 ResponseEvent::ServerModel(model),
-                ResponseEvent::Created,
+                ResponseEvent::Created { guardian_ticket: None },
                 ResponseEvent::Completed { .. }
             ] if model == "claude-sonnet-4-5"
         ));
@@ -2138,7 +2140,12 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(events[0], ResponseEvent::Created));
+        assert!(matches!(
+            events[0],
+            ResponseEvent::Created {
+                guardian_ticket: None
+            }
+        ));
         assert_eq!(
             events.iter().find_map(|event| match event {
                 ResponseEvent::OutputTextDelta(delta) => Some(delta.as_str()),

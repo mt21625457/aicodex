@@ -50,6 +50,7 @@ impl AppServerSession {
 
     pub(crate) async fn resume_thread(
         &mut self,
+        local_settings: &crate::local_settings::LocalSettings,
         config: Config,
         thread_id: ThreadId,
         model_settings: ResumeModelSettings,
@@ -138,15 +139,20 @@ impl AppServerSession {
             response.turns_backwards_cursor.clone(),
             response.items_backwards_cursor.clone(),
             Some(&config),
+            Some(local_settings),
             HistoryHydrationScope::Initial,
         )
         .await?;
         let fork_parent_title = self
             .fork_parent_title_from_app_server(response.thread.forked_from_id.as_deref())
             .await;
-        let mut started =
-            started_thread_from_resume_response(response, &config, self.thread_params_mode())
-                .await?;
+        let mut started = started_thread_from_resume_response(
+            response,
+            local_settings,
+            &config,
+            self.thread_params_mode(),
+        )
+        .await?;
         started.session.fork_parent_title = fork_parent_title;
         if self.task_tools_available(thread_id) {
             self.remember_task_tool_thread(thread_id);

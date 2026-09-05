@@ -269,6 +269,13 @@ impl ChatWidget {
                 if !self.bottom_pane.is_task_running() {
                     self.bottom_pane.set_task_running(/*running*/ true);
                 }
+                self.bottom_pane.ensure_status_indicator();
+                self.set_status(
+                    compaction::COMPACTION_HEADER.to_string(),
+                    Some(compaction::COMPACTION_DETAILS.to_string()),
+                    StatusDetailsCapitalization::Preserve,
+                    STATUS_DETAILS_DEFAULT_MAX_LINES,
+                );
                 self.input_queue.user_turn_pending_start = true;
                 self.app_event_tx.compact();
             }
@@ -329,7 +336,11 @@ impl ChatWidget {
                 self.app_event_tx.send(AppEvent::OpenAgentPicker);
             }
             SlashCommand::Permissions => {
-                self.open_permissions_popup();
+                if self.remote_connection.is_some() {
+                    self.app_event_tx.send(AppEvent::OpenPermissionsPopup);
+                } else {
+                    self.open_permissions_popup();
+                }
                 self.defer_input_until_settings_applied();
             }
             SlashCommand::Vim => {
@@ -743,7 +754,8 @@ impl ChatWidget {
             SlashCommand::Keymap => match trimmed.to_ascii_lowercase().as_str() {
                 "" => self.open_keymap_picker(),
                 "debug" => {
-                    match crate::keymap::RuntimeKeymap::from_config(&self.config.tui_keymap) {
+                    match crate::keymap::RuntimeKeymap::from_config(&self.local_settings.tui.keymap)
+                    {
                         Ok(runtime_keymap) => self.open_keymap_debug(&runtime_keymap),
                         Err(err) => {
                             self.add_error_message(format!(
@@ -793,9 +805,7 @@ impl ChatWidget {
                 });
             }
             SlashCommand::Plan if !trimmed.is_empty() => {
-                if !self.apply_plan_slash_command() {
-                    return;
-                }
+                let plan_available = self.apply_plan_slash_command();
                 let mut user_message = self.prepared_inline_user_message(
                     args,
                     text_elements,
@@ -804,7 +814,8 @@ impl ChatWidget {
                     mention_bindings,
                     source,
                 );
-                if !self.is_session_configured()
+                if !plan_available
+                    || !self.is_session_configured()
                     || self.current_model().trim().is_empty()
                     || (!self.current_model_supports_images()
                         && (!user_message.local_images.is_empty()
@@ -816,6 +827,10 @@ impl ChatWidget {
                         element.byte_range.start += PLAN_PREFIX.len();
                         element.byte_range.end += PLAN_PREFIX.len();
                     }
+                }
+                if !plan_available {
+                    self.restore_user_message_to_composer(user_message);
+                    return;
                 }
                 if self.is_session_configured() {
                     self.reasoning_buffer.clear();

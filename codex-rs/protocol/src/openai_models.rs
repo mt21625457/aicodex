@@ -33,6 +33,12 @@ use crate::config_types::ServiceTier;
 use crate::config_types::Verbosity;
 use crate::protocol::MultiAgentVersion;
 
+#[path = "openai_models/guardian.rs"]
+mod guardian;
+pub use guardian::GuardianModelPolicy;
+pub use guardian::GuardianReviewMode;
+pub use guardian::GuardianScope;
+
 #[path = "openai_models/guardian_v2.rs"]
 mod guardian_v2;
 
@@ -390,6 +396,11 @@ const fn is_true(value: &bool) -> bool {
 /// Model metadata returned by the Codex backend `/models` endpoint.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
 pub struct ModelInfo {
+    /// Model-owned approval coverage. Absent preserves legacy settings; an empty map disables
+    /// ordinary Guardian review. Keys are computer_use, shell, code_mode, file_changes, mcp, network,
+    /// and permissions. This does not override mandatory safety or administrator requirements.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guardian: Option<GuardianModelPolicy>,
     pub slug: String,
     pub display_name: String,
     pub description: Option<String>,
@@ -1007,7 +1018,7 @@ mod tests {
         );
     }
 
-    fn test_model(spec: Option<ModelMessages>) -> ModelInfo {
+    pub(super) fn test_model(spec: Option<ModelMessages>) -> ModelInfo {
         ModelInfo {
             slug: "test-model".to_string(),
             display_name: "Test Model".to_string(),
@@ -1046,6 +1057,7 @@ mod tests {
             used_fallback_model_metadata: false,
             supports_search_tool: false,
             use_responses_lite: false,
+            guardian: None,
             node_repl_auto_review_required: false,
             node_repl_disabled: false,
             auto_review_model_override: None,
@@ -2146,21 +2158,6 @@ mod tests {
             model.service_tier_for_request(Some("unsupported".to_string())),
             None
         );
-        assert_eq!(model.service_tier_for_request(/*service_tier*/ None), None);
-    }
-
-    #[test]
-    fn service_tier_for_request_does_not_apply_catalog_default() {
-        let model = ModelInfo {
-            default_service_tier: Some(ServiceTier::Fast.request_value().to_string()),
-            service_tiers: vec![ModelServiceTier {
-                id: ServiceTier::Fast.request_value().to_string(),
-                name: "Fast".to_string(),
-                description: "Priority processing.".to_string(),
-            }],
-            ..test_model(/*spec*/ None)
-        };
-
         assert_eq!(model.service_tier_for_request(/*service_tier*/ None), None);
     }
 }

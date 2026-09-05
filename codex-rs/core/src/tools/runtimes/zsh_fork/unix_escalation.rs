@@ -10,6 +10,7 @@ use crate::tools::runtimes::exec_env_for_sandbox_permissions;
 use crate::tools::sandboxing::SandboxAttempt;
 use crate::tools::sandboxing::ToolCtx;
 use crate::tools::sandboxing::ToolError;
+use crate::tools::sandboxing::sandbox_permissions_preserving_denied_reads;
 use crate::tools::sandboxing::unsandboxed_execution_allowed;
 use codex_execpolicy::Decision;
 use codex_execpolicy::Evaluation;
@@ -84,7 +85,7 @@ fn approval_sandbox_permissions(
 
 pub(crate) async fn prepare_unified_exec_zsh_fork(
     req: &crate::tools::runtimes::unified_exec::UnifiedExecRequest,
-    _attempt: &SandboxAttempt<'_>,
+    attempt: &SandboxAttempt<'_>,
     ctx: &ToolCtx,
     exec_request: ExecRequest,
     shell_zsh_path: &std::path::Path,
@@ -128,6 +129,7 @@ pub(crate) async fn prepare_unified_exec_zsh_fork(
         .to_abs_path()
         .map_err(|err| ToolError::Rejected(err.to_string()))?;
     let command_executor = CoreShellCommandExecutor {
+        sandbox_manager: attempt.manager.clone(),
         command: exec_request.command.clone(),
         cwd,
         permission_profile: exec_request.permission_profile.clone(),
@@ -154,7 +156,10 @@ pub(crate) async fn prepare_unified_exec_zsh_fork(
         permission_profile: exec_request.permission_profile.clone(),
         sandbox_permissions: req.sandbox_permissions,
         approval_sandbox_permissions: approval_sandbox_permissions(
-            req.sandbox_permissions,
+            sandbox_permissions_preserving_denied_reads(
+                req.sandbox_permissions,
+                &exec_request.permission_profile.file_system_sandbox_policy(),
+            ),
             req.additional_permissions_preapproved,
         ),
         prompt_permissions: req.additional_permissions.clone(),
@@ -565,6 +570,7 @@ fn commands_for_intercepted_exec_policy(
 // TODO(anp): Capture these Windows and Landlock settings from
 // TurnEnvironment::sandbox_context when preparing this executor, preserving its snapshot.
 struct CoreShellCommandExecutor {
+    sandbox_manager: SandboxManager,
     command: Vec<String>,
     cwd: AbsolutePathBuf,
     permission_profile: PermissionProfile,
@@ -757,7 +763,7 @@ impl CoreShellCommandExecutor {
         let (program, args) = command
             .split_first()
             .ok_or_else(|| anyhow::anyhow!("prepared command must not be empty"))?;
-        let sandbox_manager = SandboxManager::new();
+        let sandbox_manager = &self.sandbox_manager;
         let sandbox = sandbox_manager.select_initial(
             permission_profile,
             SandboxablePreference::Auto,

@@ -5,8 +5,11 @@ use codex_analytics::GuardianReviewFailureReason;
 use codex_analytics::GuardianReviewTerminalStatus;
 use codex_analytics::GuardianReviewTrackContext;
 use codex_analytics::GuardianReviewedAction;
+use codex_analytics::GuardianV2Event;
+use codex_analytics::GuardianV2EventKind;
 use codex_async_utils::THREAD_STACK_SIZE_BYTES;
 use codex_core_plugins::PluginCommandAttribution;
+use codex_extension_api::GuardianV2Enabled;
 use codex_extension_api::ThreadIdleCause;
 use codex_features::Feature;
 use codex_protocol::config_types::ApprovalsReviewer;
@@ -28,6 +31,7 @@ use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::WarningEvent;
 use futures::future::BoxFuture;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 use tokio::time::sleep_until;
@@ -50,8 +54,8 @@ use super::GuardianAssessmentOutcome;
 use super::GuardianRejectionCircuitBreakerAction;
 use super::GuardianRejectionCircuitBreakerPolicy;
 use super::GuardianReviewContext;
+use super::approval_request::format_guardian_action_compact;
 use super::approval_request::format_guardian_action_pretty;
-use super::approval_request::guardian_approval_request_to_json;
 use super::approval_request::guardian_assessment_action;
 use super::approval_request::guardian_request_target_item_id;
 use super::approval_request::guardian_request_turn_id;
@@ -78,14 +82,36 @@ const GUARDIAN_TIMEOUT_INSTRUCTIONS: &str = concat!(
 );
 
 const GUARDIAN_REVIEW_MAX_ATTEMPTS: i64 = 3;
+const GUARDIAN_PLUGIN_ATTRIBUTION_TIMEOUT: Duration = Duration::from_secs(5);
 
-fn plugin_attribution_for_guardian_request(
-    turn: &TurnContext,
+async fn plugin_attribution_for_guardian_request(
+    context: &GuardianReviewContext,
     request: &GuardianApprovalRequest,
 ) -> Option<PluginCommandAttribution> {
+    let turn = context.turn();
     match request {
-        GuardianApprovalRequest::ExecCommand { command, cwd, .. } => {
-            turn.plugin_attribution_for_command(command, cwd)
+        GuardianApprovalRequest::ExecCommand {
+            environment_id,
+            command,
+            cwd,
+            ..
+        } => {
+            let turn_environment =
+                context
+                    .environments()
+                    .turn_environments()
+                    .find(|environment| {
+                        environment.selection.environment_id.as_str() == environment_id
+                    })?;
+            if turn_environment.environment.is_remote() {
+                let file_system = turn_environment.environment.get_filesystem();
+                turn.plugin_attribution_for_executor_command(command, cwd, file_system.as_ref())
+                    .await
+            } else {
+                cwd.to_abs_path()
+                    .ok()
+                    .and_then(|cwd| turn.plugin_attribution_for_command(command, &cwd))
+            }
         }
         #[cfg(unix)]
         GuardianApprovalRequest::Execve {
@@ -312,7 +338,7 @@ pub(crate) async fn record_guardian_denial_for_test(
     record_guardian_denial(session, turn, turn_id).await;
 }
 
-/// Runs Guardian unless an installed extension explicitly claims the review.
+/// Runs Guardian unless Full Access or an installed extension resolves the review.
 /// Guardian timeouts, review-session failures, and parse failures all block
 /// execution, with timeouts surfaced separately from explicit denials.
 async fn run_guardian_review(
@@ -324,6 +350,20 @@ async fn run_guardian_review(
     options: GuardianReviewOptions,
 ) -> ReviewDecision {
     let turn = Arc::clone(context.turn());
+    if context.environments().has_full_access(
+        context.approval_policy,
+        &turn.config.permissions.effective_permission_profile(),
+    ) {
+        return if options
+            .external_cancel
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+        {
+            ReviewDecision::Abort
+        } else {
+            ReviewDecision::Approved
+        };
+    }
     let requires_synchronous_review = options.require_synchronous_review
         || reasons.retry.is_some()
         || matches!(
@@ -347,14 +387,14 @@ async fn run_guardian_review(
             .external_cancel
             .as_ref()
             .is_none_or(|cancel| !cancel.is_cancelled())
-        && let Ok(action) = guardian_approval_request_to_json(&request)
+        && let Ok(action) = format_guardian_action_compact(&request)
         && let Some(decision) = session
             .services
             .extensions
             .fast_approval_decision(
                 &session.services.session_extension_data,
                 &session.services.thread_extension_data,
-                &action.to_string(),
+                &action,
                 Some(crate::session::extension_metrics::from_session_telemetry(
                     turn.session_telemetry.clone(),
                 )),
@@ -362,22 +402,102 @@ async fn run_guardian_review(
             .await
     {
         if decision == ReviewDecision::Approved {
+            if session
+                .services
+                .thread_extension_data
+                .get::<GuardianV2Enabled>()
+                .is_some()
+            {
+                session
+                    .services
+                    .analytics_events_client
+                    .track_guardian_v2_event(GuardianV2Event {
+                        thread_id: session.thread_id.to_string(),
+                        turn_id: guardian_request_turn_id(&request, &turn.sub_id).to_owned(),
+                        item_id: guardian_request_target_item_id(&request).map(str::to_owned),
+                        model: Some(turn.model_info().slug.clone()),
+                        occurred_at_ms: codex_analytics::now_unix_millis(),
+                        kind: GuardianV2EventKind::FastDecision {
+                            decision: "approved",
+                        },
+                    });
+            }
             record_guardian_non_denial(&session, guardian_request_turn_id(&request, &turn.sub_id))
                 .await;
         }
         return decision;
     }
 
+    let runtime = super::runtime::ReviewRuntime {
+        session,
+        context,
+        review_id,
+        request,
+        reasons,
+        options,
+    };
+    codex_extension_api::SynchronousApprovalReviewer::review(
+        &runtime,
+        codex_protocol::approvals::GuardianReviewReason::Policy,
+    )
+    .await
+}
+
+/// Runs the existing synchronous reviewer without choosing policy or reusing a score.
+pub(super) async fn run_synchronous_review(
+    runtime: super::runtime::ReviewRuntime,
+    _review_reason: codex_protocol::approvals::GuardianReviewReason,
+) -> ReviewDecision {
+    let super::runtime::ReviewRuntime {
+        session,
+        context,
+        review_id,
+        request,
+        reasons,
+        options,
+    } = runtime;
+    let turn = Arc::clone(context.turn());
     let GuardianReviewOptions {
         plugin_attribution_override,
         approval_request_source,
         external_cancel,
         require_synchronous_review: _,
     } = options;
+    // Bound executor attribution and the Guardian session with one review deadline.
+    let deadline = Instant::now() + GUARDIAN_REVIEW_TIMEOUT;
     let target_item_id = guardian_request_target_item_id(&request).map(str::to_string);
     let assessment_turn_id = guardian_request_turn_id(&request, &turn.sub_id).to_string();
-    let plugin_attribution = plugin_attribution_override
-        .or_else(|| plugin_attribution_for_guardian_request(turn.as_ref(), &request));
+    let plugin_attribution = match plugin_attribution_override {
+        Some(attribution) => Some(attribution),
+        None if matches!(&request, GuardianApprovalRequest::ExecCommand { .. }) => {
+            let cancellation = external_cancel
+                .clone()
+                .unwrap_or_else(CancellationToken::new);
+            let attribution_deadline = std::cmp::min(
+                deadline,
+                Instant::now() + GUARDIAN_PLUGIN_ATTRIBUTION_TIMEOUT,
+            );
+            let attribution = tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return ReviewDecision::Abort,
+                attribution = tokio::time::timeout_at(
+                    attribution_deadline,
+                    plugin_attribution_for_guardian_request(&context, &request),
+                ) => attribution,
+            };
+            match attribution {
+                Ok(attribution) => attribution,
+                Err(_) => {
+                    tracing::warn!(
+                        timeout_ms = GUARDIAN_PLUGIN_ATTRIBUTION_TIMEOUT.as_millis(),
+                        "Guardian plugin attribution timed out"
+                    );
+                    None
+                }
+            }
+        }
+        None => plugin_attribution_for_guardian_request(&context, &request).await,
+    };
     let (plugin_id, script_path) = plugin_attribution
         .as_ref()
         .map(PluginCommandAttribution::serialized_fields)
@@ -459,6 +579,12 @@ async fn run_guardian_review(
 
     let schema = guardian_output_schema();
     let terminal_action = action_summary.clone();
+    let root_authorization_version = session
+        .services
+        .agent_control
+        .root_user_authorization(session.thread_id)
+        .await
+        .map(|snapshot| snapshot.authorization_version);
     let review_evidence = if let Some(evidence) = session
         .services
         .thread_extension_data
@@ -468,12 +594,6 @@ async fn run_guardian_review(
         // stale even if it later completes against a newer prompt snapshot.
         let history = session.conversation_history_snapshot().await;
         let authorization_version = evidence.authorization_version(history.as_ref());
-        let root_authorization_version = session
-            .services
-            .agent_control
-            .root_user_authorization(session.thread_id)
-            .await
-            .map(|snapshot| snapshot.authorization_version);
         format_guardian_action_pretty(&request).ok().map(|action| {
             (
                 evidence,
@@ -485,16 +605,33 @@ async fn run_guardian_review(
     } else {
         None
     };
-    let (outcome, analytics_result) = Box::pin(run_guardian_review_session_with_retry(
-        session.clone(),
-        context,
-        request,
-        reasons,
-        schema,
-        external_cancel,
-        GUARDIAN_REVIEW_MAX_ATTEMPTS,
-    ))
-    .await;
+    let (mut outcome, analytics_result) =
+        Box::pin(run_guardian_review_session_with_retry_before_deadline(
+            session.clone(),
+            context,
+            request,
+            reasons,
+            schema,
+            external_cancel,
+            GuardianReviewSessionLimits {
+                max_attempts: GUARDIAN_REVIEW_MAX_ATTEMPTS,
+                deadline,
+            },
+        ))
+        .await;
+    if session.enabled(Feature::GuardianThreadContext)
+        && matches!(&outcome, GuardianReviewOutcome::Completed(assessment) if assessment.outcome == GuardianAssessmentOutcome::Allow)
+        && root_authorization_version
+            != session
+                .services
+                .agent_control
+                .root_user_authorization(session.thread_id)
+                .await
+                .map(|snapshot| snapshot.authorization_version)
+    {
+        // A completed approval cannot outlive the root evidence it evaluated.
+        outcome = GuardianReviewOutcome::Error(GuardianReviewError::Cancelled);
+    }
 
     let completed_at_ms = now_unix_timestamp_ms();
     let completed_review = matches!(&outcome, GuardianReviewOutcome::Completed(_));
@@ -740,6 +877,7 @@ async fn run_guardian_review(
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct GuardianReviewOptions {
     pub(crate) plugin_attribution_override: Option<PluginCommandAttribution>,
     pub(crate) approval_request_source: GuardianApprovalRequestSource,
@@ -824,6 +962,7 @@ pub(crate) fn spawn_approval_request_review(
 pub(super) struct GuardianReviewSessionConfig {
     pub(super) spawn_config: crate::config::Config,
     pub(super) node_repl_policy: GuardianNodeReplPolicy,
+    pub(super) compaction_model_hash: Option<String>,
     model: String,
     reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
     default_review_model_id: String,
@@ -925,6 +1064,7 @@ pub(super) async fn guardian_review_session_config(
     }
     Ok(GuardianReviewSessionConfig {
         spawn_config,
+        compaction_model_hash: guardian_model_info.comp_hash.clone(),
         node_repl_policy: GuardianNodeReplPolicy::from_model_messages(
             guardian_model_info.model_messages.as_ref(),
         ),
@@ -983,6 +1123,7 @@ async fn run_guardian_review_session_before_deadline(
                 reasons,
                 schema,
                 model: session_config.model,
+                compaction_model_hash: session_config.compaction_model_hash,
                 reasoning_effort: session_config.reasoning_effort,
                 guardian_default_review_model_id: session_config.default_review_model_id,
                 guardian_catalog_contains_auto_review: session_config.catalog_contains_auto_review,
@@ -1047,6 +1188,7 @@ async fn run_guardian_review_session_before_deadline(
     }
 }
 
+#[cfg(test)]
 pub(super) async fn run_guardian_review_session_with_retry(
     session: Arc<Session>,
     context: impl Into<GuardianReviewContext>,
@@ -1056,9 +1198,41 @@ pub(super) async fn run_guardian_review_session_with_retry(
     external_cancel: Option<CancellationToken>,
     max_attempts: i64,
 ) -> (GuardianReviewOutcome, GuardianReviewAnalyticsResult) {
+    run_guardian_review_session_with_retry_before_deadline(
+        session,
+        context,
+        request,
+        reasons,
+        schema,
+        external_cancel,
+        GuardianReviewSessionLimits {
+            max_attempts,
+            deadline: Instant::now() + GUARDIAN_REVIEW_TIMEOUT,
+        },
+    )
+    .await
+}
+
+struct GuardianReviewSessionLimits {
+    max_attempts: i64,
+    deadline: Instant,
+}
+
+async fn run_guardian_review_session_with_retry_before_deadline(
+    session: Arc<Session>,
+    context: impl Into<GuardianReviewContext>,
+    request: GuardianApprovalRequest,
+    reasons: ApprovalRequestReasons,
+    schema: serde_json::Value,
+    external_cancel: Option<CancellationToken>,
+    limits: GuardianReviewSessionLimits,
+) -> (GuardianReviewOutcome, GuardianReviewAnalyticsResult) {
+    let GuardianReviewSessionLimits {
+        max_attempts,
+        deadline,
+    } = limits;
     let context = context.into();
     assert!(max_attempts > 0, "guardian review must run at least once");
-    let deadline = Instant::now() + GUARDIAN_REVIEW_TIMEOUT;
     let mut attempt_count = 1;
     loop {
         let (outcome, mut analytics_result) = run_guardian_review_session_before_deadline(

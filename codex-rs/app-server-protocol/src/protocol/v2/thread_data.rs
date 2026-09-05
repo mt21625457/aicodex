@@ -1,4 +1,5 @@
 use super::CodexErrorInfo;
+use super::ThreadEnvironment;
 use super::ThreadItem;
 use super::ThreadStatus;
 use super::TurnStatus;
@@ -203,6 +204,12 @@ pub struct ThreadSectionAppearance {
 pub struct Thread {
     /// Identifier for this thread. Codex-generated thread IDs are UUIDv7.
     pub id: String,
+    /// Current environments for a loaded thread, in priority order, primary first.
+    /// `null` means the thread is not loaded or the server does not expose its selection.
+    /// An empty list means no environments are selected. This does not report connection status.
+    #[experimental("thread.environments")]
+    #[serde(default)]
+    pub environments: Option<Vec<ThreadEnvironment>>,
     /// Optional implementation-specific thread data.
     #[experimental("thread.extra")]
     pub extra: Option<ThreadExtra>,
@@ -240,6 +247,12 @@ pub struct Thread {
     pub wire_api: Option<String>,
     /// Latest observed reasoning effort for this thread.
     pub effort: Option<ReasoningEffort>,
+    /// Current configured model when loaded, otherwise the latest persisted model.
+    /// Null when unavailable. This is not per-turn execution telemetry.
+    pub model: Option<String>,
+    /// Current configured reasoning effort when loaded, otherwise the latest persisted effort.
+    /// Null when unset or unavailable. This is not per-turn execution telemetry.
+    pub reasoning_effort: Option<ReasoningEffort>,
     /// Unix timestamp (in seconds) when the thread was created.
     #[ts(type = "number")]
     pub created_at: i64,
@@ -257,6 +270,9 @@ pub struct Thread {
     pub cwd: AbsolutePathBuf,
     /// Version of the CLI that created the thread.
     pub cli_version: String,
+    /// Originator recorded when the thread was created, independent of its current client or executor.
+    /// Null when the recorded originator is unavailable.
+    pub originator: Option<String>,
     /// Origin of the thread (CLI, VSCode, aicodex exec, aicodex app-server, etc.).
     pub source: SessionSource,
     /// Whether the app server accepts direct turn input for this loaded thread.
@@ -275,6 +291,9 @@ pub struct Thread {
     pub git_info: Option<GitInfo>,
     /// Optional user-facing thread title.
     pub name: Option<String>,
+    /// Saved Daybreak choice, independent of turn execution. Null if unset.
+    #[experimental("thread.daybreakEnabled")]
+    pub daybreak_enabled: Option<bool>,
     /// Only populated on `thread/resume`, `thread/rollback`, `thread/fork`, and `thread/read`
     /// (when `includeTurns` is true) responses.
     /// For all other responses and notifications returning a Thread,
@@ -288,6 +307,8 @@ pub struct Thread {
 #[serde(rename_all = "camelCase")]
 struct ThreadCompatibility {
     id: String,
+    #[serde(default)]
+    environments: Option<Vec<ThreadEnvironment>>,
     extra: Option<ThreadExtra>,
     session_id: String,
     forked_from_id: Option<String>,
@@ -309,6 +330,8 @@ struct ThreadCompatibility {
     wire_api: Option<String>,
     #[serde(default)]
     effort: Option<ReasoningEffort>,
+    model: Option<String>,
+    reasoning_effort: Option<ReasoningEffort>,
     created_at: i64,
     updated_at: i64,
     recency_at: Option<i64>,
@@ -316,6 +339,7 @@ struct ThreadCompatibility {
     path: Option<PathBuf>,
     cwd: AbsolutePathBuf,
     cli_version: String,
+    originator: Option<String>,
     source: SessionSource,
     can_accept_direct_input: Option<bool>,
     thread_source: Option<ThreadSource>,
@@ -323,6 +347,7 @@ struct ThreadCompatibility {
     agent_role: Option<String>,
     git_info: Option<GitInfo>,
     name: Option<String>,
+    daybreak_enabled: Option<bool>,
     turns: Vec<Turn>,
 }
 
@@ -332,8 +357,11 @@ impl<'de> Deserialize<'de> for Thread {
         D: serde::Deserializer<'de>,
     {
         let thread = ThreadCompatibility::deserialize(deserializer)?;
+        let model = thread.model.or(thread.model_id);
+        let reasoning_effort = thread.reasoning_effort.or(thread.effort);
         Ok(Self {
             id: thread.id,
+            environments: thread.environments,
             extra: thread.extra,
             session_id: thread.session_id,
             forked_from_id: thread.forked_from_id,
@@ -345,9 +373,11 @@ impl<'de> Deserialize<'de> for Thread {
             project_id: thread.project_id,
             history_mode: thread.history_mode,
             model_provider: thread.model_provider,
-            model_id: thread.model_id,
+            model_id: model.clone(),
             wire_api: thread.wire_api,
-            effort: thread.effort,
+            effort: reasoning_effort.clone(),
+            model,
+            reasoning_effort,
             created_at: thread.created_at,
             updated_at: thread.updated_at,
             recency_at: thread.recency_at,
@@ -355,6 +385,7 @@ impl<'de> Deserialize<'de> for Thread {
             path: thread.path,
             cwd: thread.cwd,
             cli_version: thread.cli_version,
+            originator: thread.originator,
             source: thread.source,
             can_accept_direct_input: thread.can_accept_direct_input,
             thread_source: thread.thread_source,
@@ -362,6 +393,7 @@ impl<'de> Deserialize<'de> for Thread {
             agent_role: thread.agent_role,
             git_info: thread.git_info,
             name: thread.name,
+            daybreak_enabled: thread.daybreak_enabled,
             turns: thread.turns,
         })
     }

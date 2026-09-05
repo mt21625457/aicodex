@@ -43,6 +43,7 @@ use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use codex_utils_output_truncation::approx_token_count;
 use codex_utils_path_uri::PathConvention;
+use codex_utils_string::truncate_middle_chars;
 
 use super::super::shell_spec::CommandToolOptions;
 use super::super::shell_spec::create_exec_command_tool_with_environment_id;
@@ -52,9 +53,13 @@ use super::get_command;
 use super::post_unified_exec_tool_use_payload;
 use super::shell_mode_for_environment;
 
+// A byte limit is a conservative hard token bound even for byte-fallback tokenizers.
+const EXEC_COMMAND_REJECTION_MAX_BYTES: usize = 900;
+
 #[derive(Clone, Copy)]
 pub(crate) struct ExecCommandHandlerOptions {
     pub(crate) allow_login_shell: bool,
+    pub(crate) allow_tty: bool,
     pub(crate) exec_permission_approvals_enabled: bool,
     pub(crate) include_environment_id: bool,
     pub(crate) include_shell_parameter: bool,
@@ -79,6 +84,7 @@ impl Default for ExecCommandHandler {
             lifetime: ExecCommandLifetime::Interactive,
             options: ExecCommandHandlerOptions {
                 allow_login_shell: false,
+                allow_tty: true,
                 exec_permission_approvals_enabled: false,
                 include_environment_id: false,
                 include_shell_parameter: true,
@@ -121,10 +127,19 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
             self.options.include_shell_parameter,
             self.options.include_windows_shell_guidance,
         );
-        match self.lifetime {
+        let mut spec = match self.lifetime {
             ExecCommandLifetime::Interactive => spec,
             ExecCommandLifetime::OneShot => one_shot_exec_command_spec(spec),
+        };
+        if !self.options.allow_tty
+            && let ToolSpec::Function(spec) = &mut spec
+        {
+            spec.parameters
+                .properties
+                .get_or_insert_default()
+                .remove("tty");
         }
+        spec
     }
 
     fn supports_parallel_tool_calls(&self) -> bool {
@@ -229,6 +244,11 @@ impl ExecCommandHandler {
                 parse_arguments(&arguments)?
             }
         };
+        if args.tty && !session.features().enabled(Feature::UnifiedExecTty) {
+            return Err(FunctionCallError::RespondToModel(
+                "TTY execution is disabled by config; omit `tty` or set it to false.".to_string(),
+            ));
+        }
         let sandbox_permissions =
             resolve_sandbox_permissions(args.sandbox_permissions, args.justification.as_deref())?;
         let hook_command = args.cmd.clone();
@@ -279,8 +299,6 @@ impl ExecCommandHandler {
         .map_err(FunctionCallError::RespondToModel)?;
         let command = resolved_command.command;
         let shell_type = resolved_command.shell_type;
-        let command_for_display = codex_shell_command::parse_command::shlex_join(&command);
-
         let ExecCommandArgs {
             mut tty,
             yield_time_ms,
@@ -457,9 +475,13 @@ impl ExecCommandHandler {
                     hook_command: Some(hook_command),
                 }))
             }
-            Err(err) => Err(FunctionCallError::RespondToModel(format!(
-                "exec_command failed for `{command_for_display}`: {err:?}"
-            ))),
+            Err(err) => {
+                let message = format!("exec_command failed: {err:?}");
+                Err(FunctionCallError::RespondToModel(truncate_middle_chars(
+                    &message,
+                    EXEC_COMMAND_REJECTION_MAX_BYTES,
+                )))
+            }
         }
     }
 }

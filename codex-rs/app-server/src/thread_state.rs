@@ -399,6 +399,7 @@ mod tests {
             "turn-1",
             &EventMsg::AgentMessage(AgentMessageEvent {
                 message: "I'll run that.".to_string(),
+                questions: None,
                 phase: None,
                 memory_citation: None,
                 delivery: None,

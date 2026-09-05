@@ -1,4 +1,5 @@
 use crate::ClaudeFileToolMode;
+use crate::ContextManagementConfigToml;
 use crate::DedicatedFileToolsConfigToml;
 use crate::Feature;
 use crate::FeatureConfigSource;
@@ -15,6 +16,28 @@ use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
 use toml::Table;
 use toml::Value as TomlValue;
+
+#[test]
+fn context_management_materializes_resolved_enabled() {
+    let mut config = FeaturesToml {
+        context_management: Some(FeatureToml::Config(ContextManagementConfigToml {
+            experimental_mode: Some(true),
+        })),
+        ..Default::default()
+    };
+    let mut features = Features::with_defaults();
+    for enabled in [false, true] {
+        features.set_enabled(Feature::ContextManagement, enabled);
+        config.materialize_resolved_enabled(&features);
+        assert_eq!(
+            config.context_management,
+            Some(FeatureToml::Config(ContextManagementConfigToml {
+                experimental_mode: Some(enabled),
+            }))
+        );
+        assert!(!config.entries.contains_key("context_management"));
+    }
+}
 
 #[test]
 fn transcript_v2_resolves_explicit_config_overrides() {
@@ -162,6 +185,44 @@ fn guardian_v2_feature_config_preserves_boolean_toggle() {
         features.entries(),
         BTreeMap::from([("guardianv2".to_owned(), true)])
     );
+}
+
+#[test]
+fn guardian_thread_context_resolves_boolean_config_and_profile_overrides() {
+    for (base, profile, enabled) in [
+        ("", "", false),
+        ("guardian_thread_context = false", "", false),
+        ("guardian_thread_context = true", "", true),
+        (
+            "guardian_thread_context = true",
+            "guardian_thread_context = false",
+            false,
+        ),
+        (
+            "guardian_thread_context = false",
+            "guardian_thread_context = true",
+            true,
+        ),
+    ] {
+        let base = toml::from_str::<FeaturesToml>(base).expect("base features");
+        let profile = toml::from_str::<FeaturesToml>(profile).expect("profile features");
+        let features = Features::from_sources(
+            FeatureConfigSource {
+                features: Some(&base),
+                ..Default::default()
+            },
+            FeatureConfigSource {
+                features: Some(&profile),
+                ..Default::default()
+            },
+            FeatureOverrides::default(),
+        );
+        let mut expected = Features::with_defaults();
+        if enabled {
+            expected.enable(Feature::GuardianThreadContext);
+        }
+        assert_eq!(features.enabled_features(), expected.enabled_features());
+    }
 }
 
 #[test]

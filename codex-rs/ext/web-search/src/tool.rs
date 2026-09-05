@@ -495,7 +495,7 @@ mod tests {
     fn kimi_tool(server: &MockServer) -> WebSearchTool {
         let mut primary =
             create_oss_provider_with_base_url(&format!("{}/v1", server.uri()), WireApi::Claude);
-        primary.experimental_bearer_token = Some("provider-token".to_string());
+        primary.experimental_bearer_token = Some("provider-token".into());
         let mut openai =
             ModelProviderInfo::create_openai_provider(Some(format!("{}/v1", server.uri())));
         openai.requires_openai_auth = false;
@@ -515,8 +515,12 @@ mod tests {
         }
     }
 
-    fn kimi_call(arguments: serde_json::Value, emitter: Arc<dyn TurnItemEmitter>) -> ToolCall {
+    fn kimi_call(
+        arguments: serde_json::Value,
+        emitter: Arc<dyn TurnItemEmitter>,
+    ) -> ToolCall<'static> {
         ToolCall {
+            source: codex_extension_api::ToolCallSource::Direct,
             turn_id: "turn-1".to_string(),
             call_id: "call-1".to_string(),
             tool_name: codex_extension_api::ToolName::namespaced("web", "run"),
@@ -714,7 +718,7 @@ mod tests {
         tool.moonshot_search.api_key = None;
         let mut primary =
             create_oss_provider_with_base_url("https://provider.example/v1", WireApi::Claude);
-        primary.experimental_bearer_token = Some("provider-token".to_string());
+        primary.experimental_bearer_token = Some("provider-token".into());
         tool.primary_provider = create_model_provider(primary, /*auth_manager*/ None);
         let result = tool
             .handle_call(kimi_call(

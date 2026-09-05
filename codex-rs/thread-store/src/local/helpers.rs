@@ -14,6 +14,7 @@ use codex_protocol::SanitizedGitUrl;
 use codex_protocol::ThreadId;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::GitInfo;
 use codex_protocol::protocol::NetworkAccess;
 use codex_protocol::protocol::SandboxPolicy;
@@ -166,8 +167,8 @@ pub(super) fn stored_thread_from_rollout_item(
             .model_provider
             .filter(|provider| !provider.is_empty())
             .unwrap_or_else(|| default_provider.to_string()),
-        model: None,
-        reasoning_effort: None,
+        model: item.model,
+        reasoning_effort: item.reasoning_effort,
         created_at,
         updated_at,
         recency_at,
@@ -176,8 +177,10 @@ pub(super) fn stored_thread_from_rollout_item(
         section_position: None,
         section_entered_at: None,
         project_id: item.project_id,
+        daybreak_enabled: item.daybreak_enabled,
         cwd: item.cwd.unwrap_or_default(),
         cli_version: item.cli_version.unwrap_or_default(),
+        originator: item.originator,
         source,
         history_mode: item.history_mode,
         thread_source: None,
@@ -204,6 +207,10 @@ pub(super) async fn hydrate_stored_thread_runtime_metadata_from_rollout(thread: 
         if let RolloutItem::TurnContext(turn_ctx) = item {
             thread.model = Some(turn_ctx.model);
             thread.reasoning_effort = turn_ctx.effort;
+        } else if let RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) = item {
+            thread.model = Some(event.thread_settings.model);
+            thread.model_provider = event.thread_settings.model_provider_id;
+            thread.reasoning_effort = event.thread_settings.reasoning_effort;
         }
     }
 }

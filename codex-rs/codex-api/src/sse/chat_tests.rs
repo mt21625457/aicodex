@@ -90,7 +90,12 @@ async fn accumulates_text_reasoning_usage_and_stop_reason() {
     )
     .await;
 
-    assert_matches!(events.first(), Some(Ok(ResponseEvent::Created)));
+    assert_matches!(
+        events.first(),
+        Some(Ok(ResponseEvent::Created {
+            guardian_ticket: None
+        }))
+    );
     assert_eq!(
         events
             .iter()
@@ -153,6 +158,7 @@ async fn accumulates_text_reasoning_usage_and_stop_reason() {
             }),
             end_turn: Some(true),
             provider_stop_reason: Some(reason),
+            usage_metadata: None,
         })) if response_id == "chatcmpl_1" && reason == "stop"
     );
     let added_reasoning_id = events.iter().find_map(|event| match event {
@@ -665,7 +671,12 @@ async fn non_meaningful_frames_do_not_reset_idle_deadline() {
         .await
         .expect("Chat idle test should finish")
         .expect("Chat idle test should emit Created");
-    assert_matches!(created, Ok(ResponseEvent::Created));
+    assert_matches!(
+        created,
+        Ok(ResponseEvent::Created {
+            guardian_ticket: None
+        })
+    );
     let event = timeout(Duration::from_secs(1), rx.recv())
         .await
         .expect("Chat idle test should finish")

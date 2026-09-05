@@ -272,6 +272,7 @@ async fn active_patch_approval_preserves_deferred_startup_protection() -> Result
                 memory_citation: None,
                 transcript_metadata: None,
                 delivery: None,
+                questions: None,
             },
         }),
         /*replay_kind*/ None,

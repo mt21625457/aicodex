@@ -75,6 +75,7 @@ mod tests {
                 memory_citation: None,
                 transcript_metadata: None,
                 delivery: None,
+                questions: None,
             },
             ThreadItem::McpToolCall {
                 id: "mcp-1".to_string(),
@@ -127,6 +128,7 @@ mod tests {
                 memory_citation: None,
                 transcript_metadata: None,
                 delivery: None,
+                questions: None,
             }
         );
         assert_eq!(
@@ -198,6 +200,8 @@ mod tests {
 
     fn test_thread(items: Vec<ThreadItem>) -> Thread {
         Thread {
+            originator: None,
+            environments: None,
             id: "thread-1".to_string(),
             extra: None,
             session_id: "session-1".to_string(),
@@ -208,11 +212,14 @@ mod tests {
             section: None,
             section_entered_at: None,
             project_id: None,
+            daybreak_enabled: None,
             history_mode: Default::default(),
             model_provider: "mock_provider".to_string(),
             model_id: None,
             wire_api: None,
             effort: None,
+            model: None,
+            reasoning_effort: None,
             created_at: 0,
             updated_at: 0,
             recency_at: Some(0),

@@ -58,6 +58,7 @@ fn serializes_chat_function_envelopes_and_reverse_metadata() {
             })],
         }),
         ToolSpec::Freeform(FreeformTool {
+            defer_loading: None,
             name: "apply_patch".to_string(),
             description: "Apply a patch".to_string(),
             format: FreeformToolFormat {
