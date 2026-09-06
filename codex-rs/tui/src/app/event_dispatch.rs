@@ -50,6 +50,10 @@ impl App {
                     | AppEvent::SelectAgentThread(_)
                     | AppEvent::StartSide { .. }
                     | AppEvent::ForkCurrentSession { .. }
+                    | AppEvent::StartManagedWorktree {
+                        mode: crate::app_event::ManagedWorktreeMode::Fork,
+                        ..
+                    }
                     | AppEvent::ForkSessionForPromptEdit { .. }
                     | AppEvent::SetThreadGoalDraft { .. }
                     | AppEvent::SetThreadGoalStatus {
@@ -85,6 +89,9 @@ impl App {
                 if self.chat_widget.has_misalignment_policy_violation() {
                     self.chat_widget.show_misalignment_policy_precaution();
                 }
+            }
+            AppEvent::StartManagedWorktree { mode, name } => {
+                self.start_managed_worktree(tui, app_server, mode, name).await;
             }
             AppEvent::ChangeWorkingDirectory {
                 thread_id,
@@ -2407,6 +2414,10 @@ impl App {
             }
             AppEvent::SaveExperimentalFeatures { thread_id, updates, response_tx } => {
                 self.save_experimental_features(app_server, thread_id, updates, response_tx);
+            }
+            AppEvent::EnableFeatureForNewThreads(feature) => {
+                self.enable_feature_for_new_threads(tui, app_server, feature)
+                    .await;
             }
             AppEvent::UpdateFeatureFlags { updates } => {
                 self.update_feature_flags(app_server, updates).await;

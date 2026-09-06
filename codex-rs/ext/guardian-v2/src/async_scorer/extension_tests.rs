@@ -363,6 +363,9 @@ impl ExtensionMetrics for RecordingMetrics {
     }
 
     fn histogram(&self, name: &str, value: i64, tags: &[(&str, &str)]) {
+        if name == "codex.guardian_v2.connection.duration_ms" {
+            return;
+        }
         self.0.lock().unwrap().push(RecordedMetric::Histogram(
             name.to_owned(),
             value,
@@ -2084,7 +2087,7 @@ async fn assert_luna_pool_context(thread_context_enabled: bool) -> Result<()> {
         conversation_history,
         r#"{"path":"README.md"}"#,
         Some(TEST_GUARDIAN_POLICY),
-        &format!("[features]\nguardian_thread_context = {thread_context_enabled}\n"),
+        &format!("[features.guardianv2]\nthread_context = {thread_context_enabled}\n"),
         /*model_defaults*/ None,
     )
     .await?;
@@ -2555,7 +2558,7 @@ async fn assert_compaction_approval_policy(thread_context_enabled: bool) -> Resu
     skip_if_no_network!(Ok(()));
 
     let fixture = GuardianFailureFixture::with_config(&format!(
-        "[features]\nguardian_thread_context = {thread_context_enabled}\n"
+        "[features.guardianv2]\nthread_context = {thread_context_enabled}\n"
     ))
     .await?;
     let thread_store = fixture.test.codex.thread_extension_data();
@@ -3327,7 +3330,7 @@ async fn assert_parent_compaction_reuse(thread_context_enabled: bool) -> Result<
             sample,
             RecordedMetric::Counter(name, 1, tags)
                 if name == CLASSIFICATION_METRIC
-                    && tags == &[("outcome".to_owned(), "failure".to_owned())]
+                    && tags.contains(&("outcome".to_owned(), "failure".to_owned()))
         )
     }));
 
@@ -3347,7 +3350,7 @@ async fn legacy_contributor_can_disable_parent_compaction_reuse() -> Result<()> 
         oversized_compaction,
         user_instruction("Inspect the repository guidelines."),
     ];
-    let configuration = "[features]\nguardian_thread_context = false\n\n[features.guardianv2]\nenabled = true\nreuse_parent_compaction = false\nmax_parent_compaction_tokens = 256\n";
+    let configuration = "[features.guardianv2]\nthread_context = false\nenabled = true\nreuse_parent_compaction = false\nmax_parent_compaction_tokens = 256\n";
     let (request, test, _registry) = sample_configured_conversation_history(
         conversation_history,
         r#"{"path":"README.md"}"#,

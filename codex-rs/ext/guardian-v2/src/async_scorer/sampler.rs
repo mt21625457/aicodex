@@ -46,6 +46,7 @@ use tokio::sync::Semaphore;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
+use super::metrics::sampler_failure_reason;
 use super::trusted_skills::GuardianTrustedSkillsFragment;
 use super::trusted_tools::GuardianTrustedToolFragment;
 
@@ -90,8 +91,8 @@ pub struct LunaSamplerConfig {
 
 /// One tool-less Luna classification request over an already-open connection.
 pub struct LunaSamplingRequest {
-    /// Runtime receipt of the response handling the classified tool.
-    pub guardian_ticket: Option<codex_protocol::guardian_ticket::GuardianTicket>,
+    /// ID of the response handling the classified tool.
+    pub parent_response_id: Option<String>,
     /// Trusted instructions describing the requested classification.
     pub instructions: String,
     /// Host-supplied Guardian reviews isolated from untrusted transcript entries.
@@ -329,10 +330,24 @@ impl LunaSampler {
             /*turn_state*/ None,
             /*telemetry*/ None,
         );
-        let connection = tokio::time::timeout(provider_info.websocket_connect_timeout(), connect)
+        let started_at = Instant::now();
+        let result = tokio::time::timeout(provider_info.websocket_connect_timeout(), connect)
             .await
-            .map_err(|_| LunaSamplerError::ConnectionTimeout)?
-            .map_err(LunaSamplerError::Api)?;
+            .map_err(|_| LunaSamplerError::ConnectionTimeout)
+            .and_then(|result| result.map_err(LunaSamplerError::Api));
+        if let Some(metrics) = self.config.metrics.as_deref() {
+            let outcome = if result.is_ok() { "success" } else { "failure" };
+            let mut tags = vec![("endpoint", endpoint.path()), ("outcome", outcome)];
+            if let Err(error) = &result {
+                tags.push(("failure_reason", sampler_failure_reason(error)));
+            }
+            metrics.histogram(
+                "codex.guardian_v2.connection.duration_ms",
+                i64::try_from(started_at.elapsed().as_millis()).unwrap_or(i64::MAX),
+                &tags,
+            );
+        }
+        let connection = result?;
         if auth_changes
             .as_ref()
             .is_some_and(|auth| auth.has_changed().unwrap_or(true))
@@ -454,7 +469,7 @@ impl LunaSampler {
         }
         // A classification is its own inference turn; retries keep that identity.
         let turn_id = Uuid::now_v7().to_string();
-        let guardian_ticket = request.guardian_ticket;
+        let parent_response_id = request.parent_response_id;
         let parent_turn_id = request.parent_turn_id;
         let root_turn_id = request.root_turn_id;
         let mut input = vec![
@@ -629,6 +644,11 @@ impl LunaSampler {
                 turn_metadata["root_turn_id"] = json!(root_turn_id);
             }
             client_metadata.insert(TURN_METADATA_KEY.to_owned(), turn_metadata.to_string());
+            if lease.connection.endpoint == ResponsesEndpoint::GuardianClassifier
+                && let Some(parent_response_id) = &parent_response_id
+            {
+                client_metadata.insert("parent_response_id".to_owned(), parent_response_id.clone());
+            }
             request.client_metadata = Some(client_metadata);
             let mut stream = match lease
                 .connection
@@ -637,7 +657,6 @@ impl LunaSampler {
                     ResponsesWsRequest::ResponseCreate((&request).into()),
                     /*connection_reused*/ true,
                     /*turn_state*/ None,
-                    guardian_ticket.as_ref(),
                 )
                 .await
             {

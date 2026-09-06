@@ -55,7 +55,7 @@ pub(super) async fn reconnect(
             tokio::time::sleep(Duration::from_secs(delay)).await;
             let client = crate::app_server_connection::connect(&target).await?;
             let mut session = AppServerSession::new(client, mode)
-                .with_startup_config(&config)
+                .with_local_codex_home(&config.codex_home)
                 .with_remote_cwd_override(remote_cwd.clone())
                 .with_thread_tool_transport(task_tools.clone());
             let bootstrap = session.bootstrap(&config).await?;
@@ -244,6 +244,12 @@ impl App {
         self.rate_limit_refresh_state.invalidate_recovery();
         session.inherit_task_tool_capabilities(app_server);
         *app_server = session;
+        self.chat_widget.set_local_worktree_operations(
+            !crate::uses_remote_workspace_or_environment(
+                &self.app_server_target,
+                self.environment_manager.as_ref(),
+            ),
+        );
         self.chat_widget.cyber_policy_notice = Default::default();
         self.chat_widget.requires_openai_auth = bootstrap.requires_openai_auth;
         self.chat_widget.remote_connection =
