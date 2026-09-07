@@ -16,6 +16,7 @@ use crate::accounting::BudgetLimitedGoalDisposition;
 use crate::accounting::GoalAccountingState;
 use crate::analytics::GoalAnalytics;
 use crate::analytics::GoalEventAttribution;
+use crate::context::resumed_goal_steering_item;
 use crate::events::GoalEventEmitter;
 use crate::metrics::GoalMetrics;
 use crate::steering::continuation_steering_item;
@@ -228,6 +229,12 @@ impl GoalRuntimeHandle {
                     self.inner
                         .accounting_state
                         .mark_idle_goal_active(goal.goal_id.clone());
+                }
+                if previous_goal.as_ref().is_some_and(|previous_goal| {
+                    previous_goal.status == codex_state::ThreadGoalStatus::BudgetLimited
+                }) {
+                    self.inject_active_turn_steering(resumed_goal_steering_item(&goal))
+                        .await;
                 }
                 if objective_changed {
                     let item = objective_updated_steering_item(&protocol_goal_from_state(goal));

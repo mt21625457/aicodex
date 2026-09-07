@@ -13,7 +13,7 @@ pub const UPDATE_GOAL_TOOL_NAME: &str = "update_goal";
 pub fn create_get_goal_tool() -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: GET_GOAL_TOOL_NAME.to_string(),
-        description: "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget."
+        description: "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget. These values belong to the stored goal run, not every subsequent user request. A budgetLimited goal stops autonomous goal execution; it does not prohibit handling a new user request or using tools in an ordinary turn. Do not resume or change the goal to bypass its budget."
             .to_string(),
         strict: false,
         defer_loading: None,

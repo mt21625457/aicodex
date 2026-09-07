@@ -41,6 +41,10 @@ mod external_agent_import_sync;
 mod feedback;
 mod fs;
 mod git_attribution;
+#[path = "goal_budget_follow_up_tests.rs"]
+mod goal_budget_follow_up;
+#[path = "goal_resume_context_tests.rs"]
+mod goal_resume_context;
 mod guardian_v2;
 mod history_notes_extension;
 mod hooks_list;

@@ -37,6 +37,7 @@ use crate::accounting::BudgetLimitedGoalDisposition;
 use crate::accounting::GoalAccountingState;
 use crate::analytics::GoalAnalytics;
 use crate::api::GoalService;
+use crate::context::GoalContextContributor;
 use crate::events::GoalEventEmitter;
 use crate::metrics::GoalMetrics;
 use crate::runtime::ActiveGoalStopReason;
@@ -557,6 +558,9 @@ pub fn install_with_backend<C>(
 ) where
     C: Send + Sync + 'static,
 {
+    registry.prompt_contributor(Arc::new(GoalContextContributor {
+        state_dbs: Arc::clone(&state_dbs),
+    }));
     let extension = Arc::new(GoalExtension::new_with_host_capabilities(
         state_dbs,
         analytics_events_client,

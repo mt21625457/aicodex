@@ -900,6 +900,8 @@ Use `thread/goal/set` to create or update the current goal for a materialized th
 
 When `goals.max_goal_token_budget` is configured, new goals default to that limit, larger budgets are rejected, and setting `tokenBudget` to `null` resets the budget to the configured limit instead of removing it.
 
+Budget exhaustion stops the active goal's current turn and automatic continuations; a stored `budgetLimited` status does not prohibit future user requests. Setting that status externally does not itself interrupt an in-flight turn; use `turn/interrupt` when an immediate interruption is needed. A later `turn/start` can handle a new request and execute tools without resuming the stopped goal or adding to its usage. This also applies after `thread/resume`; the model receives turn-scoped context distinguishing the stored goal budget from the new turn. Resuming autonomous goal work still requires a user-controlled goal update. Restoring a budget-limited goal to `active` during a turn appends a model-visible budget update, even when the objective is unchanged.
+
 Set `replaceExisting` to `true` together with a new objective to atomically replace the current goal. Replacement assigns a new goal ID and resets accumulated token and time usage; supply `tokenBudget` when the replacement should preserve or change the previous limit.
 
 ```json

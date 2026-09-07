@@ -52,6 +52,9 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 use tempfile::TempDir;
 
+#[path = "goal_extension_backend/budget_context_tests.rs"]
+mod budget_context;
+
 #[tokio::test]
 async fn installed_goal_tools_create_goal_and_fill_empty_preview() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
@@ -1692,6 +1695,22 @@ impl GoalExtensionHarness {
         runtime: Arc<codex_state::StateRuntime>,
         thread_id: ThreadId,
     ) -> anyhow::Result<Self> {
+        Self::with_config(
+            runtime,
+            thread_id,
+            GoalExtensionConfig {
+                enabled: true,
+                max_goal_token_budget: None,
+            },
+        )
+        .await
+    }
+
+    async fn with_config(
+        runtime: Arc<codex_state::StateRuntime>,
+        thread_id: ThreadId,
+        config: GoalExtensionConfig,
+    ) -> anyhow::Result<Self> {
         let sink = Arc::new(RecordingEventSink::default());
         let mut builder = ExtensionRegistryBuilder::<()>::with_event_sink(sink.clone());
         let goal_service = Arc::new(GoalService::new());
@@ -1702,10 +1721,7 @@ impl GoalExtensionHarness {
             /*metrics_client*/ None,
             Weak::new(),
             Arc::clone(&goal_service),
-            |_| GoalExtensionConfig {
-                enabled: true,
-                max_goal_token_budget: None,
-            },
+            move |_| config.clone(),
         );
         let registry = Arc::new(builder.build());
         let session_store = ExtensionData::new(thread_id.to_string());
