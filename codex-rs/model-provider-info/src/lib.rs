@@ -129,9 +129,10 @@ pub struct ModelProviderInfo {
     pub wire_api: WireApi,
     /// Whether a Chat Completions provider accepts the modern `developer` message role.
     ///
-    /// `None` preserves the OpenAI-compatible default (`true`). Set this to `false` only for a
-    /// provider that implements the legacy role set and requires developer instructions to be
-    /// serialized as `system` messages.
+    /// `None` means `wire_api != Chat`: Chat Completions default to the legacy `system`
+    /// role, while Responses and other wire APIs default to `developer`. Set this to
+    /// `true` for a Chat provider that accepts `developer`, or `false` to force `system`
+    /// on a Responses or Claude provider.
     #[serde(default)]
     pub supports_developer_role: Option<bool>,
     /// Optional query parameters to append to the base URL.
@@ -529,7 +530,8 @@ impl ModelProviderInfo {
     }
 
     pub fn supports_developer_role(&self) -> bool {
-        self.supports_developer_role.unwrap_or(true)
+        self.supports_developer_role
+            .unwrap_or(self.wire_api != WireApi::Chat)
     }
     pub fn has_command_auth(&self) -> bool {
         self.auth.is_some()

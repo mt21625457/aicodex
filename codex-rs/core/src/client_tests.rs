@@ -756,6 +756,49 @@ fn store_false_drops_id_only_official_reasoning_shells() {
 }
 
 #[test]
+fn store_false_strips_item_ids_for_compatible_openai_named_models() {
+    let mut input = vec![
+        reasoning_item("rs_server"),
+        output_message("assistant", "hello"),
+    ];
+
+    prepare_response_items_for_request(&mut input, /*store*/ false, "kimi-k2.7-code");
+    assert!(
+        input.iter().all(|item| item.id().is_none()),
+        "compatible Responses hosts must not receive unstored item IDs"
+    );
+
+    let mut unknown = vec![
+        reasoning_item("rs_server"),
+        output_message("assistant", "hello"),
+    ];
+    prepare_response_items_for_request(&mut unknown, /*store*/ false, "unknown-slug");
+    assert!(
+        unknown.iter().all(|item| item.id().is_none()),
+        "unknown Responses slugs must not receive unstored item IDs"
+    );
+}
+
+#[test]
+fn store_false_keeps_ids_for_official_gpt_and_reviewer_slugs() {
+    for model in [
+        "chatgpt-4o",
+        "codex-auto-review",
+        "openai/codex-auto-review",
+    ] {
+        let mut input = vec![
+            reasoning_item("rs_server"),
+            output_message("assistant", "hello"),
+        ];
+        prepare_response_items_for_request(&mut input, /*store*/ false, model);
+        assert!(
+            input.iter().any(|item| item.id().is_some()),
+            "{model} must keep official Responses item IDs"
+        );
+    }
+}
+
+#[test]
 fn store_true_keeps_type_valid_ids_and_strips_invalid_ids() {
     let mut input = vec![
         reasoning_item("rs_server"),

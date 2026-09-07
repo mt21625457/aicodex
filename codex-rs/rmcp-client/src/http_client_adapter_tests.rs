@@ -3,12 +3,15 @@ use std::io::ErrorKind;
 use codex_exec_server::HttpRedirectPolicy;
 use http::HeaderMap;
 use http::HeaderValue;
+use http::StatusCode;
 use http::header::AUTHORIZATION;
 use pretty_assertions::assert_eq;
+use rmcp::transport::streamable_http_client::StreamableHttpError;
 
 use super::HttpHeader;
 use super::SseEventSizeLimit;
 use super::StreamableHttpRedirectMode;
+use super::classify_post_message_auth_error;
 use super::mcp_redirect_policy;
 use super::protocol_headers;
 
@@ -282,4 +285,53 @@ fn size_accounting_saturates_without_overflow() {
         .expect_err("saturating counts must still reject an oversized event");
 
     assert_eq!((error.kind(), limit.failed), (ErrorKind::InvalidData, true));
+}
+
+fn auth_header(name: &str, value: &str) -> HttpHeader {
+    HttpHeader {
+        name: name.to_string(),
+        value: value.to_string(),
+        value_env_var: None,
+    }
+}
+
+#[test]
+fn forbidden_insufficient_scope_is_not_auth_required() {
+    let error = classify_post_message_auth_error(
+        StatusCode::FORBIDDEN.as_u16(),
+        &[auth_header(
+            "WWW-Authenticate",
+            r#"Bearer error="insufficient_scope", scope="mcp:tools""#,
+        )],
+    )
+    .expect("403 insufficient_scope must be classified");
+    assert!(matches!(error, StreamableHttpError::InsufficientScope(_)));
+}
+
+#[test]
+fn forbidden_with_other_challenge_is_auth_required() {
+    let error = classify_post_message_auth_error(
+        StatusCode::FORBIDDEN.as_u16(),
+        &[auth_header(
+            "WWW-Authenticate",
+            r#"Bearer error="invalid_token""#,
+        )],
+    )
+    .expect("403 with a non-scope challenge must be classified");
+    assert!(matches!(error, StreamableHttpError::AuthRequired(_)));
+}
+
+#[test]
+fn bare_forbidden_is_not_auth_required() {
+    assert!(classify_post_message_auth_error(StatusCode::FORBIDDEN.as_u16(), &[]).is_none());
+}
+
+#[test]
+fn unauthorized_challenge_is_auth_required() {
+    let error = classify_post_message_auth_error(
+        StatusCode::UNAUTHORIZED.as_u16(),
+        &[auth_header("WWW-Authenticate", r#"Bearer realm="mcp""#)],
+    )
+    .expect("401 with a challenge must be classified");
+    assert!(matches!(error, StreamableHttpError::AuthRequired(_)));
 }

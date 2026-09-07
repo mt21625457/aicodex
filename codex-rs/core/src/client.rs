@@ -78,9 +78,6 @@ use codex_login::RefreshTokenError;
 use codex_login::UnauthorizedRecovery;
 use codex_login::default_client::add_originator_header;
 use codex_login::default_client::create_client_for_route;
-use codex_models_manager::model_info::is_deepseek_model_slug;
-use codex_models_manager::model_info::is_grok_model_slug;
-use codex_models_manager::model_info::is_minimax_model_slug;
 use codex_models_manager::model_info::is_openai_gpt_model_slug;
 use codex_otel::SessionTelemetry;
 use codex_otel::current_span_w3c_trace_context;
@@ -197,12 +194,26 @@ pub(crate) const WEBSOCKET_CONNECT_TIMEOUT: Duration =
 /// Shared Gateway providers may still advertise WebSockets for GPT, so transport
 /// selection must consult the active model slug. Grok, DeepSeek, MiniMax, and
 /// other Responses models stay on HTTP.
+fn official_openai_responses_id_model(model: &str) -> bool {
+    is_openai_gpt_model_slug(model)
+        || model
+            .trim()
+            .rsplit([':', '/'])
+            .next()
+            .unwrap_or(model)
+            .eq_ignore_ascii_case("codex-auto-review")
+}
+
 fn responses_websocket_allowed_for_model(model: &str) -> bool {
-    is_openai_gpt_model_slug(model) || model == "codex-auto-review"
+    official_openai_responses_id_model(model)
 }
 
 fn omit_unstored_response_item_ids(model: &str) -> bool {
-    is_grok_model_slug(model) || is_deepseek_model_slug(model) || is_minimax_model_slug(model)
+    // Official OpenAI Responses persist `rs_*` ids even when `store=false` on
+    // the request. Compatible/third-party Responses services do not, and a
+    // follow-up that still carries those ids 404s with
+    // "Items are not persisted when store is set to false."
+    !official_openai_responses_id_model(model)
 }
 
 pub(crate) fn prepare_response_items_for_request(
@@ -1584,6 +1595,11 @@ impl ModelClientSession {
 
         if last_response.response_id.is_empty() {
             trace!("incremental request failed, no previous response id");
+            return (None, false);
+        }
+        if !request.store && omit_unstored_response_item_ids(&request.model) {
+            // Compatible providers do not persist the previous response when
+            // `store=false`. Reusing that id turns a follow-up into a 404.
             return (None, false);
         }
 

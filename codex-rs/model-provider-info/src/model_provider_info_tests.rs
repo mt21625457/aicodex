@@ -147,7 +147,16 @@ wire_api = "chat"
         "#,
     )
     .unwrap();
-    assert!(modern_provider.supports_developer_role());
+    assert!(!modern_provider.supports_developer_role());
+
+    let responses_provider: ModelProviderInfo = toml::from_str(
+        r#"
+name = "Responses"
+wire_api = "responses"
+        "#,
+    )
+    .unwrap();
+    assert!(responses_provider.supports_developer_role());
 }
 
 #[test]

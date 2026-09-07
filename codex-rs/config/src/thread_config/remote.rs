@@ -481,7 +481,7 @@ mod tests {
             assert_eq!(actual, expected);
             assert_eq!(
                 actual.supports_developer_role(),
-                supports_developer_role.unwrap_or(true)
+                supports_developer_role.unwrap_or(false)
             );
         }
     }

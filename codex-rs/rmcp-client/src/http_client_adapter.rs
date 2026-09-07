@@ -275,29 +275,8 @@ impl StreamableHttpClient for StreamableHttpClientAdapter {
                 StreamableHttpClientAdapterError::SessionExpired404,
             ));
         }
-        if response.status == StatusCode::UNAUTHORIZED.as_u16() {
-            let challenges = response
-                .headers
-                .iter()
-                .filter(|header| header.name.eq_ignore_ascii_case(WWW_AUTHENTICATE.as_str()))
-                .map(|header| header.value.as_str())
-                .collect::<Vec<_>>();
-            if !challenges.is_empty() {
-                // RFC 9110 allows combining these list-based fields; keep challenges after the first.
-                return Err(StreamableHttpError::AuthRequired(AuthRequiredError::new(
-                    challenges.join(", "),
-                )));
-            }
-        }
-        if response.status == StatusCode::FORBIDDEN.as_u16()
-            && let Some(challenge) = insufficient_scope_challenge(&response.headers)
-        {
-            return Err(StreamableHttpError::InsufficientScope(
-                InsufficientScopeError::new(
-                    challenge.www_authenticate_header,
-                    challenge.required_scope,
-                ),
-            ));
+        if let Some(error) = classify_post_message_auth_error(response.status, &response.headers) {
+            return Err(error);
         }
         if matches!(
             StatusCode::from_u16(response.status).ok(),
@@ -707,6 +686,42 @@ fn is_streamable_http_content_type(content_type: &str) -> bool {
         || content_type
             .as_bytes()
             .starts_with(JSON_MIME_TYPE.as_bytes())
+}
+
+fn classify_post_message_auth_error(
+    status: u16,
+    headers: &[HttpHeader],
+) -> Option<StreamableHttpError<StreamableHttpClientAdapterError>> {
+    if status != StatusCode::UNAUTHORIZED.as_u16() && status != StatusCode::FORBIDDEN.as_u16() {
+        return None;
+    }
+    // RFC 6750 / RMCP: 403 + insufficient_scope is a scope upgrade, not a
+    // rejected token. Classify it before any generic WWW-Authenticate path so
+    // AuthClient does not refresh and drop required_scope.
+    if status == StatusCode::FORBIDDEN.as_u16()
+        && let Some(challenge) = insufficient_scope_challenge(headers)
+    {
+        return Some(StreamableHttpError::InsufficientScope(
+            InsufficientScopeError::new(
+                challenge.www_authenticate_header,
+                challenge.required_scope,
+            ),
+        ));
+    }
+    let challenges = headers
+        .iter()
+        .filter(|header| header.name.eq_ignore_ascii_case(WWW_AUTHENTICATE.as_str()))
+        .map(|header| header.value.as_str())
+        .collect::<Vec<_>>();
+    if !challenges.is_empty() {
+        // RFC 9110 allows combining these list-based fields; keep challenges after the first.
+        return Some(StreamableHttpError::AuthRequired(AuthRequiredError::new(
+            challenges.join(", "),
+        )));
+    }
+    // Bare 403 without WWW-Authenticate is a permission denial. Leave it for
+    // the generic UnexpectedServerResponse path so AuthClient does not refresh.
+    None
 }
 
 fn protocol_headers(headers: &HeaderMap) -> Vec<HttpHeader> {

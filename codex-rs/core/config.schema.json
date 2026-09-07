@@ -2357,7 +2357,7 @@
         },
         "supports_developer_role": {
           "default": null,
-          "description": "Whether a Chat Completions provider accepts the modern `developer` message role.\n\n`None` preserves the OpenAI-compatible default (`true`). Set this to `false` only for a provider that implements the legacy role set and requires developer instructions to be serialized as `system` messages.",
+          "description": "Whether a Chat Completions provider accepts the modern `developer` message role.\n\n`None` means `wire_api != Chat`: Chat Completions default to the legacy `system` role, while Responses and other wire APIs default to `developer`. Set this to `true` for a Chat provider that accepts `developer`, or `false` to force `system` on a Responses or Claude provider.",
           "type": "boolean"
         },
         "supports_standalone_web_search": {
