@@ -83,7 +83,7 @@ impl ChatStreamState {
         if !self.created_emitted {
             tx_event
                 .send(Ok(ResponseEvent::Created {
-                    guardian_ticket: None,
+                    response_id: self.response_id.clone(),
                 }))
                 .await
                 .map_err(|error| ApiError::Stream(error.to_string()))?;

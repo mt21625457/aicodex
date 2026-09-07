@@ -57,6 +57,7 @@ pub(crate) use base_instructions::BaseInstructionsFragment;
 pub(crate) use chat_file_tool_guidance::ChatFileToolGuidance;
 pub(crate) use codex_context_fragments::AdditionalContextDeveloperFragment;
 pub(crate) use codex_context_fragments::AdditionalContextUserFragment;
+pub use codex_context_fragments::AnsweredQuestion;
 pub use codex_context_fragments::ContextualUserFragment;
 pub(crate) use compaction_summary::CompactionSummary;
 pub(crate) use contextual_user_message::is_contextual_user_fragment;

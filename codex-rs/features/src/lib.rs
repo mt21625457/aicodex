@@ -330,6 +330,8 @@ pub enum Feature {
     ContextManagement,
     /// Track and report a shared token budget across a session's agent threads.
     RolloutBudget,
+    /// Append trusted response configuration items when the selected reasoning effort changes.
+    ReasoningEffortOverride,
     /// Add current-time reminders to model-visible context.
     CurrentTimeReminder,
     /// Route MCP tool approval prompts through the MCP elicitation request path.
@@ -827,6 +829,11 @@ impl FeaturesToml {
         }
         if let Some(enabled) = self.guardianv2.as_ref().and_then(FeatureToml::enabled) {
             entries.insert(Feature::GuardianV2.key().to_string(), enabled);
+        }
+        if let Some(FeatureToml::Config(config)) = &self.guardianv2
+            && let Some(enabled) = config.thread_context
+        {
+            entries.insert(Feature::GuardianThreadContext.key().to_string(), enabled);
         }
         if let Some(enabled) = self.multi_agent_v2.as_ref().and_then(FeatureToml::enabled) {
             entries.insert(Feature::MultiAgentV2.key().to_string(), enabled);
@@ -1648,7 +1655,7 @@ pub const FEATURES: &[FeatureSpec] = &[
     },
     FeatureSpec {
         id: Feature::GuardianThreadContext,
-        key: "guardian_thread_context",
+        key: "guardianv2.thread_context",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
@@ -1703,6 +1710,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::RolloutBudget,
         key: "rollout_budget",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::ReasoningEffortOverride,
+        key: "reasoning_effort_override",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },

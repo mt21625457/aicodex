@@ -16,6 +16,7 @@ use codex_exec_server_protocol::JSONRPCNotification;
 use codex_exec_server_protocol::JSONRPCRequest;
 use codex_exec_server_protocol::JSONRPCResponse;
 use codex_exec_server_protocol::RequestId;
+use codex_otel::MetricsClient;
 use codex_protocol::protocol::W3cTraceContext;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -30,10 +31,15 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
+use crate::client_telemetry::record_client_request;
 use crate::connection::JsonRpcConnection;
 use crate::connection::JsonRpcConnectionEvent;
 use crate::connection::JsonRpcTransport;
 use crate::rpc_server_requests::RpcServerRequestSender;
+
+#[cfg(test)]
+#[path = "rpc_client_metrics_tests.rs"]
+mod client_metrics_tests;
 
 pub(crate) const SESSION_ALREADY_ATTACHED_ERROR_CODE: i64 = -32010;
 pub(crate) const FILE_CONFLICT_ERROR_CODE: i64 = -32009;
@@ -314,6 +320,7 @@ where
 }
 
 pub(crate) struct RpcClient {
+    metrics: Option<MetricsClient>,
     write_tx: mpsc::Sender<JSONRPCMessage>,
     pending: Arc<Mutex<HashMap<RequestId, PendingRequest>>>,
     inbound_request_ids: Arc<StdMutex<HashSet<RequestId>>>,
@@ -398,6 +405,7 @@ impl RpcClient {
 
         (
             Self {
+                metrics: codex_otel::global(),
                 write_tx,
                 pending,
                 inbound_request_ids: Arc::new(StdMutex::new(HashSet::new())),
@@ -560,6 +568,7 @@ impl RpcClient {
         P: Serialize,
         T: DeserializeOwned,
     {
+        record_client_request(self.metrics.as_ref(), method);
         let _call_slot = self.acquire_regular_call_slot()?;
         self.call_inner(method, params, RpcCallTimeout::None).await
     }
@@ -574,6 +583,7 @@ impl RpcClient {
         P: Serialize,
         T: DeserializeOwned,
     {
+        record_client_request(self.metrics.as_ref(), method);
         let _call_slot = self.acquire_regular_call_slot()?;
         self.call_inner(method, params, RpcCallTimeout::After(call_timeout))
             .await
@@ -598,6 +608,7 @@ impl RpcClient {
         P: Serialize,
         T: DeserializeOwned,
     {
+        record_client_request(self.metrics.as_ref(), method);
         let _call_slot = match self.shared_call_slots.try_acquire() {
             Ok(call_slot) => call_slot,
             Err(_) => match self.cleanup_call_slots.try_acquire() {

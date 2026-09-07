@@ -139,7 +139,7 @@ impl App {
             if let Some(primary_thread_id) = self.primary_thread_id {
                 self.refresh_agent_picker_threads(app_server, primary_thread_id);
             }
-            self.chat_widget.open_multi_agent_enable_prompt();
+            self.chat_widget.open_feature_enable_prompt(Feature::Collab);
             return;
         }
 
@@ -486,6 +486,7 @@ impl App {
             chat_widget.last_terminal_title = previous_terminal_title;
         }
         chat_widget.remote_connection = self.chat_widget.remote_connection.clone();
+        chat_widget.set_local_worktree_operations(self.chat_widget.local_worktree_operations);
         chat_widget.set_agents_navigation_enabled(matches!(
             self.app_server_target,
             AppServerTarget::LocalDaemon { .. }

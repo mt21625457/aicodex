@@ -529,7 +529,7 @@ impl ClaudeStreamState {
                 }
                 tx_event
                     .send(Ok(ResponseEvent::Created {
-                        guardian_ticket: None,
+                        response_id: self.response_id.clone(),
                     }))
                     .await
                     .map_err(|err| ApiError::Stream(err.to_string()))?;
@@ -2080,9 +2080,9 @@ mod tests {
             events.as_slice(),
             [
                 ResponseEvent::ServerModel(model),
-                ResponseEvent::Created { guardian_ticket: None },
+                ResponseEvent::Created { response_id: Some(response_id) },
                 ResponseEvent::Completed { .. }
-            ] if model == "claude-sonnet-4-5"
+            ] if model == "claude-sonnet-4-5" && response_id == "msg_1"
         ));
     }
 
@@ -2141,10 +2141,10 @@ mod tests {
         .await;
 
         assert!(matches!(
-            events[0],
+            &events[0],
             ResponseEvent::Created {
-                guardian_ticket: None
-            }
+                response_id: Some(response_id)
+            } if response_id == "msg_1"
         ));
         assert_eq!(
             events.iter().find_map(|event| match event {

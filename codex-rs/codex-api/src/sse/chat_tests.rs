@@ -46,6 +46,27 @@ async fn collect_events(
 }
 
 #[tokio::test]
+async fn created_event_preserves_missing_response_id() {
+    let events = collect_events(
+        chat_sse(&[json!({
+            "choices": [{
+                "index": 0,
+                "delta": {"content": "hello"},
+                "finish_reason": "stop"
+            }]
+        })]),
+        HashMap::new(),
+    )
+    .await;
+
+    assert_matches!(
+        events.first(),
+        Some(Ok(ResponseEvent::Created { response_id: None }))
+    );
+    assert_matches!(events.last(), Some(Ok(ResponseEvent::Completed { .. })));
+}
+
+#[tokio::test]
 async fn accumulates_text_reasoning_usage_and_stop_reason() {
     let events = collect_events(
         chat_sse(&[
@@ -93,8 +114,8 @@ async fn accumulates_text_reasoning_usage_and_stop_reason() {
     assert_matches!(
         events.first(),
         Some(Ok(ResponseEvent::Created {
-            guardian_ticket: None
-        }))
+            response_id: Some(response_id)
+        })) if response_id == "chatcmpl_1"
     );
     assert_eq!(
         events
@@ -674,8 +695,8 @@ async fn non_meaningful_frames_do_not_reset_idle_deadline() {
     assert_matches!(
         created,
         Ok(ResponseEvent::Created {
-            guardian_ticket: None
-        })
+            response_id: Some(response_id)
+        }) if response_id == "same"
     );
     let event = timeout(Duration::from_secs(1), rx.recv())
         .await

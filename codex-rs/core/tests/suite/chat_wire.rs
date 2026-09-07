@@ -8,6 +8,7 @@ use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ContextTokenUsageSource;
@@ -40,6 +41,7 @@ use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
+use test_case::test_case;
 use wiremock::Mock;
 use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
@@ -47,8 +49,14 @@ use wiremock::matchers::path;
 
 const EXPECTED_AICODEX_USER_AGENT: &str = concat!("aicodex/", env!("CARGO_PKG_VERSION"));
 
+#[test_case(ReasoningEffort::High, "high"; "high")]
+#[test_case(ReasoningEffort::Ultra, "high"; "ultra_resolves_model_effort")]
+#[test_case(ReasoningEffort::Persistent, "disabled"; "persistent_resolves_disabled")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn chat_wire_streams_text_on_chat_path_with_uniform_headers() -> anyhow::Result<()> {
+async fn chat_wire_streams_text_on_chat_path_with_uniform_headers(
+    effort: ReasoningEffort,
+    expected_effort: &str,
+) -> anyhow::Result<()> {
     let server = start_mock_server().await;
     let responses = mount_chat_sse_sequence(
         &server,
@@ -75,7 +83,13 @@ async fn chat_wire_streams_text_on_chat_path_with_uniform_headers() -> anyhow::R
     .await;
     let test = test_codex()
         .with_model("gpt-5.2")
-        .with_config(configure_chat_provider)
+        .with_model_info_override("gpt-5.2", |model| {
+            model.multi_agent_reasoning_effort = Some(ReasoningEffort::High);
+        })
+        .with_config(move |config| {
+            configure_chat_provider(config);
+            config.model_reasoning_effort = Some(effort);
+        })
         .build_with_auto_env(&server)
         .await?;
 
@@ -142,6 +156,7 @@ async fn chat_wire_streams_text_on_chat_path_with_uniform_headers() -> anyhow::R
     );
     let body = request.body_json();
     assert_eq!(body["model"], "gpt-5.2");
+    assert_eq!(body["reasoning_effort"], expected_effort);
     assert_eq!(body["stream"], true);
     assert_eq!(body["stream_options"], json!({"include_usage": true}));
     assert!(body["messages"].as_array().is_some_and(|messages| {

@@ -25,6 +25,7 @@ fn spawn_startup_thread_start(
     local_settings: crate::local_settings::LocalSettings,
     config: Config,
     app_event_tx: AppEventSender,
+    worktree: Option<crate::ManagedTuiWorktree>,
 ) {
     let request_handle = app_server.request_handle();
     let thread_params_mode = app_server.thread_params_mode();
@@ -39,9 +40,67 @@ fn spawn_startup_thread_start(
             remote_cwd_override,
             thread_tool_transport,
         )
-        .await;
+        .await
+        .and_then(|started| {
+            if let Some(worktree) = worktree.as_ref() {
+                worktree.bind(started.session.thread_id)?;
+            }
+            Ok(started)
+        });
         app_event_tx.send(AppEvent::StartupThreadStarted { result });
     });
+}
+
+pub(super) async fn prepare_fresh_startup_config(
+    config: &mut Config,
+    app_server: &AppServerSession,
+    cli_kv_overrides: &[(String, TomlValue)],
+    harness_overrides: &ConfigOverrides,
+) -> Result<bool> {
+    let defaults_cwd = match app_server.thread_params_mode() {
+        crate::app_server_session::ThreadParamsMode::Embedded => config.cwd.as_path(),
+        crate::app_server_session::ThreadParamsMode::Remote => {
+            app_server.remote_cwd_override().unwrap_or(Path::new("."))
+        }
+    };
+    let defaults = super::new_session::read_new_session_defaults(app_server, defaults_cwd).await?;
+    if let Some(defaults) = defaults.as_ref() {
+        super::new_session::overlay_new_session_defaults(
+            config,
+            defaults,
+            cli_kv_overrides,
+            harness_overrides,
+        );
+    }
+    apply_managed_new_thread_defaults(
+        config,
+        app_server.managed_new_thread_defaults(),
+        cli_kv_overrides,
+        harness_overrides,
+    );
+    Ok(defaults.is_some())
+}
+
+pub(super) fn startup_model(
+    config: &Config,
+    bootstrap: &AppServerBootstrap,
+    server_defaults_read: bool,
+) -> String {
+    config.model.clone().unwrap_or_else(|| {
+        if server_defaults_read {
+            // Bootstrap was seeded with local config, which may differ from a cleared server
+            // model. Use the server's model catalog when config/read returned model: null.
+            bootstrap
+                .available_models
+                .iter()
+                .find(|model| model.is_default)
+                .or_else(|| bootstrap.available_models.first())
+                .map(|model| model.model.clone())
+                .unwrap_or_else(|| bootstrap.default_model.clone())
+        } else {
+            bootstrap.default_model.clone()
+        }
+    })
 }
 
 impl App {
@@ -102,6 +161,7 @@ impl App {
         startup_bootstrap: Option<AppServerBootstrap>,
         startup_hooks_browser: Option<HooksListEntry>,
         mut startup_draft: StartupDraftPump,
+        managed_worktree: Option<crate::ManagedTuiWorktree>,
     ) -> Result<AppExitInfo> {
         use tokio_stream::StreamExt;
 
@@ -158,12 +218,30 @@ impl App {
             "connected app-server platform"
         );
         let bootstrap_ms = bootstrap.duration.as_millis();
-        if matches!(
+        let server_defaults_read = if matches!(
             &session_selection,
-            SessionSelection::StartFresh
-                | SessionSelection::Exit
-                | SessionSelection::AgentsOverview
+            SessionSelection::StartFresh | SessionSelection::Exit
         ) {
+            match startup_draft
+                .run_until(
+                    tui,
+                    prepare_fresh_startup_config(
+                        &mut config,
+                        &app_server,
+                        &cli_kv_overrides,
+                        &harness_overrides,
+                    ),
+                )
+                .await
+            {
+                Ok(Ok(defaults_read)) => defaults_read,
+                Ok(Err(err)) => return shutdown_on_startup_error(app_server, err).await,
+                Err(err) => return shutdown_on_startup_error(app_server, err).await,
+            }
+        } else {
+            false
+        };
+        if matches!(&session_selection, SessionSelection::AgentsOverview) {
             apply_managed_new_thread_defaults(
                 &mut config,
                 app_server.managed_new_thread_defaults(),
@@ -171,7 +249,7 @@ impl App {
                 &harness_overrides,
             );
         }
-        let mut model = config.model.clone().unwrap_or(bootstrap.default_model);
+        let mut model = startup_model(&config, &bootstrap, server_defaults_read);
         let available_models = bootstrap.available_models;
         let remote_connection = crate::status::remote_connection::remote_connection_status_value(
             &app_server_target,
@@ -295,6 +373,7 @@ impl App {
                         local_settings.clone(),
                         config.clone(),
                         app_event_tx.clone(),
+                        managed_worktree.clone(),
                     );
                 }
                 // Count a startup tooltip once the initial chat widget can render it.
@@ -457,6 +536,11 @@ impl App {
                 else {
                     return Ok(cancel_session_start(app_server).await);
                 };
+                if let Some(worktree) = managed_worktree.as_ref()
+                    && let Err(err) = worktree.bind(forked.session.thread_id)
+                {
+                    return shutdown_on_startup_error(app_server, err).await;
+                }
                 let init = crate::chatwidget::ChatWidgetInit {
                     local_settings: local_settings.clone(),
                     config: config.clone(),
@@ -491,6 +575,10 @@ impl App {
         };
         chat_widget.note_rendered_width(tui.terminal.last_known_screen_size.width);
         chat_widget.remote_connection = remote_connection;
+        chat_widget.set_local_worktree_operations(!crate::uses_remote_workspace_or_environment(
+            &app_server_target,
+            environment_manager.as_ref(),
+        ));
         chat_widget.set_agents_navigation_enabled(matches!(
             app_server_target,
             AppServerTarget::LocalDaemon { .. }

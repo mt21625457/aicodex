@@ -110,36 +110,6 @@ async fn disabled_request_logging_suppresses_transport_url_and_body() {
     assert!(!logs.contains("body-secret"));
 }
 
-#[test]
-fn sensitive_encoded_body_stays_redacted_after_preparation_and_retries() {
-    let payload = json!({"client_metadata": {"guardian_ticket": "secret-receipt"}});
-    let expected_trace = "body_kind=encoded_json original_bytes=10 preview_bytes=10 truncated=false preview=\"<redacted>\"";
-    for compression in [RequestCompression::None, RequestCompression::Zstd] {
-        let mut request = Request::new(Method::POST, "https://example.com/responses".into())
-            .with_compression(compression);
-        request.body = Some(RequestBody::EncodedJson(
-            EncodedJsonBody::encode(&payload)
-                .unwrap()
-                .without_body_logging(),
-        ));
-        assert_eq!(request_body_for_trace(&request), expected_trace);
-        for _ in 0..2 {
-            request = request.clone().into_prepared().unwrap();
-            assert_eq!(request_body_for_trace(&request), expected_trace);
-            assert!(!format!("{request:?}").contains("secret-receipt"));
-            let body = request.prepare_body_for_send().unwrap().body.unwrap();
-            let decoded = match compression {
-                RequestCompression::None => body.to_vec(),
-                RequestCompression::Zstd => zstd::stream::decode_all(body.as_ref()).unwrap(),
-            };
-            assert_eq!(
-                serde_json::from_slice::<serde_json::Value>(&decoded).unwrap(),
-                payload
-            );
-        }
-    }
-}
-
 #[tokio::test]
 async fn connection_failures_are_classified_without_exposing_request_urls() {
     let unavailable_server =
