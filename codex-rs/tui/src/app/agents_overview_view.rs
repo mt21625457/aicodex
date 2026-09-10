@@ -7,6 +7,7 @@ mod input;
 mod render;
 
 use super::agents_overview::AGENTS_OVERVIEW_VIEW_ID;
+use crate::app_event::AgentsOverviewAction;
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::BottomPaneView;
@@ -41,6 +42,7 @@ use ratatui::text::Span;
 use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
@@ -96,6 +98,33 @@ fn display_title(thread: &Thread) -> &str {
     title.trim().lines().next().unwrap_or("Untitled task")
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct AgentsOverviewProjectGroup {
+    key: (PathBuf, PathBuf),
+    heading: PathBuf,
+}
+
+impl AgentsOverviewProjectGroup {
+    fn for_thread(thread: &Thread, worktrees_enabled: bool) -> Self {
+        if worktrees_enabled
+            && let Some(identity) = codex_git_utils::repository_identity(thread.cwd.as_path())
+        {
+            Self {
+                key: (
+                    identity.common_dir.into_path_buf(),
+                    identity.relative_cwd.clone(),
+                ),
+                heading: identity.primary_root.as_path().join(identity.relative_cwd),
+            }
+        } else {
+            Self {
+                key: (thread.cwd.to_path_buf(), PathBuf::new()),
+                heading: thread.cwd.to_path_buf(),
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct AgentsOverviewViewState {
     // Search and rename never borrow the new-task draft.
@@ -104,6 +133,7 @@ pub(super) struct AgentsOverviewViewState {
     pub(super) key_chord_hint: Option<Vec<(String, String)>>,
     pub(super) focus: AgentsOverviewFocus,
     pub(super) connection_notice: Option<&'static str>,
+    pub(super) server_version_notice: Option<String>,
     search: String,
     searching: bool,
     pub(super) status_grouping: bool,
@@ -148,9 +178,9 @@ impl AgentsOverviewViewState {
 
 pub(super) struct AgentsOverviewView {
     pub(super) rows: Vec<AgentsOverviewRow>,
+    project_groups: Vec<AgentsOverviewProjectGroup>,
     selected: usize,
     state: Arc<Mutex<AgentsOverviewViewState>>,
-    exit_on_cancel: bool,
     app_event_tx: AppEventSender,
     keymap: ListKeymap,
     agents_keymap: AgentsKeymap,
@@ -162,7 +192,7 @@ impl AgentsOverviewView {
     pub(super) fn new(
         rows: Vec<AgentsOverviewRow>,
         selected_thread_id: Option<ThreadId>,
-        exit_on_cancel: bool,
+        worktrees_enabled: bool,
         app_event_tx: AppEventSender,
         keymap: RuntimeKeymap,
         state: Arc<Mutex<AgentsOverviewViewState>>,
@@ -183,11 +213,15 @@ impl AgentsOverviewView {
         })
         .chain([("esc".to_string(), "tasks".to_string())])
         .collect();
+        let project_groups = rows
+            .iter()
+            .map(|row| AgentsOverviewProjectGroup::for_thread(&row.thread, worktrees_enabled))
+            .collect();
         let mut view = Self {
             rows,
+            project_groups,
             selected,
             state,
-            exit_on_cancel,
             app_event_tx,
             keymap: keymap.list,
             agents_keymap: keymap.agents,
@@ -237,7 +271,7 @@ impl AgentsOverviewView {
         if !state.status_grouping {
             visible.sort_by_key(|index| {
                 (
-                    &self.rows[*index].thread.cwd,
+                    &self.project_groups[*index].key,
                     std::cmp::Reverse(self.rows[*index].thread.updated_at),
                 )
             });
@@ -320,7 +354,7 @@ impl AgentsOverviewView {
 
     fn render_rows(&self, area: Rect, buf: &mut Buffer) {
         let mut offset = 0;
-        let mut previous_group: Option<String> = None;
+        let mut previous_group_index: Option<usize> = None;
         let project_grouping = !self
             .state
             .lock()
@@ -333,10 +367,12 @@ impl AgentsOverviewView {
             .unwrap_or_default();
         let mut height = 2;
         while first > 0 {
-            let previous = &self.rows[visible[first - 1]];
-            let current = &self.rows[visible[first]];
+            let previous_index = visible[first - 1];
+            let current_index = visible[first];
+            let previous = &self.rows[previous_index];
+            let current = &self.rows[current_index];
             let group_changed = if project_grouping {
-                previous.thread.cwd != current.thread.cwd
+                self.project_groups[previous_index].key != self.project_groups[current_index].key
             } else {
                 previous.group != current.group
             };
@@ -353,21 +389,30 @@ impl AgentsOverviewView {
             }
             let row = &self.rows[index];
             let group = if project_grouping {
-                row.thread.cwd.display().to_string()
+                self.project_groups[index].heading.display().to_string()
             } else {
                 row.group.label().to_string()
             };
-            if previous_group.as_deref() != Some(group.as_str()) {
-                offset += u16::from(previous_group.is_some());
+            let group_changed = previous_group_index.is_none_or(|previous_index| {
+                if project_grouping {
+                    self.project_groups[previous_index].key != self.project_groups[index].key
+                } else {
+                    self.rows[previous_index].group != row.group
+                }
+            });
+            if group_changed {
+                offset += u16::from(previous_group_index.is_some());
                 if offset >= area.height {
                     break;
                 }
                 let count = self
                     .rows
                     .iter()
-                    .filter(|candidate| {
+                    .enumerate()
+                    .filter(|(candidate_index, candidate)| {
                         if project_grouping {
-                            candidate.thread.cwd == row.thread.cwd
+                            self.project_groups[*candidate_index].key
+                                == self.project_groups[index].key
                         } else {
                             candidate.group == row.group
                         }
@@ -376,7 +421,7 @@ impl AgentsOverviewView {
                 Line::from(vec![group.clone().bold(), format!("  {count}").dim()])
                     .render(Rect::new(area.x, area.y + offset, area.width, 1), buf);
                 offset += 1;
-                previous_group = Some(group);
+                previous_group_index = Some(index);
             }
             if offset >= area.height {
                 break;
@@ -603,7 +648,9 @@ impl BottomPaneView for AgentsOverviewView {
             return;
         }
 
-        if self.state().connection_notice.is_some() && !self.agents_keymap.new_task.is_pressed(key)
+        if self.state().connection_notice.is_some()
+            && !self.agents_keymap.new_task.is_pressed(key)
+            && self.keymap.action_for(key) != Some(ListAction::Cancel)
         {
             match self.keymap.action_for(key) {
                 Some(ListAction::MoveUp) => self.move_selection(/*forward*/ false),
@@ -640,6 +687,29 @@ impl BottomPaneView for AgentsOverviewView {
                     state.searching = false;
                     state.renaming = true;
                 }
+            }
+            return;
+        }
+        for (bindings, action) in [
+            (&self.agents_keymap.archive, AgentsOverviewAction::Archive),
+            (&self.agents_keymap.delete, AgentsOverviewAction::Delete),
+        ] {
+            if bindings.is_pressed(key) {
+                if let Some(row) = self.selected_row() {
+                    self.app_event_tx
+                        .send(AppEvent::ConfirmAgentsOverviewAction {
+                            thread_id: row.thread_id,
+                            action,
+                        });
+                }
+                return;
+            }
+        }
+        if self.agents_keymap.hide.is_pressed(key) {
+            if let Some(row) = self.selected_row() {
+                self.app_event_tx.send(AppEvent::HideAgentsOverviewThread {
+                    thread_id: row.thread_id,
+                });
             }
             return;
         }
@@ -680,11 +750,7 @@ impl BottomPaneView for AgentsOverviewView {
                         state.input.clear();
                         state.renaming = false;
                     } else {
-                        if self.exit_on_cancel {
-                            self.app_event_tx
-                                .send(AppEvent::Exit(crate::app::ExitMode::Immediate));
-                        }
-                        state.completion = Some(ViewCompletion::Cancelled);
+                        state.focus_composer();
                     }
                 }
                 ListAction::PageUp | ListAction::PageDown => {
@@ -692,6 +758,7 @@ impl BottomPaneView for AgentsOverviewView {
                         self.move_selection(action == ListAction::PageDown);
                     }
                 }
+                ListAction::MoveRight if !self.state().editing_metadata() => self.activate(),
                 ListAction::MoveLeft | ListAction::MoveRight => {}
             }
         } else if key.code == KeyCode::Backspace {

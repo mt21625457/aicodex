@@ -359,6 +359,7 @@ fn reference_context_item() -> TurnContextItem {
     TurnContextItem {
         turn_id: Some("reference-turn".to_string()),
         root_turn_id: None,
+        disabled_plugin_ids: None,
         cwd: AbsolutePathBuf::try_from(
             std::env::current_dir()
                 .expect("current directory")
@@ -659,7 +660,7 @@ fn annotated_history_apis_preserve_envelopes() {
 #[test_case(Some(100), 85, 100, true; "saved limit has no additional allowance")]
 #[test_case(Some(30_000), 20_000, 30_000, false; "large explicit budget")]
 fn record_annotated_items_preserves_metadata_while_processing_item(
-    fallback_token_limit_override: Option<usize>,
+    history_truncation_token_limit: Option<usize>,
     repeat_count: usize,
     expected_token_limit: usize,
     expected_truncation: bool,
@@ -677,7 +678,7 @@ fn record_annotated_items_preserves_metadata_while_processing_item(
             internal_chat_message_metadata_passthrough: None,
         },
         metadata: Some(CodexHarnessMetadata {
-            fallback_token_limit_override,
+            history_truncation_token_limit,
             ..Default::default()
         }),
     };
@@ -1269,8 +1270,10 @@ fn drop_last_n_user_turns_preserves_prefix() {
 
     // A steered message shares its source turn, but rollback must keep the earlier
     // instruction and answer as complete evidence, including after the next compaction.
-    let mut history = ContextManager::default();
-    history.enable_user_message_retention();
+    let mut history = ContextManager::with_guardian_context_mode(
+        GuardianContextMode::ThreadOwned,
+        &codex_protocol::protocol::SessionSource::Exec,
+    );
     let mut expected = None;
     for (id, text) in [
         ("restriction", "Never publish publicly."),

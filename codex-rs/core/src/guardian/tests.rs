@@ -61,8 +61,6 @@ use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::GranularApprovalConfig;
 use codex_protocol::protocol::GuardianAssessmentStatus;
-use codex_protocol::protocol::GuardianRiskLevel;
-use codex_protocol::protocol::GuardianUserAuthorization;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_utils_path_uri::LegacyAppPathString;
@@ -146,111 +144,6 @@ impl codex_extension_api::ContextContributor for GuardianMemoryContextProbe {
             }
         })
     }
-}
-
-#[test]
-fn guardian_rejection_circuit_breaker_interrupts_after_three_consecutive_denials() {
-    let mut circuit_breaker = GuardianRejectionCircuitBreaker::default();
-    assert_eq!(
-        circuit_breaker.record_denial("turn-1", GuardianRejectionCircuitBreakerPolicy::Standard),
-        GuardianRejectionCircuitBreakerAction::Continue
-    );
-    assert_eq!(
-        circuit_breaker.record_denial("turn-1", GuardianRejectionCircuitBreakerPolicy::Standard),
-        GuardianRejectionCircuitBreakerAction::Continue
-    );
-    assert_eq!(
-        circuit_breaker.record_denial("turn-1", GuardianRejectionCircuitBreakerPolicy::Standard),
-        GuardianRejectionCircuitBreakerAction::InterruptTurn {
-            consecutive_denials: 3,
-            recent_denials: 3,
-        }
-    );
-    assert_eq!(
-        circuit_breaker.record_denial("turn-1", GuardianRejectionCircuitBreakerPolicy::Standard),
-        GuardianRejectionCircuitBreakerAction::Continue
-    );
-}
-
-#[test]
-fn guardian_rejection_circuit_breaker_interrupts_cyber_models_after_one_denial() {
-    let mut circuit_breaker = GuardianRejectionCircuitBreaker::default();
-    assert_eq!(
-        circuit_breaker.record_denial("turn-1", GuardianRejectionCircuitBreakerPolicy::CyberModel),
-        GuardianRejectionCircuitBreakerAction::InterruptTurn {
-            consecutive_denials: 1,
-            recent_denials: 1,
-        }
-    );
-    assert_eq!(
-        circuit_breaker.record_denial("turn-1", GuardianRejectionCircuitBreakerPolicy::CyberModel),
-        GuardianRejectionCircuitBreakerAction::Continue
-    );
-}
-
-#[test]
-fn guardian_rejection_circuit_breaker_resets_consecutive_denials_on_non_denial() {
-    let mut circuit_breaker = GuardianRejectionCircuitBreaker::default();
-    assert_eq!(
-        circuit_breaker.record_denial("turn-1", GuardianRejectionCircuitBreakerPolicy::Standard),
-        GuardianRejectionCircuitBreakerAction::Continue
-    );
-    circuit_breaker.record_non_denial("turn-1");
-    assert_eq!(
-        circuit_breaker.record_denial("turn-1", GuardianRejectionCircuitBreakerPolicy::Standard),
-        GuardianRejectionCircuitBreakerAction::Continue
-    );
-    assert_eq!(
-        circuit_breaker.record_denial("turn-1", GuardianRejectionCircuitBreakerPolicy::Standard),
-        GuardianRejectionCircuitBreakerAction::Continue
-    );
-    assert_eq!(
-        circuit_breaker.record_denial("turn-1", GuardianRejectionCircuitBreakerPolicy::Standard),
-        GuardianRejectionCircuitBreakerAction::InterruptTurn {
-            consecutive_denials: 3,
-            recent_denials: 4,
-        }
-    );
-}
-
-#[test]
-fn auto_review_rejection_circuit_breaker_interrupts_after_ten_recent_denials() {
-    let mut circuit_breaker = GuardianRejectionCircuitBreaker::default();
-    for _ in 0..9 {
-        assert_eq!(
-            circuit_breaker
-                .record_denial("turn-1", GuardianRejectionCircuitBreakerPolicy::Standard),
-            GuardianRejectionCircuitBreakerAction::Continue
-        );
-        circuit_breaker.record_non_denial("turn-1");
-    }
-    assert_eq!(
-        circuit_breaker.record_denial("turn-1", GuardianRejectionCircuitBreakerPolicy::Standard),
-        GuardianRejectionCircuitBreakerAction::InterruptTurn {
-            consecutive_denials: 1,
-            recent_denials: 10,
-        }
-    );
-}
-
-#[test]
-fn auto_review_rejection_circuit_breaker_forgets_denials_outside_recent_review_window() {
-    let mut circuit_breaker = GuardianRejectionCircuitBreaker::default();
-    for _ in 0..9 {
-        assert_eq!(
-            circuit_breaker
-                .record_denial("turn-1", GuardianRejectionCircuitBreakerPolicy::Standard),
-            GuardianRejectionCircuitBreakerAction::Continue
-        );
-        circuit_breaker.record_non_denial("turn-1");
-    }
-    for _ in 0..(AUTO_REVIEW_DENIAL_WINDOW_SIZE - 18) {
-        circuit_breaker.record_non_denial("turn-1");
-    }
-    assert_eq!(
-        circuit_breaker.record_denial("turn-1", GuardianRejectionCircuitBreakerPolicy::Standard),
-        GuardianRejectionCircuitBreakerAction::Continue
-    );
 }
 
 async fn guardian_test_session_and_turn(
@@ -355,6 +248,7 @@ async fn seed_guardian_parent_history(session: &Arc<Session>, turn: &Arc<TurnCon
     session
         .record_conversation_items(
             turn.as_ref(),
+            turn.model_info(),
             &[
                 ResponseItem::Message {
                     id: None,
@@ -529,7 +423,7 @@ async fn build_guardian_prompt_full_mode_preserves_initial_review_format() -> an
     )
     .await?;
 
-    let text = guardian_prompt_text(&prompt.items);
+    let text = guardian_prompt_text(&prompt.context.into_user_inputs()?);
     assert!(text.contains("whose request action you are assessing"));
     assert!(text.contains(">>> TRANSCRIPT START\n"));
     assert!(text.contains(">>> TRANSCRIPT END\n"));
@@ -548,6 +442,7 @@ async fn build_guardian_prompt_prefers_retry_reason_over_approval_reason() -> an
 
     let prompt = build_guardian_prompt_items_with_parent_turn(
         session.as_ref(),
+        session.conversation_history_snapshot().await.as_ref(),
         Some(&context),
         ApprovalRequestReasons {
             approval: Some("A policy rule requires approval.".to_string()),
@@ -569,7 +464,7 @@ async fn build_guardian_prompt_prefers_retry_reason_over_approval_reason() -> an
     )
     .await?;
 
-    let text = guardian_prompt_text(&prompt.items);
+    let text = guardian_prompt_text(&prompt.context.into_user_inputs()?);
     assert!(text.contains("Retry reason:\nThe sandbox blocked the initial command.\n\n"));
     assert!(!text.contains("A policy rule requires approval."));
 
@@ -589,6 +484,7 @@ async fn build_guardian_prompt_truncates_oversized_approval_reason() -> anyhow::
 
     let prompt = build_guardian_prompt_items_with_parent_turn(
         session.as_ref(),
+        session.conversation_history_snapshot().await.as_ref(),
         Some(&context),
         ApprovalRequestReasons {
             approval: Some(approval_reason),
@@ -610,8 +506,8 @@ async fn build_guardian_prompt_truncates_oversized_approval_reason() -> anyhow::
     )
     .await?;
 
-    let reason_item = prompt
-        .items
+    let items = prompt.context.into_user_inputs()?;
+    let reason_item = items
         .iter()
         .find_map(|item| match item {
             codex_protocol::user_input::UserInput::Text { text, .. }
@@ -682,6 +578,7 @@ async fn build_guardian_prompt_includes_parent_turn_denied_reads() -> anyhow::Re
 
     let prompt = build_guardian_prompt_items_with_parent_turn(
         session.as_ref(),
+        session.conversation_history_snapshot().await.as_ref(),
         Some(&context),
         ApprovalRequestReasons {
             approval: None,
@@ -703,7 +600,7 @@ async fn build_guardian_prompt_includes_parent_turn_denied_reads() -> anyhow::Re
     )
     .await?;
 
-    let text = guardian_prompt_text(&prompt.items);
+    let text = guardian_prompt_text(&prompt.context.into_user_inputs()?);
     assert!(text.contains("PARENT TURN PERMISSION CONTEXT START"));
     assert!(text.contains("do not approve escalation whose purpose is to read them"));
     assert!(text.contains(denied_root.to_string_lossy().as_ref()));
@@ -720,6 +617,7 @@ async fn build_guardian_prompt_delta_mode_preserves_original_numbering() -> anyh
     session
         .record_conversation_items(
             turn.as_ref(),
+            turn.model_info(),
             &[
                 ResponseItem::Message {
                     id: None,
@@ -766,7 +664,7 @@ async fn build_guardian_prompt_delta_mode_preserves_original_numbering() -> anyh
     )
     .await?;
 
-    let text = guardian_prompt_text(&prompt.items);
+    let text = guardian_prompt_text(&prompt.context.into_user_inputs()?);
     assert!(text.contains("added since your last approval assessment"));
     assert!(text.contains(">>> TRANSCRIPT DELTA START\n"));
     assert!(text.contains("[5] user: Please also push the second docs fix."));
@@ -807,7 +705,7 @@ async fn build_guardian_prompt_delta_mode_handles_empty_delta() -> anyhow::Resul
     )
     .await?;
 
-    let text = guardian_prompt_text(&prompt.items);
+    let text = guardian_prompt_text(&prompt.context.into_user_inputs()?);
     assert!(text.contains(">>> TRANSCRIPT DELTA START\n"));
     assert!(text.contains("<no retained transcript delta entries>"));
     assert!(text.contains(">>> TRANSCRIPT DELTA END\n"));
@@ -845,7 +743,7 @@ async fn build_guardian_prompt_stale_delta_cursor_falls_back_to_full_prompt() ->
     )
     .await?;
 
-    let text = guardian_prompt_text(&prompt.items);
+    let text = guardian_prompt_text(&prompt.context.into_user_inputs()?);
     assert!(text.contains("whose request action you are assessing"));
     assert!(text.contains(">>> TRANSCRIPT START\n"));
     assert!(!text.contains("TRANSCRIPT DELTA"));
@@ -887,6 +785,7 @@ async fn build_guardian_prompt_stale_delta_version_falls_back_to_full_prompt() -
     session
         .record_conversation_items(
             turn.as_ref(),
+            turn.model_info(),
             &[
                 ResponseItem::Message {
                     id: None,
@@ -933,7 +832,7 @@ async fn build_guardian_prompt_stale_delta_version_falls_back_to_full_prompt() -
     )
     .await?;
 
-    let text = guardian_prompt_text(&prompt.items);
+    let text = guardian_prompt_text(&prompt.context.into_user_inputs()?);
     assert!(text.contains("whose request action you are assessing"));
     assert!(text.contains(">>> TRANSCRIPT START\n"));
     assert!(!text.contains("TRANSCRIPT DELTA"));
@@ -949,9 +848,18 @@ fn collect_guardian_transcript_entries(
     history: &dyn codex_guardian_context::SectionHistory,
     node_repl_result_token_limit: usize,
 ) -> Vec<ConversationTranscriptEntry> {
-    prompt::collect_guardian_context(history, node_repl_result_token_limit, &[], &[])
-        .expect("collect Guardian context")
-        .transcript
+    prompt::collect_guardian_context(
+        history,
+        node_repl_result_token_limit,
+        &[],
+        &[],
+        /*planned_action*/ None,
+        /*permissions*/ None,
+        /*node_repl*/ None,
+    )
+    .expect("collect Guardian context")
+    .transcript_entries()
+    .to_vec()
 }
 
 #[test]
@@ -1228,7 +1136,7 @@ fn guardian_action_formatters_reject_large_aggregate_payloads() {
     let action = GuardianApprovalRequest::ApplyPatch {
         id: "patch-1".to_string(),
         cwd: test_path_buf("/tmp").abs().into(),
-        files: vec![file; 1_000],
+        files: vec![file; 20_000],
         patch: String::new(),
     };
 
@@ -1240,7 +1148,7 @@ fn guardian_action_formatters_reject_large_aggregate_payloads() {
             error
                 .expect_err("aggregate action should exceed the review limit")
                 .to_string(),
-            "Guardian action exceeds the 8000-byte review limit"
+            "Guardian action exceeds the 200000-byte review limit"
         );
     }
 }
@@ -1319,6 +1227,7 @@ async fn build_guardian_prompt_items_keeps_required_node_repl_reviews_generic() 
 
     let prompt = build_guardian_prompt_items_with_parent_turn(
         session.as_ref(),
+        session.conversation_history_snapshot().await.as_ref(),
         Some(&context),
         ApprovalRequestReasons {
             approval: None,
@@ -1330,7 +1239,7 @@ async fn build_guardian_prompt_items_keeps_required_node_repl_reviews_generic() 
     )
     .await?;
 
-    let text = guardian_prompt_text(&prompt.items);
+    let text = guardian_prompt_text(&prompt.context.into_user_inputs()?);
     assert!(text.contains("Assess the exact planned action below."));
     assert!(text.contains("Retry reason:\nRetry the authorized browser inspection."));
     assert!(text.contains("Planned action JSON:"));
@@ -1357,6 +1266,7 @@ async fn build_guardian_prompt_items_keeps_other_requests_generic() -> anyhow::R
     ] {
         let prompt = build_guardian_prompt_items_with_parent_turn(
             session.as_ref(),
+            session.conversation_history_snapshot().await.as_ref(),
             Some(&context),
             ApprovalRequestReasons::default(),
             request,
@@ -1365,7 +1275,7 @@ async fn build_guardian_prompt_items_keeps_other_requests_generic() -> anyhow::R
         )
         .await?;
 
-        let text = guardian_prompt_text(&prompt.items);
+        let text = guardian_prompt_text(&prompt.context.into_user_inputs()?);
         assert!(text.contains("Assess the exact planned action below."));
         assert!(text.contains("Planned action JSON:"));
         assert!(!text.contains("Node REPL action JSON:"));
@@ -1450,7 +1360,7 @@ async fn build_guardian_prompt_items_explains_network_access_review_scope() -> a
     )
     .await?;
 
-    let text = guardian_prompt_text(&prompt.items);
+    let text = guardian_prompt_text(&prompt.context.into_user_inputs()?);
     assert!(text.contains("Below is a proposed network access request under review."));
     assert!(!text.contains("Network approval context:"));
     assert!(
@@ -1683,8 +1593,8 @@ async fn cancelled_guardian_review_emits_terminal_abort_without_warning() {
     let cancel_token = CancellationToken::new();
     cancel_token.cancel();
 
-    let decision = review_approval_request_with_cancel(
-        &session,
+    let decision = super::decide_approval(
+        Arc::clone(&session),
         &turn,
         "review-cancelled-guardian".to_string(),
         GuardianApprovalRequest::ApplyPatch {
@@ -1694,8 +1604,12 @@ async fn cancelled_guardian_review_emits_terminal_abort_without_warning() {
             patch: "*** Begin Patch\n*** Update File: guardian.txt\n@@\n+hello\n*** End Patch"
                 .to_string(),
         },
-        /*retry_reason*/ None,
+        ApprovalRequestReasons {
+            approval: None,
+            retry: None,
+        },
         GuardianReviewOptions {
+            require_guardian: true,
             plugin_attribution_override: None,
             approval_request_source: GuardianApprovalRequestSource::MainTurn,
             external_cancel: Some(cancel_token),
@@ -1704,7 +1618,7 @@ async fn cancelled_guardian_review_emits_terminal_abort_without_warning() {
     )
     .await;
 
-    assert_eq!(decision, ReviewDecision::Abort);
+    assert_eq!(decision, Some(ReviewDecision::Abort));
 
     let mut guardian_statuses = Vec::new();
     let mut warnings = Vec::new();
@@ -1924,87 +1838,6 @@ fn build_guardian_transcript_preserves_recent_tool_context_when_user_history_is_
     assert_eq!(
         omission,
         Some("Some conversation entries were omitted.".to_string())
-    );
-}
-
-#[test]
-fn parse_guardian_assessment_extracts_embedded_json() {
-    let parsed = parse_guardian_assessment(Some(
-        "preface {\"risk_level\":\"medium\",\"user_authorization\":\"low\",\"outcome\":\"allow\",\"rationale\":\"ok\"}",
-    ))
-    .expect("guardian assessment");
-
-    assert_eq!(
-        parsed,
-        GuardianAssessment {
-            risk_level: GuardianRiskLevel::Medium,
-            user_authorization: GuardianUserAuthorization::Low,
-            outcome: GuardianAssessmentOutcome::Allow,
-            rationale: "ok".to_string(),
-        }
-    );
-}
-
-#[test]
-fn parse_guardian_assessment_treats_bare_allow_as_low_risk() {
-    let parsed =
-        parse_guardian_assessment(Some(r#"{"outcome":"allow"}"#)).expect("guardian assessment");
-
-    assert_eq!(
-        parsed,
-        GuardianAssessment {
-            risk_level: GuardianRiskLevel::Low,
-            user_authorization: GuardianUserAuthorization::Unknown,
-            outcome: GuardianAssessmentOutcome::Allow,
-            rationale: "Auto-review returned a low-risk allow decision.".to_string(),
-        }
-    );
-}
-
-#[test]
-fn parse_guardian_assessment_treats_bare_deny_as_high_risk() {
-    let parsed =
-        parse_guardian_assessment(Some(r#"{"outcome":"deny"}"#)).expect("guardian assessment");
-
-    assert_eq!(
-        parsed,
-        GuardianAssessment {
-            risk_level: GuardianRiskLevel::High,
-            user_authorization: GuardianUserAuthorization::Unknown,
-            outcome: GuardianAssessmentOutcome::Deny,
-            rationale: "Auto-review returned a deny decision without a rationale.".to_string(),
-        }
-    );
-}
-
-#[test]
-fn guardian_output_schema_requires_only_outcome_and_allows_optional_details() {
-    let schema = guardian_output_schema();
-
-    assert_eq!(
-        schema,
-        serde_json::json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "risk_level": {
-                    "type": "string",
-                    "enum": ["low", "medium", "high", "critical"]
-                },
-                "user_authorization": {
-                    "type": "string",
-                    "enum": ["unknown", "low", "medium", "high"]
-                },
-                "outcome": {
-                    "type": "string",
-                    "enum": ["allow", "deny"]
-                },
-                "rationale": {
-                    "type": "string"
-                }
-            },
-            "required": ["outcome"]
-        })
     );
 }
 
@@ -2299,6 +2132,7 @@ async fn guardian_review_request_layout_matches_model_visible_request_snapshot()
     session
         .record_conversation_items(
             turn.as_ref(),
+            turn.model_info(),
             &[ResponseItem::Message {
                 id: None,
                 role: "user".to_string(),
@@ -2358,6 +2192,12 @@ async fn guardian_review_request_layout_matches_model_visible_request_snapshot()
         Some(codex_analytics::GuardianReviewSessionKind::TrunkNew)
     ));
     let request = request_log.single_request();
+    let turn_metadata: serde_json::Value = serde_json::from_str(
+        &request
+            .header("x-codex-turn-metadata")
+            .expect("guardian turn metadata"),
+    )?;
+    assert_eq!(turn_metadata["turn_trigger"], "guardian_review");
     let request_body = request.body_json();
     assert!(
         request_body.get("tools").is_none(),
@@ -2496,7 +2336,8 @@ async fn build_guardian_prompt_items_includes_parent_session_id() -> anyhow::Res
     )
     .await?;
     let prompt_text = prompt
-        .items
+        .context
+        .into_user_inputs()?
         .into_iter()
         .map(|item| match item {
             codex_protocol::user_input::UserInput::Text { text, .. } => text,
@@ -2604,6 +2445,7 @@ async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow:
     session
         .record_conversation_items(
             turn.as_ref(),
+            turn.model_info(),
             &[
                 ResponseItem::Message {
                     id: None,
@@ -2655,7 +2497,10 @@ async fn guardian_reuses_prompt_cache_key_and_appends_prior_reviews() -> anyhow:
     )
     .await;
     let committed_rollout_items = session
-        .guardian_review_session
+        .guardian_review_session()
+        .trunk()
+        .await
+        .expect("reviewer")
         .committed_fork_rollout_items_for_test()
         .await
         .expect("committed guardian fork snapshot");
@@ -2979,7 +2824,10 @@ async fn guardian_reused_trunk_ignores_stale_prior_turn_completion() -> anyhow::
     ));
 
     session
-        .guardian_review_session
+        .guardian_review_session()
+        .trunk()
+        .await
+        .expect("reviewer")
         .send_trunk_event_raw_for_test(Event {
             id: "stale-turn".to_string(),
             msg: EventMsg::TurnComplete(TurnCompleteEvent {
@@ -3137,7 +2985,7 @@ async fn guardian_review_surfaces_responses_api_errors_in_rejection_reason() -> 
         "denial rationale should not fall back to the generic missing payload error"
     );
     assert!(
-        rejection.contains("Reason: Automatic approval review failed:")
+        rejection.starts_with("Automatic approval review failed:")
             && rejection.contains(error_message),
         "rejection message should include guardian rationale: {rejection}"
     );
@@ -3393,14 +3241,12 @@ async fn escalated_retry_bypasses_extension_approval_and_runs_guardian() -> anyh
     struct AutoApprovingReviewContributor;
 
     impl codex_extension_api::ApprovalReviewContributor for AutoApprovingReviewContributor {
-        fn fast_decision<'a>(
+        fn decide<'a>(
             &'a self,
-            _session_store: &'a codex_extension_api::ExtensionData,
-            _thread_store: &'a codex_extension_api::ExtensionData,
-            _prompt: &'a str,
-            _extension_metrics: Option<Arc<dyn codex_extension_api::ExtensionMetrics>>,
-        ) -> codex_extension_api::ExtensionFuture<'a, Option<ReviewDecision>> {
-            Box::pin(async move { Some(ReviewDecision::Approved) })
+            _input: &'a codex_extension_api::ApprovalDecisionInput<'_>,
+        ) -> codex_extension_api::ExtensionFuture<'a, Option<codex_extension_api::ApprovalDecision>>
+        {
+            Box::pin(async { Some(codex_extension_api::ApprovalDecision::Allow) })
         }
     }
 
@@ -3564,7 +3410,7 @@ async fn guardian_ephemeral_retry_preserves_parallel_trunk_and_fork_history() ->
         );
         session
             .record_conversation_items(
-                turn.as_ref(),
+                turn.as_ref(), turn.model_info(),
                 &[
                     ResponseItem::Message {
                         id: None,
@@ -3640,7 +3486,7 @@ async fn guardian_ephemeral_retry_preserves_parallel_trunk_and_fork_history() ->
         );
         session
             .record_conversation_items(
-                turn.as_ref(),
+                turn.as_ref(), turn.model_info(),
                 &[
                     ResponseItem::Message {
                         id: None,
@@ -4181,4 +4027,30 @@ async fn guardian_review_session_config_uses_default_guardian_policy_without_req
             BUNDLED_GUARDIAN_POLICY_TEMPLATE,
         ))
     );
+}
+
+// Keep the existing reviewer tests on the production decision path.
+async fn review_approval_request(
+    session: &Arc<Session>,
+    context: impl Into<GuardianReviewContext>,
+    review_id: String,
+    request: GuardianApprovalRequest,
+    reasons: ApprovalRequestReasons,
+) -> ReviewDecision {
+    super::decide_approval(
+        Arc::clone(session),
+        context,
+        review_id,
+        request,
+        reasons,
+        GuardianReviewOptions {
+            require_guardian: true,
+            plugin_attribution_override: None,
+            approval_request_source: GuardianApprovalRequestSource::MainTurn,
+            external_cancel: None,
+            require_synchronous_review: false,
+        },
+    )
+    .await
+    .expect("Guardian should handle the request")
 }
