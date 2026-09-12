@@ -1079,39 +1079,7 @@ where
 fn base_mock() -> (MockBuilder, ResponseMock) {
     let response_mock = ResponseMock::new();
     let mock = Mock::given(method("POST"))
-        .and(path_regex(".*/(responses|guardian)$"))
-        .and(response_mock.clone());
-    (mock, response_mock)
-}
-
-fn claude_messages_mock() -> (MockBuilder, ResponseMock) {
-    let response_mock = ResponseMock::new();
-    let mock = Mock::given(method("POST"))
-        .and(path_regex(".*/messages$"))
-        .and(response_mock.clone());
-    (mock, response_mock)
-}
-
-fn chat_completions_mock() -> (MockBuilder, ResponseMock) {
-    let response_mock = ResponseMock::new();
-    let mock = Mock::given(method("POST"))
-        .and(path_regex(".*/chat/completions$"))
-        .and(response_mock.clone());
-    (mock, response_mock)
-}
-
-fn claude_count_tokens_mock() -> (MockBuilder, ResponseMock) {
-    let response_mock = ResponseMock::new();
-    let mock = Mock::given(method("POST"))
-        .and(path_regex(".*/messages/count_tokens$"))
-        .and(response_mock.clone());
-    (mock, response_mock)
-}
-
-fn compact_mock() -> (MockBuilder, ResponseMock) {
-    let response_mock = ResponseMock::new();
-    let mock = Mock::given(method("POST"))
-        .and(path_regex(".*/responses/compact$"))
+        .and(path_regex(".*/(responses|guardian|guardian-classifier)$"))
         .and(response_mock.clone());
     (mock, response_mock)
 }
@@ -1140,119 +1108,6 @@ where
 pub async fn mount_sse_once(server: &MockServer, body: String) -> ResponseMock {
     let (mock, response_mock) = base_mock();
     mock.respond_with(sse_response(body))
-        .up_to_n_times(1)
-        .mount(server)
-        .await;
-    response_mock
-}
-
-pub async fn mount_compact_json_once(server: &MockServer, body: serde_json::Value) -> ResponseMock {
-    mount_compact_response_once(
-        server,
-        ResponseTemplate::new(200)
-            .insert_header("content-type", "application/json")
-            .set_body_json(body),
-    )
-    .await
-}
-
-/// Mount a `/responses/compact` mock that mirrors the default remote compaction shape:
-/// keep user+developer messages from the request, drop assistant/tool artifacts, and append one
-/// compaction item carrying the provided summary text.
-pub async fn mount_compact_user_history_with_summary_once(
-    server: &MockServer,
-    summary_text: &str,
-) -> ResponseMock {
-    mount_compact_user_history_with_summary_sequence(server, vec![summary_text.to_string()]).await
-}
-
-/// Same as [`mount_compact_user_history_with_summary_once`], but for multiple compact calls.
-/// Each incoming compact request receives the next summary text in order.
-pub async fn mount_compact_user_history_with_summary_sequence(
-    server: &MockServer,
-    summary_texts: Vec<String>,
-) -> ResponseMock {
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering;
-
-    #[derive(Debug)]
-    struct UserHistorySummaryResponder {
-        num_calls: AtomicUsize,
-        summary_texts: Vec<String>,
-    }
-
-    impl Respond for UserHistorySummaryResponder {
-        fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
-            let call_num = self.num_calls.fetch_add(1, Ordering::SeqCst);
-            let summary_text = self
-                .summary_texts
-                .get(call_num)
-                .expect("missing summary text for compact request");
-            let body_bytes = decode_body_bytes(
-                &request.body,
-                request
-                    .headers
-                    .get("content-encoding")
-                    .and_then(|value| value.to_str().ok()),
-            );
-            let body_json: Value =
-                serde_json::from_slice(&body_bytes).expect("failed to parse compact request body");
-            let mut output = body_json
-                .get("input")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                // TODO(ccunningham): Update this mock to match future compaction model behavior:
-                // return user/developer/assistant messages since the last compaction item, then
-                // append a single newest compaction item.
-                // Match current remote compaction behavior: keep user/developer messages and
-                // omit assistant/tool history entries.
-                .filter(|item| {
-                    item.get("type").and_then(Value::as_str) == Some("message")
-                        && matches!(
-                            item.get("role").and_then(Value::as_str),
-                            Some("user") | Some("developer")
-                        )
-                })
-                .collect::<Vec<Value>>();
-            let compaction_turn_id = body_json["client_metadata"]["turn_id"].as_str();
-            // Match Responses API: generated compaction items inherit the compact request turn.
-            let mut compaction_item = serde_json::json!({
-                "type": "compaction",
-                "encrypted_content": summary_text,
-            });
-            if let Some(turn_id) = compaction_turn_id {
-                compaction_item["internal_chat_message_metadata_passthrough"] =
-                    serde_json::json!({ "turn_id": turn_id });
-            }
-            output.push(compaction_item);
-            ResponseTemplate::new(200)
-                .insert_header("content-type", "application/json")
-                .set_body_json(serde_json::json!({ "output": output }))
-        }
-    }
-
-    let num_calls = summary_texts.len();
-    let responder = UserHistorySummaryResponder {
-        num_calls: AtomicUsize::new(0),
-        summary_texts,
-    };
-    let (mock, response_mock) = compact_mock();
-    mock.respond_with(responder)
-        .up_to_n_times(num_calls as u64)
-        .expect(num_calls as u64)
-        .mount(server)
-        .await;
-    response_mock
-}
-
-pub async fn mount_compact_response_once(
-    server: &MockServer,
-    response: ResponseTemplate,
-) -> ResponseMock {
-    let (mock, response_mock) = compact_mock();
-    mock.respond_with(response)
         .up_to_n_times(1)
         .mount(server)
         .await;
@@ -1578,45 +1433,6 @@ pub async fn mount_sse_sequence(server: &MockServer, bodies: Vec<String>) -> Res
 /// [`mount_sse_sequence`]. Future wire APIs should add equivalent helpers for
 /// their request path, headers, stream events, tool loop, usage, and error
 /// behavior instead of reusing the OpenAI Responses mock path.
-pub async fn mount_claude_sse_sequence(server: &MockServer, bodies: Vec<String>) -> ResponseMock {
-    mount_sse_sequence_with_mock(server, bodies, claude_messages_mock()).await
-}
-
-/// Mounts a sequence of responses for each POST to `/v1/chat/completions`.
-pub async fn mount_chat_sse_sequence(server: &MockServer, bodies: Vec<String>) -> ResponseMock {
-    mount_sse_sequence_with_mock(server, bodies, chat_completions_mock()).await
-}
-
-pub async fn mount_claude_sse_sequence_with_delays(
-    server: &MockServer,
-    bodies: Vec<(String, Option<Duration>)>,
-) -> ResponseMock {
-    mount_sse_sequence_with_delays_and_mock(server, bodies, claude_messages_mock()).await
-}
-
-pub async fn mount_claude_count_tokens_response(
-    server: &MockServer,
-    response: ResponseTemplate,
-    expected_calls: u64,
-) -> ResponseMock {
-    let (mock, response_mock) = claude_count_tokens_mock();
-    mock.respond_with(response)
-        .up_to_n_times(expected_calls)
-        .expect(expected_calls)
-        .mount(server)
-        .await;
-    response_mock
-}
-
-pub async fn mount_claude_count_tokens_never(server: &MockServer) -> ResponseMock {
-    let (mock, response_mock) = claude_count_tokens_mock();
-    mock.respond_with(ResponseTemplate::new(500))
-        .expect(0)
-        .mount(server)
-        .await;
-    response_mock
-}
-
 async fn mount_sse_sequence_with_mock(
     server: &MockServer,
     bodies: Vec<String>,
@@ -1705,45 +1521,6 @@ pub async fn mount_response_sequence(
     };
 
     let (mock, response_mock) = base_mock();
-    mock.respond_with(responder)
-        .up_to_n_times(num_calls as u64)
-        .expect(num_calls as u64)
-        .mount(server)
-        .await;
-    response_mock
-}
-
-/// Mounts a sequence of responses for each POST to `/v1/responses/compact`.
-/// Panics if more requests are received than responses provided.
-pub async fn mount_compact_response_sequence(
-    server: &MockServer,
-    responses: Vec<ResponseTemplate>,
-) -> ResponseMock {
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering;
-
-    struct SeqResponder {
-        num_calls: AtomicUsize,
-        responses: Vec<ResponseTemplate>,
-    }
-
-    impl Respond for SeqResponder {
-        fn respond(&self, _: &wiremock::Request) -> ResponseTemplate {
-            let call_num = self.num_calls.fetch_add(1, Ordering::SeqCst);
-            self.responses
-                .get(call_num)
-                .expect("missing response for compact call")
-                .clone()
-        }
-    }
-
-    let num_calls = responses.len();
-    let responder = SeqResponder {
-        num_calls: AtomicUsize::new(0),
-        responses,
-    };
-
-    let (mock, response_mock) = compact_mock();
     mock.respond_with(responder)
         .up_to_n_times(num_calls as u64)
         .expect(num_calls as u64)

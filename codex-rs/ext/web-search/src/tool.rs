@@ -494,7 +494,7 @@ mod tests {
 
     fn kimi_tool(server: &MockServer) -> WebSearchTool {
         let mut primary =
-            create_oss_provider_with_base_url(&format!("{}/v1", server.uri()), WireApi::Claude);
+            create_oss_provider_with_base_url(&format!("{}/v1", server.uri()), WireApi::Responses);
         primary.experimental_bearer_token = Some("provider-token".into());
         let mut openai =
             ModelProviderInfo::create_openai_provider(Some(format!("{}/v1", server.uri())));
@@ -717,7 +717,7 @@ mod tests {
         let mut tool = kimi_tool(&server);
         tool.moonshot_search.api_key = None;
         let mut primary =
-            create_oss_provider_with_base_url("https://provider.example/v1", WireApi::Claude);
+            create_oss_provider_with_base_url("https://provider.example/v1", WireApi::Responses);
         primary.experimental_bearer_token = Some("provider-token".into());
         tool.primary_provider = create_model_provider(primary, /*auth_manager*/ None);
         let result = tool

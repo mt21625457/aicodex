@@ -20,7 +20,6 @@ base_url = "http://localhost:11434/v1"
         auth: None,
         aws: None,
         wire_api: WireApi::Responses,
-        supports_developer_role: None,
         query_params: None,
         http_headers: None,
         env_http_headers: None,
@@ -54,7 +53,6 @@ query_params = { api-version = "2025-04-01-preview" }
         auth: None,
         aws: None,
         wire_api: WireApi::Responses,
-        supports_developer_role: None,
         query_params: Some(maplit::hashmap! {
             "api-version".to_string() => "2025-04-01-preview".into(),
         }),
@@ -92,7 +90,6 @@ supports_standalone_web_search = true
         auth: None,
         aws: None,
         wire_api: WireApi::Responses,
-        supports_developer_role: None,
         query_params: None,
         http_headers: Some(maplit::hashmap! {
             "X-Example-Header".to_string() => "example-value".into(),
@@ -114,69 +111,6 @@ supports_standalone_web_search = true
 }
 
 #[test]
-fn test_deserialize_chat_wire_api() {
-    let provider_toml = r#"
-name = "OpenAI using Chat Completions"
-base_url = "https://api.openai.com/v1"
-env_key = "OPENAI_API_KEY"
-wire_api = "chat"
-        "#;
-
-    let provider: ModelProviderInfo = toml::from_str(provider_toml).unwrap();
-    assert_eq!(provider.wire_api, WireApi::Chat);
-}
-
-#[test]
-fn test_deserialize_chat_developer_role_capability() {
-    let provider_toml = r#"
-name = "Legacy Chat Completions"
-base_url = "https://chat.example.com/v1"
-env_key = "OPENAI_API_KEY"
-wire_api = "chat"
-supports_developer_role = false
-        "#;
-
-    let provider: ModelProviderInfo = toml::from_str(provider_toml).unwrap();
-    assert_eq!(provider.wire_api, WireApi::Chat);
-    assert!(!provider.supports_developer_role());
-
-    let modern_provider: ModelProviderInfo = toml::from_str(
-        r#"
-name = "Modern Chat Completions"
-wire_api = "chat"
-        "#,
-    )
-    .unwrap();
-    assert!(modern_provider.supports_developer_role());
-}
-
-#[test]
-fn test_deserialize_claude_wire_api() {
-    let provider_toml = r#"
-name = "Anthropic"
-base_url = "https://api.anthropic.com/v1"
-env_key = "ANTHROPIC_API_KEY"
-wire_api = "claude"
-        "#;
-
-    let provider: ModelProviderInfo = toml::from_str(provider_toml).unwrap();
-    assert_eq!(provider.wire_api, WireApi::Claude);
-}
-
-#[test]
-fn test_deserialize_anthropic_wire_api_alias() {
-    let provider_toml = r#"
-name = "Anthropic"
-base_url = "https://api.anthropic.com/v1"
-env_key = "ANTHROPIC_API_KEY"
-wire_api = "anthropic"
-        "#;
-
-    let provider: ModelProviderInfo = toml::from_str(provider_toml).unwrap();
-    assert_eq!(provider.wire_api, WireApi::Claude);
-}
-
-#[test]
 fn test_deserialize_websocket_connect_timeout() {
     let provider_toml = r#"
 name = "OpenAI"
@@ -190,27 +124,10 @@ supports_websockets = true
 }
 
 #[test]
-fn test_chat_wire_disables_responses_websocket_capability() {
-    let mut provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
-    provider.wire_api = WireApi::Chat;
-    provider.supports_websockets = true;
-
-    assert!(!provider.supports_responses_websocket());
-}
-
-#[test]
 fn test_supports_remote_compaction_for_openai() {
     let provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
 
     assert!(provider.supports_remote_compaction());
-}
-
-#[test]
-fn test_chat_wire_disables_remote_compaction_for_openai() {
-    let mut provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
-    provider.wire_api = WireApi::Chat;
-
-    assert!(!provider.supports_remote_compaction());
 }
 
 #[test]
@@ -242,7 +159,6 @@ fn test_supports_remote_compaction_for_azure_name() {
         auth: None,
         aws: None,
         wire_api: WireApi::Responses,
-        supports_developer_role: None,
         query_params: None,
         http_headers: None,
         env_http_headers: None,
@@ -259,18 +175,6 @@ fn test_supports_remote_compaction_for_azure_name() {
 }
 
 #[test]
-fn test_chat_wire_disables_remote_compaction_for_azure() {
-    let provider = ModelProviderInfo {
-        wire_api: WireApi::Chat,
-        ..ModelProviderInfo::create_openai_provider(Some(
-            "https://example.openai.azure.com/openai/v1".to_string(),
-        ))
-    };
-
-    assert!(!provider.supports_remote_compaction());
-}
-
-#[test]
 fn test_supports_remote_compaction_for_non_openai_non_azure_provider() {
     let provider = ModelProviderInfo {
         name: "Example".into(),
@@ -281,7 +185,6 @@ fn test_supports_remote_compaction_for_non_openai_non_azure_provider() {
         auth: None,
         aws: None,
         wire_api: WireApi::Responses,
-        supports_developer_role: None,
         query_params: None,
         http_headers: None,
         env_http_headers: None,
@@ -370,8 +273,11 @@ name = "Amazon Bedrock"
 base_url = "https://bedrock.example.com/v1"
 
 [aws]
-profile = "codex-bedrock"
 region = "us-west-2"
+
+[aws.credential_export]
+command = "aws-vault"
+args = ["--profile", "codex-bedrock"]
 
 [aws.auth_refresh]
 command = "aws"
@@ -383,8 +289,13 @@ args = ["login", "--profile", "codex-bedrock"]
     assert_eq!(
         provider.aws,
         Some(ModelProviderAwsAuthInfo {
-            profile: Some("codex-bedrock".to_string()),
+            profile: None,
             region: Some("us-west-2".to_string()),
+            credential_export: Some(AwsCredentialExportConfig {
+                command: "aws-vault".to_string(),
+                args: vec!["--profile".into(), "codex-bedrock".into()],
+                timeout_ms: NonZeroU64::new(30_000).expect("timeout should be non-zero"),
+            }),
             auth_refresh: Some(AwsAuthRefreshConfig {
                 command: "aws".to_string(),
                 args: vec!["login".into(), "--profile".into(), "codex-bedrock".into()],
@@ -408,10 +319,10 @@ fn test_create_amazon_bedrock_provider() {
             aws: Some(ModelProviderAwsAuthInfo {
                 profile: None,
                 region: None,
+                credential_export: None,
                 auth_refresh: None,
             }),
             wire_api: WireApi::Responses,
-            supports_developer_role: None,
             query_params: None,
             http_headers: Some(maplit::hashmap! {
                 AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_HEADER.to_string() =>
@@ -447,6 +358,7 @@ fn test_create_amazon_bedrock_runtime_provider_with_aws_configuration() {
         ModelProviderInfo::create_amazon_bedrock_runtime_provider(Some(ModelProviderAwsAuthInfo {
             profile: Some("runtime-profile".to_string()),
             region: Some("us-west-2".to_string()),
+            credential_export: None,
             auth_refresh: None,
         }));
 
@@ -462,6 +374,7 @@ fn test_create_amazon_bedrock_runtime_provider_with_aws_configuration() {
             Some(ModelProviderAwsAuthInfo {
                 profile: Some("runtime-profile".to_string()),
                 region: Some("us-west-2".to_string()),
+                credential_export: None,
                 auth_refresh: None,
             }),
             None,
@@ -559,6 +472,11 @@ fn test_merge_configured_model_providers_adds_custom_provider() {
 
 #[test]
 fn test_merge_configured_model_providers_applies_amazon_bedrock_aws_override() {
+    let credential_export = AwsCredentialExportConfig {
+        command: "aws-vault".to_string(),
+        args: vec!["export".into(), "codex-bedrock".into()],
+        timeout_ms: NonZeroU64::new(30_000).expect("timeout should be non-zero"),
+    };
     let auth_refresh = AwsAuthRefreshConfig {
         command: "aws".to_string(),
         args: vec!["login".into(), "--profile".into(), "codex-bedrock".into()],
@@ -568,8 +486,9 @@ fn test_merge_configured_model_providers_applies_amazon_bedrock_aws_override() {
         AMAZON_BEDROCK_PROVIDER_ID.to_string(),
         ModelProviderInfo {
             aws: Some(ModelProviderAwsAuthInfo {
-                profile: Some("codex-bedrock".to_string()),
+                profile: None,
                 region: Some("us-west-2".to_string()),
+                credential_export: Some(credential_export.clone()),
                 auth_refresh: Some(auth_refresh.clone()),
             }),
             ..ModelProviderInfo::default()
@@ -581,8 +500,9 @@ fn test_merge_configured_model_providers_applies_amazon_bedrock_aws_override() {
         .get_mut(AMAZON_BEDROCK_PROVIDER_ID)
         .expect("Amazon Bedrock provider should be built in")
         .aws = Some(ModelProviderAwsAuthInfo {
-        profile: Some("codex-bedrock".to_string()),
+        profile: None,
         region: Some("us-west-2".to_string()),
+        credential_export: Some(credential_export),
         auth_refresh: Some(auth_refresh),
     });
 
@@ -600,6 +520,7 @@ fn test_merge_configured_model_providers_applies_runtime_overrides_independently
     let runtime_aws = ModelProviderAwsAuthInfo {
         profile: Some("runtime-profile".to_string()),
         region: Some("eu-west-1".to_string()),
+        credential_export: None,
         auth_refresh: None,
     };
     let configured_model_providers = std::collections::HashMap::from([(
@@ -637,6 +558,7 @@ fn test_merge_configured_model_providers_applies_amazon_bedrock_transport_overri
             aws: Some(ModelProviderAwsAuthInfo {
                 profile: Some("codex-bedrock".to_string()),
                 region: Some("us-west-2".to_string()),
+                credential_export: None,
                 auth_refresh: None,
             }),
             http_headers: Some(maplit::hashmap! {
@@ -655,6 +577,7 @@ fn test_merge_configured_model_providers_applies_amazon_bedrock_transport_overri
     expected_provider.aws = Some(ModelProviderAwsAuthInfo {
         profile: Some("codex-bedrock".to_string()),
         region: Some("us-west-2".to_string()),
+        credential_export: None,
         auth_refresh: None,
     });
     expected_provider
@@ -680,6 +603,7 @@ fn test_merge_configured_model_providers_rejects_amazon_bedrock_non_default_fiel
             aws: Some(ModelProviderAwsAuthInfo {
                 profile: Some("codex-bedrock".to_string()),
                 region: None,
+                credential_export: None,
                 auth_refresh: None,
             }),
             ..ModelProviderInfo::default()
@@ -692,7 +616,7 @@ fn test_merge_configured_model_providers_rejects_amazon_bedrock_non_default_fiel
             configured_model_providers,
         ),
         Err(
-            "model_providers.amazon-bedrock only supports changing `base_url`, `auth`, `http_headers`, `aws.profile`, `aws.region`, and `aws.auth_refresh`; other non-default provider fields are not supported"
+            "model_providers.amazon-bedrock only supports changing `base_url`, `auth`, `http_headers`, `aws.profile`, `aws.region`, `aws.credential_export`, and `aws.auth_refresh`; other non-default provider fields are not supported"
                 .to_string()
         )
     );
@@ -706,6 +630,7 @@ fn test_merge_configured_model_providers_allows_amazon_bedrock_default_fields() 
             aws: Some(ModelProviderAwsAuthInfo {
                 profile: None,
                 region: None,
+                credential_export: None,
                 auth_refresh: None,
             }),
             wire_api: WireApi::Responses,
@@ -728,6 +653,7 @@ fn test_validate_provider_aws_rejects_conflicting_auth() {
         aws: Some(ModelProviderAwsAuthInfo {
             profile: None,
             region: None,
+            credential_export: None,
             auth_refresh: None,
         }),
         env_key: Some("AWS_BEARER_TOKEN_BEDROCK".to_string()),
@@ -747,6 +673,7 @@ fn test_validate_provider_aws_rejects_websockets() {
         aws: Some(ModelProviderAwsAuthInfo {
             profile: None,
             region: None,
+            credential_export: None,
             auth_refresh: None,
         }),
         requires_openai_auth: false,
@@ -777,6 +704,7 @@ fn test_validate_provider_aws_auth_refresh_command() {
             ModelProviderInfo::create_amazon_bedrock_provider(Some(ModelProviderAwsAuthInfo {
                 profile: None,
                 region: None,
+                credential_export: None,
                 auth_refresh: Some(AwsAuthRefreshConfig {
                     command: command.to_string(),
                     args: Vec::new(),
@@ -785,6 +713,78 @@ fn test_validate_provider_aws_auth_refresh_command() {
             }));
 
         assert_eq!(provider.validate(), expected);
+    }
+}
+
+#[test]
+fn test_validate_provider_aws_credential_export_command() {
+    let absolute_command = std::env::current_exe()
+        .expect("current executable should have a path")
+        .to_string_lossy()
+        .into_owned();
+    for (command, expected) in [
+        (
+            String::new(),
+            Err("provider aws.credential_export.command must not be empty".to_string()),
+        ),
+        (
+            "  ".to_string(),
+            Err("provider aws.credential_export.command must not be empty".to_string()),
+        ),
+        ("aws-vault".to_string(), Ok(())),
+        (absolute_command, Ok(())),
+        (
+            "./scripts/export-credentials".to_string(),
+            Err(
+                "provider aws.credential_export.command must be an absolute path or a bare executable name"
+                    .to_string(),
+            ),
+        ),
+        (
+            "scripts/export-credentials".to_string(),
+            Err(
+                "provider aws.credential_export.command must be an absolute path or a bare executable name"
+                    .to_string(),
+            ),
+        ),
+        (
+            "scripts/.".to_string(),
+            Err(
+                "provider aws.credential_export.command must be an absolute path or a bare executable name"
+                    .to_string(),
+            ),
+        ),
+    ] {
+        let mut provider =
+            ModelProviderInfo::create_amazon_bedrock_provider(Some(ModelProviderAwsAuthInfo {
+                profile: None,
+                region: Some("us-west-2".to_string()),
+                credential_export: Some(AwsCredentialExportConfig {
+                    command,
+                    args: vec!["--secret-argument".into()],
+                    timeout_ms: NonZeroU64::new(30_000).expect("timeout should be non-zero"),
+                }),
+                auth_refresh: Some(AwsAuthRefreshConfig {
+                    command: "aws".to_string(),
+                    args: Vec::new(),
+                    timeout_ms: NonZeroU64::new(300_000).expect("timeout should be non-zero"),
+                }),
+            }));
+
+        assert_eq!(provider.validate(), expected);
+        if expected.is_ok() {
+            provider.aws.as_mut().expect("AWS config").profile = Some("codex-bedrock".to_string());
+            assert_eq!(
+                provider.validate(),
+                Err("provider aws.credential_export cannot be combined with aws.profile".to_string()),
+            );
+        }
+        let export = provider
+            .aws
+            .as_ref()
+            .and_then(|aws| aws.credential_export.as_ref())
+            .expect("credential export should be configured");
+        assert!(!format!("{export:?}").contains("--secret-argument"));
     }
 }
 
@@ -830,5 +830,14 @@ fn kimi_model_slug_detection_matches_the_shared_routing_matrix() {
         "gateway:compatible",
     ] {
         assert!(!is_kimi_model_slug(slug), "unexpected Kimi slug: {slug}");
+    }
+}
+
+#[test]
+fn retired_wire_protocols_report_responses_migration() {
+    for protocol in ["chat", "claude", "anthropic"] {
+        let config = format!("name = \"custom\"\nwire_api = \"{protocol}\"\n");
+        let error = toml::from_str::<ModelProviderInfo>(&config).unwrap_err();
+        assert!(error.to_string().contains("Set wire_api = \"responses\""));
     }
 }

@@ -53,7 +53,7 @@ impl StreamingSseServer {
 /// Starts a lightweight HTTP server that supports:
 /// - GET /v1/models -> empty models response
 /// - GET /v1/responses -> 426 to select the HTTP fallback
-/// - POST /v1/responses or /v1/chat/completions -> SSE stream gated per-chunk, served in order
+/// - POST /v1/responses -> SSE stream gated per-chunk, served in order
 ///
 /// Returns the server handle and a list of receivers that fire when each
 /// response stream finishes sending its final chunk.
@@ -122,7 +122,7 @@ pub async fn start_streaming_sse_server(
                             return;
                         }
 
-                        if method == "POST" && matches!(path, "/v1/responses" | "/v1/chat/completions") {
+                        if method == "POST" && path == "/v1/responses" {
                             let body = match read_request_body(&mut stream, &request, body_prefix)
                                 .await
                             {

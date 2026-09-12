@@ -39,11 +39,11 @@ fn key_tag_hashes_authorization() {
 }
 
 #[test]
-fn key_tag_hashes_x_api_key_for_claude() {
+fn key_tag_hashes_custom_api_key_header() {
     let mut headers = HeaderMap::new();
-    headers.insert("x-api-key", HeaderValue::from_static("sk-ant-test"));
+    headers.insert("x-api-key", HeaderValue::from_static("custom-key-test"));
     let tag = authorization_key_tag(&headers);
-    assert_eq!(tag, hex_encode(&sha256_8(b"sk-ant-test")));
+    assert_eq!(tag, hex_encode(&sha256_8(b"custom-key-test")));
 }
 
 #[test]

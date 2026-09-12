@@ -638,9 +638,6 @@ async fn response_item_ids_are_sent_for_all_remote_v2_compaction_requests() -> a
     .await;
     let test = test_codex()
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
-        .with_config(|config| {
-            let _ = config.features.enable(Feature::RemoteCompactionV2);
-        })
         .build(&server)
         .await?;
 
@@ -1426,117 +1423,6 @@ async fn provider_auth_command_refreshes_after_401() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn provider_auth_command_refreshes_after_claude_401_error_envelope() {
-    skip_if_no_network!();
-
-    let server = MockServer::start().await;
-    let auth_fixture = ProviderAuthCommandFixture::new(&["first-token", "second-token"]).unwrap();
-
-    Mock::given(method("POST"))
-        .and(path("/v1/messages"))
-        .and(header_regex("Authorization", "Bearer first-token"))
-        .respond_with(ResponseTemplate::new(401).set_body_string(
-            r#"{"type":"error","error":{"type":"authentication_error","message":"bad key"}}"#,
-        ))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/v1/messages"))
-        .and(header_regex("Authorization", "Bearer second-token"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("content-type", "text/event-stream")
-                .set_body_raw(claude_completed_sse(), "text/event-stream"),
-        )
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    send_provider_auth_request_for_wire_api(&server, auth_fixture.auth(), WireApi::Claude).await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn provider_auth_command_refreshes_after_chat_401() {
-    skip_if_no_network!();
-
-    let server = MockServer::start().await;
-    let auth_fixture = ProviderAuthCommandFixture::new(&["first-token", "second-token"]).unwrap();
-
-    Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
-        .and(header_regex("Authorization", "Bearer first-token"))
-        .respond_with(ResponseTemplate::new(401).set_body_string("unauthorized"))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
-        .and(header_regex("Authorization", "Bearer second-token"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("content-type", "text/event-stream")
-                .set_body_raw(
-                    "data: {\"id\":\"chatcmpl_1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
-                    "text/event-stream",
-                ),
-        )
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    send_provider_auth_request_for_wire_api(&server, auth_fixture.auth(), WireApi::Chat).await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn provider_auth_command_surfaces_claude_401_when_recovery_exhausted() {
-    skip_if_no_network!();
-
-    let server = MockServer::start().await;
-    let auth_fixture = ProviderAuthCommandFixture::new(&["only-token"]).unwrap();
-
-    Mock::given(method("POST"))
-        .and(path("/v1/messages"))
-        .and(header_regex("Authorization", "Bearer only-token"))
-        .respond_with(ResponseTemplate::new(401).set_body_string(
-            r#"{"type":"error","error":{"type":"authentication_error","message":"bad key"}}"#,
-        ))
-        .expect(1)
-        .mount(&server)
-        .await;
-
-    let error =
-        try_provider_auth_request_for_wire_api(&server, auth_fixture.auth(), WireApi::Claude)
-            .await
-            .expect_err("auth should fail after recovery is exhausted");
-
-    assert!(matches!(
-        error.details(),
-        codex_protocol::error::CodexErrorDetails::UnexpectedStatus(err)
-            if err.status == http::StatusCode::UNAUTHORIZED
-                && err.body.contains("authentication_error")
-    ));
-}
-
-fn claude_completed_sse() -> String {
-    [
-        r#"event: message_start
-data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[]}}
-
-"#,
-        r#"event: message_delta
-data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":1,"output_tokens":1}}
-
-"#,
-        r#"event: message_stop
-data: {"type":"message_stop"}
-
-"#,
-    ]
-    .join("")
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn provider_auth_command_recovers_after_initial_resolution_failure() {
     skip_if_no_network!();
 
@@ -1649,7 +1535,6 @@ async fn try_provider_auth_request_for_wire_api(
         auth: Some(auth),
         aws: None,
         wire_api,
-        supports_developer_role: None,
         query_params: None,
         http_headers: None,
         env_http_headers: None,
@@ -2455,7 +2340,7 @@ async fn includes_default_reasoning_effort_in_request_when_defined_by_model_info
         sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
     )
     .await;
-    let TestCodex { codex, .. } = test_codex().with_model("gpt-5.4").build(&server).await?;
+    let TestCodex { codex, .. } = test_codex().with_model("gpt-5.5").build(&server).await?;
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -2609,12 +2494,12 @@ async fn model_without_summary_parameter_support_omits_configured_summary() -> a
     let model = model_catalog
         .models
         .iter_mut()
-        .find(|model| model.slug == "gpt-5.4")
-        .expect("gpt-5.4 exists in bundled models.json");
+        .find(|model| model.slug == "gpt-5.5")
+        .expect("gpt-5.5 exists in bundled models.json");
     model.supports_reasoning_summary_parameter = false;
 
     let TestCodex { codex, .. } = test_codex()
-        .with_model("gpt-5.4")
+        .with_model("gpt-5.5")
         .with_config(move |config| {
             config.model_catalog = Some(model_catalog);
             config.model_reasoning_effort = Some(ReasoningEffort::High);
@@ -2743,8 +2628,8 @@ async fn user_turn_explicit_reasoning_summary_overrides_model_catalog_default() 
     let model = model_catalog
         .models
         .iter_mut()
-        .find(|model| model.slug == "gpt-5.4")
-        .expect("gpt-5.4 exists in bundled models.json");
+        .find(|model| model.slug == "gpt-5.5")
+        .expect("gpt-5.5 exists in bundled models.json");
     model.default_reasoning_summary = ReasoningSummary::Detailed;
 
     let TestCodex {
@@ -2753,7 +2638,7 @@ async fn user_turn_explicit_reasoning_summary_overrides_model_catalog_default() 
         session_configured,
         ..
     } = test_codex()
-        .with_model("gpt-5.4")
+        .with_model("gpt-5.5")
         .with_config(move |config| {
             config.model_catalog = Some(model_catalog);
         })
@@ -2856,12 +2741,12 @@ async fn reasoning_summary_none_overrides_model_catalog_default() -> anyhow::Res
     let model = model_catalog
         .models
         .iter_mut()
-        .find(|model| model.slug == "gpt-5.4")
-        .expect("gpt-5.4 exists in bundled models.json");
+        .find(|model| model.slug == "gpt-5.5")
+        .expect("gpt-5.5 exists in bundled models.json");
     model.default_reasoning_summary = ReasoningSummary::Detailed;
 
     let TestCodex { codex, .. } = test_codex()
-        .with_model("gpt-5.4")
+        .with_model("gpt-5.5")
         .with_config(move |config| {
             config.model_reasoning_summary = Some(ReasoningSummary::None);
             config.model_catalog = Some(model_catalog);
@@ -2900,7 +2785,7 @@ async fn includes_default_verbosity_in_request() -> anyhow::Result<()> {
         sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
     )
     .await;
-    let TestCodex { codex, .. } = test_codex().with_model("gpt-5.4").build(&server).await?;
+    let TestCodex { codex, .. } = test_codex().with_model("gpt-5.5").build(&server).await?;
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -2978,7 +2863,7 @@ async fn configured_verbosity_is_sent() -> anyhow::Result<()> {
     )
     .await;
     let TestCodex { codex, .. } = test_codex()
-        .with_model("gpt-5.4")
+        .with_model("gpt-5.5")
         .with_config(|config| {
             config.model_verbosity = Some(Verbosity::High);
         })
@@ -3158,7 +3043,6 @@ async fn azure_responses_request_stores_and_preserves_type_valid_item_ids() {
         auth: None,
         aws: None,
         wire_api: WireApi::Responses,
-        supports_developer_role: None,
         query_params: None,
         http_headers: None,
         env_http_headers: None,
@@ -3390,7 +3274,6 @@ async fn responses_http_omits_type_invalid_web_search_ids_without_mutating_promp
         auth: None,
         aws: None,
         wire_api: WireApi::Responses,
-        supports_developer_role: None,
         query_params: None,
         http_headers: None,
         env_http_headers: None,
@@ -3931,7 +3814,6 @@ async fn azure_overrides_assign_properties_used_for_responses_url() {
         )])),
         env_key_instructions: None,
         wire_api: WireApi::Responses,
-        supports_developer_role: None,
         http_headers: Some(std::collections::HashMap::from([(
             "Custom-Header".to_string(),
             "Value".into(),
@@ -4016,7 +3898,6 @@ async fn env_var_overrides_loaded_auth() {
         auth: None,
         aws: None,
         wire_api: WireApi::Responses,
-        supports_developer_role: None,
         http_headers: Some(std::collections::HashMap::from([(
             "Custom-Header".to_string(),
             "Value".into(),

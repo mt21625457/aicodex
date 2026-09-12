@@ -259,7 +259,7 @@ mod tests {
             .expect("test config should load");
         config.model = Some("gateway:k3".to_string());
         config.model_provider =
-            create_oss_provider_with_base_url("https://api.moonshot.cn/v1", WireApi::Claude);
+            create_oss_provider_with_base_url("https://api.moonshot.cn/v1", WireApi::Responses);
 
         let extension_config = WebSearchExtensionConfig::from(&config);
 

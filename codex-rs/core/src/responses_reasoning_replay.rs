@@ -167,7 +167,9 @@ fn strip_encrypted_handoff_reasoning(input: &mut [ResponseItem], is_openai_provi
             let id = id.as_deref().unwrap_or_default();
             let unknown_origin_raw_reasoning = id.is_empty() && has_raw_reasoning_content;
             let non_openai_raw_reasoning = !is_openai_provider && has_raw_reasoning_content;
-            if crate::client_common::is_claude_reasoning_item_id(id)
+            if id
+                .rsplit_once("_reasoning_")
+                .is_some_and(|(_, index)| index.parse::<usize>().is_ok())
                 || unknown_origin_raw_reasoning
                 || non_openai_raw_reasoning
             {

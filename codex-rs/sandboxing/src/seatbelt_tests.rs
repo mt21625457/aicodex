@@ -2610,8 +2610,16 @@ fn create_seatbelt_args_for_cwd_as_git_repo() {
         args.contains(&expected_dot_codex),
         "missing {expected_dot_codex}: {args:#?}"
     );
-    let expected_dot_agents = format!(
+    let expected_dot_aicodex = format!(
         "-DWRITABLE_ROOT_0_EXCLUDED_2={}",
+        vulnerable_root_canonical.join(".aicodex").display()
+    );
+    assert!(
+        args.contains(&expected_dot_aicodex),
+        "missing {expected_dot_aicodex}: {args:#?}"
+    );
+    let expected_dot_agents = format!(
+        "-DWRITABLE_ROOT_0_EXCLUDED_3={}",
         dot_agents_canonical.to_string_lossy()
     );
     assert!(

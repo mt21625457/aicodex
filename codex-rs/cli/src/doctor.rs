@@ -3084,16 +3084,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chat_provider_skips_responses_websocket_probe() {
+    async fn http_only_provider_skips_responses_websocket_probe() {
         let temp = tempfile::tempdir().expect("tempdir");
         let mut config = ConfigBuilder::default()
             .codex_home(temp.path().to_path_buf())
             .build()
             .await
             .expect("config");
-        config.model_provider.wire_api =
-            serde_json::from_str("\"chat\"").expect("deserialize Chat wire API");
-        config.model_provider.supports_websockets = true;
+        config.model_provider.supports_websockets = false;
 
         let check = websocket_reachability_check(&config, /*auth_manager*/ None).await;
 

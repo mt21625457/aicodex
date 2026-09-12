@@ -69,9 +69,6 @@ use serde_json::json;
 
 use super::GuardianV2Extension;
 use super::GuardianV2ScoreProgress;
-use super::ParentCompactionError;
-use super::StrictReviewReason;
-use super::encrypted_parent_compaction;
 
 use crate::async_scorer::config::CLASSIFICATION_OUTPUT_INSTRUCTIONS;
 use crate::async_scorer::config::DEFAULT_MODEL_CONTEXT_ITEM_TOKENS;
@@ -88,6 +85,8 @@ use crate::async_scorer::sampler::CLASSIFICATION_TOKEN_USAGE_METRIC;
 use crate::async_scorer::sampler::INITIAL_WEBSOCKET_CONNECTIONS;
 use crate::async_scorer::sampler::LunaSampler;
 use crate::async_scorer::sampler::MODEL;
+use crate::async_scorer::sampler::tests::ProxyPrewarmLimit;
+use crate::async_scorer::sampler::tests::proxy_websocket_servers_with_http;
 use crate::async_scorer::transcript::MAX_MESSAGE_ENTRY_TOKENS;
 use crate::async_scorer::transcript::MAX_TOOL_ENTRY_TOKENS;
 use crate::async_scorer::transcript::truncate_entry;
@@ -184,7 +183,7 @@ async fn installed_extension_warms_connections_without_blocking_thread_start() -
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn installed_extension_reconnects_after_auth_refresh() -> Result<()> {
+async fn installed_extension_uses_http_after_warm_socket_auth_expires() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let thread_server = responses::start_mock_server().await;
@@ -197,20 +196,25 @@ async fn installed_extension_reconnects_after_auth_refresh() -> Result<()> {
         ev_completed("response-1"),
     ];
     // Keep the sampled connection open for another request so only auth
-    // invalidation, not a server close, forces the next handshake.
+    // invalidation forces the next classification to use HTTP.
     let mut connections = vec![Vec::new(); INITIAL_WEBSOCKET_CONNECTIONS - 1];
     connections.push(vec![events.clone(), events.clone()]);
-    connections.push(vec![events]);
     let server = responses::start_websocket_server(connections).await;
+    let http = responses::start_mock_server().await;
+    let http_mock = responses::mount_sse_once(&http, responses::sse(events)).await;
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("original"));
     auth_manager
         .set_external_auth(Arc::new(RefreshableAuth(std::sync::Mutex::new("original"))))
         .await?;
     let mut config = test.config.clone();
-    config.model_provider = ModelProviderInfo::create_openai_provider(Some(format!(
-        "http://{}/v1",
-        server.uri().trim_start_matches("ws://")
-    )));
+    config.model_provider = ModelProviderInfo::create_openai_provider(Some(
+        proxy_websocket_servers_with_http(
+            &[&server; INITIAL_WEBSOCKET_CONNECTIONS],
+            ProxyPrewarmLimit::AllConnections,
+            Some(&http.uri()),
+        )
+        .await?,
+    ));
     config.features.enable(Feature::GuardianV2)?;
     let mut builder = ExtensionRegistryBuilder::new();
     super::install(
@@ -266,6 +270,7 @@ async fn installed_extension_reconnects_after_auth_refresh() -> Result<()> {
                 turn_id: "turn-1",
                 root_turn_id: None,
                 call_id,
+                originating_item_id: None,
                 tool_name: &tool_name,
                 mcp_tool: None,
                 payload: &payload,
@@ -280,46 +285,39 @@ async fn installed_extension_reconnects_after_auth_refresh() -> Result<()> {
         })
         .await?;
         assert_eq!(
-            registry
-                .fast_approval_decision(
-                    &session_store,
-                    thread_store,
-                    r#"{"tool":"mcp_tool_call","server":"node_repl"}"#,
-                    /*extension_metrics*/ None,
-                )
-                .await,
+            cached_approval(
+                &registry,
+                thread_store,
+                r#"{"tool":"mcp_tool_call","server":"node_repl"}"#,
+                /*metrics*/ None,
+            )
+            .await,
             Some(ReviewDecision::Approved)
         );
     }
 
-    let mut expected_authorizations =
-        vec![Some("Bearer original".to_owned()); INITIAL_WEBSOCKET_CONNECTIONS];
-    expected_authorizations.push(Some("Bearer refreshed".to_owned()));
     assert_eq!(
         server
             .handshakes()
             .iter()
             .map(|handshake| handshake.header("authorization"))
             .collect::<Vec<_>>(),
-        expected_authorizations
+        vec![Some("Bearer original".to_owned()); INITIAL_WEBSOCKET_CONNECTIONS]
     );
-
-    let mut expected_requests = vec![0; INITIAL_WEBSOCKET_CONNECTIONS - 1];
-    expected_requests.extend([1, 1]);
+    assert_eq!(progress.latest_failed_tool_call.load(Ordering::Acquire), 0);
+    let http_request = http_mock.single_request();
     assert_eq!(
-        server
-            .connections()
-            .iter()
-            .map(Vec::len)
-            .collect::<Vec<_>>(),
-        expected_requests
+        http_request.header("authorization"),
+        Some("Bearer refreshed".to_owned())
     );
-    let requests = server
+    let mut requests = server
         .connections()
         .into_iter()
         .flatten()
         .map(|request| request.body_json())
         .collect::<Vec<_>>();
+    assert_eq!(requests.len(), 1);
+    requests.push(http_request.body_json());
     for request in &requests {
         responses::assert_parent_turn(request, Some("turn-1"))?;
         responses::assert_root_turn(request, /*expected*/ None)?;
@@ -351,7 +349,25 @@ fn fast_decision_metric(decision: &str, reason: &str) -> RecordedMetric {
 #[derive(Default)]
 struct RecordingMetrics(Mutex<Vec<RecordedMetric>>);
 
+impl RecordingMetrics {
+    fn classification_samples(&self) -> Vec<RecordedMetric> {
+        self.0.lock().unwrap().iter().filter(|sample| {
+            !matches!(sample, RecordedMetric::Histogram(name, _, _) if name == codex_guardian_context::SECTION_COST_METRIC || name == codex_guardian_context::REQUEST_TOKENS_METRIC)
+        }).cloned().collect()
+    }
+}
+
 impl ExtensionMetrics for RecordingMetrics {
+    fn histogram_with_boundaries(
+        &self,
+        name: &str,
+        value: i64,
+        _boundaries: &[f64],
+        tags: &[(&str, &str)],
+    ) {
+        self.histogram(name, value, tags);
+    }
+
     fn counter(&self, name: &str, inc: i64, tags: &[(&str, &str)]) {
         self.0.lock().unwrap().push(RecordedMetric::Counter(
             name.to_owned(),
@@ -546,6 +562,7 @@ async fn sandboxed_shell_classification_respects_review_scope() -> Result<()> {
             turn_id: "turn-1",
             root_turn_id: None,
             call_id: "call-2",
+            originating_item_id: None,
             tool_name: &tool_name,
             mcp_tool: None,
             payload: &payload,
@@ -637,6 +654,7 @@ async fn computer_use_only_scores_cannot_approve_other_actions() -> Result<()> {
             turn_id: "turn-1",
             root_turn_id: None,
             call_id: "ordinary-call",
+            originating_item_id: None,
             tool_name: &ordinary_tool,
             mcp_tool: None,
             payload: &payload,
@@ -670,33 +688,29 @@ async fn computer_use_only_scores_cannot_approve_other_actions() -> Result<()> {
     ] {
         let prompt = action.to_string();
         assert_eq!(
-            fixture
-                .registry
-                .fast_approval_decision(
-                    &fixture.session_store,
-                    thread_store,
-                    &prompt,
-                    thread_store
-                        .get::<RecordingMetrics>()
-                        .map(|metrics| metrics as Arc<dyn ExtensionMetrics>),
-                )
-                .await,
-            expected,
-            "unexpected fast approval for {action}"
-        );
-    }
-    assert_eq!(
-        fixture
-            .registry
-            .fast_approval_decision(
-                &fixture.session_store,
+            cached_approval(
+                &fixture.registry,
                 thread_store,
-                "not valid JSON",
+                &prompt,
                 thread_store
                     .get::<RecordingMetrics>()
                     .map(|metrics| metrics as Arc<dyn ExtensionMetrics>),
             )
             .await,
+            expected,
+            "unexpected fast approval for {action}"
+        );
+    }
+    assert_eq!(
+        cached_approval(
+            &fixture.registry,
+            thread_store,
+            "not valid JSON",
+            thread_store
+                .get::<RecordingMetrics>()
+                .map(|metrics| metrics as Arc<dyn ExtensionMetrics>),
+        )
+        .await,
         None,
         "malformed approval actions must not reuse a browser score"
     );
@@ -712,16 +726,13 @@ async fn computer_use_only_scores_cannot_approve_other_actions() -> Result<()> {
     });
     thread_store.insert(changed_model);
     assert_eq!(
-        fixture
-            .registry
-            .fast_approval_decision(
-                &fixture.session_store,
-                thread_store,
-                &json!({"tool": "mcp_tool_call", "server": "node_repl", "tool_name": "js"})
-                    .to_string(),
-                /*extension_metrics*/ None,
-            )
-            .await,
+        cached_approval(
+            &fixture.registry,
+            thread_store,
+            &json!({"tool": "mcp_tool_call", "server": "node_repl", "tool_name": "js"}).to_string(),
+            /*metrics*/ None,
+        )
+        .await,
         None,
         "a score from the previous model policy must not approve a call"
     );
@@ -773,179 +784,17 @@ async fn computer_use_only_scores_cannot_approve_other_actions() -> Result<()> {
             sampled_at: None,
         });
         assert_eq!(
-            fixture
-                .registry
-                .fast_approval_decision(
-                    &fixture.session_store,
-                    thread_store,
-                    r#"{"tool":"mcp_tool_call","server":"node_repl","tool_name":"js"}"#,
-                    /*extension_metrics*/ None,
-                )
-                .await,
+            cached_approval(
+                &fixture.registry,
+                thread_store,
+                r#"{"tool":"mcp_tool_call","server":"node_repl","tool_name":"js"}"#,
+                /*metrics*/ None,
+            )
+            .await,
             None,
             "switching back to a reviewed model must not revive a skipped score"
         );
     }
-
-    Ok(())
-}
-
-#[test]
-fn encrypted_parent_compaction_preserves_the_latest_valid_item() {
-    let older = ResponseItem::Compaction {
-        id: Some(ResponseItemId::from_server("cmp_older".to_owned())),
-        encrypted_content: "older encrypted summary".to_owned(),
-        internal_chat_message_metadata_passthrough: None,
-    };
-    let latest = ResponseItem::ContextCompaction {
-        id: Some(ResponseItemId::from_server("cmp_latest".to_owned())),
-        encrypted_content: Some("latest encrypted summary".to_owned()),
-        internal_chat_message_metadata_passthrough: None,
-    };
-
-    assert_eq!(
-        encrypted_parent_compaction(
-            [&older, &latest].into_iter(),
-            DEFAULT_PARENT_COMPACTION_TOKENS,
-        ),
-        Ok(Some(latest.clone()))
-    );
-    assert_eq!(
-        encrypted_parent_compaction(
-            [&latest, &older].into_iter(),
-            DEFAULT_PARENT_COMPACTION_TOKENS,
-        ),
-        Ok(Some(older))
-    );
-}
-
-#[test]
-fn encrypted_parent_compaction_rejects_invalid_latest_item() {
-    let older = ResponseItem::Compaction {
-        id: Some(ResponseItemId::from_server("cmp_older".to_owned())),
-        encrypted_content: "older encrypted summary".to_owned(),
-        internal_chat_message_metadata_passthrough: None,
-    };
-    let invalid = [
-        ResponseItem::Compaction {
-            id: None,
-            encrypted_content: "encrypted summary without an ID".to_owned(),
-            internal_chat_message_metadata_passthrough: None,
-        },
-        ResponseItem::Compaction {
-            id: Some(ResponseItemId::from_server("cmp_empty".to_owned())),
-            encrypted_content: String::new(),
-            internal_chat_message_metadata_passthrough: None,
-        },
-        ResponseItem::ContextCompaction {
-            id: None,
-            encrypted_content: Some("encrypted context without an ID".to_owned()),
-            internal_chat_message_metadata_passthrough: None,
-        },
-        ResponseItem::ContextCompaction {
-            id: Some(ResponseItemId::from_server("cmp_missing".to_owned())),
-            encrypted_content: None,
-            internal_chat_message_metadata_passthrough: None,
-        },
-        ResponseItem::ContextCompaction {
-            id: Some(ResponseItemId::from_server("cmp_empty".to_owned())),
-            encrypted_content: Some(String::new()),
-            internal_chat_message_metadata_passthrough: None,
-        },
-    ];
-
-    for latest in &invalid {
-        assert_eq!(
-            encrypted_parent_compaction(
-                [&older, latest].into_iter(),
-                DEFAULT_PARENT_COMPACTION_TOKENS,
-            ),
-            Err(ParentCompactionError::Unusable),
-            "an unusable latest summary must not resurrect older context"
-        );
-    }
-}
-
-#[test]
-fn encrypted_parent_compaction_rejects_oversized_latest_item() -> Result<()> {
-    let max_compaction_bytes =
-        TruncationPolicy::Tokens(DEFAULT_PARENT_COMPACTION_TOKENS).byte_budget();
-    let mut bounded = [
-        ResponseItem::Compaction {
-            id: Some(ResponseItemId::from_server("cmp_bounded".to_owned())),
-            encrypted_content: String::new(),
-            internal_chat_message_metadata_passthrough: None,
-        },
-        ResponseItem::ContextCompaction {
-            id: Some(ResponseItemId::from_server("ctx_bounded".to_owned())),
-            encrypted_content: Some(String::new()),
-            internal_chat_message_metadata_passthrough: None,
-        },
-    ];
-
-    for item in &mut bounded {
-        let envelope_bytes = serde_json::to_vec(&*item)?.len();
-        let encrypted_content = match item {
-            ResponseItem::Compaction {
-                encrypted_content, ..
-            }
-            | ResponseItem::ContextCompaction {
-                encrypted_content: Some(encrypted_content),
-                ..
-            } => encrypted_content,
-            _ => unreachable!("test fixtures are encrypted compaction items"),
-        };
-        *encrypted_content = "a".repeat(max_compaction_bytes - envelope_bytes);
-        assert_eq!(serde_json::to_vec(&*item)?.len(), max_compaction_bytes);
-        assert_eq!(
-            encrypted_parent_compaction(std::iter::once(&*item), DEFAULT_PARENT_COMPACTION_TOKENS,),
-            Ok(Some(item.clone()))
-        );
-
-        let mut oversized = item.clone();
-        match &mut oversized {
-            ResponseItem::Compaction {
-                encrypted_content, ..
-            }
-            | ResponseItem::ContextCompaction {
-                encrypted_content: Some(encrypted_content),
-                ..
-            } => encrypted_content.push('a'),
-            _ => unreachable!("test fixtures are encrypted compaction items"),
-        }
-        assert_eq!(
-            serde_json::to_vec(&oversized)?.len(),
-            max_compaction_bytes + 1
-        );
-        assert_eq!(
-            encrypted_parent_compaction(
-                [&*item, &oversized].into_iter(),
-                DEFAULT_PARENT_COMPACTION_TOKENS,
-            ),
-            Err(ParentCompactionError::Oversized),
-            "an oversized latest summary must not resurrect older context"
-        );
-    }
-
-    let oversized_metadata = ResponseItem::ContextCompaction {
-        id: Some(ResponseItemId::from_server(
-            "ctx_oversized_metadata".to_owned(),
-        )),
-        encrypted_content: Some("bounded encrypted summary".to_owned()),
-        internal_chat_message_metadata_passthrough: Some(InternalChatMessageMetadataPassthrough {
-            turn_id: Some("a".repeat(max_compaction_bytes)),
-            ..Default::default()
-        }),
-    };
-    assert!(serde_json::to_vec(&oversized_metadata)?.len() > max_compaction_bytes);
-    assert_eq!(
-        encrypted_parent_compaction(
-            [&bounded[0], &oversized_metadata].into_iter(),
-            DEFAULT_PARENT_COMPACTION_TOKENS,
-        ),
-        Err(ParentCompactionError::Oversized),
-        "oversized passthrough metadata must not bypass the complete-item limit"
-    );
 
     Ok(())
 }
@@ -1070,14 +919,13 @@ async fn sample_configured_conversation_history_with_source(
         thread_store.insert(parent_model);
     }
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                /*extension_metrics*/ None,
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            /*metrics*/ None,
+        )
+        .await,
         None
     );
     registry.thread_lifecycle_contributors()[0]
@@ -1119,6 +967,7 @@ async fn sample_configured_conversation_history_with_source(
             turn_id: "turn-1",
             root_turn_id: Some("root-turn"),
             call_id: "call-1",
+            originating_item_id: None,
             tool_name: &tool_name,
             mcp_tool: None,
             payload: &tool_payload,
@@ -1253,6 +1102,7 @@ impl GuardianFailureFixture {
                 turn_id: "turn-1",
                 root_turn_id: None,
                 call_id: "call-1",
+                originating_item_id: None,
                 tool_name: &tool_name,
                 mcp_tool: None,
                 payload: &payload,
@@ -1284,16 +1134,15 @@ impl GuardianFailureFixture {
         .await?;
         thread_store.insert(RecordingMetrics::default());
         assert_eq!(
-            self.registry
-                .fast_approval_decision(
-                    &self.session_store,
-                    thread_store,
-                    "review action",
-                    thread_store
-                        .get::<RecordingMetrics>()
-                        .map(|metrics| metrics as Arc<dyn ExtensionMetrics>),
-                )
-                .await,
+            cached_approval(
+                &self.registry,
+                thread_store,
+                "review action",
+                thread_store
+                    .get::<RecordingMetrics>()
+                    .map(|metrics| metrics as Arc<dyn ExtensionMetrics>),
+            )
+            .await,
             None
         );
         assert!(
@@ -1595,7 +1444,6 @@ max_recent_non_user_entries = 8
     let retained_action_bytes = i64::try_from(serde_json::to_string_pretty(&action)?.len())?;
     assert_eq!(action["tool"], "read_file");
 
-    let session_store = ExtensionData::new("session-1");
     let thread_store = test.codex.thread_extension_data();
     let score_progress = thread_store
         .get::<GuardianV2ScoreProgress>()
@@ -1606,13 +1454,22 @@ max_recent_non_user_entries = 8
             .latest_scored_tool_call
             .load(Ordering::Acquire)
             == 0
-            || metrics.0.lock().unwrap().len() < 14
+            || metrics.classification_samples().len() < 14
         {
             tokio::task::yield_now().await;
         }
     })
     .await?;
-    assert_eq!(thread_store.get::<StrictReviewReason>(), None);
+    assert!(metrics.0.lock().unwrap().iter().any(|sample| {
+        matches!(sample, RecordedMetric::Histogram(name, value, tags)
+        if name == codex_guardian_context::SECTION_COST_METRIC
+            && *value > 0
+            && tags == &[
+                ("target".to_owned(), "async".to_owned()),
+                ("section".to_owned(), "conversation_transcript".to_owned()),
+                ("measurement".to_owned(), "text_bytes".to_owned()),
+            ])
+    }));
     thread_store.insert(SecurityRiskScore {
         scores: BTreeMap::from([("action_risk".to_owned(), 0.65)]),
         call_id: None,
@@ -1620,21 +1477,16 @@ max_recent_non_user_entries = 8
         sampled_at: None,
     });
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                thread_store
-                    .get::<RecordingMetrics>()
-                    .map(|metrics| metrics as Arc<dyn ExtensionMetrics>),
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            thread_store
+                .get::<RecordingMetrics>()
+                .map(|metrics| metrics as Arc<dyn ExtensionMetrics>),
+        )
+        .await,
         None
-    );
-    assert_eq!(
-        thread_store.remove::<StrictReviewReason>().as_deref(),
-        Some(&StrictReviewReason::ElevatedRisk)
     );
     thread_store.insert(SecurityRiskScore {
         scores: BTreeMap::from([("action_risk".to_owned(), 0.55)]),
@@ -1643,16 +1495,15 @@ max_recent_non_user_entries = 8
         sampled_at: None,
     });
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                thread_store
-                    .get::<RecordingMetrics>()
-                    .map(|metrics| metrics as Arc<dyn ExtensionMetrics>),
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            thread_store
+                .get::<RecordingMetrics>()
+                .map(|metrics| metrics as Arc<dyn ExtensionMetrics>),
+        )
+        .await,
         Some(ReviewDecision::Approved)
     );
 
@@ -1666,16 +1517,15 @@ max_recent_non_user_entries = 8
         .latest_tool_call
         .store(/*val*/ 3, Ordering::Release);
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                thread_store
-                    .get::<RecordingMetrics>()
-                    .map(|metrics| metrics as Arc<dyn ExtensionMetrics>),
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            thread_store
+                .get::<RecordingMetrics>()
+                .map(|metrics| metrics as Arc<dyn ExtensionMetrics>),
+        )
+        .await,
         Some(ReviewDecision::Approved)
     );
 
@@ -1685,41 +1535,35 @@ max_recent_non_user_entries = 8
         .latest_tool_call
         .store(/*val*/ 4, Ordering::Release);
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                thread_store
-                    .get::<RecordingMetrics>()
-                    .map(|metrics| metrics as Arc<dyn ExtensionMetrics>),
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            thread_store
+                .get::<RecordingMetrics>()
+                .map(|metrics| metrics as Arc<dyn ExtensionMetrics>),
+        )
+        .await,
         None
-    );
-    assert_eq!(
-        thread_store.remove::<StrictReviewReason>().as_deref(),
-        Some(&StrictReviewReason::StaleScore)
     );
 
     score_progress
         .latest_scored_tool_call
         .store(/*val*/ 2, Ordering::Release);
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                thread_store
-                    .get::<RecordingMetrics>()
-                    .map(|metrics| metrics as Arc<dyn ExtensionMetrics>),
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            thread_store
+                .get::<RecordingMetrics>()
+                .map(|metrics| metrics as Arc<dyn ExtensionMetrics>),
+        )
+        .await,
         Some(ReviewDecision::Approved)
     );
 
-    let samples = initial_metrics.0.lock().unwrap();
+    let samples = initial_metrics.classification_samples();
     let classification_duration_ms = match &samples[9] {
         RecordedMetric::Histogram(name, duration_ms, _)
             if name == CLASSIFICATION_DURATION_METRIC =>
@@ -1729,7 +1573,7 @@ max_recent_non_user_entries = 8
         sample => panic!("expected classification duration metric, got {sample:?}"),
     };
     assert_eq!(
-        *samples,
+        samples,
         [
             ("total", 150),
             ("input", 120),
@@ -1983,7 +1827,6 @@ async fn contributor_uses_model_defaults_and_preserves_local_overrides() -> Resu
         .expect("planned action should be a text item");
     assert!(action.len() <= TruncationPolicy::Tokens(/*limit*/ 128).byte_budget());
 
-    let session_store = ExtensionData::new("session-1");
     let thread_store = test.codex.thread_extension_data();
     let guardian_config = thread_store
         .get::<crate::async_scorer::config::GuardianV2Config>()
@@ -2018,14 +1861,13 @@ async fn contributor_uses_model_defaults_and_preserves_local_overrides() -> Resu
         sampled_at: None,
     });
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                /*extension_metrics*/ None,
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            /*metrics*/ None,
+        )
+        .await,
         Some(ReviewDecision::Approved)
     );
 
@@ -2092,7 +1934,6 @@ async fn assert_luna_pool_context(thread_context_enabled: bool) -> Result<()> {
     )
     .await?;
     let thread_id = test.session_configured.thread_id;
-    let session_store = ExtensionData::new("session-1");
     let thread_store = test.codex.thread_extension_data();
     assert_eq!(request["model"], "gpt-5.6-luna");
     let classifier_thread_id = request["client_metadata"]["thread_id"]
@@ -2117,6 +1958,7 @@ async fn assert_luna_pool_context(thread_context_enabled: bool) -> Result<()> {
             "parent_turn_id": "turn-1",
             "root_turn_id": "root-turn",
             "thread_source": "guardian_classifier",
+            "turn_trigger": "guardian_classifier",
         })
     );
     assert_eq!(request["client_metadata"]["x-openai-subagent"], "guardian");
@@ -2204,14 +2046,13 @@ async fn assert_luna_pool_context(thread_context_enabled: bool) -> Result<()> {
         "risk scores should not be persisted unless explicitly enabled"
     );
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                /*extension_metrics*/ None,
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            /*metrics*/ None,
+        )
+        .await,
         None
     );
     thread_store.insert(SecurityRiskScore {
@@ -2221,14 +2062,13 @@ async fn assert_luna_pool_context(thread_context_enabled: bool) -> Result<()> {
         sampled_at: None,
     });
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                /*extension_metrics*/ None,
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            /*metrics*/ None,
+        )
+        .await,
         None
     );
 
@@ -2239,14 +2079,13 @@ async fn assert_luna_pool_context(thread_context_enabled: bool) -> Result<()> {
         sampled_at: None,
     });
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                /*extension_metrics*/ None,
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            /*metrics*/ None,
+        )
+        .await,
         Some(ReviewDecision::Approved)
     );
 
@@ -2258,14 +2097,13 @@ async fn assert_luna_pool_context(thread_context_enabled: bool) -> Result<()> {
         sampled_at: None,
     });
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                &disabled_thread_store,
-                "review action",
-                /*extension_metrics*/ None
-            )
-            .await,
+        cached_approval(
+            &registry,
+            &disabled_thread_store,
+            "review action",
+            /*metrics*/ None
+        )
+        .await,
         None
     );
 
@@ -2415,14 +2253,13 @@ async fn contributor_skips_required_models_in_standard_scope() -> Result<()> {
         sampled_at: None,
     });
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                r#"{"tool":"mcp_tool_call","server":"node_repl"}"#,
-                /*extension_metrics*/ None,
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            r#"{"tool":"mcp_tool_call","server":"node_repl"}"#,
+            /*metrics*/ None,
+        )
+        .await,
         None
     );
 
@@ -2445,6 +2282,7 @@ async fn contributor_skips_required_models_in_standard_scope() -> Result<()> {
             turn_id: "turn-1",
             root_turn_id: None,
             call_id: "protected.md",
+            originating_item_id: None,
             tool_name: &tool_name,
             mcp_tool: None,
             payload: &payload,
@@ -2477,7 +2315,6 @@ async fn cached_score_survives_compaction_and_internal_context_but_not_user_inpu
         /*model_defaults*/ None,
     )
     .await?;
-    let session_store = ExtensionData::new("session-1");
     let thread_store = test.codex.thread_extension_data();
     let progress = thread_store.get::<GuardianV2ScoreProgress>().unwrap();
     tokio::time::timeout(ASYNC_TEST_TIMEOUT, async {
@@ -2507,14 +2344,13 @@ async fn cached_score_survives_compaction_and_internal_context_but_not_user_inpu
     })
     .await;
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                /*extension_metrics*/ None,
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            /*metrics*/ None,
+        )
+        .await,
         Some(ReviewDecision::Approved),
     );
 
@@ -2530,14 +2366,13 @@ async fn cached_score_survives_compaction_and_internal_context_but_not_user_inpu
         }])
         .await?;
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                /*extension_metrics*/ None
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            /*metrics*/ None
+        )
+        .await,
         None,
     );
     Ok(())
@@ -2569,15 +2404,13 @@ async fn assert_compaction_approval_policy(thread_context_enabled: bool) -> Resu
         sampled_at: None,
     });
     assert_eq!(
-        fixture
-            .registry
-            .fast_approval_decision(
-                &fixture.session_store,
-                thread_store,
-                "review action",
-                /*extension_metrics*/ None
-            )
-            .await,
+        cached_approval(
+            &fixture.registry,
+            thread_store,
+            "review action",
+            /*metrics*/ None
+        )
+        .await,
         Some(ReviewDecision::Approved)
     );
     let authorization = fixture.test.codex.guardian_authorization_version().await;
@@ -2633,20 +2466,14 @@ async fn assert_compaction_approval_policy(thread_context_enabled: bool) -> Resu
             .js_executions
             .store(/*val*/ 1, Ordering::Release);
         assert_eq!(
-            fixture
-                .registry
-                .fast_approval_decision(
-                    &fixture.session_store,
-                    thread_store,
-                    prompt,
-                    /*extension_metrics*/ None
-                )
-                .await,
+            cached_approval(
+                &fixture.registry,
+                thread_store,
+                prompt,
+                /*metrics*/ None
+            )
+            .await,
             (!thread_context_enabled).then_some(ReviewDecision::Approved)
-        );
-        assert_eq!(
-            thread_store.remove::<StrictReviewReason>().as_deref(),
-            thread_context_enabled.then_some(&StrictReviewReason::IncompatibleCompaction)
         );
     }
     Ok(())
@@ -2686,14 +2513,13 @@ async fn contributor_counts_failed_thread_lookups_toward_score_lag() -> Result<(
         sampled_at: None,
     });
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                /*extension_metrics*/ None,
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            /*metrics*/ None,
+        )
+        .await,
         Some(ReviewDecision::Approved)
     );
 
@@ -2714,6 +2540,7 @@ async fn contributor_counts_failed_thread_lookups_toward_score_lag() -> Result<(
             turn_id: "turn-1",
             root_turn_id: None,
             call_id: "missing.md",
+            originating_item_id: None,
             tool_name: &tool_name,
             mcp_tool: None,
             payload: &payload,
@@ -2724,14 +2551,13 @@ async fn contributor_counts_failed_thread_lookups_toward_score_lag() -> Result<(
 
     assert_eq!(score_progress.latest_tool_call.load(Ordering::Acquire), 2);
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                /*extension_metrics*/ None,
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            /*metrics*/ None,
+        )
+        .await,
         None
     );
 
@@ -3207,6 +3033,7 @@ async fn assert_parent_compaction_reuse(thread_context_enabled: bool) -> Result<
             turn_id: "turn-1",
             root_turn_id: None,
             call_id: "call-1",
+            originating_item_id: None,
             tool_name: &tool_name,
             mcp_tool: None,
             payload: &tool_payload,
@@ -3259,14 +3086,13 @@ async fn assert_parent_compaction_reuse(thread_context_enabled: bool) -> Result<
     // Raw injection did not attach producer provenance to the live checkpoint.
     // The sample's mock snapshot cannot make that live checkpoint safe for approval.
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                /*extension_metrics*/ None,
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            /*metrics*/ None,
+        )
+        .await,
         (!thread_context_enabled).then_some(ReviewDecision::Approved),
     );
 
@@ -3283,6 +3109,7 @@ async fn assert_parent_compaction_reuse(thread_context_enabled: bool) -> Result<
             turn_id: "turn-1",
             root_turn_id: None,
             call_id: "call-2",
+            originating_item_id: None,
             tool_name: &tool_name,
             mcp_tool: None,
             payload: &tool_payload,
@@ -3310,14 +3137,13 @@ async fn assert_parent_compaction_reuse(thread_context_enabled: bool) -> Result<
         }
     );
     assert_eq!(
-        registry
-            .fast_approval_decision(
-                &session_store,
-                thread_store,
-                "review action",
-                /*extension_metrics*/ None,
-            )
-            .await,
+        cached_approval(
+            &registry,
+            thread_store,
+            "review action",
+            /*metrics*/ None,
+        )
+        .await,
         None
     );
     assert_eq!(
@@ -3450,3 +3276,179 @@ async fn contributor_bounds_oversized_actions_and_fairly_truncates_nested_fields
 
     Ok(())
 }
+
+struct CacheMiss;
+impl codex_extension_api::SynchronousApprovalReviewer for CacheMiss {
+    fn review(
+        &self,
+        _reason: codex_protocol::approvals::GuardianReviewReason,
+    ) -> codex_extension_api::ExtensionFuture<'_, ReviewDecision> {
+        Box::pin(async { ReviewDecision::denied("cache miss") })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cached_approval_discounts_only_its_own_unscored_wrapper() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let fixture = GuardianFailureFixture::new().await?;
+    let store = fixture.test.codex.thread_extension_data();
+    let progress = store.get::<GuardianV2ScoreProgress>().unwrap();
+    let mut score = store.get::<SecurityRiskScore>().unwrap().as_ref().clone();
+    score.scores.insert("action_risk".to_owned(), 0.0);
+    store.insert(score);
+    // Hold the cached score fixed while advancing real tool-start metadata.
+    let start = |call_id: &str, origin: &ResponseItemId, source: ToolCallSource| {
+        let tool_name = match source {
+            ToolCallSource::Direct => ToolName::plain("exec"),
+            ToolCallSource::CodeMode { .. } => ToolName::namespaced("mcp__example", "read"),
+        };
+        let payload = match source {
+            ToolCallSource::Direct => ToolPayload::Custom {
+                input: String::new(),
+            },
+            ToolCallSource::CodeMode { .. } => ToolPayload::Function {
+                arguments: "{}".to_owned(),
+            },
+        };
+        let index = progress
+            .latest_tool_call
+            .fetch_add(/*val*/ 1, Ordering::Relaxed)
+            + 1;
+        progress.wrapper_lag.record(
+            &ToolStartInput {
+                session_store: &fixture.session_store,
+                thread_store: store,
+                turn_store: &fixture.session_store,
+                turn_id: "turn",
+                root_turn_id: None,
+                call_id,
+                originating_item_id: Some(origin),
+                tool_name: &tool_name,
+                mcp_tool: None,
+                payload: &payload,
+                conversation_history: Arc::new(TestConversationHistory(Vec::new())),
+                source,
+            },
+            index,
+        );
+        index
+    };
+    let approve = async |call_id: &str| {
+        cached_approval(
+            &fixture.registry,
+            store,
+            &json!({"tool": "mcp_tool_call", "server": "example", "id": call_id}).to_string(),
+            /*metrics*/ None,
+        )
+        .await
+    };
+    let nested = ToolCallSource::CodeMode {
+        cell_id: "cell".to_owned(),
+        runtime_tool_call_id: "nested".to_owned(),
+    };
+    let origin = ResponseItemId::from_server("wrapper".to_owned());
+    let wrapper = start("wrapper", &origin, ToolCallSource::Direct);
+    for (call_id, expected) in [
+        ("first", Some(ReviewDecision::Approved)),
+        ("second", Some(ReviewDecision::Approved)),
+        ("third", None),
+    ] {
+        start(call_id, &origin, nested.clone());
+        assert_eq!(approve(call_id).await, expected);
+    }
+    // A score covering the wrapper must not receive another discount.
+    progress
+        .latest_scored_tool_call
+        .store(wrapper, Ordering::Release);
+    assert_eq!(approve("third").await, None);
+    progress
+        .latest_scored_tool_call
+        .store(wrapper + 3, Ordering::Release);
+    let output = start("output-only", &origin, ToolCallSource::Direct);
+    let other = ResponseItemId::from_server("other-wrapper".to_owned());
+    start("other-wrapper", &other, ToolCallSource::Direct);
+    start("other-first", &other, nested.clone());
+    assert_eq!(approve("other-first").await, Some(ReviewDecision::Approved));
+    assert_eq!(approve("unknown").await, None);
+    start("other-second", &other, nested.clone());
+    assert_eq!(approve("other-second").await, None);
+    // Covering a different wrapper still leaves this call's parent in its lag.
+    progress
+        .latest_scored_tool_call
+        .store(output, Ordering::Release);
+    assert_eq!(
+        approve("other-second").await,
+        Some(ReviewDecision::Approved)
+    );
+    // Evicted provenance falls back to the full lag.
+    for _ in 0..300 {
+        start("output-only", &origin, ToolCallSource::Direct);
+    }
+    start("late-child", &other, nested);
+    assert_eq!(
+        progress
+            .wrapper_lag
+            .discount(Some("late-child"), /*latest_scored*/ 0),
+        0
+    );
+    Ok(())
+}
+
+/// Exercises decision routing; a fresh review is observed as a cache miss.
+async fn cached_approval(
+    registry: &codex_extension_api::ExtensionRegistry<Config>,
+    store: &ExtensionData,
+    action: &str,
+    metrics: Option<Arc<dyn ExtensionMetrics>>,
+) -> Option<ReviewDecision> {
+    let action = serde_json::from_str(action).unwrap_or(serde_json::Value::Null);
+    let category = match review_scope(&action) {
+        Some(category) => category,
+        None if store.get::<super::GuardianV2Config>()?.policy.other_tools
+            == codex_protocol::openai_models::GuardianReviewMode::Adaptive =>
+        {
+            codex_protocol::openai_models::GuardianScope::Shell
+        }
+        None => {
+            super::super::metrics::record_fast_decision(
+                metrics.as_deref(),
+                "deferred",
+                "out_of_scope",
+            );
+            return None;
+        }
+    };
+    let input = codex_extension_api::ApprovalDecisionInput {
+        approval_id: "cache-probe",
+        tool_call_id: action.get("id").and_then(serde_json::Value::as_str),
+        action: &action,
+        thread_id: codex_protocol::ThreadId::from_string(store.level_id()).unwrap(),
+        thread_store: store,
+        category,
+        approval_policy: codex_protocol::protocol::AskForApproval::OnRequest,
+        approvals_reviewer: ApprovalsReviewer::AutoReview,
+        require_guardian: false,
+        require_fresh_review: false,
+        full_access: false,
+        metrics,
+        synchronous_reviewer: &CacheMiss,
+    };
+    match registry.decide_approval(&input).await {
+        Some(codex_extension_api::ApprovalDecision::Allow) => Some(ReviewDecision::Approved),
+        _ => None,
+    }
+}
+
+fn review_scope(action: &serde_json::Value) -> Option<GuardianScope> {
+    match action.get("tool").and_then(serde_json::Value::as_str)? {
+        "mcp_tool_call" => action
+            .get("server")
+            .and_then(serde_json::Value::as_str)
+            .map(GuardianScope::for_mcp_server),
+        "network_access" => Some(GuardianScope::Network),
+        tool => GuardianScope::for_tool(&ToolName::plain(tool)),
+    }
+}
+
+#[path = "budget_tests.rs"]
+mod budget;

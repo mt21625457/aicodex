@@ -111,11 +111,6 @@ impl RemoteFileSystem {
     ) -> FileSystemResult<FileSystemReadStream> {
         trace!("remote fs read_file_stream");
         let client = self.client.get().await.map_err(map_remote_error)?;
-        if let Some(sandbox) = remote_sandbox_context(sandbox)
-            && sandbox.should_run_in_sandbox()
-        {
-            return Ok(file_stream::open_stateless(client, path.clone(), sandbox));
-        }
         file_stream::open(client, path.clone(), remote_sandbox_context(sandbox)).await
     }
 

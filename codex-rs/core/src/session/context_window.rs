@@ -3,7 +3,6 @@ use super::turn_context::TurnContext;
 use crate::compact::should_use_remote_compact_task;
 use crate::config::Config;
 use codex_features::Feature;
-use codex_model_provider_info::WireApi;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::ContextTokenUsageSource;
@@ -60,8 +59,7 @@ async fn context_window_token_status_with_config(
     turn_context: &TurnContext,
     model_info: &ModelInfo,
 ) -> ContextWindowTokenStatus {
-    let active_context_tokens =
-        recorded_context_tokens_for_context_window(sess, turn_context).await;
+    let active_context_tokens = recorded_context_tokens_for_context_window(sess).await;
 
     let auto_compact_context_limit = model_info.auto_compact_context_limit();
     let clamp_to_auto_compact_context = |limit: i64| {
@@ -154,17 +152,12 @@ async fn context_window_token_status_with_config(
     }
 }
 
-async fn recorded_context_tokens_for_context_window(
-    sess: &Session,
-    turn_context: &TurnContext,
-) -> i64 {
-    // Responses local estimates are diagnostic supplements to server accounting. Chat local
-    // estimates are the explicit fallback when a compatible stream omits final usage, so they
-    // remain authoritative for auto-compaction.
-    let should_ignore_local_estimate = turn_context.provider.info().wire_api == WireApi::Responses
-        && sess.token_usage_info().await.is_some_and(|info| {
-            info.context_source == Some(ContextTokenUsageSource::LocalEstimate)
-        });
+async fn recorded_context_tokens_for_context_window(sess: &Session) -> i64 {
+    // Local estimates supplement the authoritative Responses server accounting.
+    let should_ignore_local_estimate = sess
+        .token_usage_info()
+        .await
+        .is_some_and(|info| info.context_source == Some(ContextTokenUsageSource::LocalEstimate));
     if should_ignore_local_estimate {
         sess.get_total_token_usage_without_context_tokens()
             .await

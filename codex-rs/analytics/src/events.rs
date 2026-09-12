@@ -241,6 +241,8 @@ pub(crate) struct ThreadInitializedEventParams {
     pub(crate) runtime: CodexRuntimeMetadata,
     pub(crate) model: String,
     pub(crate) ephemeral: bool,
+    /// Whether the thread's checkout is a validated linked Git worktree, if known.
+    pub(crate) is_worktree: Option<bool>,
     pub(crate) thread_source: Option<ThreadSource>,
     pub(crate) initialization_mode: ThreadInitializationMode,
     pub(crate) subagent_source: Option<String>,
@@ -335,16 +337,40 @@ pub enum GuardianApprovalRequestSource {
     DelegatedSubagent,
 }
 
+/// Path-free permission metadata for a Guardian reviewed action.
+#[derive(Clone, Debug, Serialize)]
+pub struct GuardianAdditionalPermissions {
+    network: Option<GuardianNetworkPermissions>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct GuardianNetworkPermissions {
+    enabled: Option<bool>,
+}
+
+impl From<&AdditionalPermissionProfile> for GuardianAdditionalPermissions {
+    fn from(permissions: &AdditionalPermissionProfile) -> Self {
+        Self {
+            network: permissions
+                .network
+                .as_ref()
+                .map(|network| GuardianNetworkPermissions {
+                    enabled: network.enabled,
+                }),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum GuardianReviewedAction {
     Shell {
         sandbox_permissions: SandboxPermissions,
-        additional_permissions: Option<AdditionalPermissionProfile>,
+        additional_permissions: Option<GuardianAdditionalPermissions>,
     },
     UnifiedExec {
         sandbox_permissions: SandboxPermissions,
-        additional_permissions: Option<AdditionalPermissionProfile>,
+        additional_permissions: Option<GuardianAdditionalPermissions>,
         tty: bool,
     },
     WriteStdin {
@@ -352,8 +378,7 @@ pub enum GuardianReviewedAction {
     },
     Execve {
         source: GuardianCommandSource,
-        program: String,
-        additional_permissions: Option<AdditionalPermissionProfile>,
+        additional_permissions: Option<GuardianAdditionalPermissions>,
     },
     ApplyPatch {},
     NetworkAccess {
@@ -901,6 +926,7 @@ pub(crate) struct CodexImageGenerationEventParams {
     pub(crate) saved_path_present: bool,
     pub(crate) transparent_background: Option<bool>,
     pub(crate) imagegen_request_id: Option<String>,
+    pub(crate) generation_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1465,6 +1491,7 @@ pub(crate) fn subagent_thread_started_event_request(
         runtime: current_runtime_metadata(),
         model: input.model,
         ephemeral: input.ephemeral,
+        is_worktree: None,
         thread_source: input.thread_source,
         initialization_mode: ThreadInitializationMode::New,
         subagent_source: Some(subagent_source_name(&input.subagent_source)),

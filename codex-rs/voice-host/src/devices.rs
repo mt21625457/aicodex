@@ -3,10 +3,16 @@
 //! Capture and actual rendered output carry device timing.
 //! References start with worker service; unmute rejects earlier device capture buffers.
 
+#[path = "audio_sink.rs"]
+mod audio_sink;
 #[path = "device_buffers.rs"]
 mod buffers;
 #[path = "capture_worker.rs"]
 mod capture_worker;
+#[path = "playback.rs"]
+mod playback;
+#[path = "playout.rs"]
+mod playout;
 #[path = "processing.rs"]
 mod processing;
 
@@ -33,12 +39,18 @@ use buffers::FramePacker;
 use buffers::MAX_CALLBACK_FRAMES;
 use buffers::Playback;
 use buffers::QUEUE_CAPACITY;
+use playback::PlaybackPort;
 
 const MAX_CAPTURE_AGE: Duration = Duration::from_secs(/*secs*/ 1);
 
 pub(super) struct Devices {
     _input: cpal::Stream,
-    _output: cpal::Stream,
+    output: Option<cpal::Stream>,
+    output_device: cpal::Device,
+    output_config: cpal::SupportedStreamConfig,
+    output_stream_config: cpal::StreamConfig,
+    playback: PlaybackPort,
+    playout: Option<playout::Playout>,
     worker: capture_worker::CaptureWorker,
 }
 
@@ -93,6 +105,7 @@ impl Devices {
             input_config.sample_rate(),
             output_config.sample_rate(),
         ));
+        let playback = PlaybackPort::new(buffers.clone(), output_config.sample_rate());
         let processor =
             processing::Processor::new(input_config.sample_rate(), output_config.sample_rate())
                 .map_err(io::Error::other)?;
@@ -113,7 +126,7 @@ impl Devices {
             buffers.clone()
         )
         .map_err(|_| io::Error::other("failed to open microphone"))?;
-        let output = stream!(
+        let output_stream = stream!(
             output_config.sample_format(),
             build_output,
             &output,
@@ -121,7 +134,7 @@ impl Devices {
             buffers.clone()
         )
         .map_err(|_| io::Error::other("failed to open speaker"))?;
-        output
+        output_stream
             .play()
             .map_err(|_| io::Error::other("failed to start speaker"))?;
         input
@@ -129,7 +142,12 @@ impl Devices {
             .map_err(|_| io::Error::other("failed to start microphone"))?;
         Ok(Self {
             _input: input,
-            _output: output,
+            output: Some(output_stream),
+            output_device: output,
+            output_config,
+            output_stream_config,
+            playback,
+            playout: None,
             worker: capture_worker::CaptureWorker {
                 buffers,
                 processor,
@@ -142,14 +160,72 @@ impl Devices {
         &mut self,
         controls: codex_realtime_webrtc::AudioControls,
     ) -> io::Result<()> {
-        self.worker.set_controls(controls)
+        let buffers = self.worker.buffers.clone();
+        let previous = buffers.speaker.load(Ordering::Acquire);
+        self.worker.set_controls(controls)?;
+        if previous != buffers.speaker.load(Ordering::Acquire) {
+            // Stop callbacks before native teardown can block the worker.
+            drop(self.output.take());
+            drop(self.playout.take());
+            // The new epoch cancelled writers before either teardown; wait for
+            // any in-flight write before resetting its queue.
+            let producer = self
+                .playback
+                .0
+                .producer
+                .lock()
+                .map_err(|_| io::Error::other("speaker writer failed"))?;
+            while buffers.playback.pop().is_some() {}
+            while buffers.rendered.pop().is_some() {}
+            buffers.queued.store(/*val*/ 0, Ordering::Release);
+            buffers.last_dac_ns.store(/*val*/ 0, Ordering::Release);
+            drop(producer);
+            while buffers.rendered.pop().is_some() {}
+            self.worker.processor.reset_render();
+            if !controls.speaker_suppressed {
+                self.playout =
+                    Some(playout::Playout::new(self.playback.writer()).map_err(io::Error::other)?);
+            }
+            let output = stream!(
+                self.output_config.sample_format(),
+                build_output,
+                &self.output_device,
+                &self.output_stream_config,
+                buffers
+            )
+            .map_err(|_| io::Error::other("failed to reset speaker"))?;
+            output
+                .play()
+                .map_err(|_| io::Error::other("failed to restart speaker"))?;
+            self.output = Some(output);
+        }
+        Ok(())
     }
 
     pub(super) async fn service(
         &mut self,
         audio: &mut crate::audio_track::AudioTrack,
     ) -> io::Result<usize> {
+        if let Some(playout) = &self.playout {
+            playout.check().map_err(io::Error::other)?;
+        }
         self.worker.service(audio, Instant::now).await
+    }
+
+    pub(super) fn receive(&self, packet: crate::incoming::ReceivedRtp) -> io::Result<()> {
+        if let Some(playout) = &self.playout {
+            playout.push(packet).map_err(io::Error::other)?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Devices {
+    fn drop(&mut self) {
+        self.worker.buffers.failed.store(true, Ordering::Release);
+        drop(self.output.take());
+        drop(self.playout.take());
+        let _producer = self.playback.0.producer.lock().ok();
     }
 }
 
@@ -288,6 +364,9 @@ where
     device.build_output_stream(
         *config,
         move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
+            buffers
+                .callback_sequence
+                .fetch_add(/*val*/ 1, Ordering::AcqRel);
             let timestamp = info.timestamp();
             let start = Instant::now()
                 + timestamp
@@ -295,6 +374,9 @@ where
                     .checked_duration_since(timestamp.callback)
                     .unwrap_or_default();
             render_output(data, channels, rate, start, &buffers, &mut output);
+            buffers
+                .callback_sequence
+                .fetch_add(/*val*/ 1, Ordering::Release);
         },
         move |error| handle_stream_error(&failure, error),
         /*timeout*/ None,
@@ -322,6 +404,7 @@ fn render_output<T>(
         data.fill(T::from_sample(0.0));
         return;
     }
+    let mut delivered_until = None;
     for (index, chunk) in data.chunks_mut(BLOCK * channels).enumerate() {
         let mut reference = Frame {
             samples: [0.0; BLOCK],
@@ -329,8 +412,18 @@ fn render_output<T>(
             at: start + Duration::from_secs_f64((index * BLOCK) as f64 / rate),
             generation: buffers.speaker.load(Ordering::Acquire),
         };
-        for (frame, sample) in chunk.chunks_mut(channels).zip(&mut reference.samples) {
-            let rendered = T::from_sample(output.playback.next(buffers));
+        for (offset, (frame, sample)) in chunk
+            .chunks_mut(channels)
+            .zip(&mut reference.samples)
+            .enumerate()
+        {
+            let next = output.playback.next(buffers);
+            if next.is_some() {
+                delivered_until = Some(
+                    start + Duration::from_secs_f64((index * BLOCK + offset + 1) as f64 / rate),
+                );
+            }
+            let rendered = T::from_sample(next.unwrap_or(0.0));
             frame.fill(rendered);
             *sample = f32::from_sample(rendered);
             record_peak(&buffers.speaker_peak, *sample);
@@ -338,6 +431,14 @@ fn render_output<T>(
         if !output.reference.push(reference, rate, &buffers.rendered) {
             buffers.failed.store(true, Ordering::Release);
         }
+    }
+    if let Some(end) = delivered_until {
+        buffers.last_dac_ns.store(
+            end.saturating_duration_since(buffers.clock)
+                .as_nanos()
+                .min(u128::from(u64::MAX)) as u64,
+            Ordering::Release,
+        );
     }
 }
 

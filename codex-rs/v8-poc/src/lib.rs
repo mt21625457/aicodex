@@ -64,9 +64,12 @@ mod tests {
         assert!(!super::embedded_v8_version().is_empty());
     }
 
+    // Cargo features are additive: another workspace crate may enable the V8 sandbox
+    // even when this crate's forwarding feature is absent.
+    #[cfg(feature = "sandbox")]
     #[test]
-    fn sandbox_feature_matches_linked_v8() {
-        assert_eq!(super::linked_v8_has_sandbox(), cfg!(feature = "sandbox"));
+    fn sandbox_feature_enables_linked_v8() {
+        assert!(super::linked_v8_has_sandbox());
     }
 
     #[test]

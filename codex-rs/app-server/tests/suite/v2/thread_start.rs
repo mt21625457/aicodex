@@ -50,6 +50,7 @@ use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::TrustLevel;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 use codex_protocol::openai_models::ReasoningEffort;
+use core_test_support::responses;
 use core_test_support::stdio_server_bin;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
@@ -572,16 +573,17 @@ async fn thread_start_creates_thread_and_emits_started() -> Result<()> {
 }
 
 #[tokio::test]
-async fn thread_apis_report_configured_chat_wire_for_opaque_provider_id() -> Result<()> {
+async fn thread_apis_report_configured_responses_wire_for_opaque_provider_id() -> Result<()> {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
+        .and(path("/v1/responses"))
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("content-type", "text/event-stream")
-                .set_body_string(
-                    "data: {\"id\":\"chatcmpl_app_server\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
-                ),
+                .set_body_string(responses::sse(vec![
+                    responses::ev_assistant_message("msg_1", "done"),
+                    responses::ev_completed("response_1"),
+                ])),
         )
         .expect(1)
         .mount(&server)
@@ -598,7 +600,7 @@ model_provider = "mock_provider"
 [model_providers.mock_provider]
 name = "Opaque provider"
 base_url = "{}/v1"
-wire_api = "chat"
+wire_api = "responses"
 request_max_retries = 0
 stream_max_retries = 0
 "#,
@@ -620,7 +622,7 @@ stream_max_retries = 0
     )
     .await??;
     let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(start_response)?;
-    assert_eq!(thread.wire_api.as_deref(), Some("chat"));
+    assert_eq!(thread.wire_api.as_deref(), Some("responses"));
 
     let read_id = mcp
         .send_thread_read_request(ThreadReadParams {
@@ -635,13 +637,13 @@ stream_max_retries = 0
     )
     .await??;
     let ThreadReadResponse { thread: read, .. } = to_response::<ThreadReadResponse>(read_response)?;
-    assert_eq!(read.wire_api.as_deref(), Some("chat"));
+    assert_eq!(read.wire_api.as_deref(), Some("responses"));
 
     let turn_id = mcp
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
             input: vec![V2UserInput::Text {
-                text: "persist this Chat thread".to_string(),
+                text: "persist this Responses thread".to_string(),
                 text_elements: Vec::new(),
             }],
             ..Default::default()
@@ -687,7 +689,7 @@ stream_max_retries = 0
         .iter()
         .find(|listed| listed.id == thread.id)
         .expect("thread/list should include Chat thread");
-    assert_eq!(listed.wire_api.as_deref(), Some("chat"));
+    assert_eq!(listed.wire_api.as_deref(), Some("responses"));
     Ok(())
 }
 

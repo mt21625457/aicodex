@@ -50,6 +50,10 @@ use ratatui::widgets::WidgetRef;
 
 mod cursor;
 
+#[cfg(test)]
+#[path = "custom_terminal_test_support.rs"]
+pub(crate) mod test_support;
+
 fn osc8_hyperlink_parts(symbol: &str) -> Option<(&str, &str)> {
     let content = symbol.strip_prefix("\x1b]8;;")?;
     let destination_end = content.find('\x07')?;
@@ -868,6 +872,7 @@ mod tests {
 
     impl CaptureBackend {
         fn new(width: u16, height: u16) -> Self {
+            crossterm::style::force_color_output(true);
             Self {
                 output: Vec::new(),
                 size: Size { width, height },

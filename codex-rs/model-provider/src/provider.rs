@@ -15,7 +15,6 @@ use codex_login::default_client::RESIDENCY_HEADER_NAME;
 use codex_login::default_client::ResidencyRequirement;
 use codex_login::default_client::read_default_client_residency_requirement;
 use codex_model_provider_info::ModelProviderInfo;
-use codex_model_provider_info::WireApi;
 use codex_models_manager::cache::ModelsCache;
 use codex_models_manager::manager::OpenAiModelsManager;
 use codex_models_manager::manager::SharedModelsManager;
@@ -363,15 +362,10 @@ impl ModelProvider for ConfiguredModelProvider {
             RemoteCompactionSupport::Unsupported
         };
 
-        let mut capabilities = ProviderCapabilities {
+        ProviderCapabilities {
             remote_compaction,
             ..ProviderCapabilities::default()
-        };
-        if self.info.wire_api == WireApi::Claude {
-            capabilities.image_generation = false;
-            capabilities.default_apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
         }
-        capabilities
     }
 
     fn approval_review_preferred_model(&self) -> &'static str {
@@ -523,13 +517,17 @@ impl ModelProvider for ConfiguredModelProvider {
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
     use std::num::NonZeroU64;
+    use std::task::Context;
+    use std::task::Waker;
 
     use codex_http_client::HttpClientFactory;
     use codex_http_client::OutboundProxyPolicy;
     use codex_login::auth::AgentIdentityAuthPolicy;
     use codex_login::auth::BedrockApiKeyAuth;
     use codex_model_provider_info::AwsAuthRefreshConfig;
+    use codex_model_provider_info::AwsCredentialExportConfig;
     use codex_model_provider_info::ModelProviderAwsAuthInfo;
     use codex_model_provider_info::WireApi;
     use codex_model_provider_info::create_oss_provider_with_base_url;
@@ -585,7 +583,6 @@ mod tests {
             auth: None,
             aws: None,
             wire_api: WireApi::Responses,
-            supports_developer_role: None,
             query_params: None,
             http_headers: None,
             env_http_headers: None,
@@ -661,29 +658,6 @@ mod tests {
             ProviderCapabilities {
                 remote_compaction: RemoteCompactionSupport::V2,
                 ..ProviderCapabilities::default()
-            }
-        );
-    }
-
-    #[test]
-    fn claude_provider_exposes_claude_native_capabilities() {
-        let provider = create_model_provider(
-            codex_model_provider_info::create_oss_provider_with_base_url(
-                "https://api.anthropic.com/v1",
-                WireApi::Claude,
-            ),
-            /*auth_manager*/ None,
-        );
-
-        assert_eq!(
-            provider.capabilities(),
-            ProviderCapabilities {
-                namespace_tools: true,
-                image_generation: false,
-                web_search: true,
-                default_apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
-                external_web_access: true,
-                remote_compaction: RemoteCompactionSupport::Unsupported,
             }
         );
     }
@@ -799,6 +773,7 @@ mod tests {
             ModelProviderInfo::create_amazon_bedrock_provider(Some(ModelProviderAwsAuthInfo {
                 profile: Some("codex-bedrock".to_string()),
                 region: None,
+                credential_export: None,
                 auth_refresh: None,
             })),
             Some(AuthManager::from_auth_for_testing(CodexAuth::from_api_key(
@@ -856,6 +831,7 @@ mod tests {
         let aws = ModelProviderAwsAuthInfo {
             profile: Some("codex-bedrock".to_string()),
             region: Some("us-west-2".to_string()),
+            credential_export: None,
             auth_refresh: Some(AwsAuthRefreshConfig {
                 command: "aws".to_string(),
                 args: Vec::from(
@@ -936,6 +912,93 @@ mod tests {
             ProviderUnauthorizedRecovery::Recovered
         );
         assert_eq!(read_counter(), "11");
+
+        let fixture = tempfile::tempdir().expect("export fixture should be created");
+        let export_counter = fixture.path().join("exports");
+        let export_gate = fixture.path().join("release");
+        #[cfg(unix)]
+        let (command, mut args) = (
+            "sh".to_string(),
+            vec![
+                "-c".to_string(),
+                r#"printf '1\n' >> "$1"
+while [ ! -e "$2" ]; do :; done
+printf '%s\n' '{"AccessKeyId":"exported","SecretAccessKey":"secret"}'
+"#
+                .to_string(),
+                "export-credentials".to_string(),
+            ],
+        );
+        #[cfg(windows)]
+        let (command, mut args) = {
+            let script = fixture.path().join("export.cmd");
+            std::fs::write(
+                &script,
+                concat!(
+                    "@echo off\r\n>> \"%~1\" echo 1\r\n",
+                    ":wait\r\nif not exist \"%~2\" goto wait\r\n",
+                    "echo {\"AccessKeyId\":\"exported\",\"SecretAccessKey\":\"secret\"}\r\n",
+                ),
+            )
+            .expect("export script should be written");
+            (
+                "cmd.exe".to_string(),
+                vec![
+                    "/D".to_string(),
+                    "/Q".to_string(),
+                    "/C".to_string(),
+                    script.to_string_lossy().into_owned(),
+                ],
+            )
+        };
+        args.extend(
+            [&export_counter, &export_gate].map(|path| path.to_string_lossy().into_owned()),
+        );
+        let provider_info =
+            ModelProviderInfo::create_amazon_bedrock_provider(Some(ModelProviderAwsAuthInfo {
+                profile: None,
+                credential_export: Some(AwsCredentialExportConfig {
+                    command,
+                    args: args.into_iter().map(RedactedString::from).collect(),
+                    timeout_ms: NonZeroU64::new(5_000).expect("timeout should be non-zero"),
+                }),
+                ..aws.clone()
+            }));
+        let first_export = create_model_provider(provider_info.clone(), /*auth_manager*/ None);
+        let second_export = create_model_provider(provider_info, /*auth_manager*/ None);
+        let first_refresh = first_export.recover_from_unauthorized();
+        let second_refresh = second_export.recover_from_unauthorized();
+        tokio::pin!(first_refresh, second_refresh);
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::select! {
+                result = &mut first_refresh => panic!("export should wait for its gate: {result:?}"),
+                () = async {
+                    while !export_counter.exists() {
+                        tokio::task::yield_now().await;
+                    }
+                } => {}
+            }
+        }).await.expect("export should start after login");
+        assert_eq!(read_counter(), "111");
+        {
+            // Queue another recovery after login finishes, while export still holds the lock.
+            let mut context = Context::from_waker(Waker::noop());
+            assert!(second_refresh.as_mut().poll(&mut context).is_pending());
+        }
+        std::fs::write(&export_gate, []).expect("export gate should open");
+        let (first_result, second_result) = tokio::join!(first_refresh, second_refresh);
+        assert_eq!(
+            [first_result, second_result].map(|result| result.expect("provider should recover")),
+            [ProviderUnauthorizedRecovery::Recovered; 2]
+        );
+        assert_eq!(read_counter(), "111");
+        assert_eq!(
+            std::fs::read_to_string(export_counter)
+                .expect("read export counter")
+                .lines()
+                .collect::<Vec<_>>(),
+            vec!["1"]
+        );
         std::fs::remove_file(&counter).expect("refresh invocation counter should be removed");
 
         let different_profile = ModelProviderAwsAuthInfo {

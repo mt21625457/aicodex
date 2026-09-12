@@ -147,6 +147,7 @@ pub(super) async fn spawn_review_thread(
         config: per_turn_config,
         auth_manager: auth_manager_for_context,
         initial_settings: Arc::clone(&step_settings),
+        disabled_plugin_ids: parent_turn_context.disabled_plugin_ids.clone(),
         current_settings: ArcSwap::from(step_settings),
         session_telemetry: session_telemetry_for_context,
         provider: provider_for_context,
@@ -174,7 +175,6 @@ pub(super) async fn spawn_review_thread(
         terminal_error: Arc::new(Mutex::new(None)),
         server_model_warning_emitted: AtomicBool::new(false),
         model_verification_emitted: AtomicBool::new(false),
-        file_tool_state: Arc::new(Mutex::new(crate::tools::handlers::FileToolState::default())),
         file_mutation_locks: Arc::new(
             crate::tools::file_mutation_lock::FileMutationLocks::default(),
         ),

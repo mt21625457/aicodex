@@ -16,14 +16,12 @@ use toml::Table;
 
 mod feature_configs;
 mod legacy;
-pub use feature_configs::ClaudeFileToolMode;
 pub use feature_configs::CodeModeConfigToml;
 pub use feature_configs::CodeModeHostConfigToml;
 pub use feature_configs::ContextManagementConfigToml;
 pub use feature_configs::CurrentTimeReminderConfigToml;
 pub use feature_configs::CurrentTimeReminderDeliveryMode;
 pub use feature_configs::CurrentTimeSource;
-pub use feature_configs::DedicatedFileToolsConfigToml;
 pub use feature_configs::GuardianV2ConfigToml;
 pub use feature_configs::GuardianV2ReviewScopeConfigToml;
 pub use feature_configs::GuardianV2TranscriptConfigToml;
@@ -93,6 +91,8 @@ impl Stage {
 /// Unique features toggled via configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Feature {
+    /// Discover model catalogs for OpenAI API-key authentication.
+    ApiKeyModelDiscovery,
     /// Enable the interactive transcript composer and turn-selection UI.
     TranscriptV2,
     // Stable.
@@ -142,8 +142,6 @@ pub enum Feature {
     TerminalVisualizationInstructions,
     /// Stream structured progress while apply_patch input is being generated.
     ApplyPatchStreamingEvents,
-    /// Register first-party dedicated file tools for explicit wire rollouts.
-    DedicatedFileTools,
     /// Preserve existing line endings when apply_patch updates files.
     ApplyPatchPreserveLineEndings,
     /// Allow exec tools to request additional permissions while staying sandboxed.
@@ -215,6 +213,8 @@ pub enum Feature {
     EnableMcpApps,
     /// Enable MCP protocol version 2026-07-28 support.
     Mcp20260728,
+    /// Enable MCP protocol version 2026-07-28 for the host-owned Codex Apps server.
+    CodexAppsMcp20260728,
     /// Let RMCP coordinate OAuth refresh through the configured credential store.
     McpOAuthRefreshCoordination,
     /// Removed compatibility flag for the legacy Apps MCP path override.
@@ -352,7 +352,7 @@ pub enum Feature {
     RealtimeConversation,
     /// Prevent idle system sleep while a turn is actively running.
     PreventIdleSleep,
-    /// Enable remote compaction v2 over the normal Responses API.
+    /// Removed compatibility key, still advertised to the Responses API.
     RemoteCompactionV2,
     /// Include retained images in the remote compaction context budget.
     CompactionImageBudget,
@@ -594,7 +594,7 @@ impl Features {
                 "js_repl_tools_only" => {
                     continue;
                 }
-                "remote_control" => {
+                "remote_control" | "remote_compaction_v2" => {
                     continue;
                 }
                 "apply_patch_freeform" => {
@@ -786,8 +786,6 @@ pub struct FeaturesToml {
     pub rollout_budget: Option<FeatureToml<RolloutBudgetConfigToml>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_time_reminder: Option<FeatureToml<CurrentTimeReminderConfigToml>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dedicated_file_tools: Option<FeatureToml<DedicatedFileToolsConfigToml>>,
     pub sleep_tool: Option<FeatureToml<SleepToolConfigToml>>,
     #[serde(default, rename = "apps_mcp_path_override", skip_serializing)]
     #[schemars(skip)]
@@ -858,13 +856,6 @@ impl FeaturesToml {
         {
             entries.insert(Feature::CurrentTimeReminder.key().to_string(), enabled);
         }
-        if let Some(enabled) = self
-            .dedicated_file_tools
-            .as_ref()
-            .and_then(FeatureToml::enabled)
-        {
-            entries.insert(Feature::DedicatedFileTools.key().to_string(), enabled);
-        }
         if let Some(enabled) = self.network_proxy.as_ref().and_then(FeatureToml::enabled) {
             entries.insert(Feature::NetworkProxy.key().to_string(), enabled);
         }
@@ -887,7 +878,6 @@ impl FeaturesToml {
             rollout_budget,
             current_time_reminder,
             context_management,
-            dedicated_file_tools,
             sleep_tool,
             removed_apps_mcp_path_override: _,
             network_proxy,
@@ -916,8 +906,6 @@ impl FeaturesToml {
                 materialize_resolved_feature_enabled(current_time_reminder, enabled);
             } else if spec.id == Feature::ContextManagement {
                 materialize_resolved_feature_enabled(context_management, enabled);
-            } else if spec.id == Feature::DedicatedFileTools {
-                materialize_resolved_feature_enabled(dedicated_file_tools, enabled);
             } else if spec.id == Feature::SleepTool {
                 materialize_resolved_feature_enabled(sleep_tool, enabled);
             } else if spec.id == Feature::NetworkProxy {
@@ -1244,12 +1232,6 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
-        id: Feature::DedicatedFileTools,
-        key: "dedicated_file_tools",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
-    },
-    FeatureSpec {
         id: Feature::ApplyPatchPreserveLineEndings,
         key: "apply_patch_preserve_line_endings",
         stage: Stage::UnderDevelopment,
@@ -1319,6 +1301,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::RemoteModels,
         key: "remote_models",
         stage: Stage::Removed,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::ApiKeyModelDiscovery,
+        key: "api_key_model_discovery",
+        stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
     FeatureSpec {
@@ -1404,6 +1392,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::Mcp20260728,
         key: "mcp_2026_07_28",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::CodexAppsMcp20260728,
+        key: "codex_apps_mcp_2026_07_28",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
@@ -1776,7 +1770,11 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::RealtimeConversation,
         key: "realtime_conversation",
-        stage: Stage::Removed,
+        stage: Stage::Experimental {
+            name: "Voice conversations",
+            menu_description: "Talk with Codex using /voice.",
+            announcement: "NEW: Voice conversations can now be enabled from /experimental. Restart Codex after enabling, then use /voice.",
+        },
         default_enabled: false,
     },
     FeatureSpec {
@@ -1836,8 +1834,8 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::RemoteCompactionV2,
         key: "remote_compaction_v2",
-        stage: Stage::Stable,
-        default_enabled: true,
+        stage: Stage::Removed,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::CompactionImageBudget,

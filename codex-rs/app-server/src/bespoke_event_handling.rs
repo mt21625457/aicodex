@@ -99,7 +99,6 @@ use codex_app_server_protocol::item_event_to_server_notification;
 use codex_core::CodexThread;
 use codex_core::ThreadManager;
 use codex_features::Feature;
-use codex_guardian_v2::StrictReviewReason;
 use codex_protocol::ThreadId;
 use codex_protocol::items::CollabAgentTool as CoreCollabAgentTool;
 use codex_protocol::items::CommandExecutionStatus as CoreCommandExecutionStatus;
@@ -359,10 +358,16 @@ pub(crate) async fn apply_bespoke_event_handling(
             attach_transcript_metadata_to_notification(&mut notification, &thread_state).await;
             outgoing.send_server_notification(notification).await;
             if assessment.status == codex_protocol::protocol::GuardianAssessmentStatus::InProgress
-                && conversation
-                    .thread_extension_data()
-                    .remove::<StrictReviewReason>()
-                    .is_some()
+                && matches!(
+                    assessment.review_reason,
+                    Some(
+                        codex_protocol::approvals::GuardianReviewReason::ElevatedRisk
+                            | codex_protocol::approvals::GuardianReviewReason::StaleScore
+                            | codex_protocol::approvals::GuardianReviewReason::IncompatibleCompaction
+                            | codex_protocol::approvals::GuardianReviewReason::ScoringFailure
+                            | codex_protocol::approvals::GuardianReviewReason::AuthorizationChanged
+                    )
+                )
             {
                 outgoing
                     .send_server_notification(ServerNotification::StrictReviewRequired(
@@ -873,6 +878,10 @@ pub(crate) async fn apply_bespoke_event_handling(
             });
         }
         EventMsg::ElicitationRequest(request) => {
+            let user_verification = matches!(
+                &request.request,
+                codex_protocol::approvals::ElicitationRequest::UserVerification { .. }
+            );
             let permission_guard = thread_watch_manager
                 .note_permission_requested(&conversation_id.to_string())
                 .await;
@@ -922,7 +931,10 @@ pub(crate) async fn apply_bespoke_event_handling(
                     request.server_name,
                     request.id,
                     pending_request_id,
-                    rx,
+                    PendingMcpElicitationResponse {
+                        receiver: rx,
+                        user_verification,
+                    },
                     conversation,
                     thread_state,
                     permission_guard,
@@ -1250,7 +1262,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 state.pending_rollbacks.take()
             };
 
-            if let Some(request_id) = pending {
+            if let Some((request_id, _completion_tx)) = pending {
                 let _thread_list_state_permit = match thread_list_state_permit.acquire().await {
                     Ok(permit) => permit,
                     Err(err) => {
@@ -1682,7 +1694,7 @@ async fn handle_thread_rollback_failed(
 ) {
     let pending_rollback = thread_state.lock().await.pending_rollbacks.take();
 
-    if let Some(request_id) = pending_rollback {
+    if let Some((request_id, _completion_tx)) = pending_rollback {
         outgoing
             .send_error(request_id, invalid_request(message))
             .await;
@@ -1867,19 +1879,28 @@ async fn on_request_user_input_response(
     }
 }
 
+struct PendingMcpElicitationResponse {
+    receiver: oneshot::Receiver<ClientRequestResult>,
+    user_verification: bool,
+}
+
 async fn on_mcp_server_elicitation_response(
     server_name: String,
     request_id: codex_protocol::mcp::RequestId,
     pending_request_id: RequestId,
-    receiver: oneshot::Receiver<ClientRequestResult>,
+    pending: PendingMcpElicitationResponse,
     conversation: Arc<CodexThread>,
     thread_state: Arc<Mutex<ThreadState>>,
     permission_guard: ThreadWatchActiveGuard,
 ) {
-    let response = receiver.await;
+    let response = pending.receiver.await;
     resolve_server_request_on_thread_listener(&thread_state, pending_request_id).await;
     drop(permission_guard);
-    let response = mcp_server_elicitation_response_from_client_result(response);
+    let response = if pending.user_verification {
+        crate::user_verification_response::from_client_result(response)
+    } else {
+        mcp_server_elicitation_response_from_client_result(response)
+    };
 
     if let Err(err) = conversation
         .submit(Op::ResolveElicitation {
@@ -2420,7 +2441,7 @@ mod tests {
             thread_id.to_string(),
             "fallback-provider",
             &fallback_cwd,
-            "chat".to_string(),
+            "responses".to_string(),
             ThreadStatus::NotLoaded,
         )
         .expect("rollback response should rebuild from stored history");
@@ -2430,7 +2451,7 @@ mod tests {
         assert_eq!(response.thread.preview, "fallback preview");
         assert_eq!(response.thread.name.as_deref(), Some("Rollback thread"));
         assert_eq!(response.thread.status, ThreadStatus::NotLoaded);
-        assert_eq!(response.thread.wire_api.as_deref(), Some("chat"));
+        assert_eq!(response.thread.wire_api.as_deref(), Some("responses"));
         assert_eq!(response.thread.turns.len(), 1);
         assert_eq!(response.thread.turns[0].items.len(), 2);
         Ok(())
@@ -2493,6 +2514,7 @@ mod tests {
             GuardianAssessmentStatus::Aborted => (None, None, None),
         };
         GuardianAssessmentEvent {
+            review_reason: None,
             id: format!("review-{id}"),
             target_item_id: Some(id.to_string()),
             plugin_id: Some("sample@openai-curated".to_string()),
@@ -2562,6 +2584,7 @@ mod tests {
             &conversation_id,
             "turn-from-event",
             &GuardianAssessmentEvent {
+                review_reason: None,
                 id: "review-1".to_string(),
                 target_item_id: Some("item-1".to_string()),
                 plugin_id: None,
@@ -2610,6 +2633,7 @@ mod tests {
             &conversation_id,
             "turn-from-event",
             &GuardianAssessmentEvent {
+                review_reason: None,
                 id: "review-2".to_string(),
                 target_item_id: Some("item-2".to_string()),
                 plugin_id: None,
@@ -2666,6 +2690,7 @@ mod tests {
             &conversation_id,
             "turn-from-event",
             &GuardianAssessmentEvent {
+                review_reason: None,
                 id: "review-3".to_string(),
                 target_item_id: None,
                 plugin_id: None,

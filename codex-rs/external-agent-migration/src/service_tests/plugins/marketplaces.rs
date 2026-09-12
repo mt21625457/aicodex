@@ -480,6 +480,72 @@ async fn import_plugins_supports_relative_external_agent_plugin_marketplace_path
 
 #[tokio::test]
 async fn import_plugins_infers_external_official_marketplace_when_missing_from_settings() {
+    const CHILD_ENV: &str = "CODEX_TEST_OFFICIAL_MARKETPLACE_CHILD";
+    if std::env::var_os(CHILD_ENV).is_none() {
+        // Exercise the inferred Git source and real checkout without depending on GitHub.
+        // Git configuration is scoped to a child test process, not the process-wide environment.
+        let fixture = TempDir::new().expect("marketplace fixture");
+        let repository = fixture.path().join("official-marketplace");
+        fs::create_dir_all(repository.join(".claude-plugin")).expect("manifest directory");
+        fs::write(
+            repository.join(".claude-plugin/marketplace.json"),
+            serde_json::json!({
+                "name": EXTERNAL_OFFICIAL_MARKETPLACE_NAME,
+                "plugins": []
+            })
+            .to_string(),
+        )
+        .expect("marketplace manifest");
+        for arguments in [
+            vec!["init", "."],
+            vec!["add", "."],
+            vec![
+                "-c",
+                "user.name=Codex Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "-m",
+                "test marketplace",
+            ],
+        ] {
+            let output = std::process::Command::new("git")
+                .args(arguments)
+                .current_dir(&repository)
+                .output()
+                .expect("fixture git command");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let rewrite = format!(
+            "url.{}.insteadOf",
+            repository.display().to_string().replace('\\', "/")
+        );
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", "service::tests::plugins::marketplaces::import_plugins_infers_external_official_marketplace_when_missing_from_settings", "--nocapture"])
+            .env(CHILD_ENV, "1")
+            .env("GIT_CONFIG_COUNT", "2")
+            .env("GIT_CONFIG_KEY_0", &rewrite)
+            .env("GIT_CONFIG_VALUE_0", "https://github.com/anthropics/claude-plugins-official.git")
+            .env("GIT_CONFIG_KEY_1", &rewrite)
+            .env("GIT_CONFIG_VALUE_1", "https://github.com/anthropics/claude-plugins-official")
+            .output()
+            .expect("run isolated marketplace import");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
     let (_root, external_agent_home, codex_home) = fixture_paths();
     fs::create_dir_all(&external_agent_home).expect("create external agent home");
     fs::create_dir_all(&codex_home).expect("create codex home");

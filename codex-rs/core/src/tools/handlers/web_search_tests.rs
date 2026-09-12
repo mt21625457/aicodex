@@ -236,7 +236,7 @@ async fn kimi_handler_calls_moonshot_and_returns_bounded_external_context() {
         Arc::make_mut(&mut settings.model_info).slug = "gateway:k3".to_string();
     });
     let mut provider =
-        create_oss_provider_with_base_url(&format!("{}/v1", server.uri()), WireApi::Claude);
+        create_oss_provider_with_base_url(&format!("{}/v1", server.uri()), WireApi::Responses);
     provider.experimental_bearer_token = Some("provider-token".to_string().into());
     turn.provider = create_model_provider(provider, /*auth_manager*/ None);
     let session = Arc::new(session);

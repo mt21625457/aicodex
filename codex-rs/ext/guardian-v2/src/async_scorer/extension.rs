@@ -1,3 +1,5 @@
+use super::transcript::ContextInput;
+use codex_core::context::ContextualUserFragment;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -12,10 +14,9 @@ use codex_analytics::GuardianV2Event;
 use codex_analytics::GuardianV2EventKind;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
+use codex_core::context::GuardianContextMode;
 use codex_core::context::GuardianReviewEvidence;
 use codex_core::context::NodeReplReviewEvidence;
-use codex_extension_api::ApprovalReviewContributor;
-use codex_extension_api::ConversationHistorySnapshot;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionEventSink;
 use codex_extension_api::ExtensionFuture;
@@ -23,29 +24,25 @@ use codex_extension_api::ExtensionMetrics;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::ExtensionWarning;
 use codex_extension_api::GuardianV2Enabled;
-use codex_extension_api::ResponseItem;
 use codex_extension_api::SkillInvocationContributor;
 use codex_extension_api::SkillInvocationInput;
 use codex_extension_api::ThreadLifecycleContributor;
-use codex_extension_api::ThreadOriginator;
 use codex_extension_api::ThreadStartInput;
 use codex_extension_api::ToolLifecycleContributor;
 use codex_extension_api::ToolLifecycleFuture;
 use codex_extension_api::ToolStartInput;
 use codex_features::Feature;
 use codex_guardian_context::ContextTarget;
+use codex_guardian_context::PlannedAction;
+use codex_guardian_context::PlannedActionKind;
 use codex_history::RolloutItem;
-use codex_login::AgentIdentityAuthPolicy;
 use codex_login::AuthManager;
 use codex_model_provider::create_model_provider;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::mcp::is_node_repl_backed_server;
-use codex_protocol::openai_models::GuardianReviewMode;
 use codex_protocol::openai_models::GuardianScope;
 use codex_protocol::openai_models::ModelInfo;
-use codex_protocol::protocol::ReviewDecision;
-use codex_protocol::protocol::TruncationPolicy;
 use codex_protocol::protocol::has_full_access;
 use codex_protocol::security_risk::SecurityRiskScore;
 
@@ -53,32 +50,24 @@ use super::action::GuardianAction;
 use super::action::RenderedAction;
 use super::authorization::ScoreAuthorization;
 use super::config::GuardianV2Config;
-use super::coverage::GuardianPolicy;
 use super::coverage::UnscoredAction;
-use super::metrics::REVIEW_FALLBACK_METRIC;
-use super::metrics::TOOL_CALL_LAG_METRIC;
 use super::metrics::record_classification;
 use super::metrics::record_classification_risk;
-use super::metrics::record_fast_decision;
 use super::metrics::sampler_failure_reason;
-use super::review_evidence::render_review_evidence;
+use super::parent_compaction::ParentCompactionError;
+use super::parent_compaction::select_parent_compaction;
 use super::sampler::LunaSampler;
-use super::sampler::LunaSamplerConfig;
 use super::sampler::LunaSamplerError;
 use super::sampler::LunaSamplingRequest;
-use super::sampler::MODEL;
 use super::truncation::ClassificationTruncations;
 use super::trusted_skills::TrustedSkillInvocations;
 use super::trusted_skills::TrustedSkillRoots;
 use super::trusted_tools::trusted_tool_context;
-
-/// Explains why Guardian v2 requires synchronous approval review.
-#[derive(Debug, Eq, PartialEq)]
-pub enum StrictReviewReason {
-    ElevatedRisk,
-    StaleScore,
-    IncompatibleCompaction,
-}
+use super::wrapper_lag::WrapperLag;
+use codex_core::context::GuardianReviewEvidenceFragment;
+use codex_guardian_context::PreviousReviews;
+use codex_guardian_context::ReviewEvidence;
+use codex_guardian_context::render_review_evidence;
 
 enum ClassificationOutcome {
     Scored,
@@ -87,6 +76,7 @@ enum ClassificationOutcome {
 
 #[derive(Default)]
 pub(super) struct GuardianV2ScoreProgress {
+    pub(super) wrapper_lag: WrapperLag,
     pub(super) latest_tool_call: AtomicUsize,
     // Setup and reset calls must not consume the first JS execution allowance.
     pub(super) js_executions: AtomicUsize,
@@ -138,38 +128,12 @@ impl ThreadLifecycleContributor<Config> for GuardianV2Extension {
                 policy.enforce_required_model();
             }
             let scoring_enabled = policy.scoring_enabled();
-            let luna_compaction_hash = if let Some(thread_manager) = self.thread_manager.upgrade() {
-                thread_manager
-                    .get_models_manager()
-                    .get_model_info(MODEL, &input.config.to_models_manager_config())
-                    .await
-                    .comp_hash
-            } else {
-                None
-            };
-            let sampler_config = LunaSamplerConfig {
-                provider: create_model_provider(
-                    input.config.model_provider.clone(),
-                    Some(Arc::clone(&self.auth_manager)),
-                ),
-                http_client_factory: input.config.http_client_factory(),
-                agent_identity_policy: if input.config.features.enabled(Feature::UseAgentIdentity) {
-                    AgentIdentityAuthPolicy::ChatGptAuth
-                } else {
-                    AgentIdentityAuthPolicy::JwtOnly
-                },
-                session_source: input.session_source.clone(),
-                session_id: input.session_store.level_id().to_string(),
-                thread_id: thread_id.clone(),
-                originator: input
-                    .thread_store
-                    .get::<ThreadOriginator>()
-                    .map(|originator| originator.0.clone()),
-                free_guardian: input.config.free_guardian_enabled(),
-                service_tier: input.config.service_tier.clone(),
-                luna_compaction_hash,
-                metrics: input.extension_metrics.clone(),
-            };
+            let sampler_config = super::startup::sampler_config(
+                &input,
+                Arc::clone(&self.auth_manager),
+                self.thread_manager.upgrade(),
+            )
+            .await;
 
             if scoring_enabled && guardian_config.transcript.include_images {
                 input
@@ -242,193 +206,6 @@ impl SkillInvocationContributor for GuardianV2Extension {
     }
 }
 
-impl ApprovalReviewContributor for GuardianV2Extension {
-    fn fast_decision<'a>(
-        &'a self,
-        _session_store: &'a ExtensionData,
-        thread_store: &'a ExtensionData,
-        prompt: &'a str,
-        extension_metrics: Option<Arc<dyn ExtensionMetrics>>,
-    ) -> ExtensionFuture<'a, Option<ReviewDecision>> {
-        Box::pin(async move {
-            let model = thread_store.get::<ModelInfo>();
-            let guardian_config = thread_store.get::<GuardianV2Config>()?;
-            let policy = guardian_config.policy_for_model(model.as_deref());
-            let action = serde_json::from_str::<serde_json::Value>(prompt).unwrap_or_default();
-            let scope = GuardianPolicy::review_scope(&action);
-            if scope.map_or(policy.other_tools, |scope| policy.mode(scope))
-                != GuardianReviewMode::Adaptive
-            {
-                record_fast_decision(extension_metrics.as_deref(), "deferred", "out_of_scope");
-                return None;
-            }
-            let guardian_evidence = thread_store.get_or_init(GuardianReviewEvidence::default);
-            let thread_context_enabled = guardian_evidence.uses_thread_owned_context();
-            let mut initial_cua_call = false;
-            if scope == Some(GuardianScope::ComputerUse) && policy.initial_cua_call {
-                // Thread-owned context checks checkpoint compatibility before the first CUA allowance.
-                initial_cua_call = action.get("tool_name").and_then(serde_json::Value::as_str)
-                    == Some("js")
-                    && action
-                        .get("connector_id")
-                        .and_then(serde_json::Value::as_str)
-                        == Some("node_repl")
-                    && thread_store
-                        .get::<GuardianV2ScoreProgress>()?
-                        .js_executions
-                        .load(Ordering::Acquire)
-                        == 1;
-                if initial_cua_call && !thread_context_enabled {
-                    record_fast_decision(
-                        extension_metrics.as_deref(),
-                        "approved",
-                        "initial_cua_call",
-                    );
-                    return Some(ReviewDecision::Approved);
-                }
-            } else if thread_store.get::<ModelInfo>().is_some() {
-                let manager = self.thread_manager.upgrade()?;
-                let thread_id = ThreadId::from_string(thread_store.level_id()).ok()?;
-                let Ok(thread) = manager.get_thread(thread_id).await else {
-                    record_fast_decision(
-                        extension_metrics.as_deref(),
-                        "deferred",
-                        "scoring_failure",
-                    );
-                    return None;
-                };
-                let config = thread.config().await;
-                let model = thread_store.get::<ModelInfo>()?;
-                if config
-                    .config_layer_stack
-                    .requirements()
-                    .auto_review_required_for_model(&model.slug)
-                {
-                    record_fast_decision(
-                        extension_metrics.as_deref(),
-                        "deferred",
-                        "required_model",
-                    );
-                    return None;
-                }
-            }
-            let Some(score_progress) = thread_store.get::<GuardianV2ScoreProgress>() else {
-                record_fast_decision(extension_metrics.as_deref(), "deferred", "missing_score");
-                return None;
-            };
-            let manager = self.thread_manager.upgrade()?;
-            let thread_id = ThreadId::from_string(thread_store.level_id()).ok()?;
-            let Ok(thread) = manager.get_thread(thread_id).await else {
-                record_fast_decision(extension_metrics.as_deref(), "deferred", "scoring_failure");
-                return None;
-            };
-            let history = thread.conversation_history_snapshot().await;
-            if thread_context_enabled {
-                let sampler = thread_store.get::<LunaSampler>()?;
-                if requires_sync_for_compaction(&guardian_config, history.as_ref(), &sampler)
-                    || encrypted_parent_compaction(
-                        history.items(),
-                        guardian_config.max_parent_compaction_tokens,
-                    )
-                    .is_err()
-                {
-                    thread_store.insert(StrictReviewReason::IncompatibleCompaction);
-                    record_fast_decision(
-                        extension_metrics.as_deref(),
-                        "deferred",
-                        "incompatible_compaction",
-                    );
-                    return None;
-                }
-            }
-            if initial_cua_call {
-                record_fast_decision(extension_metrics.as_deref(), "approved", "initial_cua_call");
-                return Some(ReviewDecision::Approved);
-            }
-            let current_authorization = ScoreAuthorization::current(&thread).await;
-            if !current_authorization.local.retained_context_complete
-                || current_authorization
-                    .root
-                    .is_some_and(|root| !root.retained_context_complete)
-            {
-                record_fast_decision(
-                    extension_metrics.as_deref(),
-                    "deferred",
-                    "incomplete_authorization",
-                );
-                return None;
-            }
-            let scored_authorization = score_progress
-                .authorization
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let latest_scored_tool_call = score_progress
-                .latest_scored_tool_call
-                .load(Ordering::Acquire);
-            let tool_call_lag = score_progress
-                .latest_tool_call
-                .load(Ordering::Acquire)
-                .saturating_sub(latest_scored_tool_call);
-            if let Some(metrics) = &extension_metrics {
-                metrics.histogram(
-                    TOOL_CALL_LAG_METRIC,
-                    i64::try_from(tool_call_lag).unwrap_or(i64::MAX),
-                    &[],
-                );
-            }
-            if tool_call_lag > guardian_config.max_tool_call_lag {
-                thread_store.insert(StrictReviewReason::StaleScore);
-                if let Some(metrics) = &extension_metrics {
-                    metrics.counter(
-                        REVIEW_FALLBACK_METRIC,
-                        /*inc*/ 1,
-                        &[("fallback_reason", "score_lag")],
-                    );
-                }
-                record_fast_decision(extension_metrics.as_deref(), "deferred", "stale_score");
-                return None;
-            }
-            if score_progress
-                .latest_failed_tool_call
-                .load(Ordering::Acquire)
-                > latest_scored_tool_call
-            {
-                thread_store.insert(StrictReviewReason::ElevatedRisk);
-                record_fast_decision(extension_metrics.as_deref(), "deferred", "scoring_failure");
-                return None;
-            }
-
-            let Some(score) = thread_store
-                .get::<SecurityRiskScore>()
-                .and_then(|score| score.scores.get("action_risk").copied())
-            else {
-                record_fast_decision(extension_metrics.as_deref(), "deferred", "missing_score");
-                return None;
-            };
-            if score < guardian_config.review_threshold {
-                if scored_authorization.as_ref() != Some(&current_authorization) {
-                    thread_store.insert(StrictReviewReason::StaleScore);
-                    record_fast_decision(
-                        extension_metrics.as_deref(),
-                        "deferred",
-                        "authorization_changed",
-                    );
-                    return None;
-                }
-                record_fast_decision(extension_metrics.as_deref(), "approved", "low_risk");
-                return Some(ReviewDecision::Approved);
-            }
-            if score >= guardian_config.review_threshold {
-                thread_store.insert(StrictReviewReason::ElevatedRisk);
-                record_fast_decision(extension_metrics.as_deref(), "deferred", "elevated_risk");
-            } else {
-                record_fast_decision(extension_metrics.as_deref(), "deferred", "invalid_score");
-            }
-            None
-        })
-    }
-}
-
 impl ToolLifecycleContributor for GuardianV2Extension {
     fn on_tool_start<'a>(&'a self, input: ToolStartInput<'a>) -> ToolLifecycleFuture<'a> {
         Box::pin(self.score_tool(input))
@@ -478,15 +255,18 @@ impl GuardianV2Extension {
             match policy.unscored_action {
                 UnscoredAction::Ignore => {}
                 UnscoredAction::AgeScore => {
-                    score_progress
+                    let index = score_progress
                         .latest_tool_call
-                        .fetch_add(/*val*/ 1, Ordering::Relaxed);
+                        .fetch_add(/*val*/ 1, Ordering::Relaxed)
+                        .saturating_add(/*rhs*/ 1);
+                    score_progress.wrapper_lag.record(&input, index);
                 }
                 UnscoredAction::InvalidateScore => {
                     let index = score_progress
                         .latest_tool_call
                         .fetch_add(/*val*/ 1, Ordering::Relaxed)
                         .saturating_add(/*rhs*/ 1);
+                    score_progress.wrapper_lag.record(&input, index);
                     score_progress
                         .latest_failed_tool_call
                         .fetch_max(index, Ordering::Release);
@@ -509,6 +289,7 @@ impl GuardianV2Extension {
             .latest_tool_call
             .fetch_add(/*val*/ 1, Ordering::Relaxed)
             .saturating_add(/*rhs*/ 1);
+        score_progress.wrapper_lag.record(&input, tool_call_index);
         let event_sink = Arc::clone(&self.event_sink);
         let thread_id = input.thread_store.level_id().to_owned();
         let turn_id = input.turn_id.to_owned();
@@ -608,64 +389,38 @@ impl GuardianV2Extension {
         let guardian_evidence = input
             .thread_store
             .get_or_init(GuardianReviewEvidence::default);
-        let thread_context_enabled = guardian_evidence.uses_thread_owned_context();
-        if thread_context_enabled
-            && requires_sync_for_compaction(
-                &guardian_config,
-                input.conversation_history.as_ref(),
-                &sampler,
-            )
-        {
-            score_progress
-                .latest_failed_tool_call
-                .fetch_max(tool_call_index, Ordering::Release);
-            Self::record_fail_closed_score(input.thread_store, sampled_at);
-            record_classification(
-                metrics.as_deref(),
-                classification_started_at.elapsed(),
-                "skipped",
-                /*failure_reason*/ None,
-            );
-            return;
-        }
-        let parent_compaction_hash = if thread_context_enabled {
-            input
-                .conversation_history
-                .latest_compaction_model_hash()
-                .map(str::to_owned)
-        } else {
+        let context_mode = guardian_evidence.context_mode();
+        let selected_compaction = match select_parent_compaction(
+            context_mode,
+            &guardian_config,
+            input.conversation_history.as_ref(),
+            &sampler,
             parent_model
                 .as_ref()
-                .and_then(|model| model.comp_hash.clone())
-        };
-        let parent_compaction = if guardian_config.reuse_parent_compaction {
-            match encrypted_parent_compaction(
-                input.conversation_history.items(),
-                guardian_config.max_parent_compaction_tokens,
-            ) {
-                Ok(compaction) => compaction,
-                Err(ParentCompactionError::Unusable) if !thread_context_enabled => None,
-                Err(_) => {
-                    Self::record_fail_closed_score(input.thread_store, sampled_at);
-                    record_classification(
-                        metrics.as_deref(),
-                        classification_started_at.elapsed(),
-                        "failure",
-                        Some("parent_compaction_error"),
-                    );
-                    return;
-                }
+                .and_then(|model| model.comp_hash.as_deref()),
+        ) {
+            Ok(compaction) => compaction,
+            Err(error) => {
+                let (outcome, failure_reason) = if error == ParentCompactionError::RequiresSync {
+                    score_progress
+                        .latest_failed_tool_call
+                        .fetch_max(tool_call_index, Ordering::Release);
+                    ("skipped", None)
+                } else {
+                    ("failure", Some("parent_compaction_error"))
+                };
+                Self::record_fail_closed_score(input.thread_store, sampled_at);
+                record_classification(
+                    metrics.as_deref(),
+                    classification_started_at.elapsed(),
+                    outcome,
+                    failure_reason,
+                );
+                return;
             }
-        } else {
-            None
         };
-        // Legacy requests may omit an incompatible checkpoint because their raw
-        // review transcript is still retained. The sampler rejects supplied
-        // incompatible checkpoints, so preserve that legacy omission here.
-        let parent_compaction = parent_compaction.filter(|_| {
-            thread_context_enabled
-                || sampler.supports_parent_compaction(parent_compaction_hash.as_deref())
-        });
+        let parent_compaction = selected_compaction.item;
+        let parent_compaction_hash = selected_compaction.model_hash;
         let call_id = input.call_id.to_owned();
         let mcp_tool = input.mcp_tool.cloned();
         let action = GuardianAction {
@@ -692,12 +447,9 @@ impl GuardianV2Extension {
         } else {
             Vec::new()
         };
-        let rendered_images = guardian_config
-            .transcript
-            .images(input.conversation_history.review_items(), node_repl_images);
         // Capture root evidence before background metadata resolution or model I/O.
         // Later root changes invalidate this sample through its captured authorization version.
-        let root_snapshot = if thread_context_enabled {
+        let root_snapshot = if context_mode == GuardianContextMode::ThreadOwned {
             thread.guardian_root_snapshot().await
         } else {
             None
@@ -712,7 +464,7 @@ impl GuardianV2Extension {
                 }
                 None => None,
             };
-            let root_snapshot = if thread_context_enabled {
+            let root_snapshot = if context_mode == GuardianContextMode::ThreadOwned {
                 root_snapshot
             } else {
                 thread.guardian_root_snapshot().await
@@ -737,37 +489,6 @@ impl GuardianV2Extension {
                 model: parent_model.clone(),
                 ..score_authorization
             };
-            let transcript = match guardian_config.transcript.build_context(
-                ContextTarget::Async,
-                history.as_ref(),
-                root_conversation.as_deref().unwrap_or_default(),
-                &trusted_user_inputs,
-            ) {
-                Ok(transcript) => transcript,
-                Err(error) => {
-                    Self::record_fail_closed_score(thread.thread_extension_data(), sampled_at);
-                    record_classification(
-                        metrics.as_deref(),
-                        classification_started_at.elapsed(),
-                        "failure",
-                        Some("context_build_error"),
-                    );
-                    event_sink.emit_warning(ExtensionWarning {
-                        thread_id,
-                        turn_id: Some(turn_id),
-                        message: format!("Guardian V2 context collection failed: {error}"),
-                    });
-                    return;
-                }
-            };
-            drop(history);
-            truncations.extend(transcript.truncations);
-            truncations.record(
-                "transcript_image",
-                rendered_images.omitted_bytes,
-                /*retained_bytes*/ 0,
-            );
-            let images = rendered_images.images;
             let planned_action = match action.render(guardian_config.max_action_tokens) {
                 Ok(RenderedAction {
                     text,
@@ -792,29 +513,81 @@ impl GuardianV2Extension {
                     return;
                 }
             };
-            let mut classification_input = transcript.authorization;
-            classification_input.push(">>> TRANSCRIPT START\n".to_owned());
-            classification_input.extend(transcript.entries);
-            classification_input.push(">>> TRANSCRIPT END\n\n".to_owned());
-            let trusted_review_evidence = sync_reviews
+            let action_section = PlannedAction {
+                json: planned_action.clone(),
+                tool_descriptions: None,
+                kind: PlannedActionKind::Command,
+                reason: None,
+            };
+            let review_fragments = sync_reviews
                 .iter()
                 .filter(|review| {
                     review.authorization_version == authorization_version
                         && review.root_authorization_version == root_authorization_version
                 })
                 .map(|review| {
-                    let review = render_review_evidence(review);
+                    let review = render_review_evidence(ReviewEvidence {
+                        correlation: &review.correlation,
+                        decision: &review.decision,
+                        action: &review.action,
+                        rationale: review.rationale.as_deref(),
+                    });
                     truncations.extend(review.truncations);
-                    review.text
+                    GuardianReviewEvidenceFragment::new(review.body).render()
                 })
-                .collect();
-            classification_input.extend([
-                "The Codex agent has requested the following action:\n".to_owned(),
-                ">>> APPROVAL REQUEST START\n".to_owned(),
-                "Planned action JSON:\n".to_owned(),
-                format!("{planned_action}\n"),
-                ">>> APPROVAL REQUEST END\n".to_owned(),
-            ]);
+                .collect::<Vec<_>>();
+            let transcript =
+                PreviousReviews::try_from_fragments(review_fragments).and_then(|reviews| {
+                    guardian_config.transcript.build_context(ContextInput {
+                        target: ContextTarget::Async,
+                        history: history.as_ref(),
+                        root_conversation: root_conversation.as_deref().unwrap_or_default(),
+                        trusted_user_answers: &trusted_user_inputs,
+                        planned_action: Some(&action_section),
+                        previous_reviews: Some(&reviews),
+                        trusted_tool: trusted_tool_context.as_ref(),
+                        trusted_skill_paths: &trusted_skill_paths,
+                        node_repl_images: Some(&node_repl_images),
+                    })
+                });
+            let mut transcript = match transcript {
+                Ok(transcript) => transcript,
+                Err(error) => {
+                    Self::record_fail_closed_score(thread.thread_extension_data(), sampled_at);
+                    record_classification(
+                        metrics.as_deref(),
+                        classification_started_at.elapsed(),
+                        "failure",
+                        Some("context_build_error"),
+                    );
+                    event_sink.emit_warning(ExtensionWarning {
+                        thread_id,
+                        turn_id: Some(turn_id),
+                        message: format!("Guardian V2 context collection failed: {error}"),
+                    });
+                    return;
+                }
+            };
+            drop(history);
+            drop(node_repl_images);
+            truncations.extend(std::mem::take(&mut transcript.truncations));
+            if let Some(metrics) = metrics.as_deref() {
+                for (section, cost) in transcript.section_costs() {
+                    for (measurement, value) in cost.measurements() {
+                        metrics.histogram_with_boundaries(
+                            codex_guardian_context::SECTION_COST_METRIC,
+                            i64::try_from(value).unwrap_or(i64::MAX),
+                            codex_guardian_context::SECTION_COST_BOUNDARIES,
+                            &[
+                                ("target", "async"),
+                                ("section", section),
+                                ("measurement", measurement),
+                            ],
+                        );
+                    }
+                }
+            }
+            let classification_input = transcript.into_messages();
             let mut failure_reason = "invalid_output";
             let mut classification_risk = None;
             let mut classification_finished_at = None;
@@ -848,11 +621,7 @@ impl GuardianV2Extension {
                     .sample(LunaSamplingRequest {
                         parent_response_id,
                         instructions,
-                        trusted_review_evidence,
-                        trusted_tool_context,
-                        trusted_skill_paths,
                         input: classification_input,
-                        images,
                         parent_compaction,
                         parent_compaction_hash,
                         reasoning_effort: guardian_config.reasoning_effort.clone(),
@@ -986,71 +755,6 @@ impl GuardianV2Extension {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
-enum ParentCompactionError {
-    Serialization,
-    Oversized,
-    Unusable,
-}
-
-// Sampling and fast approval must apply the same checkpoint eligibility policy.
-pub(super) fn requires_sync_for_compaction(
-    config: &GuardianV2Config,
-    history: &dyn ConversationHistorySnapshot,
-    sampler: &LunaSampler,
-) -> bool {
-    history.items().any(|item| {
-        matches!(
-            item,
-            ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. }
-        )
-    }) && (!config.reuse_parent_compaction
-        || !sampler.supports_parent_compaction(history.latest_compaction_model_hash()))
-}
-
-// An unusable latest compaction must never fall back to an older one. Missing
-// encrypted content is rejected here; only legacy callers may omit that checkpoint.
-fn encrypted_parent_compaction<'a>(
-    items: impl Iterator<Item = &'a ResponseItem>,
-    max_parent_compaction_tokens: usize,
-) -> Result<Option<ResponseItem>, ParentCompactionError> {
-    let max_compaction_bytes = TruncationPolicy::Tokens(max_parent_compaction_tokens).byte_budget();
-    let Some(item) = items
-        .filter(|item| {
-            matches!(
-                item,
-                ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. }
-            )
-        })
-        .last()
-    else {
-        return Ok(None);
-    };
-
-    let encrypted_content = match item {
-        ResponseItem::Compaction {
-            id: Some(_),
-            encrypted_content,
-            ..
-        }
-        | ResponseItem::ContextCompaction {
-            id: Some(_),
-            encrypted_content: Some(encrypted_content),
-            ..
-        } => encrypted_content,
-        _ => return Err(ParentCompactionError::Unusable),
-    };
-    if encrypted_content.is_empty() {
-        return Err(ParentCompactionError::Unusable);
-    }
-    let serialized = serde_json::to_vec(item).map_err(|_| ParentCompactionError::Serialization)?;
-    if serialized.len() > max_compaction_bytes {
-        return Err(ParentCompactionError::Oversized);
-    }
-
-    Ok(Some(item.clone()))
-}
-
 /// Installs feature-gated Guardian V2 tool classification for each thread.
 pub fn install(
     registry: &mut ExtensionRegistryBuilder<Config>,
@@ -1060,13 +764,12 @@ pub fn install(
     let extension = Arc::new(GuardianV2Extension {
         auth_manager,
         event_sink: registry.event_sink(),
-        thread_manager: thread_manager.clone(),
+        thread_manager,
     });
     registry.thread_lifecycle_contributor(extension.clone());
     registry.approval_review_contributor(Arc::new(super::approval::GuardianApprovalReviewer {
-        thread_manager,
+        thread_manager: extension.thread_manager.clone(),
     }));
-    registry.approval_review_contributor(extension.clone());
     registry.skill_invocation_contributor(extension.clone());
     registry.tool_lifecycle_contributor(extension);
 }

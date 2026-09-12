@@ -37,61 +37,6 @@ mod thread_list_cwd_filter_tests {
 }
 
 mod thread_wire_api_tests {
-    use super::super::infer_thread_wire_api;
-
-    #[test]
-    fn infers_claude_wire_api_for_bare_and_provider_prefixed_k3() {
-        for model in ["k3", "aicodex_gateway_claude:k3"] {
-            assert_eq!(
-                infer_thread_wire_api(Some(model), "custom_kimi"),
-                Some("claude".to_string()),
-                "unexpected wire API for {model}"
-            );
-        }
-    }
-
-    #[test]
-    fn provider_identity_takes_precedence_over_model_name() {
-        assert_eq!(
-            infer_thread_wire_api(Some("gpt-5.2"), "openai_chat"),
-            Some("chat".to_string())
-        );
-        assert_eq!(
-            infer_thread_wire_api(Some("gpt-5.2"), "aicodex_gateway_claude"),
-            Some("claude".to_string())
-        );
-    }
-
-    #[test]
-    fn oauth_deepseek_models_default_to_responses_not_claude() {
-        for model in [
-            "deepseek-v4-flash",
-            "deepseek-v4-pro",
-            "aicodex_gateway_claude:deepseek-v4-flash",
-            "openai/deepseek-chat",
-            "deepseek/deepseek-r1:free",
-        ] {
-            assert_eq!(
-                infer_thread_wire_api(Some(model), "aicodex_gateway_claude"),
-                Some("responses".to_string()),
-                "unexpected wire API for {model} on stale Claude gateway provider"
-            );
-            assert_eq!(
-                infer_thread_wire_api(Some(model), "aicodex_gateway"),
-                Some("responses".to_string()),
-                "unexpected wire API for {model} on generic gateway provider"
-            );
-            assert_eq!(
-                infer_thread_wire_api(Some(model), "custom_oauth"),
-                Some("responses".to_string()),
-                "unexpected wire API for {model} without provider metadata"
-            );
-        }
-        assert_eq!(
-            infer_thread_wire_api(Some("deepseek-v4-flash"), "openai_chat"),
-            Some("chat".to_string())
-        );
-    }
 
     #[test]
     fn remaps_stale_oauth_claude_provider_for_deepseek() {
@@ -118,22 +63,6 @@ mod thread_wire_api_tests {
                 "aicodex_gateway_claude",
             ),
             Some("aicodex_gateway_claude".to_string())
-        );
-    }
-
-    #[test]
-    fn does_not_treat_english_chat_suffix_as_chat_wire_api() {
-        assert_eq!(
-            infer_thread_wire_api(Some("gpt-5.2"), "not_a_chat"),
-            Some("responses".to_string())
-        );
-    }
-
-    #[test]
-    fn does_not_treat_responses_substring_as_responses_wire_api() {
-        assert_eq!(
-            infer_thread_wire_api(Some("claude-sonnet-4"), "custom_responses_proxy"),
-            Some("claude".to_string())
         );
     }
 }
@@ -174,6 +103,8 @@ mod persisted_resume_approval_policy_tests {
                     permission_profile: PermissionProfile::read_only(),
                     active_permission_profile: None,
                     cwd: cwd(),
+                    runtime_workspace_roots: None,
+                    disabled_plugin_ids: Vec::new(),
                     reasoning_effort: None,
                     reasoning_summary: None,
                     personality: None,
@@ -206,6 +137,7 @@ mod persisted_resume_approval_policy_tests {
             root_turn_id: None,
             cwd: cwd(),
             workspace_roots: None,
+            disabled_plugin_ids: None,
             current_date: None,
             timezone: None,
             approval_policy,
@@ -838,7 +770,6 @@ mod thread_processor_behavior_tests {
             auth: None,
             aws: None,
             wire_api: WireApi::Responses,
-            supports_developer_role: None,
             query_params: None,
             http_headers: None,
             env_http_headers: None,

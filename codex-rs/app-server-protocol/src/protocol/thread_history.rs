@@ -1013,6 +1013,7 @@ impl ThreadHistoryBuilder {
             failure: None,
             saved_path: None,
             imagegen_request_id: None,
+            generation_id: None,
         });
         self.upsert_item_in_current_turn(item);
     }
@@ -1027,6 +1028,7 @@ impl ThreadHistoryBuilder {
             failure: payload.failure.clone(),
             saved_path: payload.saved_path.clone(),
             imagegen_request_id: None,
+            generation_id: None,
         });
         self.upsert_item_in_current_turn(item);
     }
@@ -2902,6 +2904,7 @@ mod tests {
                         failure: None,
                         saved_path: Some(saved_path.clone()),
                         imagegen_request_id: None,
+                        generation_id: None,
                     },
                 )),
                 started_at_ms: Some(0),
@@ -2935,6 +2938,7 @@ mod tests {
                 failure: None,
                 saved_path: Some(saved_path),
                 imagegen_request_id: None,
+                generation_id: None,
             })]
         );
     }
@@ -3270,6 +3274,7 @@ mod tests {
                         ),
                         saved_path: Some(test_path_buf("/tmp/ig_123.png").abs()),
                         imagegen_request_id: None,
+                        generation_id: None,
                     }),
                 ],
             }
@@ -4078,6 +4083,7 @@ mod tests {
                 ..Default::default()
             }),
             EventMsg::GuardianAssessment(GuardianAssessmentEvent {
+                review_reason: None,
                 id: "review-guardian-exec".into(),
                 target_item_id: Some("guardian-exec".into()),
                 plugin_id: Some("sample@openai-curated".into()),
@@ -4099,6 +4105,7 @@ mod tests {
                 .expect("guardian action"),
             }),
             EventMsg::GuardianAssessment(GuardianAssessmentEvent {
+                review_reason: None,
                 id: "review-guardian-exec".into(),
                 target_item_id: Some("guardian-exec".into()),
                 plugin_id: Some("sample@openai-curated".into()),
@@ -4171,6 +4178,7 @@ mod tests {
                 ..Default::default()
             }),
             EventMsg::GuardianAssessment(GuardianAssessmentEvent {
+                review_reason: None,
                 id: "review-guardian-execve".into(),
                 target_item_id: Some("guardian-execve".into()),
                 plugin_id: Some("sample@openai-curated".into()),
