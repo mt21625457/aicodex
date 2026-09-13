@@ -92,16 +92,6 @@ const fn default_true() -> bool {
     true
 }
 
-/// Selects the model-visible dedicated file-tool policy for Chat Completions.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ChatFileToolMode {
-    #[default]
-    Legacy,
-    Dedicated,
-    DedicatedWithApplyPatch,
-}
-
 /// Moonshot simple-search routing and credential settings for Kimi sessions.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -195,9 +185,6 @@ pub struct OrchestratorFeatureToml {
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct ConfigToml {
-    /// Selects dedicated file tools for new Chat Completions sessions.
-    #[serde(default)]
-    pub chat_file_tool_mode: ChatFileToolMode,
     /// Optional override of model selection.
     pub model: Option<String>,
     /// Review model override used by the `/review` feature.
@@ -1091,18 +1078,6 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("TOML list of strings"));
         assert!(message.contains("comma-separated strings are not supported"));
-    }
-
-    #[test]
-    fn chat_file_tool_mode_defaults_to_legacy_and_rejects_unknown_values() {
-        assert_eq!(
-            ConfigToml::default().chat_file_tool_mode,
-            ChatFileToolMode::Legacy
-        );
-        let config: ConfigToml = toml::from_str("chat_file_tool_mode = 'dedicated'")
-            .expect("dedicated mode should deserialize");
-        assert_eq!(config.chat_file_tool_mode, ChatFileToolMode::Dedicated);
-        assert!(toml::from_str::<ConfigToml>("chat_file_tool_mode = 'unknown'").is_err());
     }
 
     #[test]

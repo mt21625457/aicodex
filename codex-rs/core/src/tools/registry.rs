@@ -203,7 +203,7 @@ impl AnyToolResult {
             metadata: result
                 .fallback_token_limit_override()
                 .map(|limit| CodexHarnessMetadata {
-                    fallback_token_limit_override: Some(limit),
+                    history_truncation_token_limit: Some(limit),
                     ..Default::default()
                 }),
         }
@@ -243,8 +243,8 @@ impl ToolOutput for PostToolUseFeedbackOutput {
         self.original.code_mode_result(payload)
     }
 
-    fn tool_result_sources(&self) -> Option<codex_protocol::models::ToolResultSources> {
-        self.original.tool_result_sources()
+    fn tool_result_metadata(&self) -> Option<&Value> {
+        self.original.tool_result_metadata()
     }
 }
 
@@ -462,22 +462,6 @@ impl ToolRegistry {
             .map(|tool| Arc::clone(&tool.runtime))
     }
 
-    pub(crate) fn hidden_specs(&self) -> Vec<ToolSpec> {
-        let mut tools = self
-            .tools
-            .values()
-            .filter_map(|tool| {
-                if tool.exposure != ToolExposure::Hidden {
-                    return None;
-                }
-                let spec = tool.runtime.spec();
-                matches!(&spec, ToolSpec::Freeform(_)).then(|| (tool.runtime.tool_name(), spec))
-            })
-            .collect::<Vec<_>>();
-        tools.sort_by(|(left, _), (right, _)| left.cmp(right));
-        tools.into_iter().map(|(_, spec)| spec).collect()
-    }
-
     #[cfg(test)]
     pub(crate) fn tool_names_for_test(&self) -> Vec<ToolName> {
         let mut names = self.tools.keys().cloned().collect::<Vec<_>>();
@@ -515,7 +499,7 @@ impl ToolRegistry {
     ) -> Result<AnyToolResult, FunctionCallError> {
         let tool_name = invocation.tool_name.clone();
         let call_id_owned = invocation.call_id.clone();
-        let otel = invocation.turn.session_telemetry.clone();
+        let otel = invocation.step_context.session_telemetry.clone();
         // TODO(anp): Reconcile these tags with TurnEnvironment::sandbox_context
         // instead of reporting the thread-wide backend for environment-scoped tools.
         let sandbox_tags = invocation.turn.turn_metadata_state.sandbox_tags;

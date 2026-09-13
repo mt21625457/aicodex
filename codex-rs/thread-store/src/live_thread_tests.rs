@@ -104,6 +104,7 @@ fn create_thread_params(thread_id: ThreadId) -> CreateThreadParams {
         base_instructions: BaseInstructions::default(),
         dynamic_tools: Vec::new(),
         selected_capability_roots: Vec::new(),
+        runtime_workspace_roots: None,
         multi_agent_version: None,
         history_mode: ThreadHistoryMode::Legacy,
         history_base: None,

@@ -5,7 +5,7 @@ use super::run_remote_compaction_request_v2;
 use crate::Prompt;
 use crate::client::ModelClientSession;
 use crate::compact::CompactionAnalyticsDetails;
-use crate::compact_remote::trim_function_call_history_to_fit_context_window;
+use crate::compact_remote_history::trim_function_call_history_to_fit_context_window;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::responses_metadata::CompactionTurnMetadata;
 use crate::session::session::Session;
@@ -77,13 +77,6 @@ pub(super) async fn run_remote_compact_v2_attempt(
     let prompt = Prompt {
         input,
         tools: tool_router.model_visible_specs(),
-        hidden_tools: tool_router.hidden_specs(),
-        chat_file_tool_mode: turn_context.config.chat_file_tool_mode,
-        claude_file_tool_mode: turn_context.config.claude_file_tool_mode,
-        dedicated_file_tools_enabled: turn_context
-            .config
-            .features
-            .enabled(codex_features::Feature::DedicatedFileTools),
         parallel_tool_calls: true,
         base_instructions,
         output_schema: None,

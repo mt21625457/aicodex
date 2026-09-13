@@ -26,6 +26,12 @@ The Rust implementation is now the maintained Codex CLI and serves as the defaul
 
 Codex supports a rich set of configuration options. Note that the Rust CLI uses `config.toml` instead of `config.json`. See [`docs/config.md`](../docs/config.md) for details.
 
+### Model API protocol
+
+Model providers must expose the OpenAI Responses API. `wire_api = "responses"` is the default and the only supported value. Chat Completions (`chat`) and Claude Messages (`claude` or `anthropic`) configurations are rejected. To migrate, use a provider endpoint that implements Responses; changing the protocol value alone does not make a Messages or Chat endpoint compatible.
+
+Responses HTTP and WebSocket transports remain available according to provider capabilities. Existing transcript data can still be read without enabling the retired transports.
+
 ### Model Context Protocol Support
 
 #### MCP client

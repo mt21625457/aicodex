@@ -7,6 +7,7 @@ use crate::mcp::McpEnvironmentScope;
 use crate::mcp::McpThreadIdentity;
 use crate::rollout::RolloutRecorder;
 use crate::session::session::SessionSettingsUpdate;
+use crate::session::step_context::StepContext;
 use crate::session::tests::build_world_state_from_turn_context;
 use crate::session::tests::make_session_and_context;
 use crate::tasks::InterruptedTurnHistoryMarker;
@@ -548,13 +549,7 @@ fn fork_thread_accepts_legacy_usize_snapshot_argument() {
         config: Config,
         path: std::path::PathBuf,
     ) {
-        let _future = manager.fork_thread(
-            usize::MAX,
-            config,
-            path,
-            /*thread_source*/ None,
-            /*parent_trace*/ None,
-        );
+        let _future = manager.fork_thread(usize::MAX, crate::StartThreadOptions::new(config), path);
     }
 
     let _: fn(&ThreadManager, Config, std::path::PathBuf) = assert_legacy_snapshot_callsite;
@@ -604,8 +599,9 @@ async fn ignores_session_prefix_messages_when_truncating() {
     let (session, turn_context) = make_session_and_context().await;
     let turn_context = Arc::new(turn_context);
     let world_state = build_world_state_from_turn_context(&session, &turn_context).await;
+    let step_context = StepContext::for_test(turn_context);
     let mut items = session
-        .build_initial_context_with_world_state(&turn_context, &world_state)
+        .build_initial_context_with_world_state(&step_context, &world_state)
         .await;
     items.push(user_msg("feature request"));
     items.push(assistant_msg("ack"));
@@ -925,6 +921,77 @@ async fn spawn_internal_guardian_session_preserves_windows_sandbox_proxy_setting
 }
 
 #[tokio::test]
+async fn fork_internal_session_uses_only_the_selected_history() {
+    let temp_dir = tempdir().expect("tempdir");
+    let mut config = test_config().await;
+    config.codex_home = temp_dir.path().join("codex-home").abs();
+    config.cwd = config.codex_home.abs();
+    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
+    let manager = ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+    );
+    let parent = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start parent");
+    let selected = vec![
+        user_msg("committed review"),
+        assistant_msg("completed assessment"),
+    ];
+    parent
+        .thread
+        .inject_response_items(vec![user_msg("unrelated parent work")])
+        .await
+        .expect("inject parent history");
+    let reviewer = manager
+        .fork_internal_session(
+            parent.thread_id,
+            StartThreadOptions {
+                session_source: Some(SessionSource::Internal(InternalSessionSource::Guardian)),
+                ..StartThreadOptions::new(config)
+            },
+            selected
+                .iter()
+                .cloned()
+                .map(|item| RolloutItem::ResponseItem(item.into()))
+                .collect(),
+        )
+        .await
+        .expect("fork internal reviewer");
+    let history = reviewer.thread.conversation_history_snapshot().await;
+    let mut actual = history.items().cloned().collect::<Vec<_>>();
+    // Recording history assigns message IDs and provenance; compare the selected content.
+    for item in &mut actual {
+        if let ResponseItem::Message {
+            id,
+            internal_chat_message_metadata_passthrough,
+            ..
+        } = item
+        {
+            *id = None;
+            *internal_chat_message_metadata_passthrough = None;
+        }
+    }
+    assert_eq!(actual, selected);
+    assert_eq!(
+        reviewer.thread.config_snapshot().await.parent_thread_id,
+        Some(parent.thread_id)
+    );
+    assert!(Arc::ptr_eq(
+        &reviewer.thread.session.services.auth_manager,
+        &parent.thread.session.services.auth_manager,
+    ));
+    assert_eq!(manager.list_thread_ids().await, vec![parent.thread_id]);
+    assert!(manager.get_thread(reviewer.thread_id).await.is_err());
+    manager
+        .shutdown_all_threads_bounded(Duration::from_secs(10))
+        .await;
+}
+
+#[tokio::test]
 async fn spawn_internal_session_preserves_parent_lineage_without_forking_history() {
     struct ParentLifecycleContributor {
         observed_mcp_sources: Arc<std::sync::Mutex<Vec<SessionSource>>>,
@@ -1136,10 +1203,11 @@ async fn spawn_internal_session_preserves_parent_lineage_without_forking_history
     let reviewer_turn = reviewer.thread.session.new_default_turn().await;
     let reviewer_world_state =
         build_world_state_from_turn_context(&reviewer.thread.session, &reviewer_turn).await;
+    let reviewer_step = StepContext::for_test(Arc::clone(&reviewer_turn));
     let reviewer_context = reviewer
         .thread
         .session
-        .build_initial_context_with_world_state(&reviewer_turn, &reviewer_world_state)
+        .build_initial_context_with_world_state(&reviewer_step, &reviewer_world_state)
         .await;
     assert!(
         !serde_json::to_string(&reviewer_context)
@@ -1597,10 +1665,8 @@ async fn resume_and_fork_do_not_restore_thread_environments_from_rollout() {
     let forked = manager
         .fork_thread(
             ForkSnapshot::Interrupted,
-            config,
+            crate::StartThreadOptions::new(config),
             rollout_path,
-            /*thread_source*/ None,
-            /*parent_trace*/ None,
         )
         .await
         .expect("fork source thread");
@@ -2027,10 +2093,8 @@ async fn rollout_path_resume_and_fork_read_history_through_thread_store() {
     let forked = manager
         .fork_thread(
             ForkSnapshot::Interrupted,
-            config,
+            crate::StartThreadOptions::new(config),
             rollout_path,
-            /*thread_source*/ None,
-            /*parent_trace*/ None,
         )
         .await
         .expect("fork from rollout path");
@@ -2551,10 +2615,8 @@ async fn interrupted_fork_snapshot_does_not_synthesize_turn_id_for_legacy_histor
     let forked = manager
         .fork_thread(
             ForkSnapshot::Interrupted,
-            config.clone(),
+            crate::StartThreadOptions::new(config.clone()),
             source_path,
-            /*thread_source*/ None,
-            /*parent_trace*/ None,
         )
         .await
         .expect("fork interrupted snapshot");
@@ -2678,10 +2740,8 @@ async fn interrupted_fork_snapshot_preserves_explicit_turn_id() {
     let forked = manager
         .fork_thread(
             ForkSnapshot::Interrupted,
-            config.clone(),
+            crate::StartThreadOptions::new(config.clone()),
             source_path,
-            /*thread_source*/ None,
-            /*parent_trace*/ None,
         )
         .await
         .expect("fork interrupted snapshot");
@@ -2767,10 +2827,8 @@ async fn interrupted_fork_snapshot_uses_persisted_mid_turn_history_without_live_
     let forked = manager
         .fork_thread(
             ForkSnapshot::Interrupted,
-            config.clone(),
+            crate::StartThreadOptions::new(config.clone()),
             source_path,
-            /*thread_source*/ None,
-            /*parent_trace*/ None,
         )
         .await
         .expect("fork interrupted snapshot");
@@ -2808,10 +2866,8 @@ async fn interrupted_fork_snapshot_uses_persisted_mid_turn_history_without_live_
     let reforked = manager
         .fork_thread(
             ForkSnapshot::Interrupted,
-            config.clone(),
+            crate::StartThreadOptions::new(config.clone()),
             forked_path,
-            /*thread_source*/ None,
-            /*parent_trace*/ None,
         )
         .await
         .expect("re-fork interrupted snapshot");

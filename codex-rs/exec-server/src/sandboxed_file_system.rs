@@ -1,9 +1,9 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use bytes::Bytes;
 use codex_exec_server_protocol::JSONRPCErrorError;
 use codex_utils_path_uri::PathUri;
 use tokio::io;
+use tokio_util::io::ReaderStream;
 
 use crate::CapabilityRootsDiscoverParams;
 use crate::CapabilityRootsDiscoverResponse;
@@ -170,54 +170,6 @@ impl SandboxedFileSystem {
             .expect_read_file_block()
             .map_err(map_sandbox_error)?;
         Ok((response.chunk.into_inner(), response.eof))
-    }
-
-    async fn read_file_stream(
-        &self,
-        path: &PathUri,
-        sandbox: Option<&FileSystemSandboxContext>,
-    ) -> FileSystemResult<FileSystemReadStream> {
-        let sandbox = require_platform_sandbox(sandbox)?.clone();
-        validate_native_path(path)?;
-        let file_system = self.clone();
-        let path = path.clone();
-        Ok(FileSystemReadStream::new(futures::stream::try_unfold(
-            Some(0_u64),
-            move |offset| {
-                let file_system = file_system.clone();
-                let sandbox = sandbox.clone();
-                let path = path.clone();
-                async move {
-                    let Some(offset) = offset else {
-                        return Ok(None);
-                    };
-                    let (bytes, eof) = file_system
-                        .read_file_block(&path, offset, FILE_READ_CHUNK_SIZE, Some(&sandbox))
-                        .await?;
-                    let chunk = Bytes::from(bytes);
-                    if eof {
-                        return if chunk.is_empty() {
-                            Ok(None)
-                        } else {
-                            Ok(Some((chunk, None)))
-                        };
-                    }
-                    if chunk.is_empty() {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "sandbox helper returned an empty non-terminal file block",
-                        ));
-                    }
-                    let next_offset = offset.checked_add(chunk.len() as u64).ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!("sandbox file read offset overflowed after {offset} bytes"),
-                        )
-                    })?;
-                    Ok(Some((chunk, Some(next_offset))))
-                }
-            },
-        )))
     }
 
     async fn write_file(
@@ -454,7 +406,13 @@ impl ExecutorFileSystem for SandboxedFileSystem {
         path: &'a PathUri,
         sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, FileSystemReadStream> {
-        Box::pin(SandboxedFileSystem::read_file_stream(self, path, sandbox))
+        Box::pin(async move {
+            let file = self.open_file_for_read(path, sandbox).await?;
+            Ok(FileSystemReadStream::new(ReaderStream::with_capacity(
+                file,
+                FILE_READ_CHUNK_SIZE,
+            )))
+        })
     }
 
     fn write_file<'a>(

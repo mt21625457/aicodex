@@ -145,11 +145,6 @@ impl Match for RealtimeCallRequestCapture {
     }
 }
 
-fn normalized_json_string(raw: &str) -> Result<String> {
-    let value: Value = serde_json::from_str(raw).context("expected JSON fixture to parse")?;
-    serde_json::to_string(&value).context("expected JSON fixture to serialize")
-}
-
 struct GatedSseResponse {
     gate_rx: Mutex<Option<mpsc::Receiver<()>>>,
     response: String,
@@ -2025,38 +2020,12 @@ async fn realtime_webrtc_start_emits_sdp_notification() -> Result<()> {
         "unexpected close reason: {closed_notification:?}"
     );
 
-    let request = call_capture.single_request();
-    assert_eq!(request.url.path(), "/v1/realtime/calls");
-    assert_eq!(
-        request.url.query(),
-        Some("intent=quicksilver&architecture=avas")
-    );
-    assert_eq!(
-        request
-            .headers
-            .get("content-type")
-            .and_then(|value| value.to_str().ok()),
-        Some("multipart/form-data; boundary=codex-realtime-call-boundary")
-    );
-    let body = String::from_utf8(request.body).context("multipart body should be utf-8")?;
-    let session = normalized_json_string(v1_session_create_json())?;
-    assert_eq!(
-        body,
-        format!(
-            "--codex-realtime-call-boundary\r\n\
-             Content-Disposition: form-data; name=\"sdp\"\r\n\
-             Content-Type: application/sdp\r\n\
-             \r\n\
-             v=offer\r\n\
-             \r\n\
-             --codex-realtime-call-boundary\r\n\
-             Content-Disposition: form-data; name=\"session\"\r\n\
-             Content-Type: application/json\r\n\
-             \r\n\
-             {session}\r\n\
-             --codex-realtime-call-boundary--\r\n"
-        )
-    );
+    assert_call_create_multipart(
+        call_capture.single_request(),
+        "v=offer\r\n",
+        v1_session_create_json(),
+        "/v1/realtime/calls?intent=quicksilver&architecture=avas",
+    )?;
 
     realtime_server.shutdown().await;
     Ok(())

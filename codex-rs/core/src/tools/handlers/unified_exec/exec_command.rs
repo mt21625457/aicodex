@@ -63,7 +63,6 @@ pub(crate) struct ExecCommandHandlerOptions {
     pub(crate) exec_permission_approvals_enabled: bool,
     pub(crate) include_environment_id: bool,
     pub(crate) include_shell_parameter: bool,
-    pub(crate) prefer_dedicated_file_tools: bool,
     pub(crate) include_windows_shell_guidance: bool,
 }
 
@@ -88,7 +87,6 @@ impl Default for ExecCommandHandler {
                 exec_permission_approvals_enabled: false,
                 include_environment_id: false,
                 include_shell_parameter: true,
-                prefer_dedicated_file_tools: false,
                 include_windows_shell_guidance: cfg!(windows),
             },
         }
@@ -121,7 +119,6 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
             CommandToolOptions {
                 allow_login_shell: self.options.allow_login_shell,
                 exec_permission_approvals_enabled: self.options.exec_permission_approvals_enabled,
-                prefer_dedicated_file_tools: self.options.prefer_dedicated_file_tools,
             },
             self.options.include_environment_id,
             self.options.include_shell_parameter,
@@ -410,7 +407,7 @@ impl ExecCommandHandler {
                 chunk_id: String::new(),
                 wall_time: std::time::Duration::ZERO,
                 raw_output: output.into_text().into_bytes(),
-                truncation_policy: turn.model_info().truncation_policy.into(),
+                truncation_policy: step_context.settings.model_info.truncation_policy.into(),
                 max_output_tokens,
                 process_id: None,
                 exit_code: None,
@@ -420,7 +417,7 @@ impl ExecCommandHandler {
             }));
         }
 
-        emit_unified_exec_tty_metric(&turn.session_telemetry, tty);
+        emit_unified_exec_tty_metric(&step_context.session_telemetry, tty);
         let request = ExecCommandRequest {
             command,
             shell_type,
@@ -464,7 +461,7 @@ impl ExecCommandHandler {
                     chunk_id: generate_chunk_id(),
                     wall_time: output.duration,
                     raw_output: output_text.into_bytes(),
-                    truncation_policy: turn.model_info().truncation_policy.into(),
+                    truncation_policy: step_context.settings.model_info.truncation_policy.into(),
                     max_output_tokens,
                     // Sandbox denial is terminal, so there is no live
                     // process for write_stdin to resume.

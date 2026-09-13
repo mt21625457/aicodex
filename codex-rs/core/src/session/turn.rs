@@ -11,10 +11,10 @@ use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::compact::InitialContextInjection;
 use crate::compact::run_inline_auto_compact_task;
-use crate::compact_remote::run_inline_remote_auto_compact_task;
 use crate::compact_remote_v2::run_inline_remote_auto_compact_task as run_inline_remote_auto_compact_task_v2;
 use crate::connectors;
 use crate::context::ContextualUserFragment;
+use crate::context::UserVerificationNotice;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::feedback_tags;
 use crate::hook_runtime::drain_async_hook_results;
@@ -81,7 +81,6 @@ use codex_file_system::FindUpErrorPolicy;
 use codex_file_system::find_nearest_ancestor_with_markers;
 use codex_login::CodexAuth;
 use codex_model_provider::RemoteCompactionSupport;
-use codex_model_provider_info::WireApi;
 use codex_models_manager::model_info::is_grok_model_slug;
 use codex_models_manager::model_info::is_minimax_model_slug;
 use codex_protocol::ResponseItemId;
@@ -98,6 +97,7 @@ use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelMessages;
 use codex_protocol::protocol::AgentMessageContentDeltaEvent;
 use codex_protocol::protocol::AgentReasoningSectionBreakEvent;
@@ -145,7 +145,6 @@ use tracing::trace;
 use tracing::trace_span;
 use tracing::warn;
 
-const MAX_CLAUDE_PAUSE_TURN_CONTINUATIONS: usize = 3;
 const GROK_RESPONSES_STREAM_MAX_RETRIES: u64 = 1;
 const MAX_PRE_SAMPLING_ADMISSION_COMPACTIONS_PER_TURN: usize = 3;
 
@@ -188,12 +187,15 @@ pub(crate) struct McpStartupRequirements {
 pub(crate) async fn run_turn(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
-    input: Vec<TurnInput>,
+    mut input: Vec<TurnInput>,
     empty_input_policy: EmptyInputTurnPolicy,
     mcp_startup_requirements: &mut McpStartupRequirements,
     prewarmed_client_session: Option<ModelClientSession>,
     cancellation_token: CancellationToken,
 ) -> CodexResult<Option<String>> {
+    if crate::guardian::is_basic_session_source(&turn_context.session_source) {
+        crate::guardian::check_pending_guardian_input(&sess, &turn_context).await?;
+    }
     // Record results from hooks that finished after the previous turn before this turn's user prompt.
     drain_async_hook_results(&sess, &turn_context, /*before_user_prompt*/ true).await;
     if input.is_empty()
@@ -229,9 +231,16 @@ pub(crate) async fn run_turn(
     {
         Ok(compacted) => compacted,
         Err(err) => {
+            // Compaction runs before the new input is recorded, so preserve it on every failure.
+            run_hooks_and_record_inputs(
+                &sess,
+                &turn_context,
+                &turn_context.capture_current_model_info(),
+                &input,
+                PersistContext::Standard,
+            )
+            .await;
             if matches!(err.details(), CodexErrorDetails::TurnAborted) {
-                run_hooks_and_record_inputs(&sess, &turn_context, &input, PersistContext::Standard)
-                    .await;
                 return Err(err);
             }
             if matches!(err.details(), CodexErrorDetails::ToolCollision(_)) {
@@ -240,6 +249,19 @@ pub(crate) async fn run_turn(
             let error = err.to_codex_protocol_error();
             sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
                 .await;
+            // Publish the failure only after prompt hooks finish, so clients cannot react to
+            // an error by steering follow-up input into a turn still preserving its prompt.
+            let message_prefix = match turn_context.provider.capabilities().remote_compaction {
+                RemoteCompactionSupport::V2 => {
+                    Some("Error running remote compact task".to_string())
+                }
+                RemoteCompactionSupport::Unsupported => None,
+            };
+            sess.send_event(
+                turn_context.as_ref(),
+                EventMsg::Error(err.to_error_event(message_prefix)),
+            )
+            .await;
             error!("Failed to run pre-sampling compact");
             return Ok(None);
         }
@@ -262,8 +284,14 @@ pub(crate) async fn run_turn(
         {
             Ok(requirements) => requirements,
             Err(err) => {
-                run_hooks_and_record_inputs(&sess, &turn_context, &input, PersistContext::Standard)
-                    .await;
+                run_hooks_and_record_inputs(
+                    &sess,
+                    &turn_context,
+                    &turn_context.capture_current_model_info(),
+                    &input,
+                    PersistContext::Standard,
+                )
+                .await;
                 return Err(err.into());
             }
         };
@@ -284,8 +312,14 @@ pub(crate) async fn run_turn(
     {
         Ok(step_context) => step_context,
         Err(err) if matches!(err.details(), CodexErrorDetails::TurnAborted) => {
-            run_hooks_and_record_inputs(&sess, &turn_context, &input, PersistContext::Standard)
-                .await;
+            run_hooks_and_record_inputs(
+                &sess,
+                &turn_context,
+                &turn_context.capture_current_model_info(),
+                &input,
+                PersistContext::Standard,
+            )
+            .await;
             return Err(err);
         }
         Err(err) => return Err(err),
@@ -332,7 +366,43 @@ pub(crate) async fn run_turn(
     if run_pending_session_start_hooks(&sess, &turn_context).await {
         return Ok(None);
     }
-    if run_hooks_and_record_inputs(&sess, &turn_context, &input, PersistContext::TurnStart).await {
+    if crate::guardian::is_basic_session_source(&turn_context.session_source)
+        && let Err(error) =
+            crate::guardian::finalize_guardian_input(&sess, &first_step_context, &mut input).await
+    {
+        // Token-budget compaction resets history, which can discard the evidence
+        // referenced by a pending delta review. Leave budget failures unreusable.
+        if !matches!(error.details(), CodexErrorDetails::ContextWindowExceeded)
+            || turn_context.config.features.enabled(Feature::TokenBudget)
+        {
+            return Err(error);
+        }
+        // Incoming evidence can overflow even below the normal history
+        // threshold. Keep it pending while compacting, then select once more.
+        run_auto_compact(
+            &sess,
+            Arc::clone(&first_step_context),
+            /*fallback_step_context*/ None,
+            &mut client_session,
+            InitialContextInjection::DoNotInject,
+            CompactionReason::ContextLimit,
+            CompactionPhase::PreTurn,
+        )
+        .await?;
+        world_state = sess
+            .record_context_updates_and_set_reference_context_item(first_step_context.as_ref())
+            .await?;
+        crate::guardian::finalize_guardian_input(&sess, &first_step_context, &mut input).await?;
+    }
+    if run_hooks_and_record_inputs(
+        &sess,
+        &turn_context,
+        &first_step_context.settings.model_info,
+        &input,
+        PersistContext::TurnStart,
+    )
+    .await
+    {
         return Ok(None);
     }
 
@@ -354,8 +424,12 @@ pub(crate) async fn run_turn(
     }))
     .await;
     for response_item in injection_items {
-        sess.record_conversation_items(&turn_context, std::slice::from_ref(&response_item))
-            .await;
+        sess.record_conversation_items(
+            &turn_context,
+            &first_step_context.settings.model_info,
+            std::slice::from_ref(&response_item),
+        )
+        .await;
     }
 
     track_turn_resolved_config_analytics(&sess, &turn_context, &input).await;
@@ -376,14 +450,14 @@ pub(crate) async fn run_turn(
     // 2. After auto-compact, when model/tool continuation needs to resume before any steer.
     let mut can_drain_pending_input = input.is_empty();
     let mut pending_input_deferred_for_model_follow_up = false;
-    let mut claude_pause_turn_continuations = 0usize;
     let mut repeated_follow_up = RepeatedFollowUpDetector::new();
     let mut pre_sampling_admission_compactions = 0usize;
-    let mut context_window_recovery_attempted = false;
     let mut skip_pre_sampling_admission_once = initial_pre_sampling_compacted;
     let mut post_compaction_model_follow_up_active = initial_pre_sampling_compacted;
 
     let mut next_step_context = Some(first_step_context);
+    let mut guardian_budget_compacted = false;
+    let mut context_window_recovery_attempted = false;
     loop {
         // Note that pending_input would be something like a message the user
         // submitted through the UI while the model was running. Though the UI
@@ -400,6 +474,7 @@ pub(crate) async fn run_turn(
         if run_hooks_and_record_inputs(
             &sess,
             &turn_context,
+            &turn_context.capture_current_model_info(),
             &pending_input,
             PersistContext::Standard,
         )
@@ -410,11 +485,14 @@ pub(crate) async fn run_turn(
 
         let skip_pre_sampling_admission = skip_pre_sampling_admission_once;
         skip_pre_sampling_admission_once = false;
-        // All wire APIs admit before sampling so input + reserved output cannot
-        // overflow a shared context window. Claude used to be the only path
-        // that did this on the initial request.
+        // The pre-turn check owns explicit auto-compaction thresholds. Recheck after
+        // tool output, while allowing the initial request's full-window safety check.
+        // Guardian enforces its own complete-prompt budget and single recovery attempt.
         let should_run_pre_sampling_admission = !skip_pre_sampling_admission
             && !post_compaction_model_follow_up_active
+            && !crate::guardian::is_basic_session_source(&turn_context.session_source)
+            && (next_step_context.is_none()
+                || turn_context.config.model_auto_compact_token_limit.is_none())
             && pending_input.is_empty();
         if should_run_pre_sampling_admission
             && pre_sampling_admission_compactions < MAX_PRE_SAMPLING_ADMISSION_COMPACTIONS_PER_TURN
@@ -545,9 +623,9 @@ pub(crate) async fn run_turn(
         .await;
         match sampling_request_result {
             Ok((sampling_request_output, sampling_request_input)) => {
+                guardian_budget_compacted = false;
                 let SamplingRequestResult {
                     needs_follow_up: model_needs_follow_up,
-                    provider_stop_reason,
                     last_agent_message: sampling_request_last_agent_message,
                     follow_up_text: sampling_request_follow_up_text,
                 } = sampling_request_output;
@@ -587,25 +665,6 @@ pub(crate) async fn run_turn(
                 }
                 can_drain_pending_input =
                     !(model_needs_follow_up && post_compaction_model_follow_up_active);
-                if model_needs_follow_up && provider_stop_reason.as_deref() == Some("pause_turn") {
-                    claude_pause_turn_continuations += 1;
-                    if claude_pause_turn_continuations > MAX_CLAUDE_PAUSE_TURN_CONTINUATIONS {
-                        sess.send_event(
-                            &turn_context,
-                            EventMsg::Error(ErrorEvent {
-                                message: format!(
-                                    "Claude returned pause_turn more than {MAX_CLAUDE_PAUSE_TURN_CONTINUATIONS} times without completing; stopping automatic continuation."
-                                ),
-                                codex_error_info: None,
-                                misalignment: None,
-                            }),
-                        )
-                        .await;
-                        return Ok(None);
-                    }
-                } else if provider_stop_reason.as_deref() != Some("pause_turn") {
-                    claude_pause_turn_continuations = 0;
-                }
                 if model_needs_follow_up
                     && is_minimax_model_slug(&turn_context.model_info().slug)
                     && repeated_follow_up.trip_on_repeat(sampling_request_follow_up_text.as_deref())
@@ -736,6 +795,7 @@ pub(crate) async fn run_turn(
                         {
                             sess.record_response_item_and_emit_turn_item(
                                 &turn_context,
+                                &step_context.settings.model_info,
                                 hook_prompt_message,
                             )
                             .await;
@@ -774,9 +834,43 @@ pub(crate) async fn run_turn(
                 }
                 continue;
             }
-            // Shared-window providers (Claude, Chat, Responses) recover from a
+            Err(err)
+                if matches!(err.details(), CodexErrorDetails::ContextWindowExceeded)
+                    && !guardian_budget_compacted
+                    && !turn_context.config.features.enabled(Feature::TokenBudget)
+                    && sess
+                        .services
+                        .thread_extension_data
+                        .get::<crate::guardian::ExhaustedReviewBudget>()
+                        .is_some() =>
+            {
+                // Tool continuations can also cross the complete-request limit.
+                // Only summarizing compaction preserves the action and evidence;
+                // token-budget resets must fail closed and retire the reviewer.
+                // Retry once per model step, so ineffective compaction cannot loop.
+                guardian_budget_compacted = true;
+                run_auto_compact(
+                    &sess,
+                    Arc::clone(&step_context),
+                    /*fallback_step_context*/ None,
+                    &mut client_session,
+                    InitialContextInjection::BeforeLastUserMessage {
+                        world_state: Arc::clone(&world_state),
+                        step_context: Arc::clone(&step_context),
+                    },
+                    CompactionReason::ContextLimit,
+                    CompactionPhase::MidTurn,
+                )
+                .await?;
+                can_drain_pending_input = false;
+                continue;
+            }
+            // Responses providers recover from a
             // mid-turn overflow by compacting once, then retrying the request.
-            Err(err) if matches!(err.details(), CodexErrorDetails::ContextWindowExceeded) => {
+            Err(err)
+                if matches!(err.details(), CodexErrorDetails::ContextWindowExceeded)
+                    && !crate::guardian::is_basic_session_source(&turn_context.session_source) =>
+            {
                 if context_window_recovery_attempted {
                     let event = EventMsg::Error(
                         CodexErr::ContextWindowExceeded
@@ -851,6 +945,12 @@ pub(crate) async fn run_turn(
             }
             Err(e) => {
                 info!("Turn error: {e:#}");
+                if matches!(
+                    e.details(),
+                    CodexErrorDetails::MisalignmentPolicyViolation { .. }
+                ) {
+                    sess.conversation.retire_handoffs_for_misalignment().await;
+                }
                 let error = e.to_codex_protocol_error();
                 sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
                     .await;
@@ -893,9 +993,20 @@ async fn turn_diff_display_roots(step_context: &StepContext) -> Vec<(String, Pat
 pub(crate) async fn run_hooks_and_record_inputs(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
+    model_info: &ModelInfo,
     input: &[TurnInput],
     persist_context: PersistContext,
 ) -> bool {
+    // Cancellation can reach this path before Guardian's tools and context are
+    // resolved. Only finalized evidence may enter reusable reviewer history.
+    if sess
+        .services
+        .thread_extension_data
+        .get::<crate::guardian::PendingReviewContext>()
+        .is_some()
+    {
+        return false;
+    }
     let mut blocked_input = false;
     let mut accepted_user_input = false;
     for input_item in input {
@@ -910,6 +1021,7 @@ pub(crate) async fn run_hooks_and_record_inputs(
             record_pending_input(
                 sess,
                 turn_context,
+                model_info,
                 input_item.clone(),
                 hook_outcome.additional_contexts,
                 persist_context,
@@ -1359,25 +1471,7 @@ async fn pre_sampling_admission_status(
     } else {
         None
     };
-    // Chat and Responses already project locally appended items onto their recorded usage in
-    // `ContextWindowTokenStatus`. Reapplying the full local estimate would double-count the fixed
-    // prefix and reasoning that the provider has already accounted for. Claude's native admission
-    // path still needs the full estimate before count-tokens has established a baseline.
-    let estimated_auto_compact_scope_tokens = (allow_estimated_context_admission
-        && turn_context.provider.info().wire_api == WireApi::Claude)
-        .then_some(estimated_context_tokens)
-        .flatten()
-        .map(
-            |tokens| match turn_context.config.model_auto_compact_token_limit_scope {
-                AutoCompactTokenLimitScope::Total => tokens,
-                AutoCompactTokenLimitScope::BodyAfterPrefix => {
-                    let baseline = token_status
-                        .auto_compact_window_prefill_tokens
-                        .unwrap_or(token_status.active_context_tokens);
-                    tokens.saturating_sub(baseline)
-                }
-            },
-        );
+    let estimated_auto_compact_scope_tokens: Option<i64> = None;
     let estimated_auto_compact_scope_limit_reached = estimated_auto_compact_scope_tokens
         .is_some_and(|tokens| {
             token_status
@@ -1615,12 +1709,7 @@ async fn run_auto_compact(
     }
 
     match turn_context.provider.capabilities().remote_compaction {
-        RemoteCompactionSupport::V2
-            if turn_context
-                .config
-                .features
-                .enabled(Feature::RemoteCompactionV2) =>
-        {
+        RemoteCompactionSupport::V2 => {
             emit_compact_metric(
                 &sess.services.session_telemetry,
                 "remote_v2",
@@ -1631,23 +1720,6 @@ async fn run_auto_compact(
                 step_context,
                 fallback_step_context,
                 client_session,
-                initial_context_injection,
-                reason,
-                phase,
-            )
-            .await?;
-        }
-        RemoteCompactionSupport::V2 => {
-            emit_compact_metric(
-                &sess.services.session_telemetry,
-                "remote",
-                /*manual*/ false,
-            );
-            run_inline_remote_auto_compact_task(
-                Arc::clone(sess),
-                step_context,
-                fallback_step_context,
-                client_session.turn_state(),
                 initial_context_injection,
                 reason,
                 phase,
@@ -1734,13 +1806,6 @@ pub(crate) fn build_prompt(
     Prompt {
         input,
         tools: step_context.tool_router.model_visible_specs(),
-        hidden_tools: step_context.tool_router.hidden_specs(),
-        chat_file_tool_mode: turn_context.config.chat_file_tool_mode,
-        claude_file_tool_mode: turn_context.config.claude_file_tool_mode,
-        dedicated_file_tools_enabled: turn_context
-            .config
-            .features
-            .enabled(Feature::DedicatedFileTools),
         parallel_tool_calls: true,
         base_instructions,
         output_schema: turn_context.final_output_json_schema.clone(),
@@ -1749,160 +1814,6 @@ pub(crate) fn build_prompt(
         ),
         cyber_access_program: turn_context.cyber_access_program,
     }
-}
-
-fn prompt_for_current_context(sess_history: Vec<ResponseItem>, prompt: &Prompt) -> Prompt {
-    Prompt {
-        input: sess_history,
-        tools: prompt.tools.clone(),
-        hidden_tools: prompt.hidden_tools.clone(),
-        chat_file_tool_mode: prompt.chat_file_tool_mode,
-        claude_file_tool_mode: prompt.claude_file_tool_mode,
-        dedicated_file_tools_enabled: prompt.dedicated_file_tools_enabled,
-        parallel_tool_calls: prompt.parallel_tool_calls,
-        base_instructions: prompt.base_instructions.clone(),
-        output_schema: prompt.output_schema.clone(),
-        output_schema_strict: prompt.output_schema_strict,
-        cyber_access_program: prompt.cyber_access_program,
-    }
-}
-
-async fn update_claude_token_usage_after_completion(
-    sess: &Session,
-    turn_context: &TurnContext,
-    client_session: &ModelClientSession,
-    prompt: &Prompt,
-    streamed_token_usage: Option<&codex_protocol::protocol::TokenUsage>,
-) {
-    let provider_info = turn_context.provider.info();
-    let provider_compat = crate::claude::provider_compat_for_provider(
-        &provider_info.name,
-        provider_info.base_url.as_deref(),
-        Some(&turn_context.model_info().slug),
-    );
-    let context_input = sess
-        .clone_history()
-        .await
-        .for_prompt(&turn_context.model_info().input_modalities);
-    let context_prompt = prompt_for_current_context(context_input, prompt);
-    let is_compatible_claude = provider_compat == crate::claude::ClaudeProviderCompat::Compatible;
-    let fallback_description = if is_compatible_claude {
-        "streamed usage or local estimate"
-    } else {
-        "local estimate"
-    };
-    let mut context_source = Some(ContextTokenUsageSource::ClaudeCountTokens);
-    let mut counted_tokens = match client_session
-        .count_claude_context_tokens(
-            &context_prompt,
-            turn_context.model_info(),
-            &turn_context.session_telemetry,
-            turn_context.reasoning_effort().cloned(),
-            turn_context
-                .config
-                .service_tier
-                .as_deref()
-                .and_then(ServiceTier::from_request_value),
-        )
-        .await
-    {
-        Ok(tokens) if tokens > 0 => Some(tokens),
-        Ok(tokens) => {
-            warn!(
-                tokens,
-                fallback = fallback_description,
-                "Claude count_tokens returned an unusable context token count; falling back"
-            );
-            None
-        }
-        Err(err) => {
-            warn!(
-                error = %err,
-                fallback = fallback_description,
-                "Claude count_tokens failed; falling back"
-            );
-            None
-        }
-    };
-    if counted_tokens.is_none()
-        && is_compatible_claude
-        && let Some(tokens) = streamed_token_usage
-            .map(|usage| usage.total_tokens)
-            .filter(|tokens| *tokens > 0)
-    {
-        counted_tokens = Some(tokens);
-        context_source = Some(ContextTokenUsageSource::ProviderUsage);
-    }
-    if counted_tokens.is_none() {
-        counted_tokens = sess.get_estimated_context_token_count().await;
-        context_source = Some(ContextTokenUsageSource::LocalEstimate);
-    }
-
-    sess.update_token_usage_info_with_context_count(
-        turn_context,
-        streamed_token_usage,
-        counted_tokens,
-        counted_tokens.and(context_source),
-    )
-    .await;
-}
-
-async fn update_chat_token_usage_after_completion(
-    sess: &Session,
-    turn_context: &TurnContext,
-    streamed_token_usage: Option<&codex_protocol::protocol::TokenUsage>,
-) {
-    let provider_context_tokens = streamed_token_usage
-        .map(|usage| {
-            usage
-                .total_tokens
-                .max(usage.input_tokens.saturating_add(usage.output_tokens))
-        })
-        .filter(|tokens| *tokens > 0);
-    let uses_local_estimate = provider_context_tokens.is_none();
-    let (context_tokens, context_source) = if let Some(tokens) = provider_context_tokens {
-        (Some(tokens), Some(ContextTokenUsageSource::ProviderUsage))
-    } else {
-        let estimated_tokens = sess.get_estimated_context_token_count().await;
-        (
-            estimated_tokens,
-            estimated_tokens.map(|_| ContextTokenUsageSource::LocalEstimate),
-        )
-    };
-
-    let token_info = {
-        let mut state = sess.state.lock().await;
-        let mut info = state
-            .token_info()
-            .unwrap_or_else(|| TokenUsageInfo::empty(turn_context.model_context_window()));
-        if let Some(context_tokens) = context_tokens
-            && let Some(context_source) = context_source
-        {
-            info.context_tokens = Some(context_tokens.max(0));
-            info.context_source = Some(context_source);
-        }
-        if let Some(model_context_window) = turn_context.model_context_window() {
-            info.model_context_window = Some(model_context_window);
-        }
-        state.set_token_info(Some(info));
-        if uses_local_estimate
-            && matches!(
-                turn_context.config.model_auto_compact_token_limit_scope,
-                AutoCompactTokenLimitScope::BodyAfterPrefix
-            )
-            && let Some(context_tokens) = context_tokens
-            && state
-                .auto_compact_window_snapshot()
-                .prefill_input_tokens
-                .is_none()
-        {
-            state.set_auto_compact_window_estimated_prefill(context_tokens);
-        }
-        state.token_info()
-    };
-    sess.notify_token_usage_contributors(turn_context, token_info.as_ref())
-        .await;
-    sess.send_token_count_event(turn_context).await;
 }
 
 async fn update_responses_token_usage_context_estimate(
@@ -2003,20 +1914,22 @@ async fn run_sampling_request(
                 .for_prompt(&step_context.settings.model_info.input_modalities)
         };
         let mut prompt_input = prompt_input;
-        if let Some(executed_tool_calls) = sess.services.executed_tool_calls.as_ref()
-            && executed_tool_calls
-                .attach_pending_to_prompt(&mut prompt_input, &mut executed_tool_calls_by_output)
-        {
-            codex_protocol::models::bound_executed_tool_calls_for_prompt(&mut prompt_input);
-        }
+        sess.services
+            .executed_tool_calls
+            .attach_to_prompt(&mut prompt_input, &mut executed_tool_calls_by_output);
         let prompt = build_prompt(
             prompt_input,
             step_context.as_ref(),
             base_instructions.clone(),
         );
-        // Chat intentionally does not emit Claude's native in-flight context estimate.
-        if turn_context.provider.info().wire_api == WireApi::Claude {
-            sess.emit_in_flight_context_estimate(&turn_context).await;
+        if crate::guardian::is_basic_session_source(&turn_context.session_source) {
+            crate::guardian::check_guardian_prompt_budget(
+                &sess,
+                &prompt,
+                &turn_context.config,
+                &step_context.settings.model_info,
+                responses_metadata,
+            )?;
         }
         let err = match try_run_sampling_request(
             tool_runtime.clone(),
@@ -2211,7 +2124,6 @@ pub(crate) async fn built_tools(
 #[derive(Debug)]
 struct SamplingRequestResult {
     needs_follow_up: bool,
-    provider_stop_reason: Option<String>,
     last_agent_message: Option<String>,
     follow_up_text: Option<String>,
 }
@@ -2389,6 +2301,14 @@ pub(super) fn agent_message_text(item: &codex_protocol::items::AgentMessageItem)
 
 pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<(String, Option<MessagePhase>)> {
     match msg {
+        EventMsg::ElicitationRequest(request)
+            if matches!(
+                &request.request,
+                codex_protocol::approvals::ElicitationRequest::UserVerification { .. }
+            ) =>
+        {
+            Some((UserVerificationNotice.render(), None))
+        }
         EventMsg::AgentMessage(event) => Some((event.message.clone(), event.phase.clone())),
         EventMsg::ItemCompleted(event) => match &event.item {
             TurnItem::AgentMessage(item) => Some((agent_message_text(item), item.phase.clone())),
@@ -2722,7 +2642,7 @@ async fn emit_turn_item_in_plan_mode(
 #[allow(clippy::too_many_arguments)]
 async fn handle_assistant_item_done_in_plan_mode(
     sess: &Session,
-    turn_context: &TurnContext,
+    step_context: &StepContext,
     turn_store: &codex_extension_api::ExtensionData,
     item: &ResponseItem,
     state: &mut PlanModeStreamState,
@@ -2730,6 +2650,7 @@ async fn handle_assistant_item_done_in_plan_mode(
     last_agent_message: &mut Option<String>,
     follow_up_text: &mut Option<String>,
 ) -> bool {
+    let turn_context = &step_context.turn;
     if let ResponseItem::Message { role, .. } = item
         && role == "assistant"
     {
@@ -2760,7 +2681,7 @@ async fn handle_assistant_item_done_in_plan_mode(
 
         record_completed_response_item_with_finalized_facts(
             sess,
-            turn_context,
+            step_context,
             item,
             finalized_facts.as_ref(),
         )
@@ -2778,8 +2699,9 @@ async fn handle_assistant_item_done_in_plan_mode(
 async fn drain_in_flight(
     in_flight: &mut FuturesOrdered<InFlightFuture<'static>>,
     sess: Arc<Session>,
-    turn_context: Arc<TurnContext>,
+    step_context: &StepContext,
 ) -> CodexResult<()> {
+    let turn_context = &step_context.turn;
     while let Some(res) = in_flight.next().await {
         match res {
             Ok(envelope) => {
@@ -2789,8 +2711,12 @@ async fn drain_in_flight(
                     &envelope.item,
                 )
                 .await;
-                sess.record_annotated_conversation_items(&turn_context, vec![envelope])
-                    .await;
+                sess.record_annotated_conversation_items(
+                    turn_context,
+                    &step_context.settings.model_info,
+                    vec![envelope],
+                )
+                .await;
             }
             Err(err) => {
                 error_or_panic(format!("in-flight tool future failed during drain: {err}"));
@@ -2859,7 +2785,11 @@ async fn try_run_sampling_request(
             prompt,
             &step_context.settings.model_info,
             &step_context.session_telemetry,
-            step_context.settings.reasoning_effort().cloned(),
+            sess.reasoning_effort_for_request(
+                &step_context.settings,
+                super::RequestEffortUsage::Sampling,
+            )
+            .await,
             step_context.settings.reasoning_summary,
             step_context.settings.service_tier.clone(),
             responses_metadata,
@@ -2896,10 +2826,6 @@ async fn try_run_sampling_request(
     let plan_mode = turn_context.mode() == ModeKind::Plan;
     let mut assistant_message_stream_parsers = AssistantMessageStreamParsers::new(plan_mode);
     let mut plan_mode_state = plan_mode.then(|| PlanModeStreamState::new(&turn_context.sub_id));
-    let mut completed_claude_token_usage: Option<codex_protocol::protocol::TokenUsage> = None;
-    let mut completed_claude_response = false;
-    let mut completed_chat_token_usage: Option<codex_protocol::protocol::TokenUsage> = None;
-    let mut completed_chat_response = false;
     let mut completed_responses_token_usage: Option<TokenUsage> = None;
     let defer_streamed_turn_items_for_contributors =
         !sess.services.extensions.turn_item_contributors().is_empty();
@@ -2946,7 +2872,6 @@ async fn try_run_sampling_request(
                     );
                     break Ok(SamplingRequestResult {
                         needs_follow_up: true,
-                        provider_stop_reason: Some("stream_error_after_tool_call".to_string()),
                         last_agent_message,
                         follow_up_text,
                     });
@@ -2969,7 +2894,6 @@ async fn try_run_sampling_request(
                     );
                     break Ok(SamplingRequestResult {
                         needs_follow_up: true,
-                        provider_stop_reason: Some("stream_closed_after_tool_call".to_string()),
                         last_agent_message,
                         follow_up_text,
                     });
@@ -3045,7 +2969,7 @@ async fn try_run_sampling_request(
                 if let Some(state) = plan_mode_state.as_mut()
                     && handle_assistant_item_done_in_plan_mode(
                         &sess,
-                        &turn_context,
+                        &step_context,
                         turn_store.as_ref(),
                         &item,
                         state,
@@ -3060,7 +2984,7 @@ async fn try_run_sampling_request(
 
                 let mut ctx = HandleOutputCtx {
                     sess: sess.clone(),
-                    turn_context: turn_context.clone(),
+                    step_context: Arc::clone(&step_context),
                     turn_store: Arc::clone(&turn_store),
                     tool_runtime: tool_runtime.clone(),
                     cancellation_token: cancellation_token.child_token(),
@@ -3110,7 +3034,6 @@ async fn try_run_sampling_request(
                 if preempt_for_mailbox_mail && sess.input_queue.has_pending_mailbox_items().await {
                     break Ok(SamplingRequestResult {
                         needs_follow_up: true,
-                        provider_stop_reason: None,
                         last_agent_message,
                         follow_up_text,
                     });
@@ -3254,7 +3177,6 @@ async fn try_run_sampling_request(
                 token_usage,
                 usage_metadata,
                 end_turn,
-                provider_stop_reason,
                 ..
             } => {
                 sess.services
@@ -3281,28 +3203,10 @@ async fn try_run_sampling_request(
                     usage_metadata.as_ref(),
                 )
                 .await;
-                let budget_result = match turn_context.provider.info().wire_api {
-                    WireApi::Claude => {
-                        completed_claude_response = true;
-                        completed_claude_token_usage = token_usage;
-                        Ok(())
-                    }
-                    WireApi::Chat => {
-                        completed_chat_response = true;
-                        let budget_result = sess
-                            .record_token_usage_info(&turn_context, token_usage.as_ref())
-                            .await;
-                        completed_chat_token_usage = token_usage;
-                        budget_result
-                    }
-                    WireApi::Responses => {
-                        let budget_result = sess
-                            .record_token_usage_info(&turn_context, token_usage.as_ref())
-                            .await;
-                        completed_responses_token_usage = token_usage;
-                        budget_result
-                    }
-                };
+                let budget_result = sess
+                    .record_token_usage_info(&turn_context, token_usage.as_ref())
+                    .await;
+                completed_responses_token_usage = token_usage;
                 should_emit_token_count = true;
                 should_emit_turn_diff = true;
                 if let Err(err) = budget_result {
@@ -3313,7 +3217,6 @@ async fn try_run_sampling_request(
                 }
                 break Ok(SamplingRequestResult {
                     needs_follow_up,
-                    provider_stop_reason,
                     last_agent_message,
                     follow_up_text,
                 });
@@ -3484,40 +3387,20 @@ async fn try_run_sampling_request(
     } else {
         Some(turn_context.turn_timing_state.begin_tool_blocking())
     };
-    drain_in_flight(&mut in_flight, sess.clone(), turn_context.clone()).await?;
+    drain_in_flight(&mut in_flight, sess.clone(), &step_context).await?;
     drop(tool_blocking_timing_guard);
 
-    let should_refresh_claude_context_usage =
-        matches!(&outcome, Ok(output) if !output.needs_follow_up) && completed_claude_response;
-    if should_refresh_claude_context_usage {
-        update_claude_token_usage_after_completion(
-            sess.as_ref(),
-            turn_context.as_ref(),
-            client_session,
-            prompt,
-            completed_claude_token_usage.as_ref(),
-        )
-        .await;
-    } else if completed_chat_response {
-        update_chat_token_usage_after_completion(
-            sess.as_ref(),
-            turn_context.as_ref(),
-            completed_chat_token_usage.as_ref(),
-        )
-        .await;
-    } else if should_emit_token_count {
+    if should_emit_token_count {
         // A tool call such as request_user_input can intentionally pause the turn. Emit token
         // counts only after pending tools resolve so clients do not see progress events while the
         // turn is waiting on the user. This also needs to happen before returning cancellation so
         // token usage already recorded from the completed response is still persisted.
-        if turn_context.provider.info().wire_api == WireApi::Responses {
-            update_responses_token_usage_context_estimate(
-                sess.as_ref(),
-                turn_context.as_ref(),
-                completed_responses_token_usage.as_ref(),
-            )
-            .await;
-        }
+        update_responses_token_usage_context_estimate(
+            sess.as_ref(),
+            turn_context.as_ref(),
+            completed_responses_token_usage.as_ref(),
+        )
+        .await;
         sess.send_token_count_event(&turn_context).await;
     }
 

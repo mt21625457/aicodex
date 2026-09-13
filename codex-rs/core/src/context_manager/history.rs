@@ -4,6 +4,9 @@
 //! Oversized instructions keep an incomplete excerpt for bounded root review, including
 //! sources recovered from legacy Guardian checkpoints before their raw history is dropped.
 
+#[path = "history_user_authorization.rs"]
+mod user_authorization;
+
 use crate::context::ContextualUserFragment;
 use crate::context::ModelSwitchInstructions;
 use crate::context::world_state::PersistentModeState;
@@ -30,6 +33,7 @@ use codex_history::GuardianHistoryCheckpoint;
 use codex_history::ResponseItemEnvelope;
 use codex_history::RetainedContext;
 use codex_history::RetainedContextEvent;
+use codex_history::RetainedInputSource;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::BaseInstructions;
@@ -39,8 +43,8 @@ use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::ImageDetail;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::InputModality;
-use codex_protocol::protocol::ContextTokenUsageSource;
 use codex_protocol::protocol::InterAgentCommunication;
+use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TokenUsageInfo;
 use codex_protocol::protocol::TurnContextItem;
@@ -53,11 +57,13 @@ use codex_utils_output_truncation::approx_bytes_for_tokens;
 use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::approx_tokens_from_byte_count_i64;
 use codex_utils_output_truncation::truncate_function_output_payload;
-use std::collections::HashMap;
+use codex_utils_output_truncation::with_serialization_allowance;
 use std::num::NonZeroUsize;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::LazyLock;
+
+use crate::context::GuardianContextMode;
 
 /// Transcript of thread history
 #[derive(Debug, Clone, Default)]
@@ -69,19 +75,14 @@ pub(crate) struct ContextManager {
     review_history: Option<TranscriptHistory>,
     /// Host facts independent of the model window; snapshots share immutable state.
     retained_context: Arc<RetainedContext>,
-    /// Live and replay instruction capture are enabled together by the session feature flag.
-    retain_user_messages: bool,
+    /// Capture, replay, and snapshot selection share the immutable session mode.
+    guardian_context_mode: GuardianContextMode,
+    retain_inherited_user_messages: bool,
     /// Bumped whenever history is rewritten, such as compaction or rollback.
     history_version: u64,
     /// Monotonic user-input/reset revision, independent of compaction's history generation.
     user_message_revision: u64,
     token_info: Option<TokenUsageInfo>,
-    /// Index of custom tool calls already retained in history.
-    ///
-    /// `record_items` needs this to decide whether a name-less custom tool output belongs to
-    /// code mode. Keeping the index avoids a backwards history scan for each output in long
-    /// sessions.
-    custom_tool_call_names_by_call_id: HashMap<String, String>,
     /// Reference context snapshot used for diffing and producing model-visible
     /// settings update items.
     ///
@@ -101,7 +102,7 @@ struct SharedConversationHistory {
     items: Arc<Vec<ResponseItemEnvelope>>,
     review_history: Option<TranscriptHistory>,
     retained_context: Arc<RetainedContext>,
-    expose_retained_context: bool,
+    guardian_context_mode: GuardianContextMode,
     history_version: u64,
     user_message_revision: u64,
 }
@@ -127,7 +128,7 @@ impl ConversationHistorySnapshot for SharedConversationHistory {
     }
 
     fn retained_context(&self) -> Option<&RetainedContext> {
-        self.expose_retained_context
+        (self.guardian_context_mode == GuardianContextMode::ThreadOwned)
             .then_some(&self.retained_context)
     }
 
@@ -174,13 +175,13 @@ impl ContextManager {
             items: Arc::new(Vec::new()),
             review_history: None,
             retained_context: Arc::default(),
-            retain_user_messages: false,
+            guardian_context_mode: GuardianContextMode::Legacy,
+            retain_inherited_user_messages: false,
             history_version: 0,
             user_message_revision: 0,
             token_info: TokenUsageInfo::new_or_append(
                 &None, &None, /*model_context_window*/ None,
             ),
-            custom_tool_call_names_by_call_id: HashMap::new(),
             reference_context_item: None,
             world_state_baseline: None,
         }
@@ -191,7 +192,7 @@ impl ContextManager {
             items: Arc::clone(&self.items),
             review_history: self.review_history.clone(),
             retained_context: Arc::clone(&self.retained_context),
-            expose_retained_context: self.retain_user_messages,
+            guardian_context_mode: self.guardian_context_mode,
             history_version: self.history_version,
             user_message_revision: self.user_message_revision,
         })
@@ -201,8 +202,17 @@ impl ContextManager {
         &self.retained_context
     }
 
-    pub(crate) fn enable_user_message_retention(&mut self) {
-        self.retain_user_messages = true;
+    pub(crate) fn with_guardian_context_mode(
+        guardian_context_mode: GuardianContextMode,
+        source: &SessionSource,
+    ) -> Self {
+        Self {
+            guardian_context_mode,
+            retain_inherited_user_messages: guardian_context_mode
+                == GuardianContextMode::ThreadOwned
+                && !source.is_non_root_agent(),
+            ..Self::new()
+        }
     }
 
     pub(crate) fn reserve_input_order(&mut self) -> u64 {
@@ -217,12 +227,8 @@ impl ContextManager {
         true
     }
 
-    pub(crate) fn restore_retained_context(&mut self, checkpoint: Option<&RetainedContext>) {
-        Arc::make_mut(&mut self.retained_context).restore(checkpoint);
-    }
-
     pub(crate) fn guardian_history_checkpoint(&self) -> Option<GuardianHistoryCheckpoint> {
-        if self.retain_user_messages {
+        if self.guardian_context_mode == GuardianContextMode::ThreadOwned {
             return None;
         }
         self.review_history
@@ -236,7 +242,7 @@ impl ContextManager {
         checkpoint: Option<&GuardianHistoryCheckpoint>,
     ) {
         self.restore_retained_context(retained_context);
-        if self.retain_user_messages {
+        if self.guardian_context_mode == GuardianContextMode::ThreadOwned {
             // Older retained checkpoints cleared oversized instructions. Recover their
             // bounded root excerpts before discarding the legacy source transcript.
             let items = &self.items;
@@ -356,26 +362,16 @@ impl ContextManager {
                 item: item.clone(),
                 metadata: metadata.cloned(),
             };
-            let is_code_mode_output = matches!(
-                &processed.item,
-                ResponseItem::CustomToolCallOutput { call_id, name, .. }
-                    if name.as_deref() == Some(codex_code_mode::PUBLIC_TOOL_NAME)
-                        || self.custom_tool_call_names_by_call_id.get(call_id).is_some_and(
-                            |existing_name| existing_name == codex_code_mode::PUBLIC_TOOL_NAME
-                        )
-            );
-            if !is_code_mode_output
-                && let ResponseItem::FunctionCallOutput { output, .. }
-                | ResponseItem::CustomToolCallOutput { output, .. } = &mut processed.item
+            if let ResponseItem::FunctionCallOutput { output, .. }
+            | ResponseItem::CustomToolCallOutput { output, .. } = &mut processed.item
             {
                 // The override already includes the tool's serialization allowance.
                 let policy = metadata
-                    .and_then(|metadata| metadata.fallback_token_limit_override)
+                    .and_then(|metadata| metadata.history_truncation_token_limit)
                     .map(TruncationPolicy::Tokens)
-                    .unwrap_or(policy * 1.2);
+                    .unwrap_or_else(|| with_serialization_allowance(policy));
                 truncate_function_output_payload(output, policy, estimate_audio_token_count);
             }
-            self.track_custom_tool_call_name(&processed.item);
             if let Some(review_history) = &mut self.review_history
                 && !matches!(item, ResponseItem::Message { role, content, .. }
                 if role == "user" && is_contextual_user_message_content(content))
@@ -383,54 +379,11 @@ impl ContextManager {
                 review_history.record(&processed.item);
             }
             Arc::make_mut(&mut self.items).push(processed);
-            if crate::context::is_user_authorization_message(item) {
-                if !self.retain_user_messages {
-                    Arc::make_mut(&mut self.retained_context).mark_user_messages_incomplete();
-                } else if !metadata.is_some_and(|metadata| metadata.inherited_user_message)
-                    && let ResponseItem::Message {
-                        content,
-                        internal_chat_message_metadata_passthrough,
-                        ..
-                    } = item
-                {
-                    let mut complete = internal_chat_message_metadata_passthrough
-                        .as_ref()
-                        .and_then(|metadata| metadata.content_item_kinds.as_ref())
-                        .is_some_and(|kinds| {
-                            kinds.len() == content.len()
-                                && kinds.iter().all(|kind| kind.0.starts_with("user."))
-                        });
-                    let text = content
-                        .iter()
-                        .filter_map(|content| match content {
-                            ContentItem::InputText { text } | ContentItem::OutputText { text } => {
-                                Some(text.as_str())
-                            }
-                            _ => {
-                                complete = false;
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    // Keep the same bounded text that child reviewers receive before
-                    // compaction, instead of letting storage discard a large source.
-                    // Local instruction sections still omit incomplete originals whole.
-                    let (text, truncated) =
-                        guardian_truncate_text(&text, GUARDIAN_MAX_ROOT_MESSAGE_TOKENS);
-                    complete &= !truncated;
-                    Arc::make_mut(&mut self.retained_context).record_user_message(
-                        codex_history::RetainedUserMessage {
-                            turn_id: item.turn_id().unwrap_or_default().to_owned(),
-                            message_id: item.id().map(|id| id.as_str().to_owned()),
-                            text,
-                            complete,
-                        },
-                        metadata.and_then(|metadata| metadata.user_input_order),
-                    );
-                }
-                self.user_message_revision = self.user_message_revision.saturating_add(1);
-            }
+            self.record_user_authorization(
+                item,
+                metadata,
+                user_authorization::UserMessageSource::Original,
+            );
         }
     }
 
@@ -522,7 +475,6 @@ impl ContextManager {
             // its corresponding counterpart to keep the invariants intact without
             // running a full normalization pass.
             normalize::remove_corresponding_for(items, &removed.item);
-            self.rebuild_custom_tool_call_name_index();
             self.world_state_baseline = None;
         }
     }
@@ -542,14 +494,15 @@ impl ContextManager {
             }));
         }
         self.items = Arc::new(items);
-        self.rebuild_custom_tool_call_name_index();
         self.history_version = self.history_version.saturating_add(1);
         self.world_state_baseline = None;
     }
 
     /// Compaction changes the model's history without changing the user's authorization.
     pub(crate) fn replace_compacted(&mut self, items: Vec<ResponseItemEnvelope>) {
-        if !self.retain_user_messages && self.review_history.is_none() {
+        if self.guardian_context_mode == GuardianContextMode::Legacy
+            && self.review_history.is_none()
+        {
             let mut retained = TranscriptHistory::new(self.history_version.saturating_add(1));
             for item in self.raw_items().filter(|item| {
                 !matches!(item, ResponseItem::Message { role, content, .. }
@@ -560,7 +513,6 @@ impl ContextManager {
             self.review_history = Some(retained);
         }
         self.items = Arc::new(items);
-        self.rebuild_custom_tool_call_name_index();
         self.history_version = self.history_version.saturating_add(1);
         self.world_state_baseline = None;
     }
@@ -605,10 +557,7 @@ impl ContextManager {
         let first_removed_message_id = snapshot[cut_idx]
             .id()
             .map(codex_protocol::ResponseItemId::as_str);
-        let acceptance_order = snapshot[cut_idx]
-            .metadata
-            .as_ref()
-            .and_then(|metadata| metadata.user_input_order);
+        let source = RetainedInputSource::from(snapshot[cut_idx].metadata.as_ref());
         let mut review_history = self.review_history.take();
         if let Some(history) = &mut review_history {
             history.truncate_before(&snapshot[cut_idx].item);
@@ -649,11 +598,11 @@ impl ContextManager {
             .iter()
             .filter_map(|item| item.turn_id())
             .collect::<Vec<_>>();
-        if self.retain_user_messages {
+        if self.guardian_context_mode == GuardianContextMode::ThreadOwned {
             Arc::make_mut(&mut retained_context).rollback(
                 &removed_turns,
                 first_removed_message_id,
-                acceptance_order,
+                source,
             );
         } else {
             Arc::make_mut(&mut retained_context).retain_answers(|answer| {
@@ -683,20 +632,6 @@ impl ContextManager {
             &Some(usage.clone()),
             model_context_window,
         );
-    }
-
-    pub(crate) fn set_context_token_usage(
-        &mut self,
-        context_tokens: i64,
-        source: ContextTokenUsageSource,
-        model_context_window: Option<i64>,
-    ) {
-        let mut info = self
-            .token_info
-            .clone()
-            .unwrap_or_else(|| TokenUsageInfo::empty(model_context_window));
-        info.set_context_usage(context_tokens, source, model_context_window);
-        self.token_info = Some(info);
     }
 
     fn get_non_last_reasoning_items_tokens(&self) -> i64 {
@@ -808,22 +743,6 @@ impl ContextManager {
         normalize::strip_audio_when_unsupported(input_modalities, items);
     }
 
-    fn track_custom_tool_call_name(&mut self, item: &ResponseItem) {
-        if let ResponseItem::CustomToolCall { call_id, name, .. } = item {
-            self.custom_tool_call_names_by_call_id
-                .insert(call_id.clone(), name.clone());
-        }
-    }
-
-    fn rebuild_custom_tool_call_name_index(&mut self) {
-        self.custom_tool_call_names_by_call_id.clear();
-        for item in self.items.iter() {
-            if let ResponseItem::CustomToolCall { call_id, name, .. } = &item.item {
-                self.custom_tool_call_names_by_call_id
-                    .insert(call_id.clone(), name.clone());
-            }
-        }
-    }
     /// Walk backward from a rollback cut and trim contiguous pre-turn context-update items.
     ///
     /// Returns the adjusted cut index after removing contextual developer/user items immediately

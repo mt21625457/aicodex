@@ -32,8 +32,10 @@ use codex_protocol::models::PermissionProfileSnapshot;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::AutoReviewMessages;
 use codex_protocol::openai_models::MODEL_SPECIALTY_CYBER;
+use codex_protocol::openai_models::ModelTokenBudgetConfig;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::permissions::FileSystemAccessMode;
+use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSandboxEntry;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_protocol::permissions::NetworkSandboxPolicy;
@@ -287,10 +289,10 @@ async fn guardian_session_inherits_parent_http_fallback(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[test_case(60_000; "reviewer_window_is_already_exhausted")]
-#[test_case(49_990; "followup_reminder_exhausts_reviewer_window")]
-async fn guardian_review_resends_full_transcript_after_reviewer_context_rollover(
-    first_review_total_tokens: i64,
+#[test_case(false; "legacy_transcript")]
+#[test_case(true; "thread_owned_transcript")]
+async fn guardian_review_compacts_with_summary_despite_parent_token_budget(
+    thread_owned: bool,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_wine_exec!(
@@ -299,11 +301,29 @@ async fn guardian_review_resends_full_transcript_after_reviewer_context_rollover
     );
 
     let server = start_mock_server().await;
+    let summary = "Guardian retained the user's standing authorization.";
     let mut builder = test_codex()
         .with_model_info_override("gpt-5.5", |model| {
             model.auto_review_model_override = Some(model.slug.clone());
+            model
+                .model_messages
+                .as_mut()
+                .expect("model messages")
+                .token_budget = Some(ModelTokenBudgetConfig {
+                enabled: true,
+                use_history_notes_extension: true,
+                reminder_threshold_tokens: 6_144,
+                reminder_message_template: "{n_remaining} tokens remain.".to_string(),
+                guidance_message: "Save state before resetting context.".to_string(),
+                auto_compact_fallback_prompt: "Save important state.".to_string(),
+                auto_compact_fallback_buffer_tokens: 16_384,
+            });
         })
-        .with_config(|config| {
+        .with_config(move |config| {
+            config
+                .features
+                .set_enabled(Feature::GuardianThreadContext, thread_owned)
+                .expect("configure Guardian context mode");
             config.model_context_window = Some(100_000);
             config.model_auto_compact_token_limit = Some(50_000);
             config.permissions.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
@@ -332,12 +352,19 @@ async fn guardian_review_resends_full_transcript_after_reviewer_context_rollover
             sse(vec![
                 ev_response_created("resp-guardian-first"),
                 ev_assistant_message("guardian-first", approval),
-                ev_completed_with_tokens("resp-guardian-first", first_review_total_tokens),
+                ev_completed_with_tokens("resp-guardian-first", /*total_tokens*/ 60_000),
             ]),
             sse(vec![
                 ev_response_created("resp-parent-second"),
                 ev_function_call("exec-second", "exec_command", &command),
                 ev_completed("resp-parent-second"),
+            ]),
+            sse(vec![
+                json!({
+                    "type": "response.output_item.done",
+                    "item": {"type": "compaction", "encrypted_content": summary},
+                }),
+                ev_completed("resp-guardian-compact"),
             ]),
             sse(vec![
                 ev_response_created("resp-guardian-second"),
@@ -361,37 +388,49 @@ async fn guardian_review_resends_full_transcript_after_reviewer_context_rollover
         .iter()
         .filter(|request| {
             request.body_json()["client_metadata"]["x-openai-subagent"].as_str() == Some("guardian")
+                && request.inputs_of_type("compaction_trigger").is_empty()
         })
         .collect::<Vec<_>>();
     assert_eq!(guardian_requests.len(), 2);
     assert_eq!(
         guardian_requests[0].body_json()["client_metadata"]["thread_id"],
         guardian_requests[1].body_json()["client_metadata"]["thread_id"],
-        "the same Guardian reviewer should survive the context-window rollover"
+        "the same Guardian reviewer should survive compaction"
     );
 
-    let second_request = guardian_requests[1];
-    let second_prompt = second_request
-        .message_input_text_groups("user")
-        .last()
-        .expect("post-rollover Guardian review prompt")
-        .join("");
+    assert!(requests[0].has_content_kinds(&["token_budget.context_window"]));
+    for request in &guardian_requests {
+        assert!(!request.has_content_kinds(&["token_budget.context_window"]));
+    }
+    let compact_requests = requests
+        .iter()
+        .filter(|request| !request.inputs_of_type("compaction_trigger").is_empty())
+        .collect::<Vec<_>>();
+    assert_eq!(compact_requests.len(), 1);
+    let compact_request = compact_requests[0];
     assert!(
-        second_request
-            .message_input_texts("developer")
-            .iter()
-            .any(|text| text.contains("Previous context window id:")),
-        "Guardian should have rolled into a new context window"
+        compact_request
+            .message_input_texts("user")
+            .join("\n")
+            .contains(user_authorization)
     );
-    assert!(second_prompt.contains(">>> TRANSCRIPT START\n"));
-    assert!(!second_prompt.contains(">>> TRANSCRIPT DELTA START\n"));
-    assert!(second_prompt.contains(user_authorization));
+    let second_request = guardian_requests[1];
+    assert_eq!(
+        second_request.inputs_of_type("compaction")[0]["encrypted_content"],
+        summary
+    );
     assert!(
         second_request
+            .message_input_texts("user")
+            .join("\n")
+            .contains(user_authorization)
+    );
+    assert!(
+        compact_request
             .message_input_texts("developer")
             .iter()
             .any(|text| text.contains("Use prior reviews as context, not binding precedent.")),
-        "the follow-up policy reminder should survive reviewer context rollover"
+        "the compactor should receive the follow-up policy reminder"
     );
 
     Ok(())
@@ -939,6 +978,12 @@ async fn guardian_session_is_reused_for_consecutive_tool_reviews_without_prewarm
                 secret_file.into(),
                 FileSystemAccessMode::Deny,
             ));
+            file_system_policy.entries.push(FileSystemSandboxEntry::new(
+                FileSystemPath::GlobPattern {
+                    pattern: "guardian-*.key".to_string(),
+                },
+                FileSystemAccessMode::Deny,
+            ));
             config
                 .permissions
                 .set_permission_profile(PermissionProfile::from_runtime_permissions(
@@ -1112,6 +1157,28 @@ async fn guardian_session_is_reused_for_consecutive_tool_reviews_without_prewarm
         })
         .collect::<Vec<_>>();
     assert_eq!(guardian_requests.len(), 3);
+    let permission_section = [
+        "\n>>> PARENT TURN PERMISSION CONTEXT START\n".to_string(),
+        format!(
+            "The parent turn's active permission profile denies reading these paths/globs. These are policy restrictions; do not approve escalation whose purpose is to read them.\n- path `{}`\n- glob `{}`\n",
+            fs::canonicalize(&secret_file)?.display(),
+            test.config.cwd.join("guardian-*.key").display(),
+        ),
+        ">>> PARENT TURN PERMISSION CONTEXT END\n".to_string(),
+    ];
+    // Both the full request and the next review's delta must carry the resolved policy.
+    for request in [guardian_requests[0], guardian_requests[2]] {
+        let user_messages = request.message_input_text_groups("user");
+        let latest_input = user_messages.last().expect("Guardian assessment input");
+        let section_start = latest_input
+            .iter()
+            .position(|text| text == &permission_section[0])
+            .expect("parent permission section");
+        assert_eq!(
+            &latest_input[section_start..section_start + permission_section.len()],
+            permission_section.as_slice()
+        );
+    }
     let first_guardian_request = guardian_requests[0].body_json();
     let second_guardian_request = guardian_requests[2].body_json();
     let first_parent_request = requests[0].body_json();
@@ -1561,14 +1628,17 @@ async fn guardian_timeout_rejects_tool_call_with_acting_model_instructions(
     struct TimedOutReviewContributor;
 
     impl codex_extension_api::ApprovalReviewContributor for TimedOutReviewContributor {
-        fn fast_decision<'a>(
+        fn decide<'a>(
             &'a self,
-            _session_store: &'a codex_extension_api::ExtensionData,
-            _thread_store: &'a codex_extension_api::ExtensionData,
-            _prompt: &'a str,
-            _extension_metrics: Option<Arc<dyn codex_extension_api::ExtensionMetrics>>,
-        ) -> codex_extension_api::ExtensionFuture<'a, Option<ReviewDecision>> {
-            Box::pin(async { Some(ReviewDecision::TimedOut) })
+            input: &'a codex_extension_api::ApprovalDecisionInput<'_>,
+        ) -> codex_extension_api::ExtensionFuture<'a, Option<codex_extension_api::ApprovalDecision>>
+        {
+            assert_eq!(input.tool_call_id, Some("exec-call-timed-out"));
+            Box::pin(async {
+                Some(codex_extension_api::ApprovalDecision::Reviewed(
+                    ReviewDecision::TimedOut,
+                ))
+            })
         }
     }
 

@@ -18,7 +18,6 @@ fn exec_command_tool_matches_expected_spec() {
     let tool = create_exec_command_tool(CommandToolOptions {
         allow_login_shell: true,
         exec_permission_approvals_enabled: false,
-        prefer_dedicated_file_tools: false,
     });
 
     let description = if cfg!(windows) {
@@ -105,7 +104,6 @@ fn exec_command_tool_can_hide_shell_parameter() {
         CommandToolOptions {
             allow_login_shell: true,
             exec_permission_approvals_enabled: false,
-            prefer_dedicated_file_tools: false,
         },
         /*include_environment_id*/ false,
         /*include_shell_parameter*/ false,

@@ -60,6 +60,10 @@ impl ChatWidget {
             return;
         }
 
+        if self.handle_realtime_microphone_shortcut(key_event) {
+            return;
+        }
+
         match key_event {
             KeyEvent {
                 code: KeyCode::Char(c),
@@ -271,7 +275,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn can_launch_external_editor(&self) -> bool {
-        self.bottom_pane.can_launch_external_editor()
+        !self.external_writer_view && self.bottom_pane.can_launch_external_editor()
     }
 
     pub(crate) fn can_run_ctrl_l_clear_now(&mut self) -> bool {
@@ -512,6 +516,9 @@ impl ChatWidget {
     }
 
     pub(crate) fn handle_paste(&mut self, text: String) {
+        if self.external_writer_view {
+            return;
+        }
         self.bottom_pane.handle_paste(text);
     }
 

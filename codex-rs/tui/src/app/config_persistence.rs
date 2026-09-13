@@ -19,8 +19,10 @@ async fn build_config_on_runtime_worker(
     builder: ConfigBuilder,
     error_context: String,
 ) -> Result<Config> {
-    match tokio::spawn(async move { builder.build().await }).await {
-        Ok(build_result) => build_result.wrap_err(error_context),
+    // Tokio stores the task output inline even when it boxes the future. Keep the large
+    // Config off the caller's stack while Tokio allocates the task during session switches.
+    match tokio::spawn(async move { builder.build().await.map(Box::new) }).await {
+        Ok(build_result) => build_result.map(|config| *config).wrap_err(error_context),
         Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
         Err(err) => Err(err).wrap_err_with(|| format!("{error_context} task failed")),
     }
@@ -50,6 +52,39 @@ pub(super) fn resume_model_settings_for_overrides(
     } else {
         crate::app_server_session::ResumeModelSettings::RestoreFromThread
     }
+}
+
+pub(super) fn has_explicit_resume_permission_override(
+    config: &Config,
+    overrides: &ConfigOverrides,
+) -> bool {
+    overrides.approval_policy.is_some()
+        || overrides.approvals_reviewer.is_some()
+        || overrides.sandbox_mode.is_some()
+        || overrides.permission_profile.is_some()
+        || overrides.default_permissions.is_some()
+        || !overrides.additional_writable_roots.is_empty()
+        || overrides.workspace_roots.is_some()
+        || config.config_layer_stack.layers_high_to_low().any(|layer| {
+            matches!(
+                &layer.name,
+                ConfigLayerSource::SessionFlags
+                    | ConfigLayerSource::User {
+                        profile: Some(_),
+                        ..
+                    }
+            ) && [
+                "approval_policy",
+                "approvals_reviewer",
+                "sandbox_mode",
+                "default_permissions",
+                "permissions",
+                "network",
+                "sandbox_workspace_write",
+            ]
+            .iter()
+            .any(|key| layer.config.get(*key).is_some())
+        })
 }
 
 impl App {
@@ -119,6 +154,9 @@ impl App {
         &mut self,
         selection: PermissionProfileSelection,
     ) -> bool {
+        if self.reject_pending_permission_change() {
+            return false;
+        }
         let PermissionProfileSelection {
             profile_id,
             approval_policy,
@@ -233,12 +271,142 @@ impl App {
         true
     }
 
+    pub(super) async fn select_permission_profile(
+        &mut self,
+        app_server: &mut AppServerSession,
+        selection: PermissionProfileSelection,
+    ) {
+        if self.reject_pending_permission_change() {
+            return;
+        }
+        if selection.profile_id.starts_with(':')
+            || (app_server.thread_params_mode()
+                == crate::app_server_session::ThreadParamsMode::Embedded
+                && self
+                    .config
+                    .custom_permission_profiles
+                    .iter()
+                    .any(|profile| profile.id == selection.profile_id))
+        {
+            if self.apply_permission_profile_selection(selection).await {
+                self.chat_widget.submit_initial_user_message_if_pending();
+            }
+            return;
+        }
+        let Some(thread_id) = self.chat_widget.thread_id() else {
+            self.chat_widget
+                .retain_input_after_failed_permission_selection();
+            self.chat_widget.add_error_message(
+                "Wait for the task to connect before selecting permissions.".into(),
+            );
+            return;
+        };
+        if self.chat_widget.is_user_turn_pending_or_running() {
+            self.chat_widget
+                .retain_input_after_failed_permission_selection();
+            self.chat_widget.add_error_message(
+                "Wait for the current turn to finish before changing permissions.".into(),
+            );
+            return;
+        }
+        let config = self.chat_widget.config_ref();
+        if config
+            .permissions
+            .active_permission_profile()
+            .is_some_and(|profile| profile.id == selection.profile_id)
+            && selection
+                .approval_policy
+                .is_none_or(|policy| config.permissions.approval_policy.value() == policy.to_core())
+            && selection
+                .approvals_reviewer
+                .is_none_or(|reviewer| config.approvals_reviewer == reviewer)
+        {
+            return;
+        }
+        let params = ThreadSettingsUpdateParams {
+            thread_id: thread_id.to_string(),
+            permissions: Some(selection.profile_id.clone()),
+            approval_policy: selection.approval_policy,
+            approvals_reviewer: selection.approvals_reviewer.map(Into::into),
+            ..Default::default()
+        };
+        match app_server.thread_settings_update(params).await {
+            Ok(true) => {
+                self.pending_server_profiles
+                    .insert(thread_id, selection.clone());
+                self.chat_widget.add_info_message(
+                    format!(
+                        "Permission selection requested: {}",
+                        selection.display_label
+                    ),
+                    /*hint*/ None,
+                );
+                self.chat_widget.submit_initial_user_message_if_pending();
+            }
+            Ok(false) => {
+                self.chat_widget
+                    .retain_input_after_failed_permission_selection();
+                self.chat_widget
+                    .add_error_message("Named profiles require a newer app server.".into());
+            }
+            Err(error) => {
+                self.chat_widget
+                    .retain_input_after_failed_permission_selection();
+                self.chat_widget
+                    .add_error_message(format!("Failed to select permissions: {error}"));
+            }
+        }
+    }
+
+    pub(super) fn reject_pending_permission_change(&mut self) -> bool {
+        if self
+            .chat_widget
+            .thread_id()
+            .is_some_and(|thread_id| self.pending_server_profiles.contains_key(&thread_id))
+        {
+            self.chat_widget.add_error_message(
+                "Wait for permissions to update before changing permissions.".into(),
+            );
+            return true;
+        }
+        false
+    }
+
+    pub(super) fn confirmed_server_profile(
+        &self,
+        thread_id: ThreadId,
+    ) -> Option<PermissionProfileSelection> {
+        if self.chat_widget.thread_id() != Some(thread_id) {
+            return None;
+        }
+        let config = self.chat_widget.config_ref();
+        let active = config.permissions.active_permission_profile()?;
+        if active.id.starts_with(':')
+            || (self.app_server_target.thread_params_mode()
+                == crate::app_server_session::ThreadParamsMode::Embedded
+                && self
+                    .config
+                    .custom_permission_profiles
+                    .iter()
+                    .any(|profile| profile.id == active.id))
+        {
+            return None;
+        }
+        Some(PermissionProfileSelection {
+            profile_id: active.id.clone(),
+            approval_policy: Some(config.permissions.approval_policy.value().into()),
+            approvals_reviewer: Some(config.approvals_reviewer),
+            display_label: active.id,
+        })
+    }
+
     pub(super) async fn refresh_in_memory_config_from_disk(&mut self) -> Result<()> {
         let mut config = self
             .rebuild_config_for_cwd(self.chat_widget.config_ref().cwd.to_path_buf())
             .await?;
         self.apply_runtime_policy_overrides(&mut config, RuntimePolicyOverrideScope::All);
         self.local_settings = crate::local_settings::LocalSettings::from(&config);
+        self.refresh_server_version_overview_notice(CODEX_CLI_VERSION);
         // Other preferences have runtime caches and are adopted when the widget is replaced.
         self.chat_widget
             .local_settings
@@ -428,6 +596,13 @@ impl App {
         updates: Vec<(Feature, bool)>,
     ) {
         if updates.is_empty() {
+            return;
+        }
+        if updates
+            .iter()
+            .any(|(feature, _)| *feature == Feature::GuardianApproval)
+            && self.reject_pending_permission_change()
+        {
             return;
         }
 
@@ -881,6 +1056,33 @@ impl App {
         resume_model_settings_for_overrides(&self.config, &self.harness_overrides)
     }
 
+    pub(super) fn reject_remote_resume_permission_override(&mut self, config: &Config) -> bool {
+        if self.app_server_target.thread_params_mode()
+            != crate::app_server_session::ThreadParamsMode::Remote
+        {
+            return false;
+        }
+        let explicitly_selected =
+            has_explicit_resume_permission_override(config, &self.harness_overrides)
+                || matches!(
+                    self.runtime_approval_policy_override,
+                    Some(RuntimeApprovalPolicyOverride::Explicit(_))
+                )
+                || self
+                    .runtime_permission_profile_override
+                    .as_ref()
+                    .is_some_and(|profile| {
+                        profile.turn_override == RuntimePermissionProfileTurnOverride::LegacySandbox
+                    });
+        if explicitly_selected {
+            self.chat_widget.add_error_message(
+                "Permission overrides are not supported when resuming a remote task.".into(),
+            );
+            return true;
+        }
+        false
+    }
+
     pub(super) fn on_update_personality(&mut self, personality: Personality) {
         self.config.personality = Some(personality);
         self.chat_widget.set_personality(personality);
@@ -1247,17 +1449,17 @@ mod tests {
             (ReasoningEffortConfig::Ultra, ReasoningEffortConfig::Medium),
         ] {
             let mut app = make_test_app().await;
-            app.config.model = Some("gpt-5.4".to_string());
+            app.config.model = Some("gpt-5.5".to_string());
             app.config.model_reasoning_effort = Some(configured_effort.clone());
             app.chat_widget
                 .set_reasoning_effort(Some(configured_effort));
 
             let default_effort =
-                app.on_apply_advanced_reasoning("gpt-5.4", ReasoningEffortConfig::Ultra);
+                app.on_apply_advanced_reasoning("gpt-5.5", ReasoningEffortConfig::Ultra);
             let new_thread_config = app.fresh_session_config();
 
             assert_eq!(default_effort, Some(expected_default_effort.clone()));
-            assert_eq!(app.chat_widget.current_model(), "gpt-5.4");
+            assert_eq!(app.chat_widget.current_model(), "gpt-5.5");
             assert_eq!(
                 app.chat_widget.current_reasoning_effort(),
                 Some(ReasoningEffortConfig::Ultra)
@@ -1267,7 +1469,7 @@ mod tests {
                     new_thread_config.model.as_deref(),
                     new_thread_config.model_reasoning_effort,
                 ),
-                (Some("gpt-5.4"), Some(expected_default_effort))
+                (Some("gpt-5.5"), Some(expected_default_effort))
             );
         }
     }
@@ -1275,15 +1477,15 @@ mod tests {
     #[tokio::test]
     async fn conversation_reasoning_keeps_previous_default_for_ultra_only_model() {
         let mut app = make_test_app().await;
-        app.config.model = Some("gpt-5.4".to_string());
+        app.config.model = Some("gpt-5.5".to_string());
         app.config.model_reasoning_effort = Some(ReasoningEffortConfig::Low);
         let mut preset = app
             .model_catalog
             .try_list_models()
             .expect("model catalog is infallible")
             .into_iter()
-            .find(|preset| preset.model == "gpt-5.4")
-            .expect("gpt-5.4 preset");
+            .find(|preset| preset.model == "gpt-5.5")
+            .expect("gpt-5.5 preset");
         preset.model = "ultra-only".to_string();
         preset.default_reasoning_effort = ReasoningEffortConfig::Ultra;
         preset.supported_reasoning_efforts = vec![ReasoningEffortPreset {
@@ -1307,7 +1509,7 @@ mod tests {
                 new_thread_config.model.as_deref(),
                 new_thread_config.model_reasoning_effort,
             ),
-            (Some("gpt-5.4"), Some(ReasoningEffortConfig::Low))
+            (Some("gpt-5.5"), Some(ReasoningEffortConfig::Low))
         );
     }
 
@@ -1324,7 +1526,7 @@ mod tests {
             .handle_key_event(KeyEvent::from(KeyCode::BackTab));
 
         let default_effort =
-            app.on_apply_advanced_reasoning("gpt-5.4", ReasoningEffortConfig::Ultra);
+            app.on_apply_advanced_reasoning("gpt-5.5", ReasoningEffortConfig::Ultra);
 
         assert_eq!(default_effort, Some(ReasoningEffortConfig::Low));
         assert_eq!(

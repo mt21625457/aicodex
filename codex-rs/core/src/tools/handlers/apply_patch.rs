@@ -371,14 +371,6 @@ impl ApplyPatchHandler {
         self.handle_patch(invocation, patch_input).await
     }
 
-    pub(crate) async fn handle_generated_patch(
-        &self,
-        invocation: ToolInvocation,
-        patch_input: String,
-    ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
-        self.handle_patch(invocation, patch_input).await
-    }
-
     async fn handle_patch(
         &self,
         invocation: ToolInvocation,
@@ -606,6 +598,7 @@ async fn execute_verified_patch(
     let event_ctx = ToolEventCtx::new(
         tool_ctx.session.as_ref(),
         tool_ctx.step_context.turn.as_ref(),
+        &tool_ctx.step_context.settings.model_info,
         &tool_ctx.call_id,
         tracker,
     );
@@ -633,6 +626,7 @@ async fn execute_verified_patch(
     let event_ctx = ToolEventCtx::new(
         tool_ctx.session.as_ref(),
         tool_ctx.step_context.turn.as_ref(),
+        &tool_ctx.step_context.settings.model_info,
         &tool_ctx.call_id,
         tracker,
     );

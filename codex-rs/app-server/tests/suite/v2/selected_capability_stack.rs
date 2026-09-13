@@ -96,7 +96,7 @@ async fn selected_plugin_mcp_startup_respects_explicit_mentions(
     let (apps_url, apps_server_handle) =
         start_apps_server_with_delays(Vec::new(), Vec::new(), Duration::ZERO, Duration::ZERO)
             .await?;
-    let fixture = selected_capability_fixture(&responses_server.uri(), &apps_url)?;
+    let fixture = selected_capability_fixture(&responses_server.uri(), &apps_url).await?;
     let config_path = fixture.codex_home.path().join("config.toml");
     let config = std::fs::read_to_string(&config_path)?.replace(
         "executor_capability_discovery = true",
@@ -219,7 +219,7 @@ async fn managed_plugins_requirement_disables_selected_executor_plugin_capabilit
         Duration::ZERO,
     )
     .await?;
-    let fixture = selected_capability_fixture(&responses_server.uri(), &apps_url)?;
+    let fixture = selected_capability_fixture(&responses_server.uri(), &apps_url).await?;
     let config_path = fixture.codex_home.path().join("config.toml");
     let config = std::fs::read_to_string(&config_path)?.replace(
         "executor_capability_discovery = true",
@@ -302,7 +302,7 @@ async fn selected_capability_stack_tracks_environment_availability_and_resume() 
         Duration::ZERO,
     )
     .await?;
-    let fixture = selected_capability_fixture(&responses_server.uri(), &apps_url)?;
+    let fixture = selected_capability_fixture(&responses_server.uri(), &apps_url).await?;
 
     let response_mock = responses::mount_sse_sequence(
         &responses_server,
@@ -542,7 +542,7 @@ async fn selected_capabilities_become_available_between_samples_in_one_turn(
         Duration::ZERO,
     )
     .await?;
-    let fixture = selected_capability_fixture(&responses_server.uri(), &apps_url)?;
+    let fixture = selected_capability_fixture(&responses_server.uri(), &apps_url).await?;
     let initialize_barrier = fixture.block_mcp_startup()?;
     let stop_hook_barrier = if matches!(mention_timing, MentionTiming::InitialBeforeRestart) {
         let barrier = fixture.codex_home.path().join("allow-stop-hook");
@@ -837,7 +837,7 @@ impl SelectedCapabilityFixture {
     }
 }
 
-fn selected_capability_fixture(
+async fn selected_capability_fixture(
     responses_server_uri: &str,
     apps_url: &str,
 ) -> Result<SelectedCapabilityFixture> {
@@ -847,7 +847,8 @@ fn selected_capability_fixture(
         responses_server_uri,
         apps_url,
     )?;
-    write_models_cache_with_models(codex_home.path(), vec![model_info_from_slug("mock-model")])?;
+    write_models_cache_with_models(codex_home.path(), vec![model_info_from_slug("mock-model")])
+        .await?;
     let model_catalog_path = codex_home.path().join("model_catalog.json");
     std::fs::write(
         &model_catalog_path,

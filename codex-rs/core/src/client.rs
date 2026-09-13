@@ -11,6 +11,8 @@
 //! A [`ModelClientSession`] is created per turn and is used to stream one or more Responses API
 //! requests during that turn. It caches a Responses WebSocket connection (opened lazily) and stores
 //! per-turn state such as the `x-codex-turn-state` token used for sticky routing.
+//! Cached connections, incremental response state, and turn routing are discarded when auth
+//! ownership changes.
 //!
 //! WebSocket prewarm is a v2-only `response.create` with `generate=false`; it waits for completion
 //! so the next request can reuse the same connection and `previous_response_id`.
@@ -34,13 +36,6 @@ use async_channel::Sender;
 use codex_api::AgentIdentityTelemetry;
 use codex_api::ApiError;
 use codex_api::AuthProvider;
-use codex_api::ChatCompletionsClient as ApiChatCompletionsClient;
-use codex_api::ChatCompletionsOptions as ApiChatCompletionsOptions;
-use codex_api::ClaudeCountTokensRequest as ApiClaudeCountTokensRequest;
-use codex_api::ClaudeMessagesClient as ApiClaudeMessagesClient;
-use codex_api::ClaudeMessagesOptions as ApiClaudeMessagesOptions;
-use codex_api::CompactClient as ApiCompactClient;
-use codex_api::CompactionInput as ApiCompactionInput;
 use codex_api::Compression;
 use codex_api::MemoriesClient as ApiMemoriesClient;
 use codex_api::MemorySummarizeInput as ApiMemorySummarizeInput;
@@ -86,7 +81,6 @@ use codex_protocol::auth::AuthMode;
 
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
-use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::Verbosity as VerbosityConfig;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
@@ -97,7 +91,6 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::W3cTraceContext;
-use codex_rollout_trace::CompactionTraceContext;
 use codex_rollout_trace::InferenceTraceAttempt;
 use codex_rollout_trace::InferenceTraceContext;
 use codex_tools::create_tools_json_for_responses_api;
@@ -150,7 +143,6 @@ use codex_model_provider::create_model_provider;
 #[cfg(test)]
 use codex_model_provider_info::DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS;
 use codex_model_provider_info::ModelProviderInfo;
-use codex_model_provider_info::WireApi;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result;
 use codex_response_debug_context::extract_response_debug_context;
@@ -177,13 +169,6 @@ const RESPONSES_WEBSOCKETS_V2_BETA_HEADER_VALUE: &str = "responses_websockets=20
 const X_OPENAI_INTERNAL_CODEX_RESPONSES_LITE_HEADER: &str =
     "x-openai-internal-codex-responses-lite";
 const REALTIME_CALLS_ENDPOINT: &str = "/realtime/calls";
-const CLAUDE_MESSAGES_ENDPOINT: &str = "/messages";
-const CHAT_COMPLETIONS_ENDPOINT: &str = "/chat/completions";
-const CLAUDE_COUNT_TOKENS_ENDPOINT: &str = "/messages/count_tokens";
-const RESPONSES_COMPACT_ENDPOINT: &str = "/responses/compact";
-// `/responses/compact` is unary, so the timeout covers the full response rather than one idle
-// period between stream events.
-const COMPACT_REQUEST_TIMEOUT_IDLE_MULTIPLIER: u32 = 4;
 const MEMORIES_SUMMARIZE_ENDPOINT: &str = "/memories/trace_summarize";
 #[cfg(test)]
 pub(crate) const WEBSOCKET_CONNECT_TIMEOUT: Duration =
@@ -268,12 +253,6 @@ fn is_unreplayable_store_false_reasoning(item: &ResponseItem) -> bool {
     !has_encrypted && !has_content
 }
 
-pub(crate) struct CompactConversationRequestSettings {
-    pub(crate) effort: Option<ReasoningEffortConfig>,
-    pub(crate) summary: ReasoningSummaryConfig,
-    pub(crate) service_tier: Option<String>,
-}
-
 fn session_telemetry_for_request(
     session_telemetry: &SessionTelemetry,
     request: &ResponsesApiRequest,
@@ -317,6 +296,7 @@ struct ModelClientState {
 /// share the same auth/provider setup flow.
 struct CurrentClientSetup {
     auth: Option<CodexAuth>,
+    auth_owner_generation: Option<u64>,
     api_provider: ApiProvider,
     api_auth: SharedAuthProvider,
     agent_identity_telemetry: Option<AgentIdentityTelemetry>,
@@ -370,7 +350,6 @@ pub struct ModelClient {
 pub struct ModelClientSession {
     client: ModelClient,
     websocket_session: WebsocketSession,
-    claude_count_tokens_cache: StdMutex<HashMap<String, i64>>,
     /// Turn state for sticky routing.
     ///
     /// This is an `OnceLock` that stores the turn state value received from the server
@@ -381,6 +360,7 @@ pub struct ModelClientSession {
     /// This is a contract between the client and server: we receive it at turn start,
     /// keep sending it unchanged between turn requests (e.g., for retries, incremental
     /// appends, or continuation requests), and must not send it between different turns.
+    /// An auth ownership change clears it so the new owner gets fresh routing state.
     turn_state: Arc<OnceLock<String>>,
 }
 
@@ -394,6 +374,8 @@ struct LastResponse {
 struct WebsocketSession {
     connection: Option<ApiWebSocketConnection>,
     endpoint: Option<ResponsesEndpoint>,
+    /// Owner of the cached state, including before a connection is opened.
+    auth_owner_generation: Option<u64>,
     last_request: Option<ResponsesApiRequest>,
     last_response_rx: Option<oneshot::Receiver<LastResponse>>,
     last_response_from_untraced_warmup: bool,
@@ -600,10 +582,18 @@ impl ModelClient {
     /// This constructor does not perform network I/O itself; the session opens a websocket lazily
     /// when the first stream request is issued.
     pub fn new_session(&self) -> ModelClientSession {
+        let auth_owner_generation = self.auth_owner_generation();
+        let mut websocket_session = self.take_cached_websocket_session();
+        if websocket_session.auth_owner_generation != auth_owner_generation {
+            // Drop the old owner's cache before this turn can establish fresh routing state.
+            websocket_session = WebsocketSession {
+                auth_owner_generation,
+                ..Default::default()
+            };
+        }
         ModelClientSession {
             client: self.clone(),
-            websocket_session: self.take_cached_websocket_session(),
-            claude_count_tokens_cache: StdMutex::new(HashMap::new()),
+            websocket_session,
             turn_state: Arc::new(OnceLock::new()),
         }
     }
@@ -668,13 +658,21 @@ impl ModelClient {
         ModelClientSession {
             client: scoped_client,
             websocket_session: WebsocketSession::default(),
-            claude_count_tokens_cache: StdMutex::new(HashMap::new()),
             turn_state: Arc::new(OnceLock::new()),
         }
     }
 
     pub(crate) fn auth_manager(&self) -> Option<Arc<AuthManager>> {
         self.state.provider.auth_manager()
+    }
+
+    fn auth_owner_generation(&self) -> Option<u64> {
+        self.auth_manager().map(|manager| {
+            manager
+                .auth_change_state_receiver()
+                .borrow()
+                .owner_generation
+        })
     }
 
     fn take_cached_websocket_session(&self) -> WebsocketSession {
@@ -713,125 +711,6 @@ impl ModelClient {
 
         self.store_cached_websocket_session(WebsocketSession::default());
         activated
-    }
-
-    /// Compacts the current conversation history using the Compact endpoint.
-    ///
-    /// This is a unary call (no streaming) that returns a new list of
-    /// `ResponseItem`s representing the compacted transcript.
-    ///
-    /// The model selection and telemetry context are passed explicitly to keep `ModelClient`
-    /// session-scoped.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn compact_conversation_history(
-        &self,
-        prompt: &Prompt,
-        model_info: &ModelInfo,
-        turn_state: Option<Arc<OnceLock<String>>>,
-        settings: CompactConversationRequestSettings,
-        session_telemetry: &SessionTelemetry,
-        compaction_trace: &CompactionTraceContext,
-        responses_metadata: &CodexResponsesMetadata,
-    ) -> Result<Vec<ResponseItem>> {
-        if prompt.input.is_empty() {
-            return Ok(Vec::new());
-        }
-        let client_setup = self.current_client_setup().await?;
-        let transport =
-            self.build_api_transport(&client_setup.api_provider, RESPONSES_COMPACT_ENDPOINT)?;
-        let request_telemetry = Self::build_request_telemetry(
-            session_telemetry,
-            AuthRequestTelemetryContext::new(
-                client_setup.auth.as_ref().map(CodexAuth::auth_mode),
-                client_setup.api_auth.as_ref(),
-                client_setup.agent_identity_telemetry.clone(),
-                PendingUnauthorizedRetry::default(),
-            ),
-            RequestRouteTelemetry::for_endpoint(RESPONSES_COMPACT_ENDPOINT),
-            self.state.auth_env_telemetry.clone(),
-        );
-        let request = self.build_responses_request(
-            prompt,
-            model_info,
-            settings.effort,
-            settings.summary,
-            settings.service_tier,
-            responses_metadata,
-        )?;
-        let ResponsesApiRequest {
-            model,
-            instructions,
-            mut input,
-            tools,
-            parallel_tool_calls,
-            reasoning,
-            service_tier,
-            prompt_cache_key,
-            text,
-            store,
-            ..
-        } = request;
-        self.prepare_response_items_for_request(&mut input, store, &model);
-        let payload = ApiCompactionInput {
-            model: &model,
-            input: &input,
-            instructions: &instructions,
-            tools,
-            parallel_tool_calls,
-            reasoning,
-            service_tier: service_tier.as_deref(),
-            prompt_cache_key: prompt_cache_key.as_deref(),
-            text,
-            access_programs: cyber_access_program::for_auth(
-                client_setup.auth.as_ref(),
-                prompt.cyber_access_program,
-            ),
-        };
-
-        let mut extra_headers = ApiHeaderMap::new();
-        if let Ok(header_value) = HeaderValue::from_str(&responses_metadata.installation_id) {
-            extra_headers.insert(X_CODEX_INSTALLATION_ID_HEADER, header_value);
-        }
-        extra_headers.extend(build_responses_headers(
-            self.state.beta_features_header.as_deref(),
-            turn_state.as_ref(),
-        ));
-        add_originator_header(&mut extra_headers, self.state.originator.as_str());
-        extra_headers.extend(self.build_responses_compatibility_headers(responses_metadata));
-        extra_headers.extend(build_session_headers(
-            Some(responses_metadata.session_id.to_string()),
-            Some(responses_metadata.thread_id.to_string()),
-        ));
-        if let Some(header_value) = self.generate_attestation_header_for().await {
-            extra_headers.insert(X_OAI_ATTESTATION_HEADER, header_value);
-        }
-        if let Some(header_value) = self.build_routing_hint_header(
-            client_setup.auth.as_ref(),
-            &model,
-            service_tier.as_deref(),
-        ) {
-            extra_headers.insert(X_CODEX_ROUTING_HINT_HEADER, header_value);
-        }
-        add_responses_lite_header(&mut extra_headers, model_info.use_responses_lite);
-        let compact_request_timeout = client_setup
-            .api_provider
-            .stream_idle_timeout
-            .saturating_mul(COMPACT_REQUEST_TIMEOUT_IDLE_MULTIPLIER);
-        let client =
-            ApiCompactClient::new(transport, client_setup.api_provider, client_setup.api_auth)
-                .with_telemetry(Some(request_telemetry));
-        let trace_attempt = compaction_trace.start_attempt(&payload);
-        let result = client
-            .compact_input(
-                &payload,
-                extra_headers,
-                compact_request_timeout,
-                turn_state.as_deref(),
-            )
-            .await
-            .map_err(|error| self.state.provider.map_api_error(error));
-        trace_attempt.record_result(result.as_deref());
-        result
     }
 
     pub(crate) async fn create_realtime_call_with_headers(
@@ -1035,7 +914,7 @@ impl ModelClient {
         }
     }
 
-    fn build_responses_request(
+    pub(crate) fn build_responses_request(
         &self,
         prompt: &Prompt,
         model_info: &ModelInfo,
@@ -1044,7 +923,7 @@ impl ModelClient {
         service_tier: Option<String>,
         responses_metadata: &CodexResponsesMetadata,
     ) -> Result<ResponsesApiRequest> {
-        let mut input = prompt.get_formatted_input_for_request(model_info.use_responses_lite);
+        let mut input = prompt.get_formatted_input_for_request(model_info);
         let is_openai = self.state.provider.info().is_openai();
         strip_reasoning_content_for_responses_input(
             &mut input,
@@ -1159,6 +1038,26 @@ impl ModelClient {
         Ok(request)
     }
 
+    fn filter_tool_result_metadata(input: &mut [ResponseItem], api_provider: &ApiProvider) {
+        // Check the resolved destination only when sending, not for local budget estimates.
+        // HTTP and WS (including v2 compaction) share this raw-metadata-only filter.
+        let result_metadata_allowed =
+            url::Url::parse(&api_provider.base_url)
+                .ok()
+                .is_some_and(|url| {
+                    url.scheme() == "https"
+                        && url.host_str().is_some_and(|host| {
+                            host == "api.openai.com"
+                                || codex_http_client::is_allowed_chatgpt_host(host)
+                        })
+                });
+        if !result_metadata_allowed {
+            for item in input {
+                item.clear_tool_result_metadata();
+            }
+        }
+    }
+
     fn prepare_response_items_for_request(
         &self,
         input: &mut Vec<ResponseItem>,
@@ -1197,6 +1096,9 @@ impl ModelClient {
     /// This centralizes setup used by both prewarm and normal request paths so they stay in
     /// lockstep when auth/provider resolution changes.
     async fn current_client_setup(&self) -> Result<CurrentClientSetup> {
+        // Capture before resolving credentials so an account switch during setup cannot label
+        // an old connection with the new owner's revision.
+        let auth_owner_generation = self.auth_owner_generation();
         let auth = self.state.provider.auth().await;
         let api_provider = self.state.provider.api_provider().await?;
         let resolved_auth = self
@@ -1210,6 +1112,7 @@ impl ModelClient {
             .await?;
         Ok(CurrentClientSetup {
             auth,
+            auth_owner_generation,
             api_provider,
             api_auth: resolved_auth.auth,
             agent_identity_telemetry: resolved_auth.agent_identity_telemetry,
@@ -1458,10 +1361,6 @@ impl ModelClientSession {
         self.client.state.provider.info()
     }
 
-    pub(crate) fn turn_state(&self) -> Arc<OnceLock<String>> {
-        Arc::clone(&self.turn_state)
-    }
-
     fn reset_websocket_session(&mut self) {
         self.websocket_session.connection = None;
         self.websocket_session.endpoint = None;
@@ -1639,22 +1538,17 @@ impl ModelClientSession {
         let endpoint = self
             .client
             .responses_endpoint(client_setup.auth.as_ref(), &model_info.slug);
-        let connection = self
-            .client
-            .connect_websocket(
-                session_telemetry,
-                client_setup.api_provider,
-                client_setup.api_auth,
-                responses_metadata,
-                auth_context,
-                RequestRouteTelemetry::for_endpoint(endpoint.path()),
-                endpoint,
-            )
-            .await?;
-        self.websocket_session.connection = Some(connection);
-        self.websocket_session.endpoint = Some(endpoint);
-        self.websocket_session
-            .set_connection_reused(/*connection_reused*/ false);
+        self.websocket_connection(WebsocketConnectParams {
+            session_telemetry,
+            api_provider: client_setup.api_provider,
+            api_auth: client_setup.api_auth,
+            auth_owner_generation: client_setup.auth_owner_generation,
+            responses_metadata,
+            auth_context,
+            request_route_telemetry: RequestRouteTelemetry::for_endpoint(endpoint.path()),
+            endpoint,
+        })
+        .await?;
         Ok(())
     }
     /// Returns a websocket connection for this turn.
@@ -1678,6 +1572,7 @@ impl ModelClientSession {
             session_telemetry,
             api_provider,
             api_auth,
+            auth_owner_generation,
             responses_metadata,
             auth_context,
             request_route_telemetry,
@@ -1689,8 +1584,14 @@ impl ModelClientSession {
             }
             None => true,
         };
+        // Resolving an external auth provider can change ownership during client setup.
+        let owner_changed = self.websocket_session.auth_owner_generation != auth_owner_generation
+            || self.client.auth_owner_generation() != auth_owner_generation;
+        if owner_changed {
+            self.turn_state = Arc::new(OnceLock::new());
+        }
 
-        if needs_new {
+        if needs_new || owner_changed {
             self.reset_websocket_session();
             let new_conn = match self
                 .client
@@ -1715,6 +1616,7 @@ impl ModelClientSession {
             };
             self.websocket_session.connection = Some(new_conn);
             self.websocket_session.endpoint = Some(endpoint);
+            self.websocket_session.auth_owner_generation = auth_owner_generation;
             self.websocket_session
                 .set_connection_reused(/*connection_reused*/ false);
         } else {
@@ -1813,6 +1715,10 @@ impl ModelClientSession {
                 service_tier.clone(),
                 responses_metadata,
             )?;
+            ModelClient::filter_tool_result_metadata(
+                &mut request.input,
+                &client_setup.api_provider,
+            );
             self.client.set_guardian_metadata(
                 &mut request.client_metadata,
                 responses_metadata.parent_response_id.as_deref(),
@@ -1842,6 +1748,9 @@ impl ModelClientSession {
                 request.store,
                 &request.model,
             );
+            if crate::guardian::is_basic_session_source(&self.client.state.session_source) {
+                crate::guardian::observe_guardian_request(session_telemetry, &request);
+            }
             let request_session_telemetry =
                 session_telemetry_for_request(session_telemetry, &request);
             let inference_trace_attempt = inference_trace.start_attempt();
@@ -1909,373 +1818,6 @@ impl ModelClientSession {
         }
     }
 
-    /// Streams a turn via Anthropic's Claude Messages API.
-    #[allow(clippy::too_many_arguments)]
-    #[instrument(
-        name = "model_client.stream_claude_messages",
-        level = "info",
-        skip_all,
-        fields(
-            model = %model_info.slug,
-            wire_api = %self.client.state.provider.info().wire_api,
-            transport = "claude_messages_http",
-            http.method = "POST",
-            api.path = "messages",
-            turn.has_metadata_header = responses_metadata.has_turn_metadata()
-        )
-    )]
-    async fn stream_claude_messages(
-        &self,
-        prompt: &Prompt,
-        model_info: &ModelInfo,
-        session_telemetry: &SessionTelemetry,
-        effort: Option<ReasoningEffortConfig>,
-        service_tier: Option<ServiceTier>,
-        responses_metadata: &CodexResponsesMetadata,
-        inference_trace: &InferenceTraceContext,
-    ) -> Result<ResponseStream> {
-        let auth_manager = self.client.state.provider.auth_manager();
-        let mut auth_recovery = auth_manager
-            .as_ref()
-            .map(AuthManager::unauthorized_recovery);
-        let mut provider_auth_recovery_attempted = false;
-        let mut pending_retry = PendingUnauthorizedRetry::default();
-        loop {
-            let client_setup = self.client.current_client_setup().await?;
-            let transport = self
-                .client
-                .build_api_transport(&client_setup.api_provider, CLAUDE_MESSAGES_ENDPOINT)?;
-            let request_auth_context = AuthRequestTelemetryContext::new(
-                client_setup.auth.as_ref().map(CodexAuth::auth_mode),
-                client_setup.api_auth.as_ref(),
-                client_setup.agent_identity_telemetry.clone(),
-                pending_retry,
-            );
-            let (request_telemetry, sse_telemetry) = Self::build_streaming_telemetry(
-                session_telemetry,
-                request_auth_context,
-                RequestRouteTelemetry::for_endpoint(CLAUDE_MESSAGES_ENDPOINT),
-                self.client.state.auth_env_telemetry.clone(),
-            );
-            let provider_info = self.client.state.provider.info();
-            let provider_compat = crate::claude::provider_compat_for_provider(
-                &provider_info.name,
-                provider_info.base_url.as_deref(),
-                Some(&model_info.slug),
-            );
-            let request = crate::claude::build_claude_messages_request(
-                prompt,
-                model_info,
-                crate::claude::ClaudeRequestOptions {
-                    reasoning_effort: effort.clone(),
-                    service_tier,
-                    provider_compat,
-                    cache_editing: crate::claude::cache_editing_options_for_provider(
-                        provider_compat,
-                    ),
-                    ..Default::default()
-                },
-            )?;
-            let inference_trace_attempt = inference_trace.start_attempt();
-            inference_trace_attempt.record_started(&request);
-            let client = ApiClaudeMessagesClient::new(
-                transport,
-                client_setup.api_provider,
-                client_setup.api_auth,
-            )
-            .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
-            let stream_result = client
-                .stream_request(
-                    request,
-                    ApiClaudeMessagesOptions {
-                        conversation_id: Some(self.client.state.thread_id.to_string()),
-                        extra_headers: responses_metadata.compatibility_headers(),
-                    },
-                )
-                .await;
-
-            match stream_result {
-                Ok(stream) => {
-                    let (stream, _) = map_response_stream(
-                        stream,
-                        session_telemetry.clone(),
-                        inference_trace_attempt,
-                        Arc::clone(&self.client.state.provider),
-                    );
-                    return Ok(stream);
-                }
-                Err(ApiError::Transport(
-                    unauthorized_transport @ TransportError::Http { status, .. },
-                )) if status == StatusCode::UNAUTHORIZED => {
-                    let response_debug_context =
-                        extract_response_debug_context(&unauthorized_transport);
-                    inference_trace_attempt.record_failed(
-                        &unauthorized_transport,
-                        response_debug_context.request_id.as_deref(),
-                        /*output_items*/ &[],
-                    );
-                    pending_retry = PendingUnauthorizedRetry::from_recovery(
-                        handle_unauthorized(
-                            unauthorized_transport,
-                            &mut auth_recovery,
-                            &mut provider_auth_recovery_attempted,
-                            session_telemetry,
-                            &self.client.state.provider,
-                            self.client.event_sender.as_ref(),
-                            responses_metadata.turn_id.as_deref(),
-                        )
-                        .await?,
-                    );
-                    continue;
-                }
-                Err(err) => {
-                    let response_debug_context =
-                        extract_response_debug_context_from_api_error(&err);
-                    let err = self.client.state.provider.map_api_error(err);
-                    inference_trace_attempt.record_failed(
-                        &err,
-                        response_debug_context.request_id.as_deref(),
-                        /*output_items*/ &[],
-                    );
-                    return Err(err);
-                }
-            }
-        }
-    }
-
-    /// Streams a turn via an OpenAI-compatible Chat Completions endpoint.
-    #[allow(clippy::too_many_arguments)]
-    #[instrument(
-        name = "model_client.stream_chat_completions",
-        level = "info",
-        skip_all,
-        fields(
-            model = %model_info.slug,
-            wire_api = %self.client.state.provider.info().wire_api,
-            transport = "chat_completions_http",
-            http.method = "POST",
-            api.path = "chat/completions",
-            turn.has_metadata_header = responses_metadata.has_turn_metadata()
-        )
-    )]
-    async fn stream_chat_completions(
-        &self,
-        prompt: &Prompt,
-        model_info: &ModelInfo,
-        session_telemetry: &SessionTelemetry,
-        effort: Option<ReasoningEffortConfig>,
-        service_tier: Option<String>,
-        responses_metadata: &CodexResponsesMetadata,
-        inference_trace: &InferenceTraceContext,
-    ) -> Result<ResponseStream> {
-        let auth_manager = self.client.state.provider.auth_manager();
-        let mut auth_recovery = auth_manager
-            .as_ref()
-            .map(AuthManager::unauthorized_recovery);
-        let mut provider_auth_recovery_attempted = false;
-        let mut pending_retry = PendingUnauthorizedRetry::default();
-        loop {
-            let client_setup = self.client.current_client_setup().await?;
-            let transport = self
-                .client
-                .build_api_transport(&client_setup.api_provider, CHAT_COMPLETIONS_ENDPOINT)?;
-            let request_auth_context = AuthRequestTelemetryContext::new(
-                client_setup.auth.as_ref().map(CodexAuth::auth_mode),
-                client_setup.api_auth.as_ref(),
-                client_setup.agent_identity_telemetry.clone(),
-                pending_retry,
-            );
-            let (request_telemetry, sse_telemetry) = Self::build_streaming_telemetry(
-                session_telemetry,
-                request_auth_context,
-                RequestRouteTelemetry::for_endpoint(CHAT_COMPLETIONS_ENDPOINT),
-                self.client.state.auth_env_telemetry.clone(),
-            );
-            let request = crate::chat_completions::build_chat_completions_request_for_provider(
-                prompt,
-                model_info,
-                effort
-                    .clone()
-                    .map(|effort| model_info.resolve_reasoning_effort(effort)),
-                service_tier.clone(),
-                self.client.state.provider.info().supports_developer_role(),
-            )?;
-            let request_session_telemetry = session_telemetry.clone().with_inference_request(
-                request.service_tier.as_deref(),
-                request.reasoning_effort.as_ref(),
-            );
-            let inference_trace_attempt = inference_trace.start_attempt();
-            inference_trace_attempt.record_started(&request);
-            let client = ApiChatCompletionsClient::new(
-                transport,
-                client_setup.api_provider,
-                client_setup.api_auth,
-            )
-            .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
-            let stream_result = client
-                .stream_request(
-                    request,
-                    ApiChatCompletionsOptions {
-                        conversation_id: Some(self.client.state.thread_id.to_string()),
-                        extra_headers: responses_metadata.compatibility_headers(),
-                    },
-                )
-                .await;
-
-            match stream_result {
-                Ok(stream) => {
-                    let (stream, _) = map_response_stream(
-                        stream,
-                        request_session_telemetry,
-                        inference_trace_attempt,
-                        Arc::clone(&self.client.state.provider),
-                    );
-                    return Ok(stream);
-                }
-                Err(ApiError::Transport(
-                    unauthorized_transport @ TransportError::Http { status, .. },
-                )) if status == StatusCode::UNAUTHORIZED => {
-                    let response_debug_context =
-                        extract_response_debug_context(&unauthorized_transport);
-                    inference_trace_attempt.record_failed(
-                        &unauthorized_transport,
-                        response_debug_context.request_id.as_deref(),
-                        /*output_items*/ &[],
-                    );
-                    pending_retry = PendingUnauthorizedRetry::from_recovery(
-                        handle_unauthorized(
-                            unauthorized_transport,
-                            &mut auth_recovery,
-                            &mut provider_auth_recovery_attempted,
-                            session_telemetry,
-                            &self.client.state.provider,
-                            self.client.event_sender.as_ref(),
-                            responses_metadata.turn_id.as_deref(),
-                        )
-                        .await?,
-                    );
-                    continue;
-                }
-                Err(error) => {
-                    let response_debug_context =
-                        extract_response_debug_context_from_api_error(&error);
-                    let error = self.client.state.provider.map_api_error(error);
-                    inference_trace_attempt.record_failed(
-                        &error,
-                        response_debug_context.request_id.as_deref(),
-                        /*output_items*/ &[],
-                    );
-                    return Err(error);
-                }
-            }
-        }
-    }
-
-    /// Counts the current Claude Messages request context with Anthropic's native endpoint.
-    #[allow(clippy::too_many_arguments)]
-    #[instrument(
-        name = "model_client.count_claude_context_tokens",
-        level = "info",
-        skip_all,
-        fields(
-            model = %model_info.slug,
-            wire_api = %self.client.state.provider.info().wire_api,
-            transport = "claude_messages_http",
-            http.method = "POST",
-            api.path = "messages/count_tokens"
-        )
-    )]
-    pub async fn count_claude_context_tokens(
-        &self,
-        prompt: &Prompt,
-        model_info: &ModelInfo,
-        session_telemetry: &SessionTelemetry,
-        effort: Option<ReasoningEffortConfig>,
-        service_tier: Option<ServiceTier>,
-    ) -> Result<i64> {
-        if self.client.state.provider.info().wire_api != WireApi::Claude {
-            return Err(CodexErr::Fatal(
-                "Claude context token counting requires a Claude wire API provider".to_string(),
-            ));
-        }
-
-        let client_setup = self.client.current_client_setup().await?;
-        let transport = self
-            .client
-            .build_api_transport(&client_setup.api_provider, CLAUDE_COUNT_TOKENS_ENDPOINT)?;
-        let request_auth_context = AuthRequestTelemetryContext::new(
-            client_setup.auth.as_ref().map(CodexAuth::auth_mode),
-            client_setup.api_auth.as_ref(),
-            client_setup.agent_identity_telemetry.clone(),
-            PendingUnauthorizedRetry::default(),
-        );
-        let request_telemetry = ModelClient::build_request_telemetry(
-            session_telemetry,
-            request_auth_context,
-            RequestRouteTelemetry::for_endpoint(CLAUDE_COUNT_TOKENS_ENDPOINT),
-            self.client.state.auth_env_telemetry.clone(),
-        );
-        let provider_info = self.client.state.provider.info();
-        let provider_compat = crate::claude::provider_compat_for_provider(
-            &provider_info.name,
-            provider_info.base_url.as_deref(),
-            Some(&model_info.slug),
-        );
-        let request = crate::claude::build_claude_messages_request(
-            prompt,
-            model_info,
-            crate::claude::ClaudeRequestOptions {
-                reasoning_effort: effort,
-                service_tier,
-                provider_compat,
-                cache_editing: crate::claude::cache_editing_options_for_provider(provider_compat),
-                ..Default::default()
-            },
-        )?;
-        let client = ApiClaudeMessagesClient::new(
-            transport,
-            client_setup.api_provider,
-            client_setup.api_auth,
-        )
-        .with_telemetry(Some(request_telemetry), None);
-        let count_request = ApiClaudeCountTokensRequest::from(&request);
-        let cache_key = match serde_json::to_string(&count_request) {
-            Ok(cache_key) => Some(cache_key),
-            Err(err) => {
-                trace!("failed to serialize Claude count_tokens request for cache key: {err}");
-                None
-            }
-        };
-        if let Some(tokens) = cache_key.as_ref().and_then(|cache_key| {
-            self.claude_count_tokens_cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(cache_key)
-                .copied()
-        }) {
-            return Ok(tokens);
-        }
-        let response = client
-            .count_tokens_request(
-                count_request,
-                ApiClaudeMessagesOptions {
-                    conversation_id: Some(self.client.state.thread_id.to_string()),
-                    extra_headers: ApiHeaderMap::new(),
-                },
-            )
-            .await
-            .map_err(|err| self.client.state.provider.map_api_error(err))?;
-
-        if let Some(cache_key) = cache_key {
-            self.claude_count_tokens_cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(cache_key, response.input_tokens);
-        }
-
-        Ok(response.input_tokens)
-    }
-
     /// Streams a turn via the Responses API over WebSocket transport.
     #[allow(clippy::too_many_arguments)]
     #[instrument(
@@ -2332,6 +1874,10 @@ impl ModelClientSession {
                 service_tier.clone(),
                 responses_metadata,
             )?;
+            ModelClient::filter_tool_result_metadata(
+                &mut request.input,
+                &client_setup.api_provider,
+            );
             if endpoint == ResponsesEndpoint::Guardian {
                 request.service_tier = None;
             }
@@ -2355,17 +1901,12 @@ impl ModelClientSession {
             } else {
                 session_telemetry_for_request(session_telemetry, &request)
             };
-            let mut client_metadata = self
-                .client
-                .build_ws_client_metadata(responses_metadata, model_info.use_responses_lite);
-            if let Some(turn_state) = self.turn_state.get() {
-                client_metadata.insert(X_CODEX_TURN_STATE_HEADER.to_string(), turn_state.clone());
-            }
             match self
                 .websocket_connection(WebsocketConnectParams {
                     session_telemetry,
                     api_provider: client_setup.api_provider,
                     api_auth: client_setup.api_auth,
+                    auth_owner_generation: client_setup.auth_owner_generation,
                     responses_metadata: &websocket_metadata,
                     auth_context: request_auth_context,
                     request_route_telemetry: RequestRouteTelemetry::for_endpoint(endpoint.path()),
@@ -2399,6 +1940,18 @@ impl ModelClientSession {
                 Err(err) => return Err(provider.map_api_error(err)),
             }
 
+            // Measure the complete logical request, not only the websocket delta.
+            if !warmup
+                && crate::guardian::is_basic_session_source(&self.client.state.session_source)
+            {
+                crate::guardian::observe_guardian_request(session_telemetry, &request);
+            }
+            let mut client_metadata = self
+                .client
+                .build_ws_client_metadata(responses_metadata, model_info.use_responses_lite);
+            if let Some(turn_state) = self.turn_state.get() {
+                client_metadata.insert(X_CODEX_TURN_STATE_HEADER.to_string(), turn_state.clone());
+            }
             let (incremental_request, previous_response_id_from_untraced_warmup) =
                 self.prepare_websocket_request(&request);
             let inference_trace_attempt = if warmup {
@@ -2613,75 +2166,44 @@ impl ModelClientSession {
         responses_metadata: &CodexResponsesMetadata,
         inference_trace: &InferenceTraceContext,
     ) -> Result<ResponseStream> {
-        let wire_api = self.client.state.provider.info().wire_api;
-        match wire_api {
-            WireApi::Responses => {
-                if self
-                    .client
-                    .responses_websocket_enabled_for_model(model_info.slug.as_str())
-                {
-                    let request_trace = current_span_w3c_trace_context();
-                    match self
-                        .stream_responses_websocket(
-                            prompt,
-                            model_info,
-                            session_telemetry,
-                            effort.clone(),
-                            summary,
-                            service_tier.clone(),
-                            responses_metadata,
-                            /*warmup*/ false,
-                            request_trace,
-                            inference_trace,
-                        )
-                        .await?
-                    {
-                        WebsocketStreamOutcome::Stream(stream) => return Ok(stream),
-                        WebsocketStreamOutcome::FallbackToHttp => {
-                            self.try_switch_fallback_transport(session_telemetry, model_info);
-                        }
-                    }
-                }
-
-                self.stream_responses_api(
+        if self
+            .client
+            .responses_websocket_enabled_for_model(model_info.slug.as_str())
+        {
+            let request_trace = current_span_w3c_trace_context();
+            match self
+                .stream_responses_websocket(
                     prompt,
                     model_info,
                     session_telemetry,
-                    effort,
+                    effort.clone(),
                     summary,
-                    service_tier,
+                    service_tier.clone(),
                     responses_metadata,
+                    /*warmup*/ false,
+                    request_trace,
                     inference_trace,
                 )
-                .await
-            }
-            WireApi::Claude => {
-                self.stream_claude_messages(
-                    prompt,
-                    model_info,
-                    session_telemetry,
-                    effort,
-                    service_tier
-                        .as_deref()
-                        .and_then(ServiceTier::from_request_value),
-                    responses_metadata,
-                    inference_trace,
-                )
-                .await
-            }
-            WireApi::Chat => {
-                self.stream_chat_completions(
-                    prompt,
-                    model_info,
-                    session_telemetry,
-                    effort,
-                    service_tier,
-                    responses_metadata,
-                    inference_trace,
-                )
-                .await
+                .await?
+            {
+                WebsocketStreamOutcome::Stream(stream) => return Ok(stream),
+                WebsocketStreamOutcome::FallbackToHttp => {
+                    self.try_switch_fallback_transport(session_telemetry, model_info);
+                }
             }
         }
+
+        self.stream_responses_api(
+            prompt,
+            model_info,
+            session_telemetry,
+            effort,
+            summary,
+            service_tier,
+            responses_metadata,
+            inference_trace,
+        )
+        .await
     }
 
     /// Permanently disables WebSockets for this Codex session and resets WebSocket state.
@@ -3006,6 +2528,7 @@ struct WebsocketConnectParams<'a> {
     session_telemetry: &'a SessionTelemetry,
     api_provider: codex_api::Provider,
     api_auth: SharedAuthProvider,
+    auth_owner_generation: Option<u64>,
     responses_metadata: &'a CodexResponsesMetadata,
     auth_context: AuthRequestTelemetryContext,
     request_route_telemetry: RequestRouteTelemetry,

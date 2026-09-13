@@ -1,48 +1,37 @@
 # model-provider-routing Specification
 
 ## Purpose
-TBD - created by archiving change unify-multi-backend-sampling-normalization. Update Purpose after archive.
+
+Keep model inference aligned with upstream OpenAI Codex by supporting only the OpenAI Responses API.
+
 ## Requirements
-### Requirement: Provider configuration MUST support Chat Completions wire selection
 
-Codex MUST allow model providers to select Chat Completions via `wire_api = "chat"`
-(mapped to `WireApi::Chat`). Deserializing this value MUST succeed. The default wire API
-MUST remain OpenAI Responses. Documentation MUST describe when to choose `responses`,
-`claude` / `anthropic`, and `chat`.
+### Requirement: Provider configuration MUST use Responses
 
-#### Scenario: Config selects chat wire API
+The only supported model wire protocol is `responses`. Omitting `wire_api` MUST select Responses.
+Local configurations selecting `chat`, `claude`, or the former `anthropic` alias MUST fail with an actionable message to configure a Responses-compatible endpoint. Changing the protocol value alone does not convert a Chat Completions or Messages endpoint into a Responses endpoint.
 
-- **WHEN** a provider config sets `wire_api = "chat"`
-- **THEN** Codex deserializes the provider as `WireApi::Chat`
-- **AND** sampling dispatch uses the Chat Completions adapter path
+#### Scenario: Responses provider selection
 
-#### Scenario: Default remains Responses
+- **WHEN** a provider config selects `responses` or omits `wire_api`
+- **THEN** inference uses the Responses HTTP or WebSocket transport according to the provider capabilities
+- **AND** provider-specific credentials and request state remain isolated when a turn selects another Responses provider
 
-- **WHEN** a provider config omits `wire_api`
-- **THEN** Codex uses `WireApi::Responses`
-- **AND** existing Responses providers keep their previous routing behavior
+#### Scenario: Retired protocol configuration
 
-#### Scenario: Legacy removal error is retired for chat
+- **WHEN** a provider config selects `chat`, `claude`, or `anthropic`
+- **THEN** configuration loading fails with Responses migration guidance
+- **AND** no Chat Completions or Claude Messages request is issued
 
-- **WHEN** users migrate from older builds that rejected `wire_api = "chat"`
-- **THEN** current Codex accepts the chat value
-- **AND** docs no longer instruct users that chat is permanently unsupported
+### Requirement: Remote configuration MUST enforce the same protocol boundary
 
-### Requirement: Remote thread config MUST retain its existing wire API boundary
+Legacy protobuf enum values and field numbers remain reserved for compatibility with stored data. Receiving a retired protocol MUST fail during remote configuration conversion instead of silently changing its endpoint or credentials.
 
-This change MUST NOT extend the managed/remote thread-config `WireApi` proto enum with
-`WIRE_API_CHAT`. Remote thread configs that carry a wire API value outside the existing proto
-enum MUST continue to fail with a parse error. Chat selection is available through local model
-provider configuration only in this change.
+#### Scenario: Remote retired protocol
 
-#### Scenario: Local chat support does not expand the remote proto
+- **WHEN** a remote provider contains the former Chat or Claude protocol value
+- **THEN** configuration loading reports that Responses is required
 
-- **WHEN** local provider configuration accepts `wire_api = "chat"`
-- **THEN** the managed/remote thread-config proto remains unchanged
-- **AND** it does not expose a `WIRE_API_CHAT` enum value as part of this change
+### Requirement: Task metadata MUST use provider configuration
 
-#### Scenario: Remote config with unknown wire API remains an error
-
-- **WHEN** a managed/remote thread config delivers a provider wire API value outside the proto enum
-- **THEN** Codex rejects it with the existing unknown-wire-api parse error
-
+Protocol metadata MUST come from the configured provider. Model names and provider-name substrings MUST NOT be used to infer a retired protocol. Historical transcript data may still be read without re-enabling its former transport.

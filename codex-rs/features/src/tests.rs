@@ -1,6 +1,4 @@
-use crate::ClaudeFileToolMode;
 use crate::ContextManagementConfigToml;
-use crate::DedicatedFileToolsConfigToml;
 use crate::Feature;
 use crate::FeatureConfigSource;
 use crate::FeatureOverrides;
@@ -116,6 +114,30 @@ fn cwd_relative_turn_diffs_is_an_opt_in_map_feature() {
     )]));
 
     assert!(!features.enabled(Feature::CwdRelativeTurnDiffs));
+}
+
+#[test]
+fn codex_apps_mcp_protocol_can_be_enabled_independently_of_generic_mcp() {
+    let features_toml = FeaturesToml::from(BTreeMap::from([
+        (Feature::CodexAppsMcp20260728.key().to_string(), true),
+        (Feature::Mcp20260728.key().to_string(), false),
+    ]));
+    let features = Features::from_sources(
+        FeatureConfigSource {
+            features: Some(&features_toml),
+            ..Default::default()
+        },
+        FeatureConfigSource::default(),
+        FeatureOverrides::default(),
+    );
+
+    assert_eq!(
+        (
+            features.enabled(Feature::CodexAppsMcp20260728),
+            features.enabled(Feature::Mcp20260728),
+        ),
+        (true, false),
+    );
 }
 
 #[test]
@@ -498,43 +520,6 @@ fn codex_hooks_is_legacy_alias_for_hooks() {
 fn multi_agent_is_stable_and_enabled_by_default() {
     assert_eq!(Feature::Collab.stage(), Stage::Stable);
     assert_eq!(Feature::Collab.default_enabled(), true);
-}
-
-#[test]
-fn dedicated_file_tools_accepts_boolean_and_typed_mode_config() {
-    let boolean: FeaturesToml =
-        toml::from_str("dedicated_file_tools = true").expect("boolean shorthand should parse");
-    assert_eq!(
-        boolean
-            .dedicated_file_tools
-            .as_ref()
-            .and_then(FeatureToml::enabled),
-        Some(true)
-    );
-
-    let typed: FeaturesToml = toml::from_str(
-        "dedicated_file_tools = { enabled = true, mode = 'dedicated_with_apply_patch' }",
-    )
-    .expect("typed feature config should parse");
-    assert_eq!(
-        typed.dedicated_file_tools,
-        Some(FeatureToml::Config(DedicatedFileToolsConfigToml {
-            enabled: Some(true),
-            mode: Some(ClaudeFileToolMode::DedicatedWithApplyPatch),
-        }))
-    );
-    assert!(
-        toml::from_str::<FeaturesToml>(
-            "dedicated_file_tools = { enabled = true, mode = 'unknown' }"
-        )
-        .is_err()
-    );
-    assert!(
-        toml::from_str::<FeaturesToml>(
-            "dedicated_file_tools = { enabled = true, unexpected = false }"
-        )
-        .is_err()
-    );
 }
 
 #[test]

@@ -92,9 +92,7 @@ CLEAN_TS_DEP_DIRS = (
     REPO_ROOT / ".pnpm-store",
 )
 
-CLEAN_VENDOR_DIRS = (
-    TS_ROOT / "vendor",
-)
+CLEAN_VENDOR_DIRS = (TS_ROOT / "vendor",)
 
 CLEAN_TARGETS = ("build", "rust", "ts", "deps", "vendor", "all")
 
@@ -157,7 +155,9 @@ def _cargo_toml_with_workspace_version(text: str, version: str) -> str:
             lines[index] = f'{prefix}version = "{version}"{newline}'
             return "".join(lines)
 
-    raise RuntimeError("Could not find [workspace.package] version in codex-rs/Cargo.toml")
+    raise RuntimeError(
+        "Could not find [workspace.package] version in codex-rs/Cargo.toml"
+    )
 
 
 @contextmanager
@@ -240,7 +240,10 @@ def require_sccache_wrapper_command() -> str:
         if expanded.is_file() and os.access(expanded, os.X_OK):
             return wrapper
 
-        print(f"ERROR: RUSTC_WRAPPER points to sccache but is not executable: {wrapper}", file=sys.stderr)
+        print(
+            f"ERROR: RUSTC_WRAPPER points to sccache but is not executable: {wrapper}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     if wrapper:
@@ -377,7 +380,9 @@ def detect_cli_target() -> str:
     if key in mapping:
         return mapping[key]
 
-    raise RuntimeError(f"Unsupported platform for local aicodex builds: {system} ({machine})")
+    raise RuntimeError(
+        f"Unsupported platform for local aicodex builds: {system} ({machine})"
+    )
 
 
 def executable_name(base_name: str, target: str) -> str:
@@ -388,6 +393,7 @@ def executable_name(base_name: str, target: str) -> str:
 # ---------------------------------------------------------------------------
 # Cleaning
 # ---------------------------------------------------------------------------
+
 
 def repo_relative(path: Path) -> str:
     """Return a path display string relative to the repository when possible."""
@@ -418,7 +424,9 @@ def root_binary_paths() -> list[Path]:
     """Return known top-level binaries produced by this build script."""
     paths = [REPO_ROOT / OUTPUT_BINARY_NAME, REPO_ROOT / f"{OUTPUT_BINARY_NAME}.exe"]
     for target in CLI_TARGETS:
-        paths.append(REPO_ROOT / executable_name(f"{OUTPUT_BINARY_NAME}-{target}", target))
+        paths.append(
+            REPO_ROOT / executable_name(f"{OUTPUT_BINARY_NAME}-{target}", target)
+        )
 
     seen = set()
     unique_paths = []
@@ -441,7 +449,10 @@ def clean_rust_outputs(*, dry_run: bool, target: str | None = None) -> None:
     if target:
         cmd = ["cargo", "clean", "--target", target]
         if dry_run:
-            print(f"  → Would run {' '.join(cmd)} in {repo_relative(RUST_ROOT)}", file=sys.stderr)
+            print(
+                f"  → Would run {' '.join(cmd)} in {repo_relative(RUST_ROOT)}",
+                file=sys.stderr,
+            )
             return
         if cargo_available():
             result = run(cmd, cwd=RUST_ROOT, check=False)
@@ -457,7 +468,10 @@ def clean_rust_outputs(*, dry_run: bool, target: str | None = None) -> None:
     if cargo_available():
         cmd = ["cargo", "clean"]
         if dry_run:
-            print(f"  → Would run {' '.join(cmd)} in {repo_relative(RUST_ROOT)}", file=sys.stderr)
+            print(
+                f"  → Would run {' '.join(cmd)} in {repo_relative(RUST_ROOT)}",
+                file=sys.stderr,
+            )
         else:
             result = run(cmd, cwd=RUST_ROOT, check=False)
             if result.returncode != 0:
@@ -570,6 +584,7 @@ def clean_targets_for_build_command(command: str | None) -> list[str]:
 # Rust builds
 # ---------------------------------------------------------------------------
 
+
 def build_rust(
     *,
     profile: str = DEFAULT_BUILD_PROFILE,
@@ -582,7 +597,9 @@ def build_rust(
 ) -> None:
     """Build Rust workspace using Cargo."""
     if not cargo_available():
-        print("ERROR: cargo not found. Install Rust: https://rustup.rs/", file=sys.stderr)
+        print(
+            "ERROR: cargo not found. Install Rust: https://rustup.rs/", file=sys.stderr
+        )
         sys.exit(1)
 
     cmd: list[str] = ["cargo", "build"]
@@ -640,7 +657,9 @@ def build_codex_cli(
         sys.exit(1)
 
     if install and rename and rename != CLI_BIN_NAME:
-        raise RuntimeError(f"--install requires the binary to be named {CLI_BIN_NAME!r}")
+        raise RuntimeError(
+            f"--install requires the binary to be named {CLI_BIN_NAME!r}"
+        )
 
     if install:
         dest_name = executable_name(CLI_BIN_NAME, resolved_target)
@@ -654,7 +673,10 @@ def build_codex_cli(
         # wrapper can find it when running from the local repo.
         legacy_dest_dir = TS_ROOT / "vendor" / resolved_target / "codex"
         if legacy_dest_dir.exists():
-            print(f"  → Removing legacy vendor directory {legacy_dest_dir}", file=sys.stderr)
+            print(
+                f"  → Removing legacy vendor directory {legacy_dest_dir}",
+                file=sys.stderr,
+            )
             shutil.rmtree(legacy_dest_dir)
 
         dest_dir = TS_ROOT / "vendor" / resolved_target / CLI_VENDOR_DIR_NAME
@@ -704,6 +726,7 @@ def build_codex_cli_targets(
 # TypeScript builds
 # ---------------------------------------------------------------------------
 
+
 def build_ts(*, install_deps: bool = True, verbose: bool = False) -> None:
     """Build TypeScript packages using pnpm."""
     if not node_available():
@@ -723,6 +746,7 @@ def build_ts(*, install_deps: bool = True, verbose: bool = False) -> None:
 # ---------------------------------------------------------------------------
 # Meta builds
 # ---------------------------------------------------------------------------
+
 
 def build_all(
     *,
@@ -757,6 +781,7 @@ def build_all(
 # CLI
 # ---------------------------------------------------------------------------
 
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="build.py",
@@ -765,12 +790,18 @@ def main(argv: list[str] | None = None) -> None:
     sub = parser.add_subparsers(dest="command", required=False)
 
     # rust
-    rust_parser = sub.add_parser("rust", help=f"Build Rust workspace ({DEFAULT_BUILD_PROFILE} by default)")
+    rust_parser = sub.add_parser(
+        "rust", help=f"Build Rust workspace ({DEFAULT_BUILD_PROFILE} by default)"
+    )
     add_cargo_profile_args(rust_parser)
     rust_parser.add_argument("--target", default=None, help="Rust target triple")
-    rust_parser.add_argument("-p", "--package", default=None, help="Build specific package")
+    rust_parser.add_argument(
+        "-p", "--package", default=None, help="Build specific package"
+    )
     rust_parser.add_argument("--bin", default=None, help="Build specific binary")
-    rust_parser.add_argument("--features", nargs="+", default=None, help="Enable features")
+    rust_parser.add_argument(
+        "--features", nargs="+", default=None, help="Enable features"
+    )
     rust_parser.add_argument("-j", "--jobs", type=int, default=None, help="Build jobs")
 
     # codex-cli
@@ -806,7 +837,9 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     # all
-    all_parser = sub.add_parser("all", help=f"Build everything ({DEFAULT_BUILD_PROFILE} by default)")
+    all_parser = sub.add_parser(
+        "all", help=f"Build everything ({DEFAULT_BUILD_PROFILE} by default)"
+    )
     add_cargo_profile_args(all_parser)
     all_target_group = all_parser.add_mutually_exclusive_group()
     all_target_group.add_argument("--target", default=None, help="Rust target triple")
@@ -827,7 +860,9 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     # clean
-    clean_parser = sub.add_parser("clean", help="Clean build artifacts and dependency directories")
+    clean_parser = sub.add_parser(
+        "clean", help="Clean build artifacts and dependency directories"
+    )
     clean_parser.add_argument(
         "targets",
         nargs="*",

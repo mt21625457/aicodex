@@ -518,6 +518,41 @@ client_request_definitions! {
         response: v2::ServerDiagnosticsResponse,
     },
 
+    #[experimental("userVerification/status")]
+    UserVerificationStatus => "userVerification/status" {
+        params: v2::UserVerificationStatusParams,
+        serialization: None,
+        response: v2::UserVerificationStatusResponse,
+    },
+
+    #[experimental("userVerification/enroll")]
+    UserVerificationEnroll => "userVerification/enroll" {
+        params: v2::UserVerificationEnrollParams,
+        serialization: None,
+        response: v2::UserVerificationEnrollResponse,
+    },
+
+    #[experimental("userVerification/delete")]
+    UserVerificationDelete => "userVerification/delete" {
+        params: v2::UserVerificationDeleteParams,
+        serialization: None,
+        response: v2::UserVerificationDeleteResponse,
+    },
+
+    #[experimental("userVerification/verify")]
+    UserVerificationVerify => "userVerification/verify" {
+        params: v2::UserVerificationVerifyParams,
+        serialization: None,
+        response: v2::UserVerificationVerifyResponse,
+    },
+
+    #[experimental("userVerification/cancel")]
+    UserVerificationCancel => "userVerification/cancel" {
+        params: v2::UserVerificationCancelParams,
+        serialization: None,
+        response: v2::UserVerificationCancelResponse,
+    },
+
     /// NEW APIs
     // Thread lifecycle
     // Uses `inspect_params` because only some fields are experimental.
@@ -652,6 +687,12 @@ client_request_definitions! {
         params: v2::ThreadMemoryModeSetParams,
         serialization: thread_id(params.thread_id),
         response: v2::ThreadMemoryModeSetResponse,
+    },
+    #[experimental("memory/status")]
+    MemoryStatus => "memory/status" {
+        params: v2::MemoryStatusParams,
+        serialization: global("memory"),
+        response: v2::MemoryStatusResponse,
     },
     #[experimental("memory/reset")]
     MemoryReset => "memory/reset" {

@@ -160,8 +160,11 @@ fn model_provider_from_proto(
     let id = provider.id;
     let wire_api = match proto::WireApi::try_from(provider.wire_api) {
         Ok(proto::WireApi::Responses) => WireApi::Responses,
-        Ok(proto::WireApi::Claude) => WireApi::Claude,
-        Ok(proto::WireApi::Chat) => WireApi::Chat,
+        Ok(proto::WireApi::Claude | proto::WireApi::Chat) => {
+            return Err(parse_error(
+                "remote thread config requires the Responses wire API",
+            ));
+        }
         Ok(proto::WireApi::Unspecified) => {
             return Err(parse_error("remote thread config omitted wire_api"));
         }
@@ -184,7 +187,6 @@ fn model_provider_from_proto(
             .transpose()?,
         aws: None,
         wire_api,
-        supports_developer_role: provider.supports_developer_role,
         query_params: provider.query_params.map(redacted_string_map),
         http_headers: provider.http_headers.map(redacted_string_map),
         env_http_headers: provider.env_http_headers.map(|map| map.values),
@@ -213,7 +215,6 @@ fn model_provider_to_proto(
         auth,
         aws: _,
         wire_api,
-        supports_developer_role,
         query_params,
         http_headers,
         env_http_headers,
@@ -227,6 +228,7 @@ fn model_provider_to_proto(
     } = provider;
 
     proto::ModelProvider {
+        supports_developer_role: None,
         id: id.into(),
         name,
         base_url,
@@ -235,7 +237,6 @@ fn model_provider_to_proto(
         experimental_bearer_token: experimental_bearer_token.map(RedactedString::into_inner),
         auth: auth.map(model_provider_auth_to_proto),
         wire_api: proto_wire_api(wire_api).into(),
-        supports_developer_role,
         query_params: query_params.map(proto_string_map),
         http_headers: http_headers.map(proto_string_map),
         env_http_headers: env_http_headers.map(|values| proto::StringMap { values }),
@@ -310,8 +311,6 @@ fn proto_string_map(values: HashMap<String, RedactedString>) -> proto::StringMap
 fn proto_wire_api(wire_api: WireApi) -> proto::WireApi {
     match wire_api {
         WireApi::Responses => proto::WireApi::Responses,
-        WireApi::Claude => proto::WireApi::Claude,
-        WireApi::Chat => proto::WireApi::Chat,
     }
 }
 
@@ -441,6 +440,20 @@ mod tests {
     }
 
     #[test]
+    fn remote_provider_rejects_retired_protocols() {
+        for wire_api in [proto::WireApi::Claude, proto::WireApi::Chat] {
+            let mut provider = model_provider_to_proto("retired", expected_provider());
+            provider.wire_api = wire_api.into();
+            let error = model_provider_from_proto(provider).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("requires the Responses wire API")
+            );
+        }
+    }
+
+    #[test]
     fn model_provider_proto_roundtrips_through_domain_type() {
         let mut expected = expected_provider();
         expected.auth = None;
@@ -465,25 +478,6 @@ mod tests {
 
         assert_eq!(id, "local");
         assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn model_provider_proto_roundtrips_chat_role_capability() {
-        for supports_developer_role in [None, Some(false)] {
-            let mut expected = expected_provider();
-            expected.wire_api = WireApi::Chat;
-            expected.supports_websockets = false;
-            expected.supports_developer_role = supports_developer_role;
-            let proto = model_provider_to_proto("chat_local", expected.clone());
-            let (id, actual) = model_provider_from_proto(proto).expect("chat provider from proto");
-
-            assert_eq!(id, "chat_local");
-            assert_eq!(actual, expected);
-            assert_eq!(
-                actual.supports_developer_role(),
-                supports_developer_role.unwrap_or(false)
-            );
-        }
     }
 
     fn proto_sources() -> Vec<proto::ThreadConfigSource> {
@@ -579,7 +573,6 @@ mod tests {
                 cwd: workspace_dir(),
             }),
             wire_api: WireApi::Responses,
-            supports_developer_role: None,
             query_params: Some(HashMap::from([(
                 "api-version".to_string(),
                 "2026-04-16".into(),

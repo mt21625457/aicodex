@@ -26,6 +26,7 @@ async fn worktree_creation_event_requires_feature() -> Result<()> {
         },
     )
     .await?;
+    drain_managed_worktree_start(&mut app, &mut app_server).await;
     let message = std::iter::from_fn(|| events.try_recv().ok())
         .find_map(|event| match event {
             AppEvent::InsertHistoryCell(cell) => {
@@ -72,6 +73,7 @@ async fn worktree_creation_rejects_untrusted_source_before_allocation() -> Resul
             AppEvent::StartManagedWorktree { mode, name: None },
         )
         .await?;
+        drain_managed_worktree_start(&mut app, &mut app_server).await;
         let message = std::iter::from_fn(|| events.try_recv().ok())
             .find_map(|event| match event {
                 AppEvent::InsertHistoryCell(cell) => {
@@ -86,6 +88,52 @@ async fn worktree_creation_rejects_untrusted_source_before_allocation() -> Resul
         assert!(!app.config.codex_home.join("worktrees").exists());
     }
     app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn worktree_creation_rejects_running_agent_before_allocation() -> Result<()> {
+    let (mut app, mut events, _op_rx) = make_test_app_with_channels().await;
+    let home = tempfile::tempdir()?;
+    app.config.codex_home = home.path().to_path_buf().abs();
+    app.config.features.enable(Feature::Worktrees)?;
+    app.config.active_project.trust_level = Some(codex_protocol::config_types::TrustLevel::Trusted);
+    let primary = ThreadId::new();
+    app.primary_thread_id = Some(primary);
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(primary, app.config.cwd.to_path_buf()));
+    let child = ThreadId::new();
+    app.agent_navigation.upsert(
+        child, /*agent_nickname*/ None, /*agent_role*/ None, /*is_closed*/ false,
+    );
+    app.agent_navigation.set_running(child, /*is_running*/ true);
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    let mut server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+    while events.try_recv().is_ok() {}
+
+    app.handle_event(
+        &mut tui,
+        &mut server,
+        AppEvent::StartManagedWorktree {
+            mode: crate::app_event::ManagedWorktreeMode::New,
+            name: None,
+        },
+    )
+    .await?;
+    drain_managed_worktree_start(&mut app, &mut server).await;
+
+    assert!(!app.pending_managed_worktree_creation);
+    assert!(!home.path().join("worktrees").exists());
+    let message = std::iter::from_fn(|| events.try_recv().ok())
+        .find_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => {
+                Some(lines_to_single_string(&cell.display_lines(/*width*/ 100)))
+            }
+            _ => None,
+        })
+        .expect("running agent message");
+    insta::assert_snapshot!(message, @"■ Cannot change: another agent is running.");
+    server.shutdown().await?;
     Ok(())
 }
 
@@ -107,6 +155,7 @@ async fn turn_start_failure_is_shown_without_exiting() -> Result<()> {
     let op = next_user_turn_op(&mut op_rx);
     while let Ok(event) = app_event_rx.try_recv() {
         app.handle_event(&mut tui, &mut app_server, event).await?;
+        drain_managed_worktree_start(&mut app, &mut app_server).await;
     }
 
     let control = app

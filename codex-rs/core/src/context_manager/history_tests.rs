@@ -29,6 +29,7 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::default_input_modalities;
 use codex_protocol::protocol::APPS_INSTRUCTIONS_OPEN_TAG;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::ContextTokenUsageSource;
 use codex_protocol::protocol::ENVIRONMENTS_INSTRUCTIONS_OPEN_TAG;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::PLUGINS_INSTRUCTIONS_OPEN_TAG;
@@ -359,6 +360,7 @@ fn reference_context_item() -> TurnContextItem {
     TurnContextItem {
         turn_id: Some("reference-turn".to_string()),
         root_turn_id: None,
+        disabled_plugin_ids: None,
         cwd: AbsolutePathBuf::try_from(
             std::env::current_dir()
                 .expect("current directory")
@@ -659,7 +661,7 @@ fn annotated_history_apis_preserve_envelopes() {
 #[test_case(Some(100), 85, 100, true; "saved limit has no additional allowance")]
 #[test_case(Some(30_000), 20_000, 30_000, false; "large explicit budget")]
 fn record_annotated_items_preserves_metadata_while_processing_item(
-    fallback_token_limit_override: Option<usize>,
+    history_truncation_token_limit: Option<usize>,
     repeat_count: usize,
     expected_token_limit: usize,
     expected_truncation: bool,
@@ -677,7 +679,7 @@ fn record_annotated_items_preserves_metadata_while_processing_item(
             internal_chat_message_metadata_passthrough: None,
         },
         metadata: Some(CodexHarnessMetadata {
-            fallback_token_limit_override,
+            history_truncation_token_limit,
             ..Default::default()
         }),
     };
@@ -796,7 +798,7 @@ fn total_token_usage_prefers_context_tokens_when_available() {
     );
     let info = history.token_info.as_mut().expect("token info");
     info.context_tokens = Some(250);
-    info.context_source = Some(ContextTokenUsageSource::ClaudeCountTokens);
+    info.context_source = Some(ContextTokenUsageSource::ProviderUsage);
 
     let added_user = user_msg("new user message");
     let added_tool_output = custom_tool_call_output("tool-tail", "new tool output");
@@ -1297,8 +1299,10 @@ fn drop_last_n_user_turns_preserves_prefix() {
 
     // A steered message shares its source turn, but rollback must keep the earlier
     // instruction and answer as complete evidence, including after the next compaction.
-    let mut history = ContextManager::default();
-    history.enable_user_message_retention();
+    let mut history = ContextManager::with_guardian_context_mode(
+        GuardianContextMode::ThreadOwned,
+        &codex_protocol::protocol::SessionSource::Exec,
+    );
     let mut expected = None;
     for (id, text) in [
         ("restriction", "Never publish publicly."),
@@ -1746,103 +1750,6 @@ fn record_items_truncates_custom_tool_call_output_content() {
                 output.contains("tokens truncated"),
                 "expected token-based truncation marker, got {output}"
             );
-            assert!(
-                output.contains("tokens truncated") || output.contains("bytes truncated"),
-                "expected truncation marker, got {output}"
-            );
-        }
-        other => panic!("unexpected history item: {other:?}"),
-    }
-}
-
-#[test]
-fn record_items_preserves_code_mode_exec_output_content() {
-    let mut history = ContextManager::new();
-    let policy = TruncationPolicy::Tokens(10);
-    let long_output =
-        "code mode output that has already been truncated by its runtime\n".repeat(2_500);
-    let call = ResponseItem::CustomToolCall {
-        id: None,
-        status: None,
-        call_id: "exec-call".to_string(),
-        name: codex_code_mode::PUBLIC_TOOL_NAME.to_string(),
-        namespace: None,
-        input: "text('hello')".to_string(),
-        internal_chat_message_metadata_passthrough: None,
-    };
-    let output = ResponseItem::CustomToolCallOutput {
-        id: None,
-        call_id: "exec-call".to_string(),
-        name: None,
-        output: FunctionCallOutputPayload::from_text(long_output),
-        internal_chat_message_metadata_passthrough: None,
-    };
-
-    history.record_items([&call, &output], policy);
-
-    assert_eq!(raw_items(&history), vec![call, output]);
-}
-
-#[test]
-fn record_items_preserves_code_mode_exec_output_after_history_replace() {
-    let mut history = ContextManager::new();
-    let policy = TruncationPolicy::Tokens(10);
-    let long_output =
-        "code mode output that has already been truncated by its runtime\n".repeat(2_500);
-    let call = ResponseItem::CustomToolCall {
-        id: None,
-        status: None,
-        call_id: "exec-call".to_string(),
-        name: codex_code_mode::PUBLIC_TOOL_NAME.to_string(),
-        namespace: None,
-        input: "text('hello')".to_string(),
-        internal_chat_message_metadata_passthrough: None,
-    };
-    let output = ResponseItem::CustomToolCallOutput {
-        id: None,
-        call_id: "exec-call".to_string(),
-        name: None,
-        output: FunctionCallOutputPayload::from_text(long_output),
-        internal_chat_message_metadata_passthrough: None,
-    };
-
-    history.replace(vec![call.clone()]);
-    history.record_items([&output], policy);
-
-    assert_eq!(raw_items(&history), vec![call, output]);
-}
-
-#[test]
-fn record_items_drops_code_mode_exec_index_when_call_is_removed() {
-    let mut history = ContextManager::new();
-    let policy = TruncationPolicy::Tokens(10);
-    let long_output =
-        "ordinary custom output after the matching code-mode call was removed\n".repeat(2_500);
-    let call = ResponseItem::CustomToolCall {
-        id: None,
-        status: None,
-        call_id: "exec-call".to_string(),
-        name: codex_code_mode::PUBLIC_TOOL_NAME.to_string(),
-        namespace: None,
-        input: "text('hello')".to_string(),
-        internal_chat_message_metadata_passthrough: None,
-    };
-    let output = ResponseItem::CustomToolCallOutput {
-        id: None,
-        call_id: "exec-call".to_string(),
-        name: None,
-        output: FunctionCallOutputPayload::from_text(long_output.clone()),
-        internal_chat_message_metadata_passthrough: None,
-    };
-
-    history.record_items([&call], policy);
-    history.remove_first_item();
-    history.record_items([&output], policy);
-
-    match &history.items[0].item {
-        ResponseItem::CustomToolCallOutput { output, .. } => {
-            let output = output.text_content().unwrap_or_default();
-            assert_ne!(output, long_output);
             assert!(
                 output.contains("tokens truncated") || output.contains("bytes truncated"),
                 "expected truncation marker, got {output}"

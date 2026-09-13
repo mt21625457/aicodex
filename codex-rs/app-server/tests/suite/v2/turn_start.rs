@@ -17,6 +17,7 @@ use app_test_support::to_response;
 use app_test_support::write_chatgpt_auth;
 use app_test_support::write_mock_responses_config_toml_with_chatgpt_base_url;
 use app_test_support::write_models_cache;
+use app_test_support::write_models_cache_with_models;
 use codex_app_server::INPUT_TOO_LARGE_ERROR_CODE;
 use codex_app_server::INVALID_PARAMS_ERROR_CODE;
 use codex_app_server_protocol::AdditionalContextEntry;
@@ -81,6 +82,7 @@ use codex_exec_server::LOCAL_ENVIRONMENT_ID;
 use codex_features::FEATURES;
 use codex_features::Feature;
 use codex_login::AuthCredentialsStoreMode;
+use codex_models_manager::model_info::model_info_from_slug;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::MultiAgentMode;
@@ -147,6 +149,9 @@ async fn run_local_image_turn(detail: Option<ImageDetail>) -> Result<Vec<Value>>
 
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
+    let mut model = model_info_from_slug("mock-model");
+    model.supports_image_detail_original = true;
+    write_models_cache_with_models(codex_home.path(), vec![model]).await?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
@@ -932,7 +937,7 @@ async fn turn_start_emits_thread_scoped_warning_notification_for_trimmed_skills(
     MockResponsesConfig::new(&server.uri())
         .enable_feature(Feature::Personality)
         .write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     let cache_path = codex_home.path().join("models_cache.json");
     let mut cache: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cache_path)?)?;
@@ -1029,7 +1034,7 @@ async fn turn_start_sends_service_tier_id_to_model_request() -> Result<()> {
 
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     let service_tier_model = all_model_presets()
         .iter()
         .find(|preset| preset.show_in_picker && !preset.service_tiers.is_empty())
@@ -1153,7 +1158,7 @@ async fn turn_start_emits_raw_response_completed_with_upstream_usage(
 
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
@@ -2330,18 +2335,15 @@ async fn turn_start_rejects_unknown_environment_before_starting_turn() -> Result
 }
 
 #[tokio::test]
-async fn turn_start_model_provider_override_routes_to_claude_provider() -> Result<()> {
+async fn turn_start_model_provider_override_routes_to_selected_responses_provider() -> Result<()> {
     let responses_server = create_mock_responses_server_repeating_assistant("Wrong provider").await;
-    let claude_server = wiremock::MockServer::start().await;
-    let claude_messages = responses::mount_claude_sse_sequence(
-        &claude_server,
-        vec![claude_text_sse("msg_1", "Done")],
-    )
-    .await;
-    let claude_count_tokens = responses::mount_claude_count_tokens_response(
-        &claude_server,
-        wiremock::ResponseTemplate::new(200).set_body_json(json!({ "input_tokens": 123 })),
-        1,
+    let alternate_server = wiremock::MockServer::start().await;
+    let alternate_messages = responses::mount_sse_once(
+        &alternate_server,
+        responses::sse(vec![
+            responses::ev_assistant_message("msg_1", "Done"),
+            responses::ev_completed("response_1"),
+        ]),
     )
     .await;
 
@@ -2349,7 +2351,7 @@ async fn turn_start_model_provider_override_routes_to_claude_provider() -> Resul
     create_dual_provider_config_toml(
         codex_home.path(),
         &responses_server.uri(),
-        &claude_server.uri(),
+        &alternate_server.uri(),
     )?;
 
     let mut mcp = TestAppServer::builder()
@@ -2359,7 +2361,7 @@ async fn turn_start_model_provider_override_routes_to_claude_provider() -> Resul
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
     let thread_req = mcp
-        .send_thread_start_request(ThreadStartParams {
+        .send_thread_start_request_with_auto_env(ThreadStartParams {
             model: Some("mock-model".to_string()),
             model_provider: Some("responses_provider".to_string()),
             ..Default::default()
@@ -2376,7 +2378,7 @@ async fn turn_start_model_provider_override_routes_to_claude_provider() -> Resul
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id,
             model: Some("deepseek-v4-pro".to_string()),
-            model_provider: Some("claude_provider".to_string()),
+            model_provider: Some("alternate_provider".to_string()),
             input: vec![V2UserInput::Text {
                 text: "Hello from DeepSeek".to_string(),
                 text_elements: Vec::new(),
@@ -2409,26 +2411,9 @@ async fn turn_start_model_provider_override_routes_to_claude_provider() -> Resul
         responses_requests.is_empty(),
         "turn should not hit the startup/default Responses provider"
     );
-    let claude_requests = claude_messages.requests();
-    assert_eq!(claude_requests.len(), 1);
-    assert_eq!(claude_count_tokens.requests().len(), 1);
-    let claude_wire_requests = claude_server
-        .received_requests()
-        .await
-        .expect("failed to fetch Claude requests");
-    assert!(
-        claude_wire_requests
-            .iter()
-            .any(|request| request.url.path() == "/v1/messages"),
-        "turn should use the Claude Messages wire endpoint"
-    );
-    assert!(
-        claude_wire_requests
-            .iter()
-            .any(|request| body_contains(request, r#""model":"deepseek-v4-pro""#)),
-        "Claude request should carry the selected model"
-    );
-
+    let request = alternate_messages.single_request();
+    assert_eq!(request.path(), "/v1/responses");
+    assert_eq!(request.body_json()["model"], "deepseek-v4-pro");
     Ok(())
 }
 
@@ -4315,7 +4300,7 @@ async fn turn_start_streams_apply_patch_change_updates_v2() -> Result<()> {
         .disable_feature(Feature::RemoteModels)
         .disable_feature(Feature::ShellSnapshot)
         .write(&codex_home)?;
-    write_models_cache(&codex_home)?;
+    write_models_cache(&codex_home).await?;
     let cache_path = codex_home.join("models_cache.json");
     let mut cache: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cache_path)?)?;
@@ -4395,7 +4380,7 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
     const PARENT_PROMPT: &str = "spawn a child and continue";
     const SPAWN_CALL_ID: &str = "spawn-call-1";
     const CHILD_PLAN_CALL_ID: &str = "child-plan-call";
-    const REQUESTED_MODEL: &str = "gpt-5.2";
+    const REQUESTED_MODEL: &str = "gpt-5.5";
     const REQUESTED_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::Low;
 
     let server = responses::start_mock_server().await;
@@ -4726,7 +4711,7 @@ async fn direct_input_to_multi_agent_v2_subagent_starts_follow_up_turn(
         .enable_feature(Feature::Goals)
         .with_root_config(&format!("chatgpt_base_url = \"{}\"", server.uri()))
         .write(codex_home.path())?;
-    write_models_cache(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
     mount_analytics_capture(&server, codex_home.path()).await?;
 
     let mut mcp = TestAppServer::builder()
@@ -4967,7 +4952,7 @@ async fn turn_start_emits_spawn_agent_item_with_effective_role_model_metadata_v2
     const CHILD_PROMPT: &str = "child: do work";
     const PARENT_PROMPT: &str = "spawn a child and continue";
     const SPAWN_CALL_ID: &str = "spawn-call-1";
-    const REQUESTED_MODEL: &str = "gpt-5.2";
+    const REQUESTED_MODEL: &str = "gpt-5.5";
     const REQUESTED_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::Low;
     const ROLE_MODEL: &str = "gpt-5.4";
     const ROLE_REASONING_EFFORT: ReasoningEffort = ReasoningEffort::High;
@@ -5887,7 +5872,7 @@ supports_websockets = false
 fn create_dual_provider_config_toml(
     codex_home: &Path,
     responses_server_uri: &str,
-    claude_server_uri: &str,
+    alternate_server_uri: &str,
 ) -> std::io::Result<()> {
     let config_toml = codex_home.join("config.toml");
     std::fs::write(
@@ -5908,47 +5893,15 @@ request_max_retries = 0
 stream_max_retries = 0
 supports_websockets = false
 
-[model_providers.claude_provider]
-name = "Claude provider for test"
-base_url = "{claude_server_uri}/v1"
-wire_api = "claude"
+[model_providers.alternate_provider]
+name = "Alternate Responses provider for test"
+base_url = "{alternate_server_uri}/v1"
+wire_api = "responses"
 request_max_retries = 0
 stream_max_retries = 0
 "#
         ),
     )
-}
-
-fn claude_text_sse(message_id: &str, text: &str) -> String {
-    responses::sse(vec![
-        json!({
-            "type": "message_start",
-            "message": {
-                "id": message_id,
-                "type": "message",
-                "role": "assistant",
-                "content": [],
-                "usage": {"input_tokens": 1, "output_tokens": 1}
-            }
-        }),
-        json!({
-            "type": "content_block_start",
-            "index": 0,
-            "content_block": {"type": "text", "text": ""}
-        }),
-        json!({
-            "type": "content_block_delta",
-            "index": 0,
-            "delta": {"type": "text_delta", "text": text}
-        }),
-        json!({"type": "content_block_stop", "index": 0}),
-        json!({
-            "type": "message_delta",
-            "delta": {"stop_reason": "end_turn", "stop_sequence": null},
-            "usage": {"output_tokens": 1}
-        }),
-        json!({"type": "message_stop", "message": null}),
-    ])
 }
 
 fn write_test_skill(codex_home: &Path, name: &str) -> std::io::Result<()> {

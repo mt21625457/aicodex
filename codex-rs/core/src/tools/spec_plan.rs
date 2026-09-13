@@ -6,9 +6,8 @@ use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::code_mode::execute_spec::create_code_mode_tool;
 use crate::tools::context::ToolInvocation;
-use crate::tools::dedicated_file_tool_plan;
 use crate::tools::effective_tool_mode;
-use crate::tools::handlers::ClaudeBashHandler;
+use crate::tools::handlers::ApplyPatchHandler;
 use crate::tools::handlers::CodeModeExecuteHandler;
 use crate::tools::handlers::CodeModeWaitHandler;
 use crate::tools::handlers::CurrentTimeHandler;
@@ -1018,7 +1017,6 @@ fn add_core_tool_sources(context: &CoreToolPlanContext<'_>, registry: &mut ToolR
                         turn_context,
                         context.environments,
                     ),
-                    prefer_dedicated_file_tools: false,
                     include_windows_shell_guidance: should_include_windows_shell_guidance(
                         context.environments,
                     ),
@@ -1111,15 +1109,10 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistr
             turn_context,
             context.environments,
         ),
-        prefer_dedicated_file_tools: dedicated_file_tool_plan::model_visible(
-            turn_context,
-            environment_mode,
-        ),
         include_windows_shell_guidance: should_include_windows_shell_guidance(context.environments),
     };
     if features.enabled(Feature::UnifiedExec) {
         registry.add(ExecCommandHandler::new(options));
-        registry.add_with_exposure(ClaudeBashHandler::new(options), ToolExposure::Hidden);
         registry.add(WriteStdinHandler);
     } else {
         // Managed requirements are the only configuration path that can keep
@@ -1272,12 +1265,9 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
     if environment_mode.has_environment() {
         let apply_patch_available = context.model_info.apply_patch_tool_type.is_some()
             || context.model_info.used_fallback_model_metadata;
-        for (runtime, exposure) in dedicated_file_tool_plan::planned_runtimes(
-            turn_context,
-            environment_mode,
-            apply_patch_available,
-        ) {
-            registry.register_trusted_with_exposure(runtime, exposure);
+        if apply_patch_available {
+            let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
+            registry.add(ApplyPatchHandler::new(include_environment_id));
         }
     }
 

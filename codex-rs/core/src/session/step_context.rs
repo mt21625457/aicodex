@@ -1,6 +1,6 @@
+//! Request-scoped settings and capabilities, including the durable context snapshot.
+
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
 
 use crate::agents_md::LoadedAgentsMd;
 use crate::config::TokenBudgetConfig;
@@ -12,12 +12,10 @@ use codex_exec_server::ExecutorCapabilityDiscoverySnapshot;
 use codex_exec_server::ResolvedSelectedCapabilityRoot;
 use codex_mcp::McpBinding;
 use codex_otel::SessionTelemetry;
-
-static NEXT_STEP_ID: AtomicU64 = AtomicU64::new(1);
+use codex_protocol::protocol::TurnContextItem;
 
 /// Request-scoped state that may change between model sampling requests.
 pub(crate) struct StepContext {
-    pub(super) id: u64,
     pub(crate) turn: Arc<TurnContext>,
     /// One immutable settings version captured before request preparation.
     pub(crate) settings: Arc<ResolvedStepSettings>,
@@ -39,11 +37,10 @@ pub(crate) struct StepContext {
 }
 
 impl StepContext {
-    pub(super) fn next_id() -> u64 {
-        NEXT_STEP_ID.fetch_add(1, Ordering::Relaxed)
-    }
-
-    pub(crate) fn id(&self) -> u64 {
-        self.id
+    /// Persist the summary captured for this request, even after a live settings update.
+    pub(crate) fn to_turn_context_item(&self) -> TurnContextItem {
+        let mut item = self.turn.to_turn_context_item();
+        item.summary = self.settings.reasoning_summary;
+        item
     }
 }

@@ -1,12 +1,13 @@
 pub use codex_api::ResponseEvent;
-use codex_config::config_toml::ChatFileToolMode;
-use codex_features::ClaudeFileToolMode;
 use codex_protocol::error::Result;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
+use codex_protocol::models::ImageDetail;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ModelInfo;
 use codex_tools::ToolSpec;
 use futures::Stream;
 use serde::Deserialize;
@@ -29,18 +30,6 @@ pub struct Prompt {
     /// external MCP servers.
     pub(crate) tools: Arc<[ToolSpec]>,
 
-    /// Model-hidden tool specs retained only to decode valid legacy tool calls.
-    pub(crate) hidden_tools: Vec<ToolSpec>,
-
-    /// Resolved Chat-only file-tool policy carried as non-wire request metadata.
-    pub(crate) chat_file_tool_mode: ChatFileToolMode,
-
-    /// Resolved Claude file-tool rollout policy carried as non-wire request metadata.
-    pub(crate) claude_file_tool_mode: ClaudeFileToolMode,
-
-    /// Whether the dedicated file-tool rollout gate is enabled for this session.
-    pub(crate) dedicated_file_tools_enabled: bool,
-
     /// Whether parallel tool calls are permitted for this prompt.
     pub(crate) parallel_tool_calls: bool,
 
@@ -60,10 +49,6 @@ impl Default for Prompt {
         Self {
             input: Vec::new(),
             tools: Arc::from([]),
-            hidden_tools: Vec::new(),
-            chat_file_tool_mode: ChatFileToolMode::Legacy,
-            claude_file_tool_mode: ClaudeFileToolMode::Auto,
-            dedicated_file_tools_enabled: false,
             parallel_tool_calls: false,
             base_instructions: BaseInstructions::default(),
             output_schema: None,
@@ -76,13 +61,10 @@ impl Default for Prompt {
 impl Prompt {
     pub(crate) fn get_formatted_input_for_request(
         &self,
-        use_responses_lite: bool,
+        model_info: &ModelInfo,
     ) -> Vec<ResponseItem> {
         let mut input = self.input.clone();
-        if use_responses_lite {
-            strip_image_details(&mut input);
-        }
-
+        normalize_image_details(&mut input, model_info);
         // when using the *Freeform* apply_patch tool specifically, tool outputs
         // should be structured text, not json. Do NOT reserialize when using
         // the Function tool - note that this differs from the check above for
@@ -99,13 +81,13 @@ impl Prompt {
     }
 }
 
-fn strip_image_details(items: &mut [ResponseItem]) {
+fn normalize_image_details(items: &mut [ResponseItem], model_info: &ModelInfo) {
     for item in items {
         match item {
             ResponseItem::Message { content, .. } => {
                 for content_item in content {
                     if let ContentItem::InputImage { detail, .. } = content_item {
-                        *detail = None;
+                        normalize_image_detail(detail, model_info);
                     }
                 }
             }
@@ -116,7 +98,7 @@ fn strip_image_details(items: &mut [ResponseItem]) {
                         if let FunctionCallOutputContentItem::InputImage { detail, .. } =
                             content_item
                         {
-                            *detail = None;
+                            normalize_image_detail(detail, model_info);
                         }
                     }
                 }
@@ -138,11 +120,6 @@ fn strip_image_details(items: &mut [ResponseItem]) {
             | ResponseItem::Other => {}
         }
     }
-}
-
-pub(crate) fn is_claude_reasoning_item_id(id: &str) -> bool {
-    id.rsplit_once("_reasoning_")
-        .is_some_and(|(_, index)| index.parse::<usize>().is_ok())
 }
 
 fn reserialize_shell_outputs(items: &mut [ResponseItem]) {
@@ -243,6 +220,14 @@ fn strip_total_output_header(output: &str) -> Option<(&str, u32)> {
     let total_lines = total_segment.parse::<u32>().ok()?;
     let remainder = remainder.strip_prefix('\n').unwrap_or(remainder);
     Some((remainder, total_lines))
+}
+
+fn normalize_image_detail(detail: &mut Option<ImageDetail>, model_info: &ModelInfo) {
+    if model_info.use_responses_lite {
+        *detail = None;
+    } else if *detail == Some(ImageDetail::Original) && !model_info.supports_image_detail_original {
+        *detail = Some(DEFAULT_IMAGE_DETAIL);
+    }
 }
 
 pub struct ResponseStream {
