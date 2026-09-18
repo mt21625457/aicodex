@@ -282,6 +282,7 @@ impl ThreadEventStore {
                 | ServerNotification::FileChangePatchUpdated(_)
                 | ServerNotification::ServerRequestResolved(_)
                 | ServerNotification::McpToolCallProgress(_)
+                | ServerNotification::ThreadAttachmentUpdated(_)
                 | ServerNotification::ThreadRealtimeItemAdded(_)
                 | ServerNotification::ThreadRealtimeOutputAudioDelta(_)
                 | ServerNotification::ThreadRealtimeSdp(_)
@@ -646,6 +647,8 @@ mod tests {
     use codex_app_server_protocol::McpToolCallProgressNotification;
     use codex_app_server_protocol::ReasoningSummaryTextDeltaNotification;
     use codex_app_server_protocol::RequestId as AppServerRequestId;
+    use codex_app_server_protocol::ThreadAttachmentOperation;
+    use codex_app_server_protocol::ThreadAttachmentUpdatedNotification;
     use codex_app_server_protocol::ThreadRealtimeAudioChunk;
     use codex_app_server_protocol::ThreadRealtimeOutputAudioDeltaNotification;
     use codex_app_server_protocol::TurnCompletedNotification;
@@ -658,6 +661,7 @@ mod tests {
 
     fn test_thread_session(thread_id: ThreadId, cwd: PathBuf) -> ThreadSessionState {
         ThreadSessionState {
+            windows_sandbox_host: crate::app::WindowsSandboxHost::Local,
             thread_id,
             forked_from_id: None,
             fork_parent_title: None,
@@ -902,6 +906,15 @@ mod tests {
         let large_payload = "x".repeat(1024 * 1024);
 
         for _ in 0..32 {
+            store.push_notification_ref(&ServerNotification::ThreadAttachmentUpdated(
+                ThreadAttachmentUpdatedNotification {
+                    thread_id: thread_id.to_string(),
+                    attachment_type: "pullRequest".to_string(),
+                    identity_key: "openai/codex#1".to_string(),
+                    attachment_id: "attachment-1".to_string(),
+                    operation: ThreadAttachmentOperation::Created,
+                },
+            ));
             store.push_notification_ref(&ServerNotification::McpToolCallProgress(
                 McpToolCallProgressNotification {
                     thread_id: thread_id.to_string(),

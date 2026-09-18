@@ -3,12 +3,93 @@
 use super::*;
 use crate::budget::section_tokens;
 use crate::composition::user_message;
+use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseItem;
 use pretty_assertions::assert_eq;
 
 fn text(value: &str) -> ContentItem {
     ContentItem::InputText {
         text: value.to_owned(),
+    }
+}
+
+#[test]
+fn recovery_shortens_older_history_only_after_optional_evidence() {
+    let older = format!("[1] user: {}original suffix", "é🙂\"\n".repeat(/*n*/ 6_000));
+    let commentary = text(&"optional commentary ".repeat(/*n*/ 1_000));
+    let approval = text("[3] developer: user approved this action");
+    let restriction = text("[4] user: only modify scratch files");
+    let action = text("complete action");
+    let notice = SectionOutput {
+        id: "budget_omission",
+        delivery: SectionDelivery::UserContent(vec![Budgeted::required(text(
+            "evidence omitted or shortened",
+        ))]),
+    };
+    let context = ComposedContext {
+        sections: vec![SectionOutput {
+            id: "conversation_transcript",
+            delivery: SectionDelivery::UserContent(vec![
+                Budgeted::historical(text(&older)),
+                Budgeted::optional(commentary.clone(), BudgetPriority::Commentary),
+                Budgeted::historical(approval.clone()),
+                Budgeted::historical(restriction.clone()),
+                Budgeted::required(action.clone()),
+            ]),
+        }],
+        truncations: Vec::new(),
+    };
+    for reduction in [0, 4_000] {
+        let available = context.estimated_tokens() - content_tokens(&commentary)
+            + section_tokens(&notice)
+            - reduction;
+        let budget = RequestBudget {
+            max_input_tokens: available + 2_000,
+            existing_context_tokens: 2_000,
+        };
+        if reduction > 0 {
+            assert!(
+                context
+                    .clone()
+                    .enforce_budget(
+                        budget,
+                        "evidence omitted or shortened".to_owned(),
+                        HistoryTruncation::Preserve
+                    )
+                    .is_err()
+            );
+        }
+        let selected = context
+            .clone()
+            .enforce_budget(
+                budget,
+                "evidence omitted or shortened".to_owned(),
+                HistoryTruncation::Allow,
+            )
+            .unwrap();
+        assert!(selected.estimated_tokens() <= available);
+        let SectionDelivery::UserContent(content) = &selected.sections[0].delivery else {
+            panic!("expected user evidence")
+        };
+        let ContentItem::InputText { text: retained } = &content[0].content else {
+            panic!("expected historical text")
+        };
+        if reduction == 0 {
+            assert_eq!(retained, &older);
+        } else {
+            assert!(retained.starts_with("[1] user: "));
+            assert!(retained.ends_with("original suffix"));
+            assert!(retained.contains("<truncated omitted_approx_tokens="));
+        }
+        assert_eq!(
+            content,
+            &vec![
+                Budgeted::historical(text(retained)),
+                Budgeted::historical(approval.clone()),
+                Budgeted::historical(restriction.clone()),
+                Budgeted::required(action.clone()),
+            ]
+        );
     }
 }
 
@@ -46,6 +127,7 @@ fn planned_action_budget_omits_descriptions_without_changing_arguments() {
                 existing_context_tokens: 0,
             },
             "evidence omitted".to_owned(),
+            HistoryTruncation::Preserve,
         )
         .unwrap();
     // The sync preamble is also required and remains ahead of the action.
@@ -65,7 +147,9 @@ fn budget_reserves_existing_context_and_preserves_required_messages() {
         .unwrap()
         .into_message();
     let image = ContentItem::InputImage {
-        image_url: "data:image/png;base64,AAAA".to_owned(),
+        image: ImageReference::Inline {
+            image_url: "data:image/png;base64,AAAA".to_owned(),
+        },
         detail: None,
     };
     let make_context = || ComposedContext {
@@ -115,6 +199,7 @@ fn budget_reserves_existing_context_and_preserves_required_messages() {
                 existing_context_tokens: 2_000,
             },
             "evidence omitted".to_owned(),
+            HistoryTruncation::Preserve,
         )
         .unwrap();
     assert!(context.estimated_tokens() <= available);
@@ -137,6 +222,7 @@ fn budget_reserves_existing_context_and_preserves_required_messages() {
                 existing_context_tokens: 0,
             },
             "evidence omitted".to_owned(),
+            HistoryTruncation::Preserve,
         )
         .unwrap();
     assert_eq!(
@@ -150,19 +236,28 @@ fn budget_reserves_existing_context_and_preserves_required_messages() {
 }
 
 #[test]
-fn image_omission_preserves_text_and_later_eviction_policy() {
+fn image_accounting_preserves_later_eviction_policy() {
     let evidence = text(&"optional commentary ".repeat(/*n*/ 100));
+    let file_image = ContentItem::InputImage {
+        image: ImageReference::File {
+            file_id: "file_123".to_owned(),
+        },
+        detail: None,
+    };
     let mut context = ComposedContext {
         sections: vec![SectionOutput {
             id: "evidence",
             delivery: SectionDelivery::UserContent(vec![
                 Budgeted::optional(
                     ContentItem::InputImage {
-                        image_url: "rejected-image".to_owned(),
+                        image: ImageReference::Inline {
+                            image_url: "rejected-image".to_owned(),
+                        },
                         detail: None,
                     },
                     BudgetPriority::Image,
                 ),
+                Budgeted::optional(file_image.clone(), BudgetPriority::Image),
                 Budgeted::optional(evidence.clone(), BudgetPriority::Commentary),
                 Budgeted::required(text("user restriction")),
             ]),
@@ -173,21 +268,22 @@ fn image_omission_preserves_text_and_later_eviction_policy() {
         .clone()
         .enforce_budget(
             RequestBudget {
-                max_input_tokens: 1_000,
+                max_input_tokens: content_tokens(&file_image).saturating_add(1_000),
                 existing_context_tokens: 0,
             },
             "evidence omitted".to_owned(),
+            HistoryTruncation::Preserve,
         )
         .unwrap();
     assert_eq!(
         without_oversized_image.into_messages(),
         vec![user_message(vec![
-            evidence.clone(),
+            file_image.clone(),
             text("user restriction"),
             text("evidence omitted")
         ])]
     );
-    context.retain_images(|_, _| false);
+    context.retain_images(|image, _| matches!(image, ImageReference::File { .. }));
     let available = context.estimated_tokens();
     let retained = context
         .clone()
@@ -197,35 +293,46 @@ fn image_omission_preserves_text_and_later_eviction_policy() {
                 existing_context_tokens: 0,
             },
             "evidence omitted".to_owned(),
+            HistoryTruncation::Preserve,
         )
         .unwrap();
     assert_eq!(
         retained.into_messages(),
-        vec![user_message(vec![evidence, text("user restriction")])]
+        vec![user_message(vec![
+            file_image.clone(),
+            evidence,
+            text("user restriction")
+        ])]
     );
     let smaller = context
         .enforce_budget(
             RequestBudget {
-                max_input_tokens: 100,
+                max_input_tokens: content_tokens(&file_image).saturating_add(100),
                 existing_context_tokens: 0,
             },
             "evidence omitted".to_owned(),
+            HistoryTruncation::Preserve,
         )
         .unwrap();
     assert_eq!(
         smaller.into_messages(),
         vec![user_message(vec![
+            file_image,
             text("user restriction"),
             text("evidence omitted")
         ])]
     );
 
     let older = ContentItem::InputImage {
-        image_url: "older-image".to_owned(),
+        image: ImageReference::Inline {
+            image_url: "older-image".to_owned(),
+        },
         detail: None,
     };
     let newer = ContentItem::InputImage {
-        image_url: "newer-image".to_owned(),
+        image: ImageReference::Inline {
+            image_url: "newer-image".to_owned(),
+        },
         detail: None,
     };
     let image_section = |images: Vec<ContentItem>| SectionOutput {
@@ -261,6 +368,7 @@ fn image_omission_preserves_text_and_later_eviction_policy() {
                 existing_context_tokens: 0,
             },
             "evidence omitted".to_owned(),
+            HistoryTruncation::Preserve,
         )
         .unwrap();
         assert_eq!(

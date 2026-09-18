@@ -100,6 +100,7 @@ fn should_retry_guardian_review(outcome: &GuardianReviewOutcome) -> bool {
             | CodexErrorInfo::SessionBudgetExceeded
             | CodexErrorInfo::UsageLimitExceeded
             | CodexErrorInfo::CyberPolicy
+            | CodexErrorInfo::BioPolicy
             | CodexErrorInfo::MisalignmentPolicyViolation
             | CodexErrorInfo::Unauthorized
             | CodexErrorInfo::BadRequest
@@ -110,7 +111,8 @@ fn should_retry_guardian_review(outcome: &GuardianReviewOutcome) -> bool {
         },
         GuardianReviewOutcome::Completed(_)
         | GuardianReviewOutcome::Error(
-            GuardianReviewError::PromptBuild { .. }
+            GuardianReviewError::InputBudgetExceeded
+            | GuardianReviewError::PromptBuild { .. }
             | GuardianReviewError::Session {
                 error_info: None, ..
             }

@@ -7,7 +7,6 @@ mod coverage;
 mod decision;
 mod feedback;
 mod input_budget;
-mod metrics;
 mod prompt;
 pub(crate) use input_budget::PendingReviewContext;
 pub(crate) use input_budget::check_pending as check_pending_guardian_input;
@@ -19,11 +18,16 @@ pub(crate) use request_budget::observe as observe_guardian_request;
 mod review;
 mod review_session;
 mod reviewer_config;
+pub(crate) use reviewer_config::resolve_review_model;
 mod runtime;
+#[cfg(test)]
+pub(crate) mod test_host;
 
+use codex_protocol::items::ModelInvocationContext;
 use std::sync::Arc;
 
 use codex_protocol::config_types::ApprovalsReviewer;
+use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort;
@@ -41,29 +45,24 @@ pub(crate) use approval_request::GuardianMcpAnnotations;
 pub(crate) use approval_request::GuardianNetworkAccessTrigger;
 #[cfg(test)]
 pub(crate) use approval_request::guardian_approval_request_to_json;
-pub(crate) use codex_guardian_reviewer::guardian_timeout_message;
 pub(crate) use decision::decide_approval;
 pub(crate) use decision::spawn_approval_decision;
-pub(crate) use prompt::BUNDLED_GUARDIAN_POLICY;
-pub(crate) use prompt::BUNDLED_GUARDIAN_POLICY_TEMPLATE;
 pub(crate) use prompt::guardian_truncate_text;
 pub(crate) use review::GuardianReviewOptions;
 pub(crate) use review::is_basic_session_source;
 pub(crate) use review::new_guardian_review_id;
-#[cfg(test)]
-pub(crate) use review::record_guardian_denial_for_test;
 pub(crate) use review::routes_approval_policy_to_guardian;
-pub(crate) use review::routes_approval_to_guardian;
 pub use review_session::GuardianReviewSession;
-pub use review_session::GuardianReviewSessionHost;
 pub(crate) use review_session::GuardianReviewSessionManager;
-pub(crate) use review_session::prewarm_guardian_review_session;
+pub use review_session::GuardianReviewState;
+pub use review_session::PreparedGuardianContext;
+pub use review_session::prepare_review_prewarm;
+
 pub(crate) use review_session::prompt_cache_key_override_for_review_session;
 pub(crate) use runtime::ReviewAction;
 
 pub(crate) use codex_guardian_reviewer::REVIEW_TIMEOUT as GUARDIAN_REVIEW_TIMEOUT;
 pub(crate) const GUARDIAN_REVIEWER_NAME: &str = "guardian";
-pub(crate) use codex_guardian_reviewer::AUTO_REVIEW_DENIAL_WINDOW_SIZE;
 pub(crate) const AUTO_REVIEW_DENIED_ACTION_APPROVAL_DEVELOPER_PREFIX: &str =
     codex_guardian_context::MANUAL_APPROVAL_DEVELOPER_PREFIX;
 const GUARDIAN_MAX_TOOL_ENTRY_TOKENS: usize = codex_guardian_context::ContextProfile::synchronous()
@@ -72,8 +71,6 @@ const GUARDIAN_MAX_TOOL_ENTRY_TOKENS: usize = codex_guardian_context::ContextPro
     .tool_tokens;
 pub(crate) const GUARDIAN_MAX_ROOT_MESSAGE_TOKENS: usize = 900;
 pub(crate) const GUARDIAN_MAX_NODE_REPL_TOOL_RESULT_TOKENS: usize = 6_000;
-pub(crate) const GUARDIAN_MAX_ACTION_BYTES: usize = 50_000 * 4;
-const GUARDIAN_MAX_ACTION_STRING_TOKENS: usize = 16_000;
 
 /// Captures review inputs from the issuing step without retaining its MCP bindings or tool router.
 /// Background network approvals and Unix interception use the active task's resolved settings.
@@ -82,35 +79,46 @@ const GUARDIAN_MAX_ACTION_STRING_TOKENS: usize = 16_000;
 /// MCP elicitation reviews continue to use turn-only inputs.
 #[derive(Clone)]
 pub(crate) struct GuardianReviewContext {
-    /// The response currently handled in this execution context.
+    /// The latest response ID received in this turn when review was requested.
     pub(crate) parent_response_id: Option<String>,
     turn: Arc<TurnContext>,
     environments: TurnEnvironmentSnapshot,
     // Model and reasoning inputs are carried for the follow-up Guardian and V2 migrations.
-    #[expect(dead_code)]
     pub(crate) model_info: Arc<ModelInfo>,
-    #[expect(dead_code)]
     pub(crate) reasoning_effort: Option<ReasoningEffort>,
-    #[expect(dead_code)]
     pub(crate) reasoning_summary: ReasoningSummary,
+    pub(crate) personality: Option<Personality>,
     pub(crate) approval_policy: AskForApproval,
     pub(crate) approvals_reviewer: ApprovalsReviewer,
 }
 
 impl GuardianReviewContext {
+    pub(crate) fn model_context(&self) -> ModelInvocationContext {
+        ModelInvocationContext {
+            model_slug: self.model_info.slug.clone(),
+            reasoning_effort: self
+                .reasoning_effort
+                .as_ref()
+                .or(self.model_info.default_reasoning_level.as_ref())
+                .map(ToString::to_string),
+        }
+    }
+
     pub(crate) fn from_resolved_settings(
         turn: Arc<TurnContext>,
         settings: &ResolvedStepSettings,
+        environments: &TurnEnvironmentSnapshot,
     ) -> Self {
         Self {
             parent_response_id: turn
                 .extension_data
                 .get::<codex_api::ResponseId>()
                 .map(|id| id.0.clone()),
-            environments: turn.environments.clone(),
+            environments: environments.clone(),
             model_info: Arc::clone(&settings.model_info),
             reasoning_effort: settings.reasoning_effort().cloned(),
             reasoning_summary: settings.reasoning_summary,
+            personality: settings.personality(),
             approval_policy: settings.approval_policy(),
             approvals_reviewer: settings.approvals_reviewer(),
             turn,
@@ -139,6 +147,7 @@ impl From<&Arc<StepContext>> for GuardianReviewContext {
             model_info: Arc::clone(&step.settings.model_info),
             reasoning_effort: step.settings.reasoning_effort().cloned(),
             reasoning_summary: step.settings.reasoning_summary,
+            personality: step.settings.personality(),
             approval_policy: step.settings.approval_policy(),
             approvals_reviewer: step.settings.approvals_reviewer(),
         }
@@ -156,6 +165,7 @@ impl From<Arc<TurnContext>> for GuardianReviewContext {
             model_info: Arc::clone(turn.model_info()),
             reasoning_effort: turn.reasoning_effort().cloned(),
             reasoning_summary: turn.reasoning_summary(),
+            personality: turn.personality(),
             approval_policy: turn.approval_policy(),
             approvals_reviewer: turn.config.approvals_reviewer,
             turn,
@@ -171,10 +181,6 @@ impl From<&Arc<TurnContext>> for GuardianReviewContext {
 
 #[cfg(test)]
 use codex_guardian_reviewer::guardian_output_schema;
-
-pub(crate) use codex_guardian_reviewer::GuardianRejectionCircuitBreaker;
-pub(crate) use codex_guardian_reviewer::GuardianRejectionCircuitBreakerAction;
-pub(crate) use codex_guardian_reviewer::GuardianRejectionCircuitBreakerPolicy;
 
 pub(crate) use approval_request::format_guardian_action_pretty;
 #[cfg(test)]
