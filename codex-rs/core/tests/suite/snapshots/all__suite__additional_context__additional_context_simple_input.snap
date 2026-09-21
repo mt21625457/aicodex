@@ -5,7 +5,9 @@ expression: "context_snapshot::format_labeled_requests_snapshot(\"additional con
 Scenario: additional context is inserted before the user turn input.
 
 ## Request
-00:message/developer:<PERMISSIONS_INSTRUCTIONS>
+00:message/developer[2]:
+    [01] <context_continuation>\nThe runtime manages context compaction or rollover. Context-window capacity is not a task deadline or the goal's token budget. Cumulativ...
+    [02] <PERMISSIONS_INSTRUCTIONS>
 01:message/developer:<automation_info>run one</automation_info>
 02:message/user:<external_browser_info>tab one</external_browser_info>
 03:message/user:inspect the active tab

@@ -5,9 +5,10 @@ expression: "format_labeled_requests_snapshot(\"Deferred namespaces appear after
 Scenario: Deferred namespaces appear after Apps recovers between sampling requests.
 
 ## Apps unavailable
-00:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <tools>
+00:message/developer[3]:
+    [01] <context_continuation>\nThe runtime manages context compaction or rollover. Context-window capac...
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <tools>
          Deferred tool namespaces:
          - multi_agent_v1: Tools for spawning and managing sub-agents.
          </tools>
@@ -15,9 +16,10 @@ Scenario: Deferred namespaces appear after Apps recovers between sampling reques
 02:message/user:use an app after it recovers
 
 ## Apps recovered
-00:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <tools>
+00:message/developer[3]:
+    [01] <context_continuation>\nThe runtime manages context compaction or rollover. Context-window capac...
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <tools>
          Deferred tool namespaces:
          - multi_agent_v1: Tools for spawning and managing sub-agents.
          </tools>

@@ -1156,6 +1156,13 @@ async fn model_change_projects_media_without_changing_live_or_replayed_history(
         .single_request()
         .inputs_of_type("message")
         .into_iter()
+        // Stateless requests can omit IDs on both items. Select the media message before
+        // comparing identity so an earlier developer message with no ID cannot match it.
+        .filter(|item| {
+            item["content"]
+                .as_array()
+                .is_some_and(|content| content.iter().any(|part| part["type"] == "input_image"))
+        })
         .find(|item| item["id"] == original["id"]);
     // Preserve the prepared media, item ID, turn ID, and creation timestamp together.
     assert_eq!(restored.as_ref(), Some(&original));

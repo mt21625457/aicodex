@@ -16,6 +16,8 @@ Budget:
 - Token budget: {{ token_budget }}
 - Tokens remaining: {{ remaining_tokens }}
 
+These numbers describe cumulative goal accounting, not the current context-window size. An unbounded remaining budget does not imply a hidden token deadline. The runtime manages context compaction or rollover; preserve the original objective and continue after it. Do not mark an unfinished goal complete or blocked because a context window is filling up or a response is ending. Actual user or system budget limits and stop requests still apply.
+
 Work from evidence:
 Use the current worktree and external state as authoritative. Previous conversation context can help locate relevant work, but inspect the current state before relying on it. Improve, replace, or remove existing work as needed to satisfy the actual objective.
 

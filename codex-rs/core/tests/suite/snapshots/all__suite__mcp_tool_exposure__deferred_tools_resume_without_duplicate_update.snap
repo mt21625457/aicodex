@@ -5,9 +5,10 @@ expression: "format_labeled_requests_snapshot(\"Persisted deferred tools remain 
 Scenario: Persisted deferred tools remain unchanged after resuming the thread.
 
 ## Before resume
-00:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <tools>
+00:message/developer[3]:
+    [01] <context_continuation>\nThe runtime manages context compaction or rollover. Context-window capac...
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <tools>
          Deferred tool namespaces:
          - mcp__codex_apps__calendar: Plan events and manage your calendar.
          </tools>
@@ -15,9 +16,10 @@ Scenario: Persisted deferred tools remain unchanged after resuming the thread.
 02:message/user:inspect deferred tools before resume
 
 ## After resume
-00:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <tools>
+00:message/developer[3]:
+    [01] <context_continuation>\nThe runtime manages context compaction or rollover. Context-window capac...
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <tools>
          Deferred tool namespaces:
          - mcp__codex_apps__calendar: Plan events and manage your calendar.
          </tools>

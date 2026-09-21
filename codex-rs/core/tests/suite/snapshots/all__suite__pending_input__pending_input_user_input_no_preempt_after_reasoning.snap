@@ -5,12 +5,16 @@ expression: snapshot
 Scenario: /responses POST bodies (input only, redacted like other suite snapshots)
 
 ## First request
-00:message/developer:<PERMISSIONS_INSTRUCTIONS>
+00:message/developer[2]:
+    [01] <context_continuation>\nThe runtime manages context compaction or rollover. Context-window capacity is not a task deadline or the goal's token budget. Cumulative token usage across requests is not the current context-window size. Continue the authorized work and tool calls while work remains; do not stop, defer it to a new conversation, or claim this turn's context is exhausted based on your own estimate. After compaction, use the retained summary and current state to continue the same task. Do not mark an unfinished goal complete or blocked because the context is filling up or a response is ending. Actual runtime errors, user stop requests, permissions, and explicit goal or usage limits still apply; report real failures accurately instead of claiming success.\n</context_continuation>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 01:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>>
 02:message/user:first prompt
 
 ## Second request
-00:message/developer:<PERMISSIONS_INSTRUCTIONS>
+00:message/developer[2]:
+    [01] <context_continuation>\nThe runtime manages context compaction or rollover. Context-window capacity is not a task deadline or the goal's token budget. Cumulative token usage across requests is not the current context-window size. Continue the authorized work and tool calls while work remains; do not stop, defer it to a new conversation, or claim this turn's context is exhausted based on your own estimate. After compaction, use the retained summary and current state to continue the same task. Do not mark an unfinished goal complete or blocked because the context is filling up or a response is ending. Actual runtime errors, user stop requests, permissions, and explicit goal or usage limits still apply; report real failures accurately instead of claiming success.\n</context_continuation>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 01:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>>
 02:message/user:first prompt
 03:reasoning:summary=thinking:encrypted=true

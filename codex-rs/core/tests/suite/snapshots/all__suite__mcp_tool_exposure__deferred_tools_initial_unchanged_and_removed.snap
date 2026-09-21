@@ -5,9 +5,10 @@ expression: "format_labeled_requests_snapshot(\"Initially available deferred too
 Scenario: Initially available deferred tools remain unchanged until disabling Calendar removes them.
 
 ## Initially available
-00:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <tools>
+00:message/developer[3]:
+    [01] <context_continuation>\nThe runtime manages context compaction or rollover. Context-window capac...
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <tools>
          Deferred tool namespaces:
          - mcp__codex_apps__calendar: Plan events and manage your calendar.
          </tools>
@@ -15,9 +16,10 @@ Scenario: Initially available deferred tools remain unchanged until disabling Ca
 02:message/user:inspect initially available deferred tools
 
 ## Unchanged follow-up
-00:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <tools>
+00:message/developer[3]:
+    [01] <context_continuation>\nThe runtime manages context compaction or rollover. Context-window capac...
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <tools>
          Deferred tool namespaces:
          - mcp__codex_apps__calendar: Plan events and manage your calendar.
          </tools>
@@ -27,9 +29,10 @@ Scenario: Initially available deferred tools remain unchanged until disabling Ca
 04:message/user:inspect unchanged deferred tools
 
 ## Removed and empty
-00:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <tools>
+00:message/developer[3]:
+    [01] <context_continuation>\nThe runtime manages context compaction or rollover. Context-window capac...
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <tools>
          Deferred tool namespaces:
          - mcp__codex_apps__calendar: Plan events and manage your calendar.
          </tools>

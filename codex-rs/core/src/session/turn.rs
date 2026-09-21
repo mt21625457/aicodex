@@ -624,6 +624,9 @@ pub(crate) async fn run_turn(
         match sampling_request_result {
             Ok((sampling_request_output, sampling_request_input)) => {
                 guardian_budget_compacted = false;
+                // A successful sampling step proves the previous recovery worked. A later
+                // overflow can belong to a new window, even within this same long-running turn.
+                context_window_recovery_attempted = false;
                 let SamplingRequestResult {
                     needs_follow_up: model_needs_follow_up,
                     last_agent_message: sampling_request_last_agent_message,

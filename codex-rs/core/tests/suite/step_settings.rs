@@ -443,6 +443,11 @@ async fn tool_result_history_keeps_originating_model_across_switch_and_replay() 
             dimensions
         );
         let mut expected = raw.clone();
+        // Internal history retains IDs, while stateless wire requests omit them.
+        expected
+            .as_object_mut()
+            .expect("tool output object")
+            .remove("id");
         expected["output"][0]["text"] =
             json!(truncate_text(&text, TruncationPolicy::Tokens(limit) * 1.2));
         assert_eq!(requests[2].function_call_output(call_id), expected);
