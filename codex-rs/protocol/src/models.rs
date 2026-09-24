@@ -2336,6 +2336,24 @@ impl CallToolResult {
         {
             match serde_json::to_string(structured_content) {
                 Ok(serialized_structured_content) => {
+                    // Structured metadata supplements media grounding; it must
+                    // not turn an observation into a text-only tool result.
+                    if content_items.iter().any(|item| {
+                        matches!(
+                            item,
+                            FunctionCallOutputContentItem::InputImage { .. }
+                                | FunctionCallOutputContentItem::InputAudio { .. }
+                        )
+                    }) {
+                        let mut items = content_items;
+                        items.push(FunctionCallOutputContentItem::InputText {
+                            text: serialized_structured_content,
+                        });
+                        return FunctionCallOutputPayload {
+                            body: FunctionCallOutputBody::ContentItems(items),
+                            success: Some(self.success()),
+                        };
+                    }
                     return FunctionCallOutputPayload {
                         body: FunctionCallOutputBody::Text(serialized_structured_content),
                         success: Some(self.success()),
@@ -2480,6 +2498,10 @@ impl std::fmt::Display for FunctionCallOutputPayload {
 }
 
 // (Moved event mapping logic into codex-core to avoid coupling protocol to UI-facing events.)
+
+#[cfg(test)]
+#[path = "models/mcp_media_tests.rs"]
+mod mcp_media_tests;
 
 #[cfg(test)]
 mod tests {
