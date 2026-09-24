@@ -2141,6 +2141,7 @@ dependencies = [
  "codex-client",
  "codex-http-client",
  "codex-protocol",
+ "codex-utils-image",
  "codex-utils-rustls-provider",
  "codex-websocket-client",
  "eventsource-stream",

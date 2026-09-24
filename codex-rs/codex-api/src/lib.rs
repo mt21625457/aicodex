@@ -8,6 +8,7 @@ pub(crate) mod files;
 pub(crate) mod images;
 pub(crate) mod provider;
 pub(crate) mod rate_limits;
+mod request_budget;
 pub(crate) mod requests;
 pub(crate) mod safety_buffering;
 pub(crate) mod search;

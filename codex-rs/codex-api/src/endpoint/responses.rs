@@ -112,8 +112,14 @@ impl<T: HttpTransport> ResponsesClient<T> {
             compression,
             turn_state,
         } = options;
-        let body = EncodedJsonBody::encode(&request)
-            .map_err(|e| ApiError::Stream(format!("failed to encode responses request: {e}")))?;
+        let body = serde_json::to_value(&request).map_err(|_| ApiError::InvalidRequest {
+            message: "Cannot encode Responses request".into(),
+        })?;
+        let body = crate::request_budget::prepare(
+            body,
+            crate::request_budget::RequestBudget::for_provider(self.session.provider()),
+        )
+        .await?;
 
         let mut headers = extra_headers;
         if let Some(ref thread_id) = thread_id {
@@ -146,8 +152,11 @@ impl<T: HttpTransport> ResponsesClient<T> {
         compression: Compression,
         turn_state: Option<Arc<OnceLock<String>>>,
     ) -> Result<ResponseStream, ApiError> {
-        let body = EncodedJsonBody::encode(&body)
-            .map_err(|e| ApiError::Stream(format!("failed to encode responses request: {e}")))?;
+        let body = crate::request_budget::prepare(
+            body,
+            crate::request_budget::RequestBudget::for_provider(self.session.provider()),
+        )
+        .await?;
         self.stream_encoded(body, extra_headers, compression, turn_state)
             .await
     }

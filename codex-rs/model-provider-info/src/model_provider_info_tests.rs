@@ -24,6 +24,7 @@ base_url = "http://localhost:11434/v1"
         http_headers: None,
         env_http_headers: None,
         request_max_retries: None,
+        request_body_max_bytes: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
         websocket_connect_timeout_ms: None,
@@ -59,6 +60,7 @@ query_params = { api-version = "2025-04-01-preview" }
         http_headers: None,
         env_http_headers: None,
         request_max_retries: None,
+        request_body_max_bytes: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
         websocket_connect_timeout_ms: None,
@@ -98,6 +100,7 @@ supports_standalone_web_search = true
             "X-Example-Env-Header".to_string() => "EXAMPLE_ENV_VAR".to_string(),
         }),
         request_max_retries: None,
+        request_body_max_bytes: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
         websocket_connect_timeout_ms: None,
@@ -163,6 +166,7 @@ fn test_supports_remote_compaction_for_azure_name() {
         http_headers: None,
         env_http_headers: None,
         request_max_retries: None,
+        request_body_max_bytes: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
         websocket_connect_timeout_ms: None,
@@ -189,6 +193,7 @@ fn test_supports_remote_compaction_for_non_openai_non_azure_provider() {
         http_headers: None,
         env_http_headers: None,
         request_max_retries: None,
+        request_body_max_bytes: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
         websocket_connect_timeout_ms: None,
@@ -330,6 +335,7 @@ fn test_create_amazon_bedrock_provider() {
             }),
             env_http_headers: None,
             request_max_retries: None,
+            request_body_max_bytes: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
             websocket_connect_timeout_ms: None,
@@ -840,4 +846,23 @@ fn retired_wire_protocols_report_responses_migration() {
         let error = toml::from_str::<ModelProviderInfo>(&config).unwrap_err();
         assert!(error.to_string().contains("Set wire_api = \"responses\""));
     }
+}
+
+#[test]
+fn request_body_budget_roundtrips_and_reaches_api_provider() {
+    let source = "name = 'gateway'\nrequest_body_max_bytes = 8388608";
+    let provider: ModelProviderInfo = toml::from_str(source).unwrap();
+    assert_eq!(
+        provider
+            .to_api_provider(None)
+            .unwrap()
+            .request_body_max_bytes,
+        Some(8388608)
+    );
+    let decoded: ModelProviderInfo = toml::from_str(&toml::to_string(&provider).unwrap()).unwrap();
+    assert_eq!(decoded, provider);
+    assert!(
+        toml::from_str::<ModelProviderInfo>("name = 'gateway'\nrequest_body_max_bytes = 0")
+            .is_err()
+    );
 }

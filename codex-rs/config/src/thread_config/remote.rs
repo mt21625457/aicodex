@@ -191,6 +191,15 @@ fn model_provider_from_proto(
         http_headers: provider.http_headers.map(redacted_string_map),
         env_http_headers: provider.env_http_headers.map(|map| map.values),
         request_max_retries: provider.request_max_retries,
+        request_body_max_bytes: provider
+            .request_body_max_bytes
+            .map(|bytes| {
+                usize::try_from(bytes)
+                    .ok()
+                    .and_then(std::num::NonZeroUsize::new)
+                    .ok_or_else(|| parse_error("invalid remote request_body_max_bytes"))
+            })
+            .transpose()?,
         stream_max_retries: provider.stream_max_retries,
         stream_idle_timeout_ms: provider.stream_idle_timeout_ms,
         websocket_connect_timeout_ms: provider.websocket_connect_timeout_ms,
@@ -219,6 +228,7 @@ fn model_provider_to_proto(
         http_headers,
         env_http_headers,
         request_max_retries,
+        request_body_max_bytes,
         stream_max_retries,
         stream_idle_timeout_ms,
         websocket_connect_timeout_ms,
@@ -241,6 +251,7 @@ fn model_provider_to_proto(
         http_headers: http_headers.map(proto_string_map),
         env_http_headers: env_http_headers.map(|values| proto::StringMap { values }),
         request_max_retries,
+        request_body_max_bytes: request_body_max_bytes.map(|bytes| bytes.get() as u64),
         stream_max_retries,
         stream_idle_timeout_ms,
         websocket_connect_timeout_ms,
@@ -454,6 +465,21 @@ mod tests {
     }
 
     #[test]
+    fn remote_request_budget_rejects_zero_and_preserves_absence() {
+        let mut proto = model_provider_to_proto("local", expected_provider());
+        proto.request_body_max_bytes = Some(0);
+        assert!(model_provider_from_proto(proto.clone()).is_err());
+        proto.request_body_max_bytes = None;
+        assert!(
+            model_provider_from_proto(proto)
+                .unwrap()
+                .1
+                .request_body_max_bytes
+                .is_none()
+        );
+    }
+
+    #[test]
     fn model_provider_proto_roundtrips_through_domain_type() {
         let mut expected = expected_provider();
         expected.auth = None;
@@ -521,6 +547,7 @@ mod tests {
                                 )]),
                             }),
                             request_max_retries: Some(7),
+                            request_body_max_bytes: Some(123456),
                             stream_max_retries: Some(8),
                             stream_idle_timeout_ms: Some(9_000),
                             websocket_connect_timeout_ms: Some(10_000),
@@ -583,6 +610,7 @@ mod tests {
                 "LOCAL_HEADER".to_string(),
             )])),
             request_max_retries: Some(7),
+            request_body_max_bytes: std::num::NonZeroUsize::new(123456),
             stream_max_retries: Some(8),
             stream_idle_timeout_ms: Some(9_000),
             websocket_connect_timeout_ms: Some(10_000),

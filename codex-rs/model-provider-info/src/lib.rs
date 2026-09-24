@@ -134,6 +134,10 @@ pub struct ModelProviderInfo {
     pub env_http_headers: Option<HashMap<String, String>>,
     /// Maximum number of times to retry a failed HTTP request to this provider.
     pub request_max_retries: Option<u64>,
+    /// Uncompressed Responses request byte budget for this provider route.
+    /// Must be positive. Unset uses conservative endpoint defaults.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_body_max_bytes: Option<std::num::NonZeroUsize>,
     /// Number of times to retry reconnecting a dropped streaming response before failing.
     pub stream_max_retries: Option<u64>,
     /// Idle timeout (in milliseconds) to wait for activity on a streaming response before treating
@@ -390,6 +394,7 @@ impl ModelProviderInfo {
             headers,
             retry,
             stream_idle_timeout: self.stream_idle_timeout(),
+            request_body_max_bytes: self.request_body_max_bytes.map(std::num::NonZeroUsize::get),
         })
     }
 
@@ -471,6 +476,7 @@ impl ModelProviderInfo {
             ),
             // Use global defaults for retry/timeout unless overridden in config.toml.
             request_max_retries: None,
+            request_body_max_bytes: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
             websocket_connect_timeout_ms: None,
@@ -507,6 +513,7 @@ impl ModelProviderInfo {
             )])),
             env_http_headers: None,
             request_max_retries: None,
+            request_body_max_bytes: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
             websocket_connect_timeout_ms: None,
@@ -694,6 +701,7 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         http_headers: None,
         env_http_headers: None,
         request_max_retries: None,
+        request_body_max_bytes: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
         websocket_connect_timeout_ms: None,

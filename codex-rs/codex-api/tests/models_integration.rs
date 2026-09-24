@@ -43,6 +43,7 @@ fn provider(base_url: &str) -> Provider {
             retry_transport: true,
         },
         stream_idle_timeout: std::time::Duration::from_secs(1),
+        request_body_max_bytes: None,
     }
 }
 

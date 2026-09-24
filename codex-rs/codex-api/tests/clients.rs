@@ -64,6 +64,9 @@ fn empty_tools() -> Arc<RawValue> {
     Arc::from(RawValue::from_string("[]".to_string()).expect("valid tool JSON"))
 }
 
+#[path = "clients/deepseek_budget_tests.rs"]
+mod deepseek_budget_tests;
+
 fn request_body_bytes(request: &Request) -> &[u8] {
     let Some(RequestBody::EncodedJson(body)) = request.body.as_ref() else {
         panic!("expected a prepared request body");
@@ -196,6 +199,7 @@ fn provider(name: &str) -> Provider {
             retry_transport: true,
         },
         stream_idle_timeout: Duration::from_millis(10),
+        request_body_max_bytes: None,
     }
 }
 

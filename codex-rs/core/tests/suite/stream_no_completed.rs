@@ -61,6 +61,7 @@ async fn retries_on_early_close() {
         env_http_headers: None,
         // exercise retry path: first attempt yields incomplete stream, so allow 1 retry
         request_max_retries: Some(0),
+        request_body_max_bytes: None,
         stream_max_retries: Some(1),
         stream_idle_timeout_ms: Some(2000),
         websocket_connect_timeout_ms: None,
@@ -139,6 +140,7 @@ async fn grok_retries_after_responses_stream_idle_timeout() {
         http_headers: None,
         env_http_headers: None,
         request_max_retries: Some(0),
+        request_body_max_bytes: None,
         stream_max_retries: Some(5),
         stream_idle_timeout_ms: Some(50),
         websocket_connect_timeout_ms: None,

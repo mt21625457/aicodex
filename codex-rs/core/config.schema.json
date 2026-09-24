@@ -2390,6 +2390,12 @@
           "description": "Optional query parameters to append to the base URL.",
           "type": "object"
         },
+        "request_body_max_bytes": {
+          "description": "Uncompressed Responses request byte budget for this provider route. Must be positive. Unset uses conservative endpoint defaults.",
+          "format": "uint",
+          "minimum": 1.0,
+          "type": "integer"
+        },
         "request_max_retries": {
           "description": "Maximum number of times to retry a failed HTTP request to this provider.",
           "format": "uint64",

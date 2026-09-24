@@ -79,6 +79,8 @@ pub struct ModelProvider {
     pub supports_developer_role: ::core::option::Option<bool>,
     #[prost(bool, tag = "19")]
     pub supports_standalone_web_search: bool,
+    #[prost(uint64, optional, tag = "20")]
+    pub request_body_max_bytes: ::core::option::Option<u64>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct StringMap {

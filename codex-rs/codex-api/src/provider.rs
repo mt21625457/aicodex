@@ -47,6 +47,8 @@ pub struct Provider {
     pub headers: HeaderMap,
     pub retry: RetryConfig,
     pub stream_idle_timeout: Duration,
+    /// Optional uncompressed Responses request byte budget for this route.
+    pub request_body_max_bytes: Option<usize>,
 }
 
 impl Provider {

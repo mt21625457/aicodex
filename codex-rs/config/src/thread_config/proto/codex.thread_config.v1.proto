@@ -50,6 +50,7 @@ message ModelProvider {
   bool supports_websockets = 17;
   optional bool supports_developer_role = 18;
   bool supports_standalone_web_search = 19;
+  optional uint64 request_body_max_bytes = 20;
 }
 
 message StringMap {

@@ -187,6 +187,7 @@ pub struct ResponsesWebsocketConnection {
     endpoint: ResponsesEndpoint,
     // TODO (pakrym): is this the right place for timeout?
     idle_timeout: Duration,
+    request_budget: crate::request_budget::RequestBudget,
     server_reasoning_included: bool,
     server_model: Option<String>,
     telemetry: Option<Arc<dyn WebsocketTelemetry>>,
@@ -213,10 +214,12 @@ impl ResponsesWebsocketConnection {
         server_model: Option<String>,
         telemetry: Option<Arc<dyn WebsocketTelemetry>>,
         endpoint: ResponsesEndpoint,
+        request_budget: crate::request_budget::RequestBudget,
     ) -> Self {
         Self {
             stream: Arc::new(Mutex::new(Some(stream))),
             endpoint,
+            request_budget,
             idle_timeout,
             server_reasoning_included,
             server_model,
@@ -272,7 +275,7 @@ impl ResponsesWebsocketConnection {
             warmup: ws_request.generate == Some(false),
             connection_reused,
         };
-        let request_text = serialize_websocket_request(&request)?;
+        let request_text = serialize_websocket_request(&request, self.request_budget).await?;
         let trace_summary = websocket_request_trace_summary(&request, request_text.len());
         trace!(
             request_type = trace_summary.request_type,
@@ -436,6 +439,7 @@ impl ResponsesWebsocketClient {
             server_model,
             telemetry,
             self.endpoint,
+            crate::request_budget::RequestBudget::for_provider(&self.provider),
         ))
     }
 
@@ -938,10 +942,22 @@ async fn send_websocket_request(
     Ok(())
 }
 
-fn serialize_websocket_request(request: &ResponsesWsRequest<'_>) -> Result<String, ApiError> {
-    serde_json::to_string(request)
-        .map_err(|err| ApiError::Stream(format!("failed to encode websocket request: {err}")))
+async fn serialize_websocket_request(
+    request: &ResponsesWsRequest<'_>,
+    budget: crate::request_budget::RequestBudget,
+) -> Result<String, ApiError> {
+    let body = serde_json::to_value(request).map_err(|_| ApiError::InvalidRequest {
+        message: "Cannot encode Responses websocket request".into(),
+    })?;
+    let prepared = crate::request_budget::prepare(body, budget).await?;
+    String::from_utf8(prepared.as_bytes().to_vec()).map_err(|_| ApiError::InvalidRequest {
+        message: "Cannot encode Responses websocket request".into(),
+    })
 }
+
+#[cfg(test)]
+#[path = "responses_websocket_budget_tests.rs"]
+mod budget_tests;
 
 #[derive(Debug, PartialEq, Eq)]
 struct WebsocketRequestTraceSummary<'a> {
@@ -993,8 +1009,8 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    #[test]
-    fn direct_serialization_preserves_websocket_request_payload() {
+    #[tokio::test]
+    async fn direct_serialization_preserves_websocket_request_payload() {
         let api_request = ResponsesApiRequest {
             model: "gpt-test".to_string(),
             instructions: "Use the available tools.".to_string(),
@@ -1049,7 +1065,9 @@ mod tests {
         expected_payload["previous_response_id"] = json!("resp-1");
         expected_payload["generate"] = json!(false);
         let request_text =
-            serialize_websocket_request(&request).expect("serialize websocket request");
+            serialize_websocket_request(&request, budget_tests::budget(/*limit*/ 40 * 1024 * 1024))
+                .await
+                .expect("serialize websocket request");
         let wire_payload =
             serde_json::from_str::<Value>(&request_text).expect("parse websocket request");
 
@@ -1062,8 +1080,8 @@ mod tests {
         assert!(config.extensions.permessage_deflate.is_some());
     }
 
-    #[test]
-    fn websocket_request_trace_summary_omits_payload_content() {
+    #[tokio::test]
+    async fn websocket_request_trace_summary_omits_payload_content() {
         let secret_input = format!("{}secret-input", "a".repeat(4096));
         let secret_tool_description = "secret tool description must not be logged";
         let api_request = ResponsesApiRequest {
@@ -1113,7 +1131,9 @@ mod tests {
             ..ResponseCreateWsRequest::from(&api_request)
         });
         let request_text =
-            serialize_websocket_request(&request).expect("serialize websocket request");
+            serialize_websocket_request(&request, budget_tests::budget(/*limit*/ 40 * 1024 * 1024))
+                .await
+                .expect("serialize websocket request");
         assert!(request_text.contains(&secret_input));
         assert!(request_text.contains(secret_tool_description));
 
