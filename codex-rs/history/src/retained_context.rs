@@ -3,6 +3,9 @@
 //! Adopted parent instructions precede local facts without sharing the local acceptance counter.
 //! Their parent verified answers are unavailable, so adopted authorization stays incomplete.
 
+#[path = "retained_assistant_messages.rs"]
+mod assistant_messages;
+
 use std::collections::VecDeque;
 
 use schemars::JsonSchema;
@@ -33,7 +36,8 @@ pub struct VerifiedAnswer {
     pub questions: Vec<VerifiedQuestionAnswer>,
 }
 
-/// Original user instruction, retained outside model summarization for delegated review.
+/// Original conversational text, retained outside model summarization for review.
+/// The owning family supplies the source role; assistant text never establishes authorization.
 /// Non-text input is not reconstructed as text; missing evidence remains explicit.
 #[derive(Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct RetainedUserMessage {
@@ -41,6 +45,9 @@ pub struct RetainedUserMessage {
     pub message_id: Option<String>,
     pub text: String,
     pub complete: bool,
+    /// Missing provenance in older checkpoints conservatively remains ordinary input.
+    #[serde(default, skip_serializing_if = "crate::UserInputOrigin::is_user")]
+    pub origin: crate::UserInputOrigin,
 }
 
 /// Local facts use their acceptance counter; copied parent instructions use prefix order.
@@ -110,6 +117,7 @@ pub enum RetainedContextOrder {
 /// Borrowed host evidence across retained families.
 pub enum RetainedContextEntry<'a> {
     UserMessage(&'a RetainedUserMessage),
+    AssistantMessage(&'a RetainedUserMessage),
     VerifiedAnswer(&'a VerifiedAnswer),
 }
 
@@ -146,8 +154,14 @@ pub struct RetainedContext {
     #[serde(default)]
     user_messages: VecDeque<Ordered<RetainedUserMessage>>,
     /// Old checkpoints did not preserve user restrictions for delegated review.
-    #[serde(default = "legacy_user_messages_incomplete")]
+    #[serde(default = "missing_message_history")]
     user_messages_incomplete: bool,
+    /// Assistant context has a separate budget so it cannot evict user restrictions.
+    #[serde(default)]
+    assistant_messages: VecDeque<Ordered<RetainedUserMessage>>,
+    /// Observed assistant storage omissions; absent legacy metadata is not evidence of loss.
+    #[serde(default)]
+    assistant_messages_incomplete: bool,
     #[serde(default)]
     next_order: u64,
     /// Delivery snapshots share local input order, so later steers can be undone independently.
@@ -155,7 +169,7 @@ pub struct RetainedContext {
     sender_deliveries: VecDeque<Ordered<SenderUserMessages>>,
 }
 
-fn legacy_user_messages_incomplete() -> bool {
+fn missing_message_history() -> bool {
     true
 }
 
@@ -284,7 +298,7 @@ impl RetainedContext {
         self.user_messages.iter().any(|entry| entry.inherited)
     }
 
-    /// Returns retained evidence with its origin and persisted order across both families.
+    /// Returns retained evidence with its origin and persisted order across all families.
     /// Explicit acceptance order survives delayed recording; inherited prefix order stays separate.
     pub fn ordered_entries(
         &self,
@@ -303,6 +317,12 @@ impl RetainedContext {
                     .iter()
                     .map(|entry| (entry.key(), RetainedContextEntry::UserMessage(&entry.value))),
             )
+            .chain(self.assistant_messages.iter().map(|entry| {
+                (
+                    entry.key(),
+                    RetainedContextEntry::AssistantMessage(&entry.value),
+                )
+            }))
             .collect::<Vec<_>>();
         entries.sort_by_key(|(order, _)| *order);
         entries.into_iter()
@@ -318,6 +338,28 @@ impl RetainedContext {
     ) {
         message.bound();
         let inherited = source == RetainedInputSource::Inherited;
+        // An unchanged invocation is not a new instruction. Keep the original
+        // acceptance order; compare only the latest version of this automation,
+        // so A -> B -> A still records three distinct instruction versions.
+        if message.complete
+            && message.origin == crate::UserInputOrigin::Heartbeat
+            && let Some(current) = crate::Heartbeat::parse(&message.text)
+        {
+            for entry in self.user_messages.iter().rev().filter(|entry| {
+                entry.inherited == inherited
+                    && entry.value.origin == crate::UserInputOrigin::Heartbeat
+            }) {
+                let Some(previous) = crate::Heartbeat::parse(&entry.value.text) else {
+                    break;
+                };
+                if previous.automation_id == current.automation_id {
+                    if entry.value.complete && previous.instructions == current.instructions {
+                        return;
+                    }
+                    break;
+                }
+            }
+        }
         // Worker forks omit parent answer records. Adopting their instructions
         // cannot establish whether an omitted answer restricted an inherited grant.
         self.verified_answers_incomplete |= inherited;
@@ -334,12 +376,7 @@ impl RetainedContext {
         // Parent and worker counters have different scopes. Adopt the copied prefix
         // in history order without advancing the worker's local acceptance counter.
         let order = if inherited {
-            self.user_messages
-                .iter()
-                .filter(|entry| entry.inherited)
-                .map(|entry| entry.order.saturating_add(1))
-                .max()
-                .unwrap_or_default()
+            self.next_inherited_order()
         } else {
             self.record_order(source.acceptance_order())
         };
@@ -421,7 +458,11 @@ impl RetainedContext {
             entry.value = answer;
             self.next_order = self.next_order.max(entry.order.saturating_add(1));
         }
-        for entry in &mut self.user_messages {
+        for entry in self
+            .user_messages
+            .iter_mut()
+            .chain(&mut self.assistant_messages)
+        {
             entry.value.bound();
             // Also repair checkpoints written before adoption recorded the answer gap.
             self.verified_answers_incomplete |= entry.inherited;
@@ -453,6 +494,10 @@ impl RetainedContext {
             &mut self.verified_answers_incomplete,
         );
         bound_family(&mut self.user_messages, &mut self.user_messages_incomplete);
+        bound_family(
+            &mut self.assistant_messages,
+            &mut self.assistant_messages_incomplete,
+        );
     }
 
     /// Keeps legacy answers whose source calls survive when no retained instruction boundary exists.
@@ -483,6 +528,8 @@ impl RetainedContext {
                 .retain(|entry| entry.key() < boundary);
             self.verified_answers.retain(|entry| entry.key() < boundary);
             self.user_messages.retain(|entry| entry.key() < boundary);
+            self.assistant_messages
+                .retain(|entry| entry.key() < boundary);
             return;
         }
         self.user_messages_incomplete |= first_removed_message_id.is_some()
@@ -497,6 +544,10 @@ impl RetainedContext {
         self.sender_deliveries.retain(|entry| {
             source != RetainedInputSource::Inherited
                 && !turn_ids.contains(&entry.value.receiver_turn_id.as_str())
+        });
+        self.assistant_messages.retain(|message| {
+            (source != RetainedInputSource::Inherited || message.inherited)
+                && !turn_ids.contains(&message.value.turn_id.as_str())
         });
         self.user_messages.retain(|message| {
             (source != RetainedInputSource::Inherited || message.inherited)

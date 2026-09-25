@@ -2,7 +2,10 @@ use pretty_assertions::assert_eq;
 
 use super::RemoteNetworkProxyConfig;
 use super::RemoteNetworkProxyLaunchConfig;
+use crate::LocalBindingPolicy::DefaultFalse;
+use crate::LocalBindingPolicy::RequireTrue;
 use crate::MitmHookConfig;
+use crate::NetworkMitmCaConfig;
 use crate::NetworkMode;
 use crate::NetworkProxy;
 use crate::NetworkProxyAuditMetadata;
@@ -37,6 +40,7 @@ fn optional_socket_policy_preserves_input_and_resolves_at_remote_boundary() {
             allow_all.unwrap_or(false)
         );
         config.dangerously_allow_all_unix_sockets = Some(allow_all.unwrap_or(false));
+        config.allow_local_binding = Some(false);
         assert_eq!(remote.into_network_proxy_config(), config);
     }
 }
@@ -56,7 +60,7 @@ async fn round_trip_preserves_supported_effective_settings() {
             allow_upstream_proxy: false,
             dangerously_allow_all_unix_sockets: Some(true),
             mode: NetworkMode::Limited,
-            allow_local_binding: true,
+            allow_local_binding: Some(true),
             ..NetworkProxyConfig::default()
         };
         config.set_allowed_domains(vec!["example.com".into()]);
@@ -92,7 +96,7 @@ async fn round_trip_preserves_supported_effective_settings() {
         );
         assert_eq!(
             proxy
-                .remote_launch_config()
+                .remote_launch_config(DefaultFalse)
                 .await
                 .unwrap()
                 .proxy
@@ -164,6 +168,26 @@ fn accepts_unsupported_configuration_when_proxy_is_disabled() {
 }
 
 #[test]
+fn rejects_external_ca_even_when_proxy_is_disabled() {
+    for (enabled, mitm_enabled) in [(false, false), (false, true), (true, false), (true, true)] {
+        let config = NetworkProxyConfig {
+            enabled,
+            mitm: mitm_enabled,
+            mitm_ca: Some(NetworkMitmCaConfig {
+                certificate_file: "/run/proxy/ca.pem".to_string(),
+                private_key_file: "/run/proxy/key.pem".to_string(),
+            }),
+            ..NetworkProxyConfig::default()
+        };
+
+        assert!(
+            RemoteNetworkProxyConfig::from_effective_config(&config).is_err(),
+            "external CA configuration must not cross the remote executor boundary (proxy enabled={enabled}, MITM enabled={mitm_enabled})"
+        );
+    }
+}
+
+#[test]
 fn launch_config_materializes_audit_and_execution_attribution() {
     let proxy = RemoteNetworkProxyConfig::from_effective_config(&NetworkProxyConfig {
         enabled: true,
@@ -209,4 +233,37 @@ fn policy_decision_callback_timeout_round_trips() {
             .expect("deserialize launch timeout"),
         launch
     );
+}
+
+#[tokio::test]
+async fn local_binding_is_resolved_for_each_executor() -> anyhow::Result<()> {
+    for (binding, policy, expected) in [
+        (None, DefaultFalse, Some(false)),
+        (None, RequireTrue, Some(true)),
+        (Some(false), DefaultFalse, Some(false)),
+        (Some(false), RequireTrue, None),
+        (Some(true), DefaultFalse, Some(true)),
+    ] {
+        let config = NetworkProxyConfig {
+            enabled: true,
+            allow_local_binding: binding,
+            ..Default::default()
+        };
+        let mut state = crate::runtime::network_proxy_state_for_policy(config);
+        state.local_binding_policy = RequireTrue;
+        let proxy = NetworkProxy::builder()
+            .state(Arc::new(state))
+            .managed_by_codex(false)
+            .build()
+            .await?;
+        assert_eq!(
+            proxy
+                .remote_launch_config(policy)
+                .await
+                .ok()
+                .map(|launch| launch.proxy.allow_local_binding),
+            expected,
+        );
+    }
+    Ok(())
 }

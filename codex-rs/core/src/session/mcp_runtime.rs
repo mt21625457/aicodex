@@ -15,6 +15,7 @@ use codex_mcp::McpServerRegistration;
 use codex_mcp::McpServerSource;
 use codex_mcp::McpStartupPolicy;
 use codex_mcp::PreparedMcpCall;
+use codex_mcp::ToolInfo;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use std::collections::HashSet;
 
@@ -55,15 +56,13 @@ impl Session {
     /// Captures this session's current MCP client and catalog for one tool call.
     pub(crate) async fn prepare_mcp_call(
         self: &Arc<Self>,
-        server: &str,
-        tool: &str,
+        advertised_tool: &ToolInfo,
     ) -> Option<PreparedMcpCall> {
         self.refresh_mcp_if_dirty().await;
         self.services
             .mcp_runtime
-            .current_binding_for_call(server)
-            .await?
-            .prepare_call(server, tool)
+            .prepare_call(advertised_tool)
+            .await
     }
 
     pub(super) async fn latest_mcp_desired_state(
@@ -374,7 +373,6 @@ impl Session {
             client_mcp_extensions: self.services.client_mcp_extensions.for_mcp_servers(),
             auth,
             auth_manager: Some(Arc::clone(&self.services.auth_manager)),
-            allow_user_interaction: !desired.session_source.is_non_root_agent(),
             elicitation_reviewer,
             elicitation_lifecycle: Some(self.mcp_elicitation_lifecycle()),
         }

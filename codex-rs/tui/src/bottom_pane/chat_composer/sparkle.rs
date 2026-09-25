@@ -67,7 +67,7 @@ pub(super) struct Sparkle {
     command_input: RefCell<String>,
     phase: Cell<Phase>,
     fresh: bool,
-    terminal_focused: bool,
+    pub(super) terminal_focused: bool,
 }
 
 impl Default for Sparkle {
@@ -97,7 +97,7 @@ impl BottomPane {
             SparkleDraft::Untouched | SparkleDraft::Command
         ) && self.composer.sparkle.phase.get() == Phase::Unarmed
             && settings.animations
-            && settings.whimsy
+            && settings.effects.starfield
             && Self::is_sparkle_model(model)
         {
             self.composer.sparkle.phase.set(Phase::Waiting);
@@ -112,7 +112,7 @@ impl BottomPane {
     }
 
     pub(crate) fn stop_ineligible_sparkle(&self, model: &str, settings: &Tui) {
-        if !settings.animations || !settings.whimsy || !Self::is_sparkle_model(model) {
+        if !settings.animations || !settings.effects.starfield || !Self::is_sparkle_model(model) {
             self.composer.stop_visible_sparkle();
         }
     }

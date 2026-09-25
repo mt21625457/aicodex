@@ -37,6 +37,22 @@ impl TestDaemon {
             .join(&release_name)
             .join("bin/codex");
         std::fs::create_dir_all(managed.parent().context("managed bin parent")?)?;
+        // Preserve the installed path without invalidating the shared CLI's Rosetta cache.
+        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+        {
+            std::fs::copy(&codex_source, &managed)?;
+            // Translate the fixture before timed daemon capability and readiness checks.
+            ensure!(
+                Command::new(&managed)
+                    .env("CODEX_HOME", home.path())
+                    .arg("--version")
+                    .output()?
+                    .status
+                    .success(),
+                "failed to prepare managed test executable"
+            );
+        }
+        #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
         std::fs::hard_link(&codex_source, &managed)
             .or_else(|_| std::fs::copy(&codex_source, managed).map(|_| ()))?;
         std::fs::write(standalone.join("auto-update-version"), &release_name)?;
@@ -524,10 +540,22 @@ fn packaged_daemon_launch(action: &str, initial: InitialDaemon) -> Result<()> {
         br#"{"shutdownGraceSeconds":0}"#,
     )?;
     let cli_before = daemon.codex.canonicalize()?;
-    let result = daemon
-        .command()
-        .args(["app-server", "daemon", action])
-        .output()?;
+    let mut command = daemon.command();
+    command.args(["app-server", "daemon", action]);
+    // A freshly copied executable can briefly remain busy on Linux CI workers.
+    let mut retries = 0;
+    let result = loop {
+        let result = command.output();
+        if !result
+            .as_ref()
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::ExecutableFileBusy)
+            || retries == 2
+        {
+            break result?;
+        }
+        retries += 1;
+        std::thread::sleep(Duration::from_millis(/*millis*/ 10));
+    };
     ensure!(
         result.status.success(),
         "{}",

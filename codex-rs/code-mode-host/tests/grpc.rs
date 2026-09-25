@@ -46,6 +46,8 @@ use tonic::transport::Server;
 mod host;
 #[path = "support/large_tool_delegate.rs"]
 mod large_tool_delegate;
+#[path = "grpc/network_policy_tests.rs"]
+mod network_policy_tests;
 #[path = "support/recording_delegate.rs"]
 mod recording_delegate;
 
@@ -122,6 +124,7 @@ fn tool(name: &str) -> ToolDefinition {
         description: String::new(),
         kind: CodeModeToolKind::Function,
         input_schema: None,
+        input_schema_max_bytes: None,
         output_schema: None,
     }
 }

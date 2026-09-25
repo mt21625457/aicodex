@@ -1,5 +1,6 @@
 //! Context fragments injected into model input.
 
+mod agent_message_board_notification;
 mod approved_command_prefix_saved;
 mod apps_instructions;
 mod available_plugins_instructions;
@@ -13,6 +14,7 @@ mod environments_instructions;
 mod guardian_approved_action;
 mod guardian_budget_omission;
 mod guardian_context_mode;
+mod user_goal;
 pub use guardian_budget_omission::GuardianBudgetOmission;
 mod guardian_followup_review_reminder;
 mod guardian_node_repl_policy;
@@ -50,6 +52,7 @@ mod user_shell_command;
 mod user_verification_notice;
 pub(crate) mod world_state;
 
+pub(crate) use agent_message_board_notification::AgentMessageBoardNotification;
 pub(crate) use approved_command_prefix_saved::APPROVED_COMMAND_PREFIX_SAVED_MESSAGE_PREFIX;
 pub(crate) use approved_command_prefix_saved::ApprovedCommandPrefixSaved;
 pub(crate) use apps_instructions::AppsInstructions;
@@ -59,10 +62,12 @@ pub(crate) use codex_context_fragments::AdditionalContextDeveloperFragment;
 pub(crate) use codex_context_fragments::AdditionalContextUserFragment;
 pub use codex_context_fragments::AnsweredQuestion;
 pub use codex_context_fragments::ContextualUserFragment;
+pub(crate) use codex_guardian_context::PermissionContext as GuardianPermissionContext;
 pub(crate) use codex_prompts::MultiAgentRoleInstructions;
 pub use codex_prompts::PermissionsInstructions;
 pub(crate) use compaction_summary::CompactionSummary;
 pub(crate) use contextual_user_message::is_contextual_user_fragment;
+pub(crate) use contextual_user_message::is_guardian_context_message;
 pub(crate) use contextual_user_message::is_user_authorization_message;
 pub(crate) use contextual_user_message::parse_visible_hook_prompt_message;
 pub(crate) use current_time_reminder::CurrentTimeReminder;
@@ -117,6 +122,7 @@ pub(crate) use token_budget_context::TokenBudgetRemainingContext;
 pub(crate) use token_budget_context::TokenBudgetReminder;
 pub(crate) use turn_aborted::TurnAborted;
 pub(crate) use unsupported_media::UnsupportedMedia;
+pub use user_goal::UserGoalUpdate;
 pub(crate) use user_instructions::UserInstructions;
 pub(crate) use user_shell_command::UserShellCommand;
 pub(crate) use user_verification_notice::UserVerificationNotice;

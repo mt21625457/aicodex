@@ -62,8 +62,9 @@ impl AnalyticsView {
                 PlanType::Free => "Free",
                 PlanType::Go => "Go",
                 PlanType::Plus => "Plus",
-                PlanType::Pro => "Pro",
-                PlanType::ProLite => "Pro Lite",
+                PlanType::Pro => "Pro (More)",
+                PlanType::ProLite => "Pro",
+                PlanType::ProMax => "Pro (Max)",
                 PlanType::Team
                 | PlanType::Business
                 | PlanType::SelfServeBusinessProLite
@@ -156,17 +157,7 @@ impl AnalyticsView {
             lines.extend([values, labels, Line::default()]);
         }
         let selected = self.sections[Section::Summary].group;
-        let controls = Line::from(super::summary::VIEWS[selected].label());
-        if inner_width >= 58 {
-            lines.push(columns(
-                "Token activity".bold().into(),
-                controls,
-                inner_width,
-            ));
-        } else {
-            lines.push("Token activity".bold().into());
-            lines.extend(word_wrap_lines([controls], RtOptions::new(inner_width)));
-        }
+        lines.push("Token activity".bold().into());
         lines.push("Last 12 months".set_style(secondary_style()).into());
         lines.push(Line::default());
         if let Some(buckets) = &tokens.daily_usage_buckets {

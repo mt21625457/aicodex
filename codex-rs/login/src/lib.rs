@@ -41,6 +41,7 @@ pub use auth::AuthKeyringBackendKind;
 pub use auth::AuthManager;
 pub use auth::AuthManagerConfig;
 pub use auth::AuthManagerInitializationError;
+pub use auth::AuthRuntimeConfig;
 pub use auth::CLIENT_ID;
 pub use auth::CLIENT_ID_OVERRIDE_ENV_VAR;
 pub use auth::CODEX_ACCESS_TOKEN_ENV_VAR;
@@ -75,4 +76,9 @@ pub use outbound_proxy::AuthRouteConfig;
 pub use token_data::TokenData;
 
 pub use gateway_auth::GatewayAuthConfig;
+pub use gateway_auth::GatewayAuthError;
 pub use gateway_auth::GatewayAuthManager;
+pub use gateway_auth::GatewayAuthStatus;
+pub use gateway_auth::GatewayAuthStatusChange;
+pub use gateway_auth::GatewayLoginControl;
+pub use gateway_auth::subscribe_gateway_auth_status;

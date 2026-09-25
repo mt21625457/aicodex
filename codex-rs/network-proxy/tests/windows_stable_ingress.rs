@@ -297,7 +297,7 @@ async fn build_proxy(
         socks_url: format!("socks5://{socks_addr}"),
         enable_socks5,
         enable_socks5_udp: false,
-        allow_local_binding: true,
+        allow_local_binding: Some(true),
         mode: NetworkMode::Full,
         ..NetworkProxyConfig::default()
     };
@@ -452,9 +452,7 @@ fn run_restricted_child_blocking(
             /*logs_base_dir*/ None,
             /*stdio*/ None,
             /*console_mode*/ ConsoleMode::Inherit,
-            LaunchDesktop::prepare(
-                /*use_private_desktop*/ false, /*logs_base_dir*/ None,
-            )?,
+            LaunchDesktop::prepare(/*logs_base_dir*/ None)?,
         )?
     };
     let process = unsafe {

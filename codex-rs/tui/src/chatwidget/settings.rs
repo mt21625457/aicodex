@@ -211,6 +211,7 @@ impl ChatWidget {
         self.codex_rate_limit_reached_type = None;
         self.codex_spend_control_reached = None;
         self.rate_limit_warnings = RateLimitWarningState::default();
+        self.usage_notice_state = usage_notice::UsageNoticeState::default();
         self.rate_limit_switch_prompt = RateLimitSwitchPromptState::Idle;
         self.bottom_pane
             .dismiss_view_by_id(RATE_LIMIT_SWITCH_PROMPT_VIEW_ID);
@@ -443,6 +444,7 @@ impl ChatWidget {
     }
 
     fn apply_thread_settings(&mut self, mut settings: ThreadSettings) {
+        self.prompt_suggestion_summary = settings.summary;
         self.invalidate_permission_discovery();
         let cwd_changed = self.config.cwd != settings.cwd;
         self.apply_thread_settings_cwd(settings.cwd.clone());
@@ -543,12 +545,12 @@ impl ChatWidget {
         self.refresh_model_dependent_surfaces();
     }
 
-    pub(super) fn model_display_name(&self) -> &str {
+    pub(crate) fn model_display_name(&self) -> &str {
         let model = self.current_model();
         if model.is_empty() {
             DEFAULT_MODEL_DISPLAY_NAME
         } else {
-            crate::model_catalog::model_display_name(model)
+            self.model_catalog.display_name(model)
         }
     }
 

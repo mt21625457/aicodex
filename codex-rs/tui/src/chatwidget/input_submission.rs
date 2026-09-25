@@ -76,6 +76,7 @@ impl ChatWidget {
     }
 
     pub(super) fn submit_user_message(&mut self, user_message: UserMessage) {
+        self.clear_prompt_suggestion();
         let _accepted = self.submit_user_message_with_history_record(
             user_message,
             UserMessageHistoryRecord::UserMessageText,
@@ -138,6 +139,7 @@ impl ChatWidget {
         if self.has_misalignment_policy_violation() {
             return (false, None);
         }
+        self.empty_state_animation.borrow_mut().dismiss();
         if self.input_queue.rate_limit_recovery_pending || self.pending_image_submission.is_some() {
             let model_prompt = source == UserMessageSource::Prompt
                 && (shell_escape_policy == ShellEscapePolicy::Disallow
@@ -282,7 +284,9 @@ impl ChatWidget {
                 .retain(|binding| crate::task_mentions::valid_thread_path(&binding.path).is_none());
         }
 
-        let mentions = collect_tool_mentions(&text, &HashMap::new());
+        let reply_text = crate::async_question_reply::display_text(&text);
+        let mentions =
+            collect_tool_mentions(reply_text.as_deref().unwrap_or(&text), &HashMap::new());
         let bound_names: HashSet<String> = mention_bindings
             .iter()
             .map(|binding| binding.mention.clone())
@@ -421,6 +425,7 @@ impl ChatWidget {
         let submitted_image_display = (render_in_history && !local_images.is_empty())
             .then(|| Self::user_message_display_from_inputs(&items));
         let client_user_message_id = uuid::Uuid::new_v4().to_string();
+        crate::startup_recovery::bind_submission(&text, &client_user_message_id);
         let pending_steer = (!render_in_history).then(|| PendingSteer {
             client_id: client_user_message_id.clone(),
             user_message: UserMessage {
@@ -513,6 +518,11 @@ impl ChatWidget {
             }
         };
         if let Some((text, elements)) = history {
+            let reply_text = crate::async_question_reply::display_text(text);
+            let (text, elements) = match &reply_text {
+                Some(text) => (text.as_str(), &[][..]),
+                None => (text.as_str(), elements),
+            };
             self.append_message_history_entry(encode_history_mentions_at_elements(
                 text,
                 &encoded_mentions,

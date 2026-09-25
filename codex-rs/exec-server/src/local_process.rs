@@ -422,7 +422,7 @@ impl LocalProcess {
             windows_sandbox: prepared.windows_sandbox_spawn_request(),
             tty: params.tty,
             stdin_open: params.tty || params.pipe_stdin,
-            inherited_fds: &[],
+            inherited_fds: codex_utils_pty::ChildFds::Inherited(&[]),
         })
         .await;
         let spawned = match spawned_result {
@@ -1250,6 +1250,20 @@ mod tests {
     use crate::protocol::NetworkPolicyRequestParams;
     #[cfg(not(target_os = "windows"))]
     use crate::protocol::NetworkPolicyRequestResponse;
+
+    #[cfg(target_os = "linux")]
+    #[ctor::ctor]
+    fn initialize_spawn_helper() {
+        use std::os::unix::ffi::OsStringExt;
+        let command_line = std::fs::read("/proc/self/cmdline").expect("test command line");
+        codex_utils_pty::init_spawn_helper(
+            command_line
+                .strip_suffix(&[0])
+                .unwrap_or(&command_line)
+                .split(|byte| *byte == 0)
+                .map(|arg| std::ffi::OsString::from_vec(arg.to_vec())),
+        );
+    }
 
     fn test_exec_params(env: HashMap<String, String>) -> ExecParams {
         ExecParams {

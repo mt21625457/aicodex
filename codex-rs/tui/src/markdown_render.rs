@@ -1,11 +1,13 @@
 //! Low-level markdown event renderer for the TUI transcript.
 //!
 //! This module consumes `pulldown-cmark` events and emits styled `ratatui`
-//! lines, including table layout, Mermaid previews, width-aware wrapping, and local file-link
+//! lines, including table layout, task-list checkboxes, Mermaid previews, wrapping, and local file-link
 //! display. It is the final rendering stage used by higher-level helpers in
-//! `markdown.rs`.
+//! `markdown.rs`. Launch-time `tui.rendering` preferences preserve disabled features as source.
 //!
 //! Local file-link parsing and display policy live in [`local_links`].
+//! List spacing stays a renderer policy: compact while streaming in an owned viewport, uniform
+//! after source-backed consolidation, and historical spacing for native scrollback.
 //!
 //! ## Table rendering pipeline
 //!
@@ -44,16 +46,15 @@ use crate::render::highlight::foreground_style_for_scopes;
 use crate::render::highlight::foreground_style_for_scopes_with_theme;
 use crate::render::highlight::highlight_code_to_lines;
 use crate::render::line_utils::line_to_static;
+use crate::style::accent_color;
 use crate::style::table_separator_style;
 use crate::terminal_hyperlinks::HyperlinkLine;
-use crate::terminal_hyperlinks::annotate_web_urls_in_line;
 use crate::terminal_hyperlinks::remap_wrapped_line;
 use crate::terminal_hyperlinks::visible_lines;
 use crate::terminal_hyperlinks::web_destination;
 use crate::width::char_width;
 use crate::width::display_width;
 use crate::wrapping::RtOptions;
-use crate::wrapping::adaptive_wrap_line;
 use crate::wrapping::word_wrap_line;
 use pulldown_cmark::Alignment;
 use pulldown_cmark::CodeBlockKind;
@@ -73,20 +74,33 @@ use std::path::Path;
 use std::path::PathBuf;
 
 mod file_citations;
+mod list_spacing;
 mod local_links;
 mod math;
 mod mermaid;
+pub(crate) mod preferences;
+mod source_tables;
 mod streaming;
 mod table_key_value;
+mod task_lists;
 mod web_links;
 
 use file_citations::FileCitations;
+pub(crate) use list_spacing::ListSpacing;
+use list_spacing::UniformList;
 use local_links::is_local_path_like_link;
 use local_links::render_local_link_target;
 use local_links::should_render_local_link_label;
 pub(crate) use streaming::StreamingMarkdownRender;
 pub(crate) use streaming::render_streaming_markdown_lines_with_width_and_cwd;
+#[cfg(test)]
+#[path = "markdown_render/list_spacing_tests.rs"]
+mod list_spacing_tests;
+#[cfg(test)]
+#[path = "markdown_render/task_list_tests.rs"]
+mod task_list_tests;
 pub(crate) use web_links::hide_web_link_destination;
+use web_links::style_bare_web_urls;
 
 const TABLE_COLUMN_GAP: usize = 2;
 const TABLE_CELL_PADDING: usize = 1;
@@ -132,13 +146,13 @@ impl MarkdownStyles {
                     "markup.raw.inline.markdown",
                 ],
             )
-            .unwrap_or_else(|| Style::new().cyan()),
+            .unwrap_or_else(|| Style::new().fg(accent_color())),
             emphasis: Style::new().italic(),
             strong: Style::new().bold(),
             strikethrough: Style::new().crossed_out(),
-            ordered_list_marker: Style::new().light_blue(),
+            ordered_list_marker: Style::new().fg(accent_color()),
             unordered_list_marker: Style::new(),
-            link: Style::new().cyan().underlined(),
+            link: Style::new().fg(accent_color()).underlined(),
             blockquote: Style::new().green(),
         }
     }
@@ -148,14 +162,24 @@ impl MarkdownStyles {
 struct IndentContext {
     prefix: Vec<Span<'static>>,
     marker: Option<Vec<Span<'static>>>,
+    copy_marker: String,
     is_list: bool,
 }
 
 impl IndentContext {
     fn new(prefix: Vec<Span<'static>>, marker: Option<Vec<Span<'static>>>, is_list: bool) -> Self {
+        // Keep the canonical marker separate from depth-dependent display padding.
+        let copy_marker = marker
+            .iter()
+            .flatten()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+            .trim_start()
+            .replace('•', "-");
         Self {
             prefix,
             marker,
+            copy_marker,
             is_list,
         }
     }
@@ -357,12 +381,16 @@ pub(crate) fn render_markdown_lines_with_width_cwd_and_hidden_link_destinations(
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TABLES);
+    options.set(Options::ENABLE_TASKLISTS, preferences::current().lists);
     let math = math::MathMarkdown::new(input, options, width);
-    let parser = DecodedTextMerge::new(
+    let parser = DecodedTextMerge::new(source_tables::preserve(
+        input,
         math.events(Parser::new_ext(&math.markdown, options).into_offset_iter()),
-    );
-    let mut w = Writer::new(input, parser, width, cwd, is_hidden_link_destination);
-    w.run();
+    ));
+    let mut w = Writer::new(input, width, cwd, is_hidden_link_destination);
+    // Drop the consumed parser before the rendering state, including on unwind.
+    let mut parser = parser;
+    w.run(&mut parser);
     w.text
 }
 
@@ -378,6 +406,7 @@ struct LinkState {
     /// can collapse to this canonical target without losing descriptive labels.
     local_target_display: Option<String>,
     local_label_spans: Vec<Span<'static>>,
+    local_label_inline: Vec<Vec<crate::markdown_copy::Inline>>,
 }
 
 fn should_render_link_destination(dest_url: &str) -> bool {
@@ -390,22 +419,25 @@ fn should_render_link_destination(dest_url: &str) -> bool {
 /// and an optional `TableState` for accumulating table events.  The
 /// `wrap_width` field enables width-aware line wrapping and table column
 /// allocation; when `None`, lines keep their intrinsic width.
-struct Writer<'a, 'policy, I>
-where
-    I: Iterator<Item = (Event<'a>, Range<usize>)>,
-{
+/// Layout state is independent of the parser so rendering routines are compiled
+/// once; event traversal remains statically dispatched over each iterator.
+struct Writer<'a, 'policy> {
     input: &'a str,
-    iter: I,
     text: Vec<HyperlinkLine>,
     styles: MarkdownStyles,
     inline_styles: Vec<Style>,
+    copy_inline: Vec<crate::markdown_copy::Inline>,
+    copy_line: crate::markdown_copy::CopyLine,
     indent_stack: Vec<IndentContext>,
     list_indices: Vec<Option<u64>>,
     list_needs_blank_before_next_item: Vec<bool>,
     list_item_start_line_counts: Vec<usize>,
+    list_spacing: ListSpacing,
+    uniform_lists: Vec<UniformList>,
     link: Option<LinkState>,
     needs_newline: bool,
     pending_marker_line: bool,
+    last_task_marker_end: usize,
     in_paragraph: bool,
     in_code_block: bool,
     code_block_lang: Option<String>,
@@ -424,30 +456,30 @@ where
     table_state: Option<TableState>,
 }
 
-impl<'a, 'policy, I> Writer<'a, 'policy, I>
-where
-    I: Iterator<Item = (Event<'a>, Range<usize>)>,
-{
+impl<'a, 'policy> Writer<'a, 'policy> {
     fn new(
         input: &'a str,
-        iter: I,
         wrap_width: Option<usize>,
         cwd: Option<&Path>,
         is_hidden_link_destination: &'policy dyn Fn(&str) -> bool,
     ) -> Self {
         Self {
             input,
-            iter,
             text: Vec::new(),
             styles: MarkdownStyles::default(),
             inline_styles: Vec::new(),
+            copy_inline: Vec::new(),
+            copy_line: Default::default(),
             indent_stack: Vec::new(),
             list_indices: Vec::new(),
             list_needs_blank_before_next_item: Vec::new(),
             list_item_start_line_counts: Vec::new(),
+            list_spacing: ListSpacing::default(),
+            uniform_lists: Vec::new(),
             link: None,
             needs_newline: false,
             pending_marker_line: false,
+            last_task_marker_end: 0,
             in_paragraph: false,
             in_code_block: false,
             code_block_lang: None,
@@ -467,17 +499,34 @@ where
         }
     }
 
-    fn run(&mut self) {
-        while let Some((ev, range)) = self.iter.next() {
-            self.handle_event(ev, range);
+    fn run<I>(&mut self, iter: &mut I)
+    where
+        I: Iterator<Item = (Event<'a>, Range<usize>)>,
+    {
+        while let Some((ev, range)) = iter.next() {
+            self.handle_event(ev, range, iter);
         }
         self.flush_current_line();
     }
 
-    fn handle_event(&mut self, event: Event<'a>, range: Range<usize>) {
+    fn handle_event<I>(&mut self, event: Event<'a>, range: Range<usize>, iter: &mut I)
+    where
+        I: Iterator<Item = (Event<'a>, Range<usize>)>,
+    {
         self.prepare_for_event(&event);
+        let copy_inline = crate::markdown_copy::Inline::from_event(&event);
+        if let Some(inline) = &copy_inline {
+            self.copy_inline.push(inline.clone());
+        }
+        let close_inline = matches!(
+            event,
+            Event::Code(_)
+                | Event::End(
+                    TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough | TagEnd::Link
+                )
+        );
         match event {
-            Event::Start(tag) => self.start_tag(tag, range),
+            Event::Start(tag) => self.start_tag(tag, range, iter),
             Event::End(tag) => self.end_tag(tag, range),
             Event::Text(text) => {
                 if self.in_code_block {
@@ -494,12 +543,25 @@ where
                     self.push_blank_line();
                 }
                 self.push_line(Line::from("———"));
+                self.copy_line.rule = true;
                 self.needs_newline = true;
             }
             Event::Html(html) => self.html(html, /*inline*/ false),
             Event::InlineHtml(html) => self.html(html, /*inline*/ true),
             Event::FootnoteReference(_) => {}
-            Event::TaskListMarker(_) => {}
+            Event::TaskListMarker(checked) => {
+                // The parser can emit a recovered empty item's marker in a later paragraph.
+                if range.start >= self.last_task_marker_end {
+                    self.last_task_marker_end = range.end;
+                    self.task_list_marker(checked);
+                    if self.current_line_content.is_none() {
+                        self.push_line(Line::default());
+                    }
+                }
+            }
+        }
+        if close_inline {
+            self.copy_inline.pop();
         }
     }
 
@@ -520,7 +582,10 @@ where
         self.push_line(Line::default());
     }
 
-    fn start_tag(&mut self, tag: Tag<'a>, range: Range<usize>) {
+    fn start_tag<I>(&mut self, tag: Tag<'a>, range: Range<usize>, iter: &mut I)
+    where
+        I: Iterator<Item = (Event<'a>, Range<usize>)>,
+    {
         match tag {
             Tag::Paragraph => self.start_paragraph(),
             Tag::Heading { level, .. } => self.start_heading(level),
@@ -538,7 +603,39 @@ where
                 self.start_codeblock(lang, indent)
             }
             Tag::List(start) => self.start_list(start),
-            Tag::Item => self.start_item(),
+            Tag::Item => {
+                self.start_item();
+                if let Some((next, next_range)) = iter.next() {
+                    // Recover markers consumed without an event before block content or empty items.
+                    let content_start = if matches!(next, Event::End(TagEnd::Item)) {
+                        range.end
+                    } else {
+                        next_range.start
+                    };
+                    if preferences::current().lists
+                        && let Some(prefix) = self.input.get(range.start..content_start)
+                        && let Some(prefix) = prefix.lines().next()
+                        && let Some((_, marker)) = prefix.trim().split_once(char::is_whitespace)
+                        && let Some(checked) = match marker.trim() {
+                            "[ ]" => Some(false),
+                            "[x]" | "[X]" => Some(true),
+                            _ => None,
+                        }
+                    {
+                        self.last_task_marker_end = content_start;
+                        self.task_list_marker(checked);
+                        if matches!(
+                            next,
+                            Event::Start(Tag::List(_) | Tag::HtmlBlock)
+                                | Event::End(TagEnd::Item)
+                                | Event::Rule
+                        ) {
+                            self.push_line(Line::default());
+                        }
+                    }
+                    self.handle_event(next, next_range, iter);
+                }
+            }
             Tag::Emphasis => self.push_inline_style(self.styles.emphasis),
             Tag::Strong => self.push_inline_style(self.styles.strong),
             Tag::Strikethrough => self.push_inline_style(self.styles.strikethrough),
@@ -556,7 +653,15 @@ where
 
     fn end_tag(&mut self, tag: TagEnd, range: Range<usize>) {
         match tag {
-            TagEnd::Paragraph => self.end_paragraph(),
+            TagEnd::Paragraph => {
+                // At a streaming EOF, the parser omits a trailing hard-break event. Retain it
+                // before this line is committed and a later delta supplies the next line.
+                self.copy_line.hard_break |= self
+                    .input
+                    .get(..range.end)
+                    .is_some_and(|prefix| prefix.ends_with("  \n") || prefix.ends_with("  \r\n"));
+                self.end_paragraph();
+            }
             TagEnd::Heading(_) => self.end_heading(),
             TagEnd::BlockQuote => self.end_blockquote(),
             TagEnd::CodeBlock => self.end_codeblock(range),
@@ -564,6 +669,12 @@ where
             TagEnd::Item => {
                 self.flush_current_line();
                 let start_line_count = self.list_item_start_line_counts.pop().unwrap_or_default();
+                if let Some(list) = self.uniform_lists.last_mut() {
+                    let rows = &self.text[start_line_count..];
+                    list.multiline |= rows.len() > 1
+                        || (rows.len() == 1
+                            && self.wrap_width.is_some_and(|width| rows[0].width() > width));
+                }
                 if self.text.len().saturating_sub(start_line_count) > 1
                     && let Some(needs_blank) = self.list_needs_blank_before_next_item.last_mut()
                 {
@@ -623,7 +734,9 @@ where
             HeadingLevel::H6 => self.styles.h6,
         };
         let content = format!("{} ", "#".repeat(level as usize));
+        let heading = content.len();
         self.push_line(Line::from(vec![Span::styled(content, heading_style)]));
+        self.copy_line.heading = heading;
         self.push_inline_style(heading_style);
         self.needs_newline = false;
     }
@@ -792,6 +905,7 @@ where
             self.push_table_cell_hard_break();
             return;
         }
+        self.copy_line.hard_break = true;
         self.push_line(Line::default());
     }
 
@@ -820,24 +934,53 @@ where
         }
         self.list_indices.push(index);
         self.list_needs_blank_before_next_item.push(false);
+        if self.list_spacing == ListSpacing::Uniform {
+            self.uniform_lists.push(UniformList::default());
+        }
     }
 
     fn end_list(&mut self) {
+        self.flush_current_line();
+        if let Some(list) = self.uniform_lists.pop() {
+            list.finish(&mut self.text);
+        }
         self.list_indices.pop();
         self.list_needs_blank_before_next_item.pop();
         self.needs_newline = true;
     }
 
     fn start_item(&mut self) {
-        if self
+        let after_multiline = self
             .list_needs_blank_before_next_item
             .last_mut()
             .map(std::mem::take)
-            .unwrap_or(false)
-        {
-            self.push_blank_line();
-        }
+            .unwrap_or(/*default*/ false);
         self.flush_current_line();
+        let separate = match self.list_spacing {
+            ListSpacing::AfterMultiline => after_multiline,
+            ListSpacing::Compact => false,
+            ListSpacing::Uniform => self.uniform_lists.last().is_some_and(|list| list.has_item),
+        };
+        if separate {
+            let index = self.text.len();
+            self.push_blank_line();
+            if let Some(line) = self.text.get_mut(index) {
+                let mut source =
+                    crate::terminal_hyperlinks::LogicalLineSource::from_line(&line.line);
+                let mut copy = crate::markdown_copy::CopyLine::default();
+                copy.omit = true;
+                source.copy = Some(std::sync::Arc::new(copy));
+                line.source = Some(source);
+            }
+            if self.text.len() > index
+                && let Some(list) = self.uniform_lists.last_mut()
+            {
+                list.separators.push(index);
+            }
+        }
+        if let Some(list) = self.uniform_lists.last_mut() {
+            list.has_item = true;
+        }
         self.list_item_start_line_counts.push(self.text.len());
         self.pending_marker_line = true;
         let depth = self.list_indices.len();
@@ -850,7 +993,12 @@ where
         let marker = if let Some(last_index) = self.list_indices.last_mut() {
             match last_index {
                 None => Some(vec![Span::styled(
-                    " ".repeat(width - 1) + "- ",
+                    " ".repeat(width - 1)
+                        + if preferences::current().lists {
+                            "• "
+                        } else {
+                            "- "
+                        },
                     self.styles.unordered_list_marker,
                 )]),
                 Some(index) => {
@@ -880,7 +1028,14 @@ where
 
     fn start_codeblock(&mut self, lang: Option<String>, indent: Option<Span<'static>>) {
         self.flush_current_line();
-        if !self.text.is_empty() {
+        let first_item_block = self.pending_marker_line
+            && self
+                .indent_stack
+                .last()
+                .is_some_and(|context| context.is_list);
+        if !self.text.is_empty()
+            && (self.list_spacing == ListSpacing::AfterMultiline || !first_item_block)
+        {
             self.push_blank_line();
         }
         self.in_code_block = true;
@@ -910,16 +1065,17 @@ where
         if let Some(lang) = self.code_block_lang.take() {
             let code = std::mem::take(&mut self.code_block_buffer);
             if !code.is_empty() {
-                let diagram = if lang == "mermaid"
+                let diagram = if preferences::current().mermaid
+                    && lang == "mermaid"
                     && mermaid::has_closing_fence(self.input, range, self.code_block_content_end)
                 {
                     let indent =
                         Self::spans_display_width(&self.prefix_spans(self.pending_marker_line));
-                    mermaid::render(
+                    Some(mermaid::render(
                         &code,
                         self.wrap_width.map(|width| width.saturating_sub(indent)),
                         &current_syntax_theme(),
-                    )
+                    ))
                 } else {
                     None
                 };
@@ -966,6 +1122,7 @@ where
                 self.push_prewrapped_line(line, pending_marker_line);
             } else {
                 self.push_hyperlink_line(line);
+                self.copy_line.code = true;
                 self.flush_current_line();
             }
             pending_marker_line = false;
@@ -1115,7 +1272,7 @@ where
         } else if self.link.is_some() || self.in_code_block {
             HyperlinkLine::new(Line::from(span))
         } else {
-            annotate_web_urls_in_line(Line::from(span))
+            style_bare_web_urls(span, self.styles.link)
         };
         if let Some(table_state) = self.table_state.as_mut()
             && let Some(cell) = table_state.current_cell.as_mut()
@@ -1874,6 +2031,7 @@ where
                 None
             },
             local_label_spans: Vec::new(),
+            local_label_inline: Vec::new(),
             destination: dest_url,
         });
     }
@@ -1943,8 +2101,14 @@ where
                         self.push_line(Line::default());
                     }
                     if show_label {
-                        for label_span in link.local_label_spans {
+                        for (label_span, inline) in link
+                            .local_label_spans
+                            .into_iter()
+                            .zip(link.local_label_inline)
+                        {
+                            let previous = std::mem::replace(&mut self.copy_inline, inline);
                             self.push_span(label_span);
+                            self.copy_inline = previous;
                         }
                         self.push_span(" (".into());
                     }
@@ -1968,6 +2132,13 @@ where
     fn push_local_link_label_span(&mut self, span: Span<'static>) {
         if let Some(link) = self.link.as_mut() {
             link.local_label_spans.push(span);
+            link.local_label_inline.push(
+                self.copy_inline[..self
+                    .copy_inline
+                    .len()
+                    .min(crate::markdown_copy::MAX_COPY_DEPTH)]
+                    .to_vec(),
+            );
         }
     }
 
@@ -1986,22 +2157,27 @@ where
     fn flush_current_line(&mut self) {
         if let Some(mut line) = self.current_line_content.take() {
             let style = self.current_line_style;
+            let mut source = crate::terminal_hyperlinks::LogicalLineSource::from_line(&line.line);
+            source.copy = Some(std::sync::Arc::new(std::mem::take(&mut self.copy_line)));
             // NB we don't wrap code in code blocks, in order to preserve whitespace for copy/paste.
             if !self.current_line_in_code_block
                 && let Some(width) = self.wrap_width
             {
+                line.source = Some(source);
                 let opts = RtOptions::new(width)
                     .initial_indent(self.current_initial_indent.clone().into())
                     .subsequent_indent(self.current_subsequent_indent.clone().into());
-                let wrapped = adaptive_wrap_line(&line.line, opts)
-                    .into_iter()
-                    .map(|wrapped| line_to_static(&wrapped))
-                    .collect();
-                for wrapped in remap_wrapped_line(&line, wrapped) {
+                for wrapped in crate::terminal_hyperlinks::adaptive_wrap_hyperlink_lines(
+                    std::slice::from_ref(&line),
+                    opts,
+                ) {
                     self.push_output_line(wrapped.style(style));
                 }
             } else {
                 let mut spans = self.current_initial_indent.clone();
+                source.prefix_bytes = spans.iter().map(|span| span.content.len()).sum();
+                source.continuation_indent = self.current_subsequent_indent.clone().into();
+                line.source = Some(source);
                 let shift = Self::spans_display_width(&spans);
                 spans.append(&mut line.line.spans);
                 for hyperlink in &mut line.hyperlinks {
@@ -2041,6 +2217,16 @@ where
         };
 
         let mut spans = self.prefix_spans(pending_marker_line);
+        let mut source = crate::terminal_hyperlinks::LogicalLineSource::from_line(&line.line);
+        let mut copy = crate::markdown_copy::CopyLine::default();
+        copy.prefix = self.copy_prefix(pending_marker_line);
+        copy.continuation = self.copy_prefix(/*pending_marker_line*/ false);
+        copy.item_prefix = self.copy_prefix(/*pending_marker_line*/ true);
+        copy.code = true;
+        source.copy = Some(std::sync::Arc::new(copy));
+        source.prefix_bytes = spans.iter().map(|span| span.content.len()).sum();
+        source.continuation_indent = self.prefix_spans(/*pending_marker_line*/ false).into();
+        line.source = Some(source);
         let shift = Self::spans_display_width(&spans);
         spans.append(&mut line.line.spans);
         for hyperlink in &mut line.hyperlinks {
@@ -2063,6 +2249,14 @@ where
         self.current_initial_indent = self.prefix_spans(was_pending);
         self.current_subsequent_indent = self.prefix_spans(/*pending_marker_line*/ false);
         self.current_line_style = style;
+        self.copy_line = crate::markdown_copy::CopyLine::default();
+        self.copy_line.prefix = self.copy_prefix(was_pending);
+        self.copy_line.continuation = self.copy_prefix(/*pending_marker_line*/ false);
+        self.copy_line.item_prefix = self.copy_prefix(/*pending_marker_line*/ true);
+        self.copy_line.code = self.in_code_block;
+        // Heading markers are already visible; retain them as Markdown syntax.
+        self.copy_line
+            .push(line.spans.iter().map(|span| span.content.len()).sum(), &[]);
         self.current_line_content = Some(HyperlinkLine::new(line));
         self.current_line_in_code_block = self.in_code_block;
         self.line_ends_with_local_link_target = false;
@@ -2084,6 +2278,7 @@ where
             self.push_line(Line::default());
         }
         if let Some(line) = self.current_line_content.as_mut() {
+            self.copy_line.push(span.content.len(), &self.copy_inline);
             line.push_span(
                 span,
                 self.link.as_ref().map(|link| link.destination.as_str()),
@@ -2096,6 +2291,15 @@ where
             self.push_line(Line::default());
         }
         if let Some(line) = self.current_line_content.as_mut() {
+            self.copy_line.push(
+                appended
+                    .line
+                    .spans
+                    .iter()
+                    .map(|span| span.content.len())
+                    .sum(),
+                &self.copy_inline,
+            );
             let shift = line.width();
             line.line.spans.append(&mut appended.line.spans);
             line.hyperlinks
@@ -2119,7 +2323,7 @@ where
         } else if self.link.is_some() || self.in_code_block {
             HyperlinkLine::new(Line::from(span))
         } else {
-            annotate_web_urls_in_line(Line::from(span))
+            style_bare_web_urls(span, self.styles.link)
         };
         self.push_annotated(annotated);
     }
@@ -2136,6 +2340,33 @@ where
 
     fn push_output_line(&mut self, line: HyperlinkLine) {
         self.text.push(line);
+    }
+
+    // Markdown needs relative container indentation, not the display's fixed-depth padding.
+    fn copy_prefix(&self, pending_marker_line: bool) -> String {
+        // Code's display padding is not a Markdown container. Keep only the innermost semantic
+        // containers so lazy continuation lines cannot each retain an arbitrarily deep prefix.
+        let containers =
+            &self.indent_stack[..self.indent_stack.len() - usize::from(self.in_code_block)];
+        let containers = &containers[containers
+            .len()
+            .saturating_sub(crate::markdown_copy::MAX_COPY_DEPTH)..];
+        let last_list = containers.iter().rposition(|context| context.is_list);
+        let mut prefix = String::new();
+        for (index, context) in containers.iter().enumerate() {
+            if context.is_list {
+                let marker = &context.copy_marker;
+                let width = marker.find('[').unwrap_or(marker.len());
+                if pending_marker_line && Some(index) == last_list {
+                    prefix.push_str(marker);
+                } else {
+                    prefix.extend(std::iter::repeat_n(' ', width));
+                }
+            } else {
+                prefix.extend(context.prefix.iter().map(|span| span.content.as_ref()));
+            }
+        }
+        prefix
     }
 
     fn prefix_spans(&self, pending_marker_line: bool) -> Vec<Span<'static>> {
@@ -2181,6 +2412,7 @@ mod markdown_render_tests {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    use ratatui::style::Stylize;
     use ratatui::text::Text;
 
     fn lines_to_strings(text: &Text<'_>) -> Vec<String> {
@@ -2217,7 +2449,7 @@ mod tests {
         let lines = lines_to_strings(&rendered);
         assert_eq!(
             lines,
-            vec!["- first second".to_string(), "  third fourth".to_string(),]
+            vec!["• first second".to_string(), "  third fourth".to_string(),]
         );
     }
 
@@ -2230,10 +2462,10 @@ mod tests {
         assert_eq!(
             lines,
             vec![
-                "- outer item with".to_string(),
+                "• outer item with".to_string(),
                 "  several words to".to_string(),
                 "  wrap".to_string(),
-                "    - inner item".to_string(),
+                "    • inner item".to_string(),
                 "      that also".to_string(),
                 "      needs wrapping".to_string(),
             ]
@@ -2258,9 +2490,19 @@ mod tests {
 
     #[test]
     fn wraps_blockquotes() {
-        let markdown = "> block quote with content that should wrap nicely";
-        let rendered = render_markdown_text_with_width(markdown, Some(22));
-        let lines = lines_to_strings(&rendered);
+        let markdown = "> block quote with **content** that should wrap nicely";
+        let rendered =
+            render_markdown_lines_with_width_and_cwd(markdown, Some(22), /*cwd*/ None);
+        let source = rendered[0].source.as_ref().expect("blockquote source");
+        assert_eq!(
+            source.styled_range(0..source.text.len()),
+            Line::from(vec![
+                "block quote with ".green(),
+                "content".green().bold(),
+                " that should wrap nicely".green(),
+            ])
+        );
+        let lines: Vec<_> = rendered.iter().map(|line| line.line.to_string()).collect();
         assert_eq!(
             lines,
             vec![
@@ -2279,7 +2521,7 @@ mod tests {
         assert_eq!(
             lines,
             vec![
-                "- list item".to_string(),
+                "• list item".to_string(),
                 "  > block quote inside".to_string(),
                 "  > list that wraps".to_string(),
             ]
@@ -2333,7 +2575,13 @@ mod tests {
         // extracted (first word / comma-separated token) so highlighting works.
         for info in &["rust,no_run", "rust no_run", "rust title=\"demo\""] {
             let markdown = format!("```{info}\nfn main() {{}}\n```\n");
-            let rendered = render_markdown_text(&markdown);
+            let rendered = crate::terminal_palette::with_test_default_colors(
+                crate::terminal_probe::DefaultColors {
+                    fg: (220, 220, 220),
+                    bg: (20, 20, 20),
+                },
+                || render_markdown_text(&markdown),
+            );
             let has_rgb = rendered.lines.iter().any(|line| {
                 line.spans
                     .iter()
@@ -2370,7 +2618,6 @@ mod tests {
 
         let writer = W::new(
             "",
-            std::iter::empty(),
             /*wrap_width*/ Some(80),
             /*cwd*/ None,
             &never_hide_link_destination,
@@ -2396,7 +2643,7 @@ mod tests {
     // ---------------------------------------------------------------
     // Type alias for calling private associated functions on Writer.
     // ---------------------------------------------------------------
-    type W<'a> = Writer<'a, 'a, std::iter::Empty<(Event<'a>, Range<usize>)>>;
+    type W<'a> = Writer<'a, 'a>;
 
     /// Build a single-line `TableCell` from plain text.
     fn make_cell(text: &str) -> TableCell {

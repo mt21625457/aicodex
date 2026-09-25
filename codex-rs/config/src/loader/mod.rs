@@ -1,3 +1,4 @@
+mod application;
 mod layer_io;
 mod local;
 #[cfg(target_os = "macos")]
@@ -12,6 +13,9 @@ mod tests;
 mod projectless_directory_tests;
 #[cfg(windows)]
 mod windows;
+
+pub use application::LocalApplicationRequirements;
+pub use application::load_local_application_requirements;
 
 use self::layer_io::LoadedConfigLayers;
 use crate::CONFIG_TOML_FILE;
@@ -1153,8 +1157,10 @@ fn sanitize_project_config(
         {
             ignored_keys.push("features.shell_snapshot".to_string());
         }
-        if features.remove("respect_system_proxy").is_some() {
-            ignored_keys.push("features.respect_system_proxy".to_string());
+        for key in ["respect_system_proxy", "system_proxy_fallback"] {
+            if features.remove(key).is_some() {
+                ignored_keys.push(format!("features.{key}"));
+            }
         }
         if credential_broker_configured
             && features
