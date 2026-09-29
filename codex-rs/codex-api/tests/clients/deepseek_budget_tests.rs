@@ -93,7 +93,11 @@ async fn oversized_request_never_reaches_http_even_with_compression_enabled() ->
             Ok(_) => panic!("oversized request must fail"),
             Err(error) => error,
         };
-        assert!(!codex_api::map_api_error(error).is_retryable());
+        assert!(
+            codex_api::map_api_error(error)
+                .retry_delay(/*retry_count*/ 1)
+                .is_none()
+        );
         assert!(state.take_stream_requests().is_empty());
     }
     Ok(())
@@ -113,6 +117,7 @@ async fn upstream_413_is_not_retried_or_reclassified_as_transient() -> Result<()
                 status: StatusCode::PAYLOAD_TOO_LARGE,
                 url: None,
                 headers: None,
+                retry_after: None,
                 body: Some("Failed to buffer the request body: length limit exceeded".into()),
             })
         }
@@ -141,7 +146,7 @@ async fn upstream_413_is_not_retried_or_reclassified_as_transient() -> Result<()
     };
     assert_eq!(state.take_stream_requests().len(), 1);
     let error = codex_api::map_api_error(error);
-    assert!(!error.is_retryable());
+    assert!(error.retry_delay(/*retry_count*/ 1).is_none());
     assert!(error.to_string().contains("length limit exceeded"));
     Ok(())
 }

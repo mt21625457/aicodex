@@ -1,0 +1,24 @@
+---
+source: core/tests/suite/scenarios_mailbox_preemption_tests.rs
+assertion_line: 170
+expression: "context_snapshot::format_context_snapshot(\"Worker messages arrive during a response. Deferred mailbox preemption lets the planned tool execute before the next request receives both messages.\",\n&entries, &ContextSnapshotOptions::default().rewrite_known_segments(),)"
+---
+Scenario: Worker messages arrive during a response. Deferred mailbox preemption lets the planned tool execute before the next request receives both messages.
+
+## Window 1
+-- request 1 (request) --
+00:message/developer[2]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <PERMISSIONS_INSTRUCTIONS>
+01:message/user:
+    <ENVIRONMENT_CONTEXT>
+02:message/user:
+    Plan the next action while the worker finishes.
+-- request 2 (request) --
+03:reasoning:summary=Preparing the next action:encrypted=true
+04:function_call/update_plan:{"plan":[{"status":"in_progress","step":"Reply to the user"}]}
+05:function_call_output:Plan updated
+06:agent_message
+07:agent_message

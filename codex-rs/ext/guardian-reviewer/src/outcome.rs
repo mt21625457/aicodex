@@ -13,6 +13,7 @@ pub enum GuardianReviewOutcome {
 
 #[derive(Debug)]
 pub enum GuardianReviewError {
+    InputBudgetExceeded,
     PromptBuild {
         message: String,
     },
@@ -26,6 +27,8 @@ pub enum GuardianReviewError {
     },
     Timeout,
     Cancelled,
+    /// The action is still pending, but its authorization evidence changed during review.
+    StaleAuthorization,
 }
 
 impl GuardianReviewError {
@@ -61,10 +64,13 @@ impl GuardianReviewError {
     pub fn failure_reason(&self) -> GuardianReviewFailureReason {
         match self {
             Self::PromptBuild { .. } => GuardianReviewFailureReason::PromptBuildError,
-            Self::Session { .. } => GuardianReviewFailureReason::SessionError,
+            Self::Session { .. } | Self::InputBudgetExceeded => {
+                GuardianReviewFailureReason::SessionError
+            }
             Self::Parse { .. } => GuardianReviewFailureReason::ParseError,
             Self::Timeout => GuardianReviewFailureReason::Timeout,
             Self::Cancelled => GuardianReviewFailureReason::Cancelled,
+            Self::StaleAuthorization => GuardianReviewFailureReason::StaleAuthorization,
         }
     }
 }
@@ -73,6 +79,7 @@ impl GuardianReviewError {
 pub enum GuardianReviewSessionOutcome {
     Completed(anyhow::Result<Option<String>>),
     PromptBuildFailed(anyhow::Error),
+    InputBudgetExceeded,
     SessionFailed {
         error: anyhow::Error,
         error_info: Option<CodexErrorInfo>,
@@ -101,6 +108,9 @@ impl From<GuardianReviewSessionOutcome> for GuardianReviewOutcome {
             }
             GuardianReviewSessionOutcome::PromptBuildFailed(error) => {
                 Self::Error(GuardianReviewError::prompt_build(error))
+            }
+            GuardianReviewSessionOutcome::InputBudgetExceeded => {
+                Self::Error(GuardianReviewError::InputBudgetExceeded)
             }
             GuardianReviewSessionOutcome::SessionFailed {
                 error,

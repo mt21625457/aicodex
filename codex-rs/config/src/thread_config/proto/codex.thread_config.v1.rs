@@ -75,12 +75,16 @@ pub struct ModelProvider {
     pub requires_openai_auth: bool,
     #[prost(bool, tag = "17")]
     pub supports_websockets: bool,
+    /// Preserve the existing fork wire IDs; new fields must not reuse 18 or 19.
     #[prost(bool, optional, tag = "18")]
     pub supports_developer_role: ::core::option::Option<bool>,
     #[prost(bool, tag = "19")]
     pub supports_standalone_web_search: bool,
+    /// Keep the released request budget wire ID; catalog URLs use a distinct field.
     #[prost(uint64, optional, tag = "20")]
     pub request_body_max_bytes: ::core::option::Option<u64>,
+    #[prost(string, optional, tag = "21")]
+    pub model_catalog_url: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct StringMap {

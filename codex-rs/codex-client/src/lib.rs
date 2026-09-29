@@ -1,7 +1,11 @@
+mod provider;
 mod retry;
 mod sse;
 mod telemetry;
 
+pub use crate::provider::Provider;
+pub use crate::provider::RetryConfig;
+pub use crate::provider::is_azure_responses_provider;
 pub use crate::retry::RetryOn;
 pub use crate::retry::RetryOperation;
 pub use crate::retry::RetryPolicy;

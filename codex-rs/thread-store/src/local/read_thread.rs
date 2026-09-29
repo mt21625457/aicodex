@@ -14,6 +14,7 @@ use codex_state::ThreadMetadata;
 use super::LocalThreadStore;
 use super::helpers::distinct_thread_metadata_title;
 use super::helpers::git_info_from_parts;
+use super::helpers::has_guardian_default_title;
 use super::helpers::hydrate_stored_thread_runtime_metadata_from_rollout;
 use super::helpers::permission_profile_from_metadata_value;
 use super::helpers::rollout_path_is_archived;
@@ -445,14 +446,16 @@ async fn thread_name_from_metadata(
     match history_mode {
         ThreadHistoryMode::Paginated => sqlite_thread_name(metadata),
         ThreadHistoryMode::Legacy => {
-            if let Some(title) = distinct_thread_metadata_title(metadata) {
-                Some(title)
+            let title = distinct_thread_metadata_title(metadata);
+            if title.is_some() && !has_guardian_default_title(metadata) {
+                title
             } else {
                 find_thread_name_by_id(store.config.codex_home.as_path(), &metadata.id)
                     .await
                     .ok()
                     .flatten()
                     .filter(|name| !name.trim().is_empty())
+                    .or(title)
             }
         }
     }

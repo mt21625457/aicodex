@@ -89,7 +89,11 @@ fn exact_utf8_budget_includes_envelope_tools_and_text() {
     )
     .unwrap_err();
     assert!(error.to_string().contains("request was not sent"));
-    assert!(!crate::api_bridge::map_api_error(error).is_retryable());
+    assert!(
+        crate::api_bridge::map_api_error(error)
+            .retry_delay(/*retry_count*/ 1)
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -175,7 +179,11 @@ async fn malformed_images_fail_privately_when_optimization_is_needed() {
         .await
         .unwrap_err();
     assert!(!error.to_string().contains("private-invalid"));
-    assert!(!crate::api_bridge::map_api_error(error).is_retryable());
+    assert!(
+        crate::api_bridge::map_api_error(error)
+            .retry_delay(/*retry_count*/ 1)
+            .is_none()
+    );
 }
 
 #[tokio::test]

@@ -1,11 +1,14 @@
 //! Fits newly composed evidence into the remaining complete-request allowance.
-//! Required evidence is never truncated. Optional content is removed in a stable
-//! order, and a host-owned omission fragment is reserved before any removal.
+//! Required action evidence is never truncated. Optional evidence leaves first;
+//! hosts may shorten historical instructions after compaction cannot make room.
+//! Every reduction reserves an omission notice and preserves source order.
 
 use std::collections::HashSet;
 
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ImageDetail;
+use codex_protocol::models::ImageReference;
+use codex_protocol::protocol::TruncationPolicy;
 
 use crate::ComposedContext;
 use crate::RequestBudget;
@@ -31,6 +34,7 @@ pub(crate) enum BudgetPriority {
 #[derive(Clone, PartialEq)]
 pub struct Budgeted<T> {
     pub content: T,
+    pub(crate) source: Option<codex_history::RetainedSource>,
     pub(crate) retention: Retention,
 }
 
@@ -38,13 +42,23 @@ impl<T> Budgeted<T> {
     pub fn required(content: T) -> Self {
         Self {
             content,
+            source: None,
             retention: Retention::Required,
+        }
+    }
+
+    pub(crate) fn historical(content: T) -> Self {
+        Self {
+            content,
+            source: None,
+            retention: Retention::Historical,
         }
     }
 
     pub(crate) fn optional(content: T, priority: BudgetPriority) -> Self {
         Self {
             content,
+            source: None,
             retention: Retention::Optional(priority),
         }
     }
@@ -62,27 +76,41 @@ impl<T> std::fmt::Debug for Budgeted<T> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Retention {
     Required,
+    Historical,
     Optional(BudgetPriority),
+}
+
+/// Whether the host has reached the final attempt to fit historical evidence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HistoryTruncation {
+    /// Preserve original instructions while the host can still compact history.
+    Preserve,
+    /// Shorten older historical entries only after optional evidence is exhausted.
+    Allow,
 }
 
 impl ComposedContext {
     /// Applies host image admission before aggregate selection, preserving section
     /// identity and each retained item's selection policy.
-    pub fn retain_images(&mut self, mut admit: impl FnMut(&str, &mut Option<ImageDetail>) -> bool) {
+    pub fn retain_images(
+        &mut self,
+        mut admit: impl FnMut(&ImageReference, &mut Option<ImageDetail>) -> bool,
+    ) {
         for section in &mut self.sections {
             retain_content(section, &mut self.truncations, |_, item| match item {
-                ContentItem::InputImage { image_url, detail } => admit(image_url, detail),
+                ContentItem::InputImage { image, detail } => admit(image, detail),
                 _ => true,
             });
         }
     }
 
-    /// Returns complete evidence that fits, or no context at all. The host owns
-    /// the bounded omission fragment and the existing reviewer history/checkpoint.
+    /// Fits evidence according to the host recovery phase, or returns no context.
+    /// The host owns the bounded omission fragment and existing reviewer history.
     pub fn enforce_budget(
         mut self,
         budget: RequestBudget,
         omission_notice: String,
+        history_truncation: HistoryTruncation,
     ) -> Result<Self, SectionError> {
         let remaining = budget
             .max_input_tokens
@@ -130,6 +158,62 @@ impl ComposedContext {
                 remaining_items[section_index] = content.len();
             }
         }
+        let mut history_truncated = false;
+        if history_truncation == HistoryTruncation::Allow && required_tokens > remaining {
+            // Source order makes older evidence yield first. Keep each source's
+            // label, both ends and the standard marker; later restrictions stay
+            // complete whenever older entries can supply the needed space.
+            'history: for section in &mut self.sections {
+                let SectionDelivery::UserContent(content) = &mut section.delivery else {
+                    continue;
+                };
+                for item in content {
+                    if item.retention != Retention::Historical {
+                        continue;
+                    }
+                    let original_tokens = content_tokens(&item.content);
+                    let ContentItem::InputText { text } = &mut item.content else {
+                        continue;
+                    };
+                    let target = original_tokens.saturating_sub(required_tokens - remaining);
+                    let mut upper = TruncationPolicy::Bytes(text.len()).token_budget();
+                    let mut lower = 32.min(upper);
+                    let mut shortened = crate::truncate_text(text, lower);
+                    while lower < upper {
+                        let mid = lower + (upper - lower).div_ceil(2);
+                        let candidate = crate::truncate_text(text, mid);
+                        if content_tokens(&ContentItem::InputText {
+                            text: candidate.clone(),
+                        }) <= target
+                        {
+                            lower = mid;
+                            shortened = candidate;
+                        } else {
+                            upper = mid - 1;
+                        }
+                    }
+                    let saved =
+                        original_tokens.saturating_sub(content_tokens(&ContentItem::InputText {
+                            text: shortened.clone(),
+                        }));
+                    if saved == 0 {
+                        continue;
+                    }
+                    self.truncations.push(TruncationObservation {
+                        component: section.id,
+                        original_bytes: text.len(),
+                        retained_bytes: shortened.len(),
+                    });
+                    *text = shortened;
+                    history_truncated = true;
+                    required_tokens = required_tokens.saturating_sub(saved);
+                    needed = needed.saturating_sub(saved);
+                    if required_tokens <= remaining {
+                        break 'history;
+                    }
+                }
+            }
+        }
         // Evidence that cannot fit beside the required content and notice must
         // leave first, without evicting useful smaller entries on its behalf.
         let optional_allowance =
@@ -162,7 +246,7 @@ impl ComposedContext {
             }
             needed = needed.saturating_sub(remove(section_index, index, tokens));
         }
-        if removed.is_empty() {
+        if removed.is_empty() && !history_truncated {
             return Err(SectionError::EvidenceLimitExceeded {
                 section: "request_budget",
             });
@@ -200,7 +284,14 @@ fn retain_content(
                 ContentItem::OutputTextWithCitations { .. } => {
                     crate::budget::content_bytes(&item.content)
                 }
-                ContentItem::InputImage { image_url, .. } => image_url.len(),
+                ContentItem::InputImage {
+                    image: ImageReference::Inline { image_url },
+                    ..
+                } => image_url.len(),
+                ContentItem::InputImage {
+                    image: ImageReference::File { .. },
+                    ..
+                } => 0,
                 ContentItem::InputAudio { audio_url } => audio_url.len(),
             };
             truncations.push(TruncationObservation {

@@ -18,8 +18,10 @@ use codex_login::AuthKeyringBackendKind;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_login::auth::AgentIdentityAuthPolicy;
+use codex_login::auth::BedrockApiKeyAuth;
 use codex_login::default_client::originator;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
+use codex_model_provider_info::AMAZON_BEDROCK_RUNTIME_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::WireApi;
 use codex_model_provider_info::built_in_model_providers;
@@ -40,6 +42,7 @@ use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ImageDetail;
+use codex_protocol::models::ImageReference;
 use codex_protocol::models::LocalShellAction;
 use codex_protocol::models::LocalShellExecAction;
 use codex_protocol::models::LocalShellStatus;
@@ -104,6 +107,96 @@ use wiremock::matchers::query_param;
 const INSTALLATION_ID_FILENAME: &str = "installation_id";
 const TEST_WINDOW_ID: &str = "test-thread:0";
 const TEST_INSTALLATION_ID: &str = "11111111-1111-4111-8111-111111111111";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_request_preserves_flex_without_catalog_support_or_fast_mode()
+-> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    for configure_at_start in [false, true] {
+        let server = start_mock_server().await;
+        let response_mock = mount_sse_once(&server, sse(vec![ev_completed("done")])).await;
+        let test = test_codex()
+            .with_model("gpt-5.4")
+            .with_model_info_override("gpt-5.4", |model| model.service_tiers.clear())
+            .with_config(move |config| {
+                config
+                    .features
+                    .disable(Feature::FastMode)
+                    .expect("disable FastMode");
+                config.service_tier = configure_at_start.then(|| "flex".to_string());
+            })
+            .build_with_auto_env(&server)
+            .await?;
+        if !configure_at_start {
+            core_test_support::submit_thread_settings(
+                &test.codex,
+                ThreadSettingsOverrides {
+                    service_tier: Some(Some("flex".to_string())),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        }
+        test.codex
+            .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+                text: "hello".into(),
+                text_elements: Vec::new(),
+            }]))
+            .await?;
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+
+        assert_eq!(
+            response_mock.single_request().body_json()["service_tier"],
+            json!("flex"),
+            "configure_at_start={configure_at_start}",
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_request_uses_implicit_default_tier_for_bedrock() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    for provider_id in [
+        AMAZON_BEDROCK_PROVIDER_ID,
+        AMAZON_BEDROCK_RUNTIME_PROVIDER_ID,
+    ] {
+        let server = start_mock_server().await;
+        let response_mock = mount_sse_once(&server, sse(vec![ev_completed("done")])).await;
+        let test = test_codex()
+            .with_auth(CodexAuth::BedrockApiKey(BedrockApiKeyAuth {
+                api_key: "dummy".to_string(),
+                region: "us-east-1".to_string(),
+            }))
+            .with_model("gpt-5.4")
+            .with_model_info_override("gpt-5.4", |model| model.service_tiers.clear())
+            .with_config(move |config| {
+                let base_url = config.model_provider.base_url.clone();
+                config.model_provider_id = provider_id.to_string();
+                config.model_provider = built_in_model_providers(/*openai_base_url*/ None)
+                    .remove(provider_id)
+                    .expect("built-in Bedrock provider");
+                config.model_provider.base_url = base_url;
+                config.service_tier = Some("flex".to_string());
+            })
+            .build_with_auto_env(&server)
+            .await?;
+        test.submit_turn("hello").await?;
+
+        assert_eq!(
+            response_mock
+                .single_request()
+                .body_json()
+                .get("service_tier"),
+            None,
+            "provider={provider_id}",
+        );
+    }
+    Ok(())
+}
 
 fn rollout_response_item(item: ResponseItem) -> RolloutItem {
     RolloutItem::ResponseItem(item.into())
@@ -1079,7 +1172,9 @@ async fn resume_replays_legacy_js_repl_image_rollout_shapes() {
                 id: None,
                 role: "user".to_string(),
                 content: vec![ContentItem::InputImage {
-                    image_url: legacy_image_url.to_string(),
+                    image: ImageReference::Inline {
+                        image_url: legacy_image_url.to_string(),
+                    },
                     detail: Some(DEFAULT_IMAGE_DETAIL),
                 }],
                 phase: None,
@@ -1219,7 +1314,9 @@ async fn resume_replays_image_tool_outputs_with_detail() {
                 namespace: None,
                 output: FunctionCallOutputPayload::from_content_items(vec![
                     FunctionCallOutputContentItem::InputImage {
-                        image_url: image_url.to_string(),
+                        image: ImageReference::Inline {
+                            image_url: image_url.to_string(),
+                        },
                         detail: Some(ImageDetail::Original),
                     },
                 ]),
@@ -1248,7 +1345,9 @@ async fn resume_replays_image_tool_outputs_with_detail() {
                 name: None,
                 output: FunctionCallOutputPayload::from_content_items(vec![
                     FunctionCallOutputContentItem::InputImage {
-                        image_url: image_url.to_string(),
+                        image: ImageReference::Inline {
+                            image_url: image_url.to_string(),
+                        },
                         detail: Some(ImageDetail::Original),
                     },
                 ]),
@@ -1274,7 +1373,7 @@ async fn resume_replays_image_tool_outputs_with_detail() {
     .await;
 
     let codex_home = Arc::new(TempDir::new().unwrap());
-    let mut builder = test_codex().with_model("gpt-5.4");
+    let mut builder = test_codex().with_model("gpt-5.5");
     let test = builder
         .resume(&server, codex_home, session_path.clone())
         .await
@@ -1423,6 +1522,42 @@ async fn provider_auth_command_refreshes_after_401() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn provider_auth_command_refreshes_during_websocket_preconnect() {
+    skip_if_no_network!();
+
+    let server = MockServer::start().await;
+    let auth_fixture = ProviderAuthCommandFixture::new(&["first-token", "second-token"]).unwrap();
+    Mock::given(method("GET"))
+        .and(path("/v1/responses"))
+        .and(header("authorization", "Bearer first-token"))
+        .respond_with(ResponseTemplate::new(401))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // Auth must recover during preconnect, before the ordinary HTTP fallback turn.
+    Mock::given(method("GET"))
+        .and(path("/v1/responses"))
+        .and(header("authorization", "Bearer second-token"))
+        .respond_with(ResponseTemplate::new(426))
+        .expect(1)
+        .mount(&server)
+        .await;
+    mount_sse_once_match(
+        &server,
+        header("authorization", "Bearer second-token"),
+        sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
+    )
+    .await;
+
+    let mut provider =
+        ModelProviderInfo::create_openai_provider(Some(format!("{}/v1", server.uri())));
+    provider.requires_openai_auth = false;
+    provider.auth = Some(auth_fixture.auth());
+    provider.supports_websockets = true;
+    send_request_with_provider(provider).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn provider_auth_command_recovers_after_initial_resolution_failure() {
     skip_if_no_network!();
 
@@ -1529,10 +1664,12 @@ async fn try_provider_auth_request_for_wire_api(
     let provider = ModelProviderInfo {
         name: "corp".into(),
         base_url: Some(format!("{}/v1", server.uri())),
+        model_catalog_url: None,
         env_key: None,
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: Some(auth),
+        gateway_oauth: None,
         aws: None,
         wire_api,
         query_params: None,
@@ -1555,6 +1692,7 @@ async fn try_request_with_provider(
     provider: ModelProviderInfo,
 ) -> codex_protocol::error::Result<()> {
     let codex_home = TempDir::new()?;
+    let preconnect = provider.supports_websockets;
     let mut config = load_default_config_for_test(&codex_home).await;
     config.model_provider_id = provider.name.clone();
     config.model_provider = provider.clone();
@@ -1589,6 +1727,7 @@ async fn try_request_with_provider(
         "test_originator".to_string(),
         config.model_verbosity,
         config.features.enabled(Feature::ContentItemKinds),
+        config.features.enabled(Feature::ReasoningEffortOverride),
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
@@ -1598,9 +1737,22 @@ async fn try_request_with_provider(
             .enabled(Feature::ConcurrentReasoningSummaries),
         /*attestation_provider*/ None,
         config.http_client_factory(),
+        config.workspace_routing_context(),
+        Vec::new(),
     );
     let responses_metadata = test_turn_responses_metadata(&client, thread_id);
     let mut client_session = client.new_session();
+    if preconnect {
+        client_session
+            .preconnect_websocket(
+                &model_info,
+                /*service_tier*/ None,
+                &session_telemetry,
+                &responses_metadata,
+            )
+            .await
+            .expect("preconnect should recover authentication before the first turn");
+    }
     let mut prompt = Prompt::default();
     prompt.input.push(ResponseItem::Message {
         id: None,
@@ -1876,11 +2028,11 @@ async fn includes_user_instructions_message_in_request() {
         .with_pre_build_hook(|home| {
             std::fs::write(home.join("AGENTS.md"), "be nice").expect("write global instructions");
         });
-    let codex = builder
+    let test = builder
         .build(&server)
         .await
-        .expect("create new conversation")
-        .codex;
+        .expect("create new conversation");
+    let codex = test.codex.clone();
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -2289,43 +2441,46 @@ async fn powershell_shell_version_is_model_visible_only_when_enabled() -> anyhow
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn includes_configured_max_effort_in_request() -> anyhow::Result<()> {
+async fn includes_configured_effort_in_request() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
-    let server = MockServer::start().await;
+    for (effort, expected) in [
+        ("max", json!("max")),
+        ("0", json!(0)),
+        ("64", json!(64)),
+        ("future", json!("future")),
+        ("-1", json!("-1")),
+        ("18446744073709551616", json!("18446744073709551616")),
+    ] {
+        let server = MockServer::start().await;
+        let resp_mock = mount_sse_once(
+            &server,
+            sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
+        )
+        .await;
+        let TestCodex { codex, .. } = test_codex()
+            .with_model("gpt-5.4")
+            .with_pre_build_hook(move |home| {
+                std::fs::write(
+                    home.join("config.toml"),
+                    format!("model_reasoning_effort = \"{effort}\"\n"),
+                )
+                .expect("write test config");
+            })
+            .build_with_auto_env(&server)
+            .await?;
 
-    let resp_mock = mount_sse_once(
-        &server,
-        sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
-    )
-    .await;
-    let TestCodex { codex, .. } = test_codex()
-        .with_model("gpt-5.4")
-        .with_config(|config| {
-            config.model_reasoning_effort = Some(ReasoningEffort::Max);
-        })
-        .build(&server)
-        .await?;
+        codex
+            .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+                text: "hello".into(),
+                text_elements: Vec::new(),
+            }]))
+            .await
+            .unwrap();
 
-    codex
-        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
-            text: "hello".into(),
-            text_elements: Vec::new(),
-        }]))
-        .await
-        .unwrap();
-
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
-
-    let request = resp_mock.single_request();
-    let request_body = request.body_json();
-
-    assert_eq!(
-        request_body
-            .get("reasoning")
-            .and_then(|t| t.get("effort"))
-            .and_then(|v| v.as_str()),
-        Some("max")
-    );
+        wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+        let request = resp_mock.single_request();
+        assert_eq!(request.body_json()["reasoning"]["effort"], expected);
+    }
 
     Ok(())
 }
@@ -2913,11 +3068,11 @@ async fn includes_developer_instructions_message_in_request() {
         .with_config(|config| {
             config.developer_instructions = Some("be useful".to_string());
         });
-    let codex = builder
+    let test = builder
         .build(&server)
         .await
-        .expect("create new conversation")
-        .codex;
+        .expect("create new conversation");
+    let codex = test.codex.clone();
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -3038,10 +3193,12 @@ async fn azure_responses_request_stores_and_preserves_type_valid_item_ids() {
     let provider = ModelProviderInfo {
         name: "azure".into(),
         base_url: Some(format!("{}/openai", server.uri())),
+        model_catalog_url: None,
         env_key: None,
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,
+        gateway_oauth: None,
         aws: None,
         wire_api: WireApi::Responses,
         query_params: None,
@@ -3093,12 +3250,15 @@ async fn azure_responses_request_stores_and_preserves_type_valid_item_ids() {
         "test_originator".to_string(),
         config.model_verbosity,
         config.features.enabled(Feature::ContentItemKinds),
+        config.features.enabled(Feature::ReasoningEffortOverride),
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
         /*concurrent_reasoning_summaries_enabled*/ false,
         /*attestation_provider*/ None,
         config.http_client_factory(),
+        config.workspace_routing_context(),
+        Vec::new(),
     );
     let responses_metadata = test_turn_responses_metadata(&client, thread_id);
     let mut client_session = client.new_session();
@@ -3266,6 +3426,8 @@ async fn responses_http_omits_type_invalid_web_search_ids_without_mutating_promp
     let resp_mock = mount_sse_once(&server, sse_body.to_string()).await;
 
     let provider = ModelProviderInfo {
+        gateway_oauth: None,
+        model_catalog_url: None,
         // Azure Responses uses `store: true`, so this exercises type-specific
         // ID validation rather than the `store: false` rule that removes all IDs.
         name: "azure".into(),
@@ -3325,12 +3487,17 @@ async fn responses_http_omits_type_invalid_web_search_ids_without_mutating_promp
         "test_originator".to_string(),
         config.model_verbosity,
         config.features.enabled(Feature::ContentItemKinds),
+        /*reasoning_effort_override_enabled*/ false,
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
         /*concurrent_reasoning_summaries_enabled*/ false,
         /*attestation_provider*/ None,
         config.http_client_factory(),
+        codex_model_provider::WorkspaceRoutingContext::new(
+            "https://chatgpt.com/backend-api".into(),
+        ),
+        Vec::new(),
     );
     let responses_metadata = test_turn_responses_metadata(&client, thread_id);
     let mut client_session = client.new_session();
@@ -3806,10 +3973,12 @@ async fn azure_overrides_assign_properties_used_for_responses_url() {
     let provider = ModelProviderInfo {
         name: "custom".to_string(),
         base_url: Some(format!("{}/openai", server.uri())),
+        model_catalog_url: None,
         // Reuse the existing environment variable to avoid using unsafe code
         env_key: Some(EXISTING_ENV_VAR_WITH_NON_EMPTY_VALUE.to_string()),
         experimental_bearer_token: None,
         auth: None,
+        gateway_oauth: None,
         aws: None,
         query_params: Some(std::collections::HashMap::from([(
             "api-version".to_string(),
@@ -3891,6 +4060,7 @@ async fn env_var_overrides_loaded_auth() {
     let provider = ModelProviderInfo {
         name: ModelProviderInfo::create_openai_provider(/*base_url*/ None).name,
         base_url: Some(format!("{}/openai", server.uri())),
+        model_catalog_url: None,
         // Reuse the existing environment variable to avoid using unsafe code
         env_key: Some(EXISTING_ENV_VAR_WITH_NON_EMPTY_VALUE.to_string()),
         query_params: Some(std::collections::HashMap::from([(
@@ -3900,6 +4070,7 @@ async fn env_var_overrides_loaded_auth() {
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,
+        gateway_oauth: None,
         aws: None,
         wire_api: WireApi::Responses,
         http_headers: Some(std::collections::HashMap::from([(

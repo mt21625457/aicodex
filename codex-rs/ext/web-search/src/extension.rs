@@ -18,6 +18,7 @@ use codex_extension_api::ThreadOriginator;
 use codex_extension_api::ThreadStartInput;
 use codex_extension_api::ToolContributor;
 use codex_features::Feature;
+use codex_http_client::HttpClientFactory;
 use codex_login::AuthManager;
 use codex_model_provider::create_model_provider;
 use codex_model_provider_info::ModelProviderInfo;
@@ -35,6 +36,7 @@ struct WebSearchExtension {
 #[derive(Clone)]
 struct WebSearchExtensionConfig {
     available: bool,
+    http_client_factory: HttpClientFactory,
     primary_provider: ModelProviderInfo,
     openai_provider: ModelProviderInfo,
     moonshot_search: codex_config::config_toml::MoonshotSearchConfig,
@@ -57,6 +59,7 @@ impl From<&Config> for WebSearchExtensionConfig {
                 })
         };
         Self {
+            http_client_factory: config.http_client_factory(),
             // Core filters this candidate per turn using the actual selected model/provider.
             available: web_search_mode != WebSearchMode::Disabled,
             primary_provider: config.model_provider.clone(),
@@ -149,6 +152,7 @@ impl ToolContributor for WebSearchExtension {
 
         vec![Arc::new(WebSearchTool {
             session_id: session_store.level_id().to_string(),
+            http_client_factory: config.http_client_factory.clone(),
             primary_provider: create_model_provider(
                 config.primary_provider.clone(),
                 Some(self.auth_manager.clone()),
@@ -180,6 +184,8 @@ mod tests {
     use codex_extension_api::ExtensionData;
     use codex_extension_api::ExtensionRegistryBuilder;
     use codex_extension_api::ToolName;
+    use codex_http_client::HttpClientFactory;
+    use codex_http_client::OutboundProxyPolicy;
     use codex_login::CodexAuth;
     use codex_model_provider_info::ModelProviderInfo;
     use codex_model_provider_info::WireApi;
@@ -228,6 +234,7 @@ mod tests {
         let thread_store = ExtensionData::new("11111111-1111-4111-8111-111111111111");
         thread_store.insert(WebSearchExtensionConfig {
             available: true,
+            http_client_factory: HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
             primary_provider: ModelProviderInfo::create_openai_provider(/*base_url*/ None),
             openai_provider: ModelProviderInfo::create_openai_provider(/*base_url*/ None),
             moonshot_search: Default::default(),

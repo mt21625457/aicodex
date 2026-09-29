@@ -27,6 +27,7 @@ from .v2_all import FileChangePatchUpdatedNotification
 from .v2_all import FsChangedNotification
 from .v2_all import FuzzyFileSearchSessionCompletedNotification
 from .v2_all import FuzzyFileSearchSessionUpdatedNotification
+from .v2_all import GatewayOAuthChangedNotification
 from .v2_all import GuardianWarningNotification
 from .v2_all import HookCompletedNotification
 from .v2_all import HookStartedNotification
@@ -54,6 +55,7 @@ from .v2_all import SkillsChangedNotification
 from .v2_all import StrictReviewRequiredNotification
 from .v2_all import TerminalInteractionNotification
 from .v2_all import ThreadArchivedNotification
+from .v2_all import ThreadAttachmentUpdatedNotification
 from .v2_all import ThreadClosedNotification
 from .v2_all import ThreadDeletedNotification
 from .v2_all import ThreadGoalClearedNotification
@@ -108,6 +110,7 @@ KnownNotificationPayload: TypeAlias = (
     | FsChangedNotification
     | FuzzyFileSearchSessionCompletedNotification
     | FuzzyFileSearchSessionUpdatedNotification
+    | GatewayOAuthChangedNotification
     | GuardianWarningNotification
     | HookCompletedNotification
     | HookStartedNotification
@@ -135,6 +138,7 @@ KnownNotificationPayload: TypeAlias = (
     | StrictReviewRequiredNotification
     | TerminalInteractionNotification
     | ThreadArchivedNotification
+    | ThreadAttachmentUpdatedNotification
     | ThreadClosedNotification
     | ThreadDeletedNotification
     | ThreadGoalClearedNotification
@@ -170,6 +174,7 @@ KnownNotificationPayload: TypeAlias = (
 )
 
 NOTIFICATION_MODELS: dict[str, type[KnownNotificationPayload]] = {
+    "account/gatewayOAuth/changed": GatewayOAuthChangedNotification,
     "account/login/completed": AccountLoginCompletedNotification,
     "account/rateLimits/updated": AccountRateLimitsUpdatedNotification,
     "account/updated": AccountUpdatedNotification,
@@ -216,6 +221,7 @@ NOTIFICATION_MODELS: dict[str, type[KnownNotificationPayload]] = {
     "serverRequest/resolved": ServerRequestResolvedNotification,
     "skills/changed": SkillsChangedNotification,
     "thread/archived": ThreadArchivedNotification,
+    "thread/attachment/updated": ThreadAttachmentUpdatedNotification,
     "thread/closed": ThreadClosedNotification,
     "thread/compacted": ContextCompactedNotification,
     "thread/deleted": ThreadDeletedNotification,

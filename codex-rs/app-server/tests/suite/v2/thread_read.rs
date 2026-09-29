@@ -14,6 +14,7 @@ use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ContextTokenUsageSource;
 use codex_app_server_protocol::DeprecationNoticeNotification;
+use codex_app_server_protocol::ImageReference;
 use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::InitializeParams;
 use codex_app_server_protocol::JSONRPCError;
@@ -26,6 +27,7 @@ use codex_app_server_protocol::ThreadForkParams;
 use codex_app_server_protocol::ThreadForkResponse;
 use codex_app_server_protocol::ThreadHistoryMode;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemEntry;
 use codex_app_server_protocol::ThreadItemsListParams;
 use codex_app_server_protocol::ThreadItemsListResponse;
 use codex_app_server_protocol::ThreadListParams;
@@ -240,6 +242,84 @@ async fn thread_read_can_include_turns() -> Result<()> {
         !mcp.pending_notification_methods()
             .contains(&"deprecationNotice".to_string())
     );
+
+    Ok(())
+}
+
+/// Preserves a file-backed image across a completed turn, including a cold history read.
+#[tokio::test]
+async fn thread_read_preserves_file_id_from_completed_turn() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let start_id = mcp
+        .send_thread_start_request_with_auto_env(ThreadStartParams {
+            model: Some("mock-model".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let ThreadStartResponse { thread, .. } =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(start_id)).await??;
+    let image = UserInput::Image {
+        image: ImageReference::File {
+            file_id: "file_123".to_string(),
+        },
+        detail: None,
+    };
+
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.start_turn_and_wait_for_completion(TurnStartParams {
+            thread_id: thread.id.clone(),
+            input: vec![image.clone()],
+            ..Default::default()
+        }),
+    )
+    .await??;
+
+    let read_id = mcp
+        .send_thread_read_request(ThreadReadParams {
+            items_view: None,
+            thread_id: thread.id.clone(),
+            include_turns: true,
+        })
+        .await?;
+    let ThreadReadResponse {
+        thread: loaded_thread,
+        ..
+    } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(read_id)).await??;
+    let ThreadItem::UserMessage { content, .. } = &loaded_thread.turns[0].items[0] else {
+        panic!("expected completed turn to start with a user message");
+    };
+    assert_eq!(content, &vec![image.clone()]);
+
+    timeout(DEFAULT_READ_TIMEOUT, mcp.shutdown_gracefully()).await??;
+    drop(mcp);
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let read_id = mcp
+        .send_thread_read_request(ThreadReadParams {
+            items_view: None,
+            thread_id: thread.id,
+            include_turns: true,
+        })
+        .await?;
+    let ThreadReadResponse {
+        thread: restarted_thread,
+        ..
+    } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(read_id)).await??;
+    let ThreadItem::UserMessage { content, .. } = &restarted_thread.turns[0].items[0] else {
+        panic!("expected persisted turn to start with a user message");
+    };
+    assert_eq!(content, &vec![image]);
 
     Ok(())
 }
@@ -595,6 +675,8 @@ async fn thread_search_occurrences_reads_paginated_projection() -> Result<()> {
     );
     store
         .create_thread(CreateThreadParams {
+            creator_user_id: None,
+            creator_account_id: None,
             session_id: thread_id.into(),
             thread_id,
             extra_config: None,
@@ -863,6 +945,7 @@ async fn thread_turns_list_reads_store_history_without_rollout_path() -> Result<
         loader_overrides,
         strict_config: false,
         cloud_config_bundle: CloudConfigBundleLoader::default(),
+        embedded_network_policy: Default::default(),
         thread_config_loader: Arc::new(codex_config::NoopThreadConfigLoader),
         feedback: CodexFeedback::new(),
         log_db: None,
@@ -933,6 +1016,7 @@ async fn thread_read_loaded_include_turns_reads_store_history_without_rollout_pa
         loader_overrides,
         strict_config: false,
         cloud_config_bundle: CloudConfigBundleLoader::default(),
+        embedded_network_policy: Default::default(),
         thread_config_loader: Arc::new(codex_config::NoopThreadConfigLoader),
         feedback: CodexFeedback::new(),
         log_db: None,
@@ -1042,6 +1126,7 @@ async fn thread_list_includes_store_thread_without_rollout_path() -> Result<()> 
         loader_overrides,
         strict_config: false,
         cloud_config_bundle: CloudConfigBundleLoader::default(),
+        embedded_network_policy: Default::default(),
         thread_config_loader: Arc::new(codex_config::NoopThreadConfigLoader),
         feedback: CodexFeedback::new(),
         log_db: None,
@@ -1832,6 +1917,8 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
     );
     store
         .create_thread(CreateThreadParams {
+            creator_user_id: None,
+            creator_account_id: None,
             session_id: thread_id.into(),
             thread_id,
             extra_config: None,
@@ -2301,9 +2388,20 @@ async fn paginated_history_lists_and_legacy_reads_use_projected_turns_and_items(
         SortDirection::Asc,
     )
     .await?;
-    assert_eq!(first_items_page.data.len(), 1);
-    assert_eq!(first_items_page.data[0].turn_id, "turn-1");
-    assert_eq!(first_items_page.data[0].item.id(), "user-1");
+    assert_eq!(
+        first_items_page.data,
+        vec![ThreadItemEntry {
+            turn_id: "turn-1".to_string(),
+            item: ThreadItem::UserMessage {
+                transcript_metadata: None,
+                id: "user-1".to_string(),
+                client_id: None,
+                content: Vec::new(),
+            },
+            started_at_ms: Some(0),
+            completed_at_ms: Some(1),
+        }]
+    );
     let second_items_page = read_items_page(
         &mut mcp,
         thread_id,
@@ -2597,6 +2695,7 @@ async fn read_items_page(
 fn paginated_turn_started(turn_id: &str) -> RolloutItem {
     RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
         turn_id: turn_id.to_string(),
+        root_turn_id: None,
         trace_id: None,
         started_at: Some(10),
         model_context_window: None,
@@ -2675,6 +2774,8 @@ async fn seed_pathless_store_thread(
 ) -> Result<()> {
     store
         .create_thread(CreateThreadParams {
+            creator_user_id: None,
+            creator_account_id: None,
             session_id: thread_id.into(),
             thread_id,
             extra_config: None,

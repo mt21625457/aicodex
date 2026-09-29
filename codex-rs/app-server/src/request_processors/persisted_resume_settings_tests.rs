@@ -93,6 +93,7 @@ fn turn_context_item(
 
 fn turn_started_item(turn_id: &str) -> RolloutItem {
     RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+        root_turn_id: None,
         turn_id: turn_id.to_string(),
         trace_id: None,
         started_at: None,

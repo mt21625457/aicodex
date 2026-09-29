@@ -1,24 +1,26 @@
 ---
 source: core/tests/suite/model_visible_layout.rs
+assertion_line: 693
 expression: "format_labeled_requests_snapshot(\"First post-resume turn where pre-turn override sets model to rollout model; no model-switch update should appear.\",\n&[(\"Last Request Before Resume\", &initial_request),\n(\"First Request After Resume + Override\", &resumed_request),])"
 ---
 Scenario: First post-resume turn where pre-turn override sets model to rollout model; no model-switch update should appear.
 
-## Last Request Before Resume
+## Window 1
+-- request 1 (turn; Last Request Before Resume) --
 00:message/developer[3]:
-    [01] <context_continuation>\nThe runtime manages context compaction or rollover. Context-window capac...
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
     [02] <SKILLS_INSTRUCTIONS>
     [03] <PERMISSIONS_INSTRUCTIONS>
-01:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>>
-02:message/user:seed resume history
-
-## First Request After Resume + Override
-00:message/developer[3]:
-    [01] <context_continuation>\nThe runtime manages context compaction or rollover. Context-window capac...
-    [02] <SKILLS_INSTRUCTIONS>
-    [03] <PERMISSIONS_INSTRUCTIONS>
-01:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>>
-02:message/user:seed resume history
-03:message/assistant:recorded before resume
-04:message/user:<ENVIRONMENT_CONTEXT:cwd=PRETURN_CONTEXT_DIFF_CWD>
-05:message/user:first resumed turn after model override
+01:message/user:
+    <ENVIRONMENT_CONTEXT>
+02:message/user:
+    seed resume history
+-- request 2 (turn; First Request After Resume + Override) --
+03:message/assistant:
+    recorded before resume
+04:message/user:
+    <ENVIRONMENT_CONTEXT>
+05:message/user:
+    first resumed turn after model override

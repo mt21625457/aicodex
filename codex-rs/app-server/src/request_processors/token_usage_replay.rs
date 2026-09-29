@@ -252,6 +252,7 @@ mod tests {
         let rollout_items = vec![
             RolloutItem::EventMsg(EventMsg::TurnStarted(
                 codex_protocol::protocol::TurnStartedEvent {
+                    root_turn_id: None,
                     turn_id: "persisted-turn-id".to_string(),
                     trace_id: None,
                     started_at: None,

@@ -7,19 +7,32 @@ use codex_protocol::models::ContentItemKind;
 /// Configured multi-agent instructions emitted as a standalone developer message.
 pub(crate) struct MultiAgentUsageHint {
     text: String,
+    marked: bool,
 }
 
 impl MultiAgentUsageHint {
-    pub(crate) fn new(text: &str) -> Self {
+    /// Bound the fully composed role text, including runtime guidance, at the context boundary.
+    pub(crate) fn from_role(instructions: &super::MultiAgentRoleInstructions) -> Self {
         Self {
-            text: truncate_text_to_token_budget(text, MULTI_AGENT_USAGE_HINT_MAX_TOKENS),
+            text: truncate_text_to_token_budget(
+                &instructions.body(),
+                MULTI_AGENT_USAGE_HINT_MAX_TOKENS,
+            ),
+            marked: !instructions.markers().0.is_empty(),
         }
     }
 }
 
 impl ContextualUserFragment for MultiAgentUsageHint {
     fn content_kind(&self) -> ContentItemKind {
-        ContentItemKind("multi_agent.usage_hint".to_string())
+        ContentItemKind(
+            if self.marked {
+                "multi_agent.role_instructions"
+            } else {
+                "multi_agent.usage_hint"
+            }
+            .to_string(),
+        )
     }
 
     fn role(&self) -> &'static str {
@@ -31,7 +44,11 @@ impl ContextualUserFragment for MultiAgentUsageHint {
     }
 
     fn markers(&self) -> (&'static str, &'static str) {
-        Self::type_markers()
+        if self.marked {
+            ("<multi_agent_role>", "</multi_agent_role>")
+        } else {
+            Self::type_markers()
+        }
     }
 
     fn type_markers() -> (&'static str, &'static str) {
