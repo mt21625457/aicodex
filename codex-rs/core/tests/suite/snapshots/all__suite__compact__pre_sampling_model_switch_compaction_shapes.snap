@@ -1,31 +1,52 @@
 ---
 source: core/tests/suite/compact.rs
+assertion_line: 2377
 expression: "format_labeled_requests_snapshot(\"Pre-sampling compaction on model switch to a smaller context window: current behavior compacts using prior-turn history only (incoming user message excluded), and the follow-up request carries compacted history plus the new user message.\",\n&[(\"Initial Request (Previous Model)\", &requests[0]),\n(\"Pre-sampling Compaction Request\", &requests[1]),\n(\"Post-Compaction Follow-up Request (Next Model)\", &requests[2]),])"
 ---
 Scenario: Pre-sampling compaction on model switch to a smaller context window: current behavior compacts using prior-turn history only (incoming user message excluded), and the follow-up request carries compacted history plus the new user message.
 
-## Initial Request (Previous Model)
+## Window 1
+-- request 1 (turn; Initial Request (Previous Model)) --
 00:message/developer[2]:
-    [01] <context_continuation>\nThe runtime manages context compaction o...
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
     [02] <PERMISSIONS_INSTRUCTIONS>
-01:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>>
-02:message/user:before switch
+01:message/user:
+    <ENVIRONMENT_CONTEXT>
+02:message/user:
+    before switch
 
-## Pre-sampling Compaction Request
+## Window 2 (after request 1: settings changed (parallel_tool_calls, tools))
+-- request 2 (compaction; Pre-sampling Compaction Request) --
 00:message/developer[2]:
-    [01] <context_continuation>\nThe runtime manages context compaction o...
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
     [02] <PERMISSIONS_INSTRUCTIONS>
-01:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>>
-02:message/user:before switch
-03:message/assistant:before switch
-04:message/user:<SUMMARIZATION_PROMPT>
+01:message/user:
+    <ENVIRONMENT_CONTEXT>
+02:message/user:
+    before switch
+03:message/assistant:
+    before switch
+04:message/user:
+    <SUMMARIZATION_PROMPT>
 
-## Post-Compaction Follow-up Request (Next Model)
-00:message/user:before switch
-01:message/user:<COMPACTION_SUMMARY>\nPRE_SAMPLING_SUMMARY
+## Window 3 (after request 2: input diverged at item 00, settings changed (model, parallel_tool_calls, tools))
+-- request 3 (turn; Post-Compaction Follow-up Request (Next Model)) --
+00:message/user:
+    before switch
+01:message/user:
+    <COMPACTION_SUMMARY>
+    PRE_SAMPLING_SUMMARY
 02:message/developer[3]:
-    [01] <model_switch>\nThe user was previously using a different model....
-    [02] <context_continuation>\nThe runtime manages context compaction o...
+    [01] <MODEL_SWITCH>
+    [02] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
     [03] <PERMISSIONS_INSTRUCTIONS>
-03:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>>
-04:message/user:after switch
+03:message/user:
+    <ENVIRONMENT_CONTEXT>
+04:message/user:
+    after switch

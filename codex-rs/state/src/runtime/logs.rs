@@ -526,7 +526,7 @@ WHERE id IN (
     Ok(())
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(sqlx_macros::FromRow)]
 struct FeedbackLogRow {
     ts: i64,
     ts_nanos: i64,

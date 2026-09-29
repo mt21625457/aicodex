@@ -8,8 +8,8 @@ fn profiles_preserve_distinct_retention_and_original_numbering() {
     let entries = [
         (ConversationTranscriptEntryKind::User, "inspect only"),
         (
-            ConversationTranscriptEntryKind::Developer,
-            "approved action",
+            ConversationTranscriptEntryKind::ProtectedAssistant,
+            "proposed action",
         ),
         (ConversationTranscriptEntryKind::Assistant, "working"),
     ]
@@ -18,6 +18,7 @@ fn profiles_preserve_distinct_retention_and_original_numbering() {
         kind,
         text: text.to_owned(),
         original_bytes: text.len(),
+        retained_source: None,
     })
     .collect::<Vec<_>>();
     let mut sync = ContextProfile::synchronous();
@@ -30,7 +31,7 @@ fn profiles_preserve_distinct_retention_and_original_numbering() {
         (sync.items, sync.omission_note),
         (
             vec![
-                Budgeted::required("[8] user: inspect only".to_owned()),
+                Budgeted::historical("[8] user: inspect only".to_owned()),
                 Budgeted::optional(
                     "[10] assistant: working".to_owned(),
                     BudgetPriority::Commentary
@@ -43,8 +44,8 @@ fn profiles_preserve_distinct_retention_and_original_numbering() {
         (asynchronous.items, asynchronous.omission_note),
         (
             vec![
-                Budgeted::required("[1] user: inspect only\n".to_owned()),
-                Budgeted::required("[2] developer: approved action\n".to_owned())
+                Budgeted::historical("[1] user: inspect only\n".to_owned()),
+                Budgeted::required("[2] assistant: proposed action\n".to_owned())
             ],
             None,
         ),
@@ -70,6 +71,7 @@ fn profiles_reserve_the_newest_five_tool_entries_for_aggregate_enforcement() {
             kind: ConversationTranscriptEntryKind::ToolOutput("tool result".to_owned()),
             text: format!("result {index}"),
             original_bytes: 8,
+            retained_source: None,
         })
         .collect::<Vec<_>>();
     for profile in [

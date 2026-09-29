@@ -13,7 +13,7 @@ use crate::tools::sandboxing::Sandboxable;
 use crate::tools::sandboxing::ToolCtx;
 use crate::tools::sandboxing::ToolError;
 use crate::tools::sandboxing::ToolRuntime;
-use crate::tools::sandboxing::executor_windows_sandbox_level;
+use crate::tools::sandboxing::executor_windows_sandbox_selection;
 use codex_apply_patch::AppliedPatchDelta;
 use codex_apply_patch::ApplyPatchAction;
 use codex_apply_patch::ApplyPatchOptions;
@@ -124,16 +124,16 @@ fn file_system_sandbox_context_for_attempt(
     let permissions =
         effective_permission_profile(attempt.exec_server_permissions, additional_permissions);
     Some(FileSystemSandboxContext {
-        permissions: permissions.into(),
-        cwd: Some(attempt.sandbox_cwd.clone()),
+        permissions,
+        cwd: attempt.sandbox_cwd.clone(),
         workspace_roots: attempt.workspace_roots.to_vec(),
         user_home_dir,
         temporary_directories: None,
-        windows_sandbox_level: executor_windows_sandbox_level(
+        windows_sandbox_selection: executor_windows_sandbox_selection(
+            attempt.windows_sandbox_type,
             attempt.windows_sandbox_level,
             attempt.sandbox_cwd,
         ),
-        windows_sandbox_private_desktop: attempt.windows_sandbox_private_desktop,
         windows_sandbox_proxy_settings_mode: None,
         use_legacy_landlock: attempt.use_legacy_landlock,
     })

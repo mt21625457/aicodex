@@ -1,30 +1,46 @@
 ---
 source: core/tests/suite/mcp_tool_exposure.rs
-expression: "format_labeled_requests_snapshot(\"Persisted deferred tools remain unchanged after resuming the thread.\",\n&[(\"Before resume\", &requests[0]), (\"After resume\", &requests[1]),],)"
+assertion_line: 1302
+expression: "context_snapshot::format_context_snapshot(\"Persisted deferred tools remain unchanged after resuming the thread.\",\n&[SnapshotEntry::items(&requests[0].input()).labeled(\"Before resume\"),\nSnapshotEntry::items(&requests[1].input()).labeled(\"After resume\"),],\n&ContextSnapshotOptions::default().rewrite_known_segments(),)"
 ---
 Scenario: Persisted deferred tools remain unchanged after resuming the thread.
 
-## Before resume
-00:message/developer[3]:
-    [01] <context_continuation>\nThe runtime manages context compaction or rollover. Context-window capac...
+## Window 1
+-- request 1 (items; Before resume) --
+00:message/developer[4]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
     [02] <PERMISSIONS_INSTRUCTIONS>
-    [03] <tools>
-         Deferred tool namespaces:
-         - mcp__codex_apps__calendar: Plan events and manage your calendar.
-         </tools>
-01:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>>
-02:message/user:inspect deferred tools before resume
+    [03] <APPS_INSTRUCTIONS>
+    [04] <tools>
+        Deferred tool namespaces:
+        - mcp__codex_apps__calendar: Plan events and manage your calendar.
+        </tools>
+01:message/user:
+    <ENVIRONMENT_CONTEXT>
+02:message/user:
+    inspect deferred tools before resume
 
-## After resume
-00:message/developer[3]:
-    [01] <context_continuation>\nThe runtime manages context compaction or rollover. Context-window capac...
+## Window 2 (after request 1: settings unavailable)
+-- request 2 (items; After resume) --
+00:message/developer[4]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
     [02] <PERMISSIONS_INSTRUCTIONS>
-    [03] <tools>
-         Deferred tool namespaces:
-         - mcp__codex_apps__calendar: Plan events and manage your calendar.
-         </tools>
-01:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>>
-02:message/user:inspect deferred tools before resume
-03:message/assistant:done
-04:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>>
-05:message/user:inspect unchanged deferred tools after resume
+    [03] <APPS_INSTRUCTIONS>
+    [04] <tools>
+        Deferred tool namespaces:
+        - mcp__codex_apps__calendar: Plan events and manage your calendar.
+        </tools>
+01:message/user:
+    <ENVIRONMENT_CONTEXT>
+02:message/user:
+    inspect deferred tools before resume
+03:message/assistant:
+    done
+04:message/user:
+    <ENVIRONMENT_CONTEXT>
+05:message/user:
+    inspect unchanged deferred tools after resume

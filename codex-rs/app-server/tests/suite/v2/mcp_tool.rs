@@ -259,6 +259,7 @@ async fn mcp_server_tool_call_forwards_only_server_extensions() -> Result<()> {
             version: "0.1.0".to_string(),
         },
         Some(InitializeCapabilities {
+            explicit_gateway_oauth: false,
             experimental_api: true,
             request_attestation: false,
             mcp_server_openai_form_elicitation: true,
@@ -358,6 +359,7 @@ async fn model_mcp_tool_call_uses_session_client_extensions() -> Result<()> {
             version: "0.1.0".to_string(),
         },
         Some(InitializeCapabilities {
+            explicit_gateway_oauth: false,
             experimental_api: true,
             request_attestation: false,
             mcp_server_openai_form_elicitation: true,
@@ -1091,6 +1093,7 @@ async fn mcp_tool_call_completion_notification_contains_truncated_large_result()
         arguments: json!({ "message": LARGE_RESPONSE_MESSAGE }),
         app_context: None,
         mcp_app_resource_uri: None,
+        mcp_app_ui: None,
         plugin_id: None,
         read_only_hint: None,
         result: Some(result),
@@ -1207,6 +1210,7 @@ async fn mcp_tool_call_hint_survives_mid_call_thread_read_and_resume() -> Result
         arguments: json!({ "message": ELICITATION_TRIGGER_MESSAGE }),
         app_context: None,
         mcp_app_resource_uri: None,
+        mcp_app_ui: None,
         plugin_id: None,
         read_only_hint: Some(true),
         result: None,

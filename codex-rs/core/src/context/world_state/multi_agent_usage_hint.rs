@@ -8,12 +8,14 @@ use crate::context::MultiAgentUsageHint;
 /// Configured or model-owned multi-agent instructions currently visible to the model.
 #[derive(Clone, Debug)]
 pub(crate) struct MultiAgentUsageHintState {
-    instructions: MultiAgentRoleInstructions,
+    instructions: MultiAgentUsageHint,
 }
 
 impl MultiAgentUsageHintState {
     pub(crate) fn new(instructions: MultiAgentRoleInstructions) -> Self {
-        Self { instructions }
+        Self {
+            instructions: MultiAgentUsageHint::from_role(&instructions),
+        }
     }
 }
 
@@ -37,13 +39,7 @@ impl WorldStateSection for MultiAgentUsageHintState {
             PreviousSectionState::Known(previous) if previous == &self.snapshot() => None,
             PreviousSectionState::Unknown => None,
             PreviousSectionState::Known(_) | PreviousSectionState::Absent => {
-                if self.instructions.markers().0.is_empty() {
-                    Some(Box::new(MultiAgentUsageHint::new(
-                        &self.instructions.body(),
-                    )))
-                } else {
-                    Some(Box::new(self.instructions.clone()))
-                }
+                Some(Box::new(self.instructions.clone()))
             }
         }
     }

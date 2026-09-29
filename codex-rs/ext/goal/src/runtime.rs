@@ -34,6 +34,7 @@ pub(crate) struct GoalRuntimeConfig {
     pub(crate) analytics: GoalAnalytics,
     pub(crate) enabled: bool,
     pub(crate) tools_available_for_thread: bool,
+    pub(crate) tools_visible_for_thread: bool,
     pub(crate) root_accounting_state: Option<Arc<GoalAccountingState>>,
 }
 
@@ -61,6 +62,7 @@ struct GoalRuntimeInner {
     root_accounting_state: Option<Arc<GoalAccountingState>>,
     enabled: AtomicBool,
     tools_available_for_thread: bool,
+    tools_visible_for_thread: bool,
     goal_state_lock: Semaphore,
 }
 
@@ -114,6 +116,7 @@ impl GoalRuntimeHandle {
                 root_accounting_state: config.root_accounting_state,
                 enabled: AtomicBool::new(config.enabled),
                 tools_available_for_thread: config.tools_available_for_thread,
+                tools_visible_for_thread: config.tools_visible_for_thread,
                 goal_state_lock: Semaphore::new(/*permits*/ 1),
             }),
         }
@@ -128,6 +131,10 @@ impl GoalRuntimeHandle {
     }
 
     pub(crate) fn tools_visible(&self) -> bool {
+        self.is_enabled() && self.inner.tools_visible_for_thread
+    }
+
+    pub(crate) fn tools_available(&self) -> bool {
         self.is_enabled() && self.inner.tools_available_for_thread
     }
 
@@ -440,7 +447,7 @@ impl GoalRuntimeHandle {
     }
 
     pub(crate) async fn continue_if_idle(&self) -> Result<(), String> {
-        if !self.tools_visible() {
+        if !self.tools_available() {
             self.inner.accounting_state.clear_active_goal();
             return Ok(());
         }

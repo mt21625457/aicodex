@@ -19,6 +19,7 @@ use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::mount_sse_once_match;
 use core_test_support::responses::sse;
+use core_test_support::responses::sse_response;
 use core_test_support::responses::start_mock_server;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
@@ -30,6 +31,9 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio::time::Instant;
 use tokio::time::sleep;
+
+#[path = "multi_agent_restore_tests.rs"]
+mod restore_tests;
 
 const COLLABORATION_NAMESPACE: &str = "collaboration";
 const SPAWN_CALL_ID: &str = "spawn-worker";
@@ -149,7 +153,8 @@ fn configure_multi_agent_v2_with_role(
         .expect("test config should allow feature update");
     config.multi_agent_v2.subagent_developer_instructions =
         Some(SUBAGENT_DEVELOPER_INSTRUCTIONS.to_string());
-    config.multi_agent_v2.max_concurrent_threads_per_session = 3;
+    // Keep the root, worker, grandchild, and sibling resident until explicit shutdown.
+    config.multi_agent_v2.max_concurrent_threads_per_session = 4;
     let role_path = config.codex_home.join("durable-worker-role.toml");
     std::fs::write(
         &role_path,
@@ -303,17 +308,37 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
         sse(vec![ev_completed("resp-parent-turn-assistant")]),
     )
     .await;
-    for (text, is_subagent) in [(NESTED_CALL_ID, true), (QUEUE_CALL_ID, false)] {
-        mount_sse_once_match(
-            &server,
-            move |request: &wiremock::Request| {
-                body_contains(request, text)
-                    && request_has_input_type(request, "agent_message") == is_subagent
-            },
-            sse(vec![ev_completed("resp-parent-turn-assistant")]),
-        )
+    // The grandchild's completion can arrive during the worker's completion response,
+    // causing one more sampling request to drain that message before the turn ends.
+    let worker_completion = wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/v1/responses"))
+        .and(|request: &wiremock::Request| {
+            decoded_body(request)
+                .and_then(|body| serde_json::from_slice::<Value>(&body).ok())
+                .is_some_and(|body| {
+                    body["input"].as_array().is_some_and(|items| {
+                        items.iter().any(|item| {
+                            item["type"] == "function_call_output"
+                                && item["call_id"] == NESTED_CALL_ID
+                        })
+                    })
+                })
+        })
+        .respond_with(sse_response(sse(vec![ev_completed(
+            "resp-worker-complete",
+        )])))
+        .expect(1..=2)
+        .mount_as_scoped(&server)
         .await;
-    }
+    mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            body_contains(request, QUEUE_CALL_ID)
+                && !request_has_input_type(request, "agent_message")
+        },
+        sse(vec![ev_completed("resp-parent-turn-assistant")]),
+    )
+    .await;
     mount_sse_once_match(
         &server,
         |request: &wiremock::Request| {
@@ -457,6 +482,7 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
     worker_thread.shutdown_and_wait().await?;
     drop(sibling_thread);
     drop(worker_thread);
+    drop(worker_completion);
 
     let followup_args = serde_json::to_string(&json!({
         "target": "worker",

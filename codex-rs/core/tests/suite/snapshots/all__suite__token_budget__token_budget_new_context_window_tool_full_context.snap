@@ -1,15 +1,26 @@
 ---
 source: core/tests/suite/token_budget.rs
+assertion_line: 1713
 expression: snapshot
 ---
 Scenario: New context window tool installs fresh full context before the next follow-up request.
 
-## Final Follow-Up Request
+## Window 1
+-- request 1 (turn; Final Follow-Up Request) --
 00:message/developer[3]:
-    [01] <context_continuation>\nThe runtime manages context compaction or rollover. Context-window capacity is not a task deadline or the goal's token budget. Cumulative token usage across requests is not the current context-window size. Continue the authorized work and tool calls while work remains; do not stop, defer it to a new conversation, or claim this turn's context is exhausted based on your own estimate. After compaction, use the retained summary and current state to continue the same task. Do not mark an unfinished goal complete or blocked because the context is filling up or a response is ending. Actual runtime errors, user stop requests, permissions, and explicit goal or usage limits still apply; report real failures accurately instead of claiming success.\n</context_continuation>
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
     [02] <SKILLS_INSTRUCTIONS>
     [03] <PERMISSIONS_INSTRUCTIONS>
-01:message/developer:<context_window>\nAgent name: /root\nFirst context window id: <FIRST_WINDOW_ID>\nCurrent context window id: <WINDOW_ID>\nPrevious context window id: <FIRST_WINDOW_ID>\n</context_window>
-02:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>>
-03:function_call/update_plan
+01:message/developer:
+    <context_window>
+    Agent name: /root
+    First context window id: <UUID 1>
+    Current context window id: <UUID 2>
+    Previous context window id: <UUID 1>
+    </context_window>
+02:message/user:
+    <ENVIRONMENT_CONTEXT>
+03:function_call/update_plan:{"plan":[{"status":"in_progress","step":"Continue in the new context window"}]}
 04:function_call_output:Plan updated
