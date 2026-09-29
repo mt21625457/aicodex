@@ -291,8 +291,8 @@ async fn list_with_macos_proxy_resolution_does_not_panic() -> Result<()> {
             .env_remove("https_proxy")
             .env_remove("ALL_PROXY")
             .env_remove("all_proxy")
-            .env_remove("NO_PROXY")
-            .env_remove("no_proxy")
+            .env("NO_PROXY", "127.0.0.1,localhost,::1")
+            .env("no_proxy", "127.0.0.1,localhost,::1")
             .args([
                 "-c",
                 &system_proxy_override,

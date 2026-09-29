@@ -9,7 +9,6 @@ use codex_app_server_protocol::AttestationGenerateResponse;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::JSONRPCMessage;
-use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::ThreadStartParams;
@@ -25,6 +24,7 @@ use core_test_support::skip_if_no_network;
 use pretty_assertions::assert_eq;
 use std::path::Path;
 use tempfile::TempDir;
+use test_case::test_case;
 use tokio::time::Duration;
 use tokio::time::timeout;
 
@@ -32,9 +32,12 @@ const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(60);
 const ATTESTATION_HEADER: &str = "v1.integration-test";
 const APP_SERVER_ATTESTATION_HEADER: &str = r#"{"v":1,"s":0,"t":"v1.integration-test"}"#;
 
+#[test_case(ThreadStartParams::default(); "persistent")]
+#[test_case(ThreadStartParams { ephemeral: Some(true), ..Default::default() }; "ephemeral")]
 #[tokio::test]
-async fn attestation_generate_round_trip_adds_header_to_responses_websocket_handshake() -> Result<()>
-{
+async fn attestation_generate_round_trip_adds_header_to_responses_websocket_handshake(
+    thread_start_params: ThreadStartParams,
+) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let websocket_server = start_websocket_server_with_headers(vec![WebSocketConnectionConfig {
@@ -81,6 +84,7 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
                 version: "0.1.0".to_string(),
             },
             Some(InitializeCapabilities {
+                explicit_gateway_oauth: false,
                 experimental_api: true,
                 request_attestation: true,
                 opt_out_notification_methods: None,
@@ -94,46 +98,41 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
         bail!("expected initialize response, got {initialized:?}");
     };
 
-    let mut attestation_requests = 0;
     let thread_request_id = mcp
-        .send_thread_start_request_with_auto_env(ThreadStartParams::default())
+        .send_thread_start_request_with_auto_env(thread_start_params)
         .await?;
-    let thread_response: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        read_response_servicing_attestation(
-            &mut mcp,
-            RequestId::Integer(thread_request_id),
-            &mut attestation_requests,
-        ),
-    )
-    .await??;
-    let ThreadStartResponse { thread, .. } = to_response(thread_response)?;
-
-    let turn_request_id = mcp
-        .send_turn_start_request(TurnStartParams {
-            thread_id: thread.id,
-            client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "Hello".to_string(),
-                text_elements: Vec::new(),
-            }],
-            ..Default::default()
-        })
-        .await?;
-    let turn_response: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        read_response_servicing_attestation(
-            &mut mcp,
-            RequestId::Integer(turn_request_id),
-            &mut attestation_requests,
-        ),
-    )
-    .await??;
-    let _: TurnStartResponse = to_response(turn_response)?;
-
+    let mut turn_request_id = None;
+    let mut turn_started = false;
+    let mut turn_completed = false;
+    let mut attestation_requests = 0;
+    // Prewarming can request attestation before thread/start or turn/start responds.
+    // Service those requests immediately instead of buffering them behind RPC responses.
     timeout(DEFAULT_READ_TIMEOUT, async {
         loop {
             match mcp.read_next_message().await? {
+                JSONRPCMessage::Response(response)
+                    if response.id == RequestId::Integer(thread_request_id) =>
+                {
+                    let ThreadStartResponse { thread, .. } = to_response(response)?;
+                    turn_request_id = Some(RequestId::Integer(
+                        mcp.send_turn_start_request(TurnStartParams {
+                            thread_id: thread.id,
+                            client_user_message_id: None,
+                            input: vec![V2UserInput::Text {
+                                text: "Hello".to_string(),
+                                text_elements: Vec::new(),
+                            }],
+                            ..Default::default()
+                        })
+                        .await?,
+                    ));
+                }
+                JSONRPCMessage::Response(response)
+                    if turn_request_id.as_ref() == Some(&response.id) =>
+                {
+                    let _: TurnStartResponse = to_response(response)?;
+                    turn_started = true;
+                }
                 JSONRPCMessage::Request(request) => {
                     let request = ServerRequest::try_from(request)?;
                     let ServerRequest::AttestationGenerate { request_id, .. } = request else {
@@ -151,9 +150,12 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
                 JSONRPCMessage::Notification(notification)
                     if notification.method == "turn/completed" =>
                 {
-                    break Ok(());
+                    turn_completed = true;
                 }
                 _ => {}
+            }
+            if turn_started && turn_completed {
+                break Ok(());
             }
         }
     })
@@ -201,31 +203,3 @@ supports_websockets = true
 
 // Startup prewarming can request attestation before thread/start or turn/start
 // returns. Service server requests while awaiting each client response.
-async fn read_response_servicing_attestation(
-    mcp: &mut TestAppServer,
-    expected_id: RequestId,
-    attestation_requests: &mut usize,
-) -> Result<JSONRPCResponse> {
-    loop {
-        match mcp.read_next_message().await? {
-            JSONRPCMessage::Response(response) if response.id == expected_id => {
-                return Ok(response);
-            }
-            JSONRPCMessage::Request(request) => {
-                let request = ServerRequest::try_from(request)?;
-                let ServerRequest::AttestationGenerate { request_id, .. } = request else {
-                    bail!("expected attestation/generate request, got {request:?}");
-                };
-                *attestation_requests += 1;
-                mcp.send_response(
-                    request_id,
-                    serde_json::to_value(AttestationGenerateResponse {
-                        token: ATTESTATION_HEADER.into(),
-                    })?,
-                )
-                .await?;
-            }
-            _ => {}
-        }
-    }
-}

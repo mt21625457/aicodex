@@ -24,7 +24,11 @@ async fn websocket_budget_checks_actual_frame_and_preserves_continuation_metadat
     let error = serialize_websocket_request(&frame, budget(/*limit*/ 4096))
         .await
         .unwrap_err();
-    assert!(!crate::api_bridge::map_api_error(error).is_retryable());
+    assert!(
+        crate::api_bridge::map_api_error(error)
+            .retry_delay(/*retry_count*/ 1)
+            .is_none()
+    );
     request.instructions = "x".repeat(4096);
     request.input = serde_json::from_value(json!([{"type":"message", "role":"user", "content":[
         {"type":"input_image", "image_url":"data:image/png;base64,private-invalid"}

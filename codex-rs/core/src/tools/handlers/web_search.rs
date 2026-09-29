@@ -24,6 +24,7 @@ use codex_api::SearchResponse;
 use codex_api::SearchSettings;
 use codex_features::Feature;
 use codex_http_client::ClientRouteClass;
+use codex_login::default_client::ClientRedirectPolicy;
 use codex_login::default_client::create_client_for_route;
 use codex_model_provider::create_model_provider;
 use codex_model_provider_info::ModelProviderInfo;
@@ -118,6 +119,7 @@ impl WebSearchHandler {
             &turn.config.http_client_factory(),
             &request_url,
             ClientRouteClass::Api,
+            ClientRedirectPolicy::Default,
         )
         .map_err(|err| {
             FunctionCallError::RespondToModel(format!(

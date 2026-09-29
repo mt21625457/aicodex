@@ -1,24 +1,26 @@
 ---
 source: core/tests/suite/pending_input.rs
+assertion_line: 766
 expression: snapshot
 ---
-Scenario: /responses POST bodies (input only, redacted like other suite snapshots)
+Scenario: /responses POST bodies with pending input
 
-## First request
+## Window 1
+-- request 1 (request; First request) --
 00:message/developer[2]:
-    [01] <context_continuation>\nThe runtime manages context compaction or rollover. Context-window capacity is not a task deadline or the goal's token budget. Cumulative token usage across requests is not the current context-window size. Continue the authorized work and tool calls while work remains; do not stop, defer it to a new conversation, or claim this turn's context is exhausted based on your own estimate. After compaction, use the retained summary and current state to continue the same task. Do not mark an unfinished goal complete or blocked because the context is filling up or a response is ending. Actual runtime errors, user stop requests, permissions, and explicit goal or usage limits still apply; report real failures accurately instead of claiming success.\n</context_continuation>
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
     [02] <PERMISSIONS_INSTRUCTIONS>
-01:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>>
-02:message/user:first prompt
-
-## Second request
-00:message/developer[2]:
-    [01] <context_continuation>\nThe runtime manages context compaction or rollover. Context-window capacity is not a task deadline or the goal's token budget. Cumulative token usage across requests is not the current context-window size. Continue the authorized work and tool calls while work remains; do not stop, defer it to a new conversation, or claim this turn's context is exhausted based on your own estimate. After compaction, use the retained summary and current state to continue the same task. Do not mark an unfinished goal complete or blocked because the context is filling up or a response is ending. Actual runtime errors, user stop requests, permissions, and explicit goal or usage limits still apply; report real failures accurately instead of claiming success.\n</context_continuation>
-    [02] <PERMISSIONS_INSTRUCTIONS>
-01:message/user:<ENVIRONMENT_CONTEXT:cwd=<CWD>>
-02:message/user:first prompt
+01:message/user:
+    <ENVIRONMENT_CONTEXT>
+02:message/user:
+    first prompt
+-- request 2 (request; Second request) --
 03:reasoning:summary=thinking:encrypted=true
-04:function_call/shell
-05:message/assistant:first answer
+04:function_call/shell:{"command":"echo preserved tool call"}
+05:message/assistant:
+    first answer
 06:function_call_output:unsupported call: shell
-07:message/user:second prompt
+07:message/user:
+    second prompt

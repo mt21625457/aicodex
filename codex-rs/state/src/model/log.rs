@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use serde::Serialize;
-use sqlx::FromRow;
+use sqlx_macros::FromRow;
 
 pub(crate) const MAX_PERSISTED_LOG_BODY_BYTES: usize = 64 * 1024;
 

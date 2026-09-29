@@ -635,7 +635,7 @@ async fn cold_resume_preserves_effective_developer_instructions_for_worker(
         ));
     }
     MockResponsesConfig::new(&server.uri())
-        .with_model("gpt-5.4")
+        .with_model("gpt-5.5")
         .with_root_config(&format!(
             "developer_instructions = {PARENT_INSTRUCTIONS:?}\nmodel_reasoning_effort = \"high\""
         ))
@@ -650,7 +650,7 @@ async fn cold_resume_preserves_effective_developer_instructions_for_worker(
             .await?;
         let ThreadStartResponse { thread, .. } = app_server
             .start_thread(ThreadStartParams {
-                model: Some("gpt-5.4".to_string()),
+                model: Some("gpt-5.5".to_string()),
                 history_mode: Some(history_mode),
                 ..Default::default()
             })
@@ -873,23 +873,6 @@ features.shell_tool = false
         .await?;
     assert!(loaded.data.contains(&thread_id));
     assert!(!loaded.data.contains(&child_thread_id));
-    if history_mode == ThreadHistoryMode::Legacy {
-        // Legacy parent hydration reconstructs its durable child and forwards the restored
-        // TokenCount while doing so. Consume that parent-resume notification here so it cannot
-        // be mistaken for the explicit child-resume replay asserted below.
-        let replay = timeout(
-            READ_TIMEOUT,
-            app_server
-                .read_stream_until_matching_notification("legacy child usage", &is_child_usage),
-        )
-        .await??;
-        let replay: ThreadTokenUsageUpdatedNotification =
-            serde_json::from_value(replay.params.expect("usage parameters"))?;
-        assert_eq!(
-            (replay.turn_id, replay.token_usage.total.total_tokens),
-            expected_child_usage,
-        );
-    }
 
     let expected = baseline;
     if history_mode == ThreadHistoryMode::Paginated {

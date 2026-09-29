@@ -5,7 +5,7 @@ Build script for the Codex project.
 Supports building:
 - Rust components (via Cargo)
 - TypeScript/Node.js components (via pnpm)
-- Native binaries for CLI distribution
+- CLI and its required Code Mode host, built and staged together
 
 Usage:
     ./build.py                     # Default: build all in minimized release mode, output binary named "aicodex"
@@ -17,7 +17,7 @@ Usage:
     ./build.py all --fast          # Build everything in fast local mode
     ./build.py codex-cli           # Build the aicodex CLI binary in minimized release mode
     ./build.py codex-cli --fast    # Build the aicodex CLI binary in fast local mode
-    ./build.py codex-cli --all-targets
+    ./build.py codex-cli --all-targets  # Separate runtime pairs under dist/<target>/
     ./build.py clean --dry-run     # Show build artifacts that can be removed
 """
 
@@ -44,6 +44,7 @@ AICODEX_VERSION_FILE = REPO_ROOT / "AICODEX_VERSION"
 OUTPUT_BINARY_NAME = "aicodex"
 CLI_PACKAGE_NAME = "codex-cli"
 CLI_BIN_NAME = "aicodex"
+CODE_MODE_HOST_NAME = "codex-code-mode-host"
 CLI_VENDOR_DIR_NAME = "aicodex"
 
 CLI_TARGETS = (
@@ -422,7 +423,15 @@ def remove_path(path: Path, *, dry_run: bool) -> bool:
 
 def root_binary_paths() -> list[Path]:
     """Return known top-level binaries produced by this build script."""
-    paths = [REPO_ROOT / OUTPUT_BINARY_NAME, REPO_ROOT / f"{OUTPUT_BINARY_NAME}.exe"]
+    paths = [
+        REPO_ROOT / name
+        for name in (
+            OUTPUT_BINARY_NAME,
+            f"{OUTPUT_BINARY_NAME}.exe",
+            CODE_MODE_HOST_NAME,
+            f"{CODE_MODE_HOST_NAME}.exe",
+        )
+    ]
     for target in CLI_TARGETS:
         paths.append(
             REPO_ROOT / executable_name(f"{OUTPUT_BINARY_NAME}-{target}", target)
@@ -589,8 +598,8 @@ def build_rust(
     *,
     profile: str = DEFAULT_BUILD_PROFILE,
     target: str | None = None,
-    package: str | None = None,
-    bin: str | None = None,
+    package: str | list[str] | None = None,
+    bin: str | list[str] | None = None,
     features: list[str] | None = None,
     jobs: int | None = None,
     verbose: bool = False,
@@ -604,10 +613,10 @@ def build_rust(
 
     cmd: list[str] = ["cargo", "build"]
     cmd += cargo_profile_args(profile)
-    if package:
-        cmd += ["-p", package]
-    if bin:
-        cmd += ["--bin", bin]
+    for name in [package] if isinstance(package, str) else package or []:
+        cmd += ["-p", name]
+    for name in [bin] if isinstance(bin, str) else bin or []:
+        cmd += ["--bin", name]
     if target:
         cmd += ["--target", target]
     if features:
@@ -619,6 +628,21 @@ def build_rust(
 
     version = read_aicodex_version()
     cargo_env = cargo_build_env(profile)
+    # 与标准分发共用锁定版本和 SHA-256 校验的 V8 依赖，禁止下载不匹配的默认库。
+    # targets 模块通过此变量定位源码；只在导入期间设置，不改变调用方的环境。
+    previous_root = os.environ.get("CODEX_REPO_ROOT")
+    os.environ["CODEX_REPO_ROOT"] = str(REPO_ROOT)
+    try:
+        from scripts.codex_package.targets import TARGET_SPECS
+        from scripts.codex_package.v8 import resolve_codex_v8_cargo_env
+    finally:
+        if previous_root is None:
+            os.environ.pop("CODEX_REPO_ROOT", None)
+        else:
+            os.environ["CODEX_REPO_ROOT"] = previous_root
+    cargo_env.update(
+        resolve_codex_v8_cargo_env(TARGET_SPECS[target or detect_cli_target()])
+    )
     print(f"  → Using sccache: {cargo_env['RUSTC_WRAPPER']}", file=sys.stderr)
     if profile == RELEASE_BUILD_PROFILE:
         print("  → Enforcing minimized release profile", file=sys.stderr)
@@ -633,28 +657,32 @@ def build_codex_cli(
     install: bool = False,
     rename: str | None = None,
     verbose: bool = False,
+    output_dir: Path | None = None,
 ) -> Path:
-    """Build the aicodex CLI binary and optionally stage / rename it."""
+    """构建同版本 CLI 与 Code Mode 宿主；任一缺失都不得交付不完整运行时。"""
     resolved_target = target or detect_cli_target()
+    if rename and Path(
+        executable_name(rename, resolved_target)
+    ).name == executable_name(CODE_MODE_HOST_NAME, resolved_target):
+        raise ValueError("CLI output name conflicts with the required Code Mode host")
     build_rust(
         profile=profile,
         target=resolved_target,
-        package=CLI_PACKAGE_NAME,
-        bin=CLI_BIN_NAME,
+        package=[CLI_PACKAGE_NAME, CODE_MODE_HOST_NAME],
+        bin=[CLI_BIN_NAME, CODE_MODE_HOST_NAME],
         verbose=verbose,
     )
 
-    src = (
-        RUST_ROOT
-        / "target"
-        / resolved_target
-        / cargo_profile_output_dir(profile)
-        / executable_name(CLI_BIN_NAME, resolved_target)
-    )
-
-    if not src.exists():
-        print(f"ERROR: expected binary not found at {src}", file=sys.stderr)
-        sys.exit(1)
+    # 尊重 Cargo 自定义输出目录，避免误取默认 target 下的旧版本产物。
+    target_root = Path(os.environ.get("CARGO_TARGET_DIR", RUST_ROOT / "target"))
+    if not target_root.is_absolute():
+        target_root = RUST_ROOT / target_root
+    build_dir = target_root / resolved_target / cargo_profile_output_dir(profile)
+    src = build_dir / executable_name(CLI_BIN_NAME, resolved_target)
+    host = build_dir / executable_name(CODE_MODE_HOST_NAME, resolved_target)
+    for artifact in (src, host):
+        if not artifact.is_file():
+            raise RuntimeError(f"Required runtime binary missing: {artifact}")
 
     if install and rename and rename != CLI_BIN_NAME:
         raise RuntimeError(
@@ -683,14 +711,16 @@ def build_codex_cli(
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest = dest_dir / dest_name
 
-        print(f"  → Staging {src} → {dest}", file=sys.stderr)
-        shutil.copy2(src, dest)
-        return dest
+    else:
+        dest_dir = output_dir or REPO_ROOT
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / dest_name
 
-    # Also copy to repo root with the desired name for easy access
-    dest = REPO_ROOT / dest_name
-    print(f"  → Copying {src} → {dest}", file=sys.stderr)
-    shutil.copy2(src, dest)
+    # 内核按固定文件名在自身目录寻找宿主；rename 只影响 CLI 名字。
+    # 先校验整组输入再复制，宿主缺失时不能更新已安装的 CLI。
+    for source, destination in ((host, dest_dir / host.name), (src, dest)):
+        print(f"  → Staging {source} → {destination}", file=sys.stderr)
+        shutil.copy2(source, destination)
     return dest
 
 
@@ -705,18 +735,16 @@ def build_codex_cli_targets(
     """Build the aicodex CLI binary for multiple target triples."""
     outputs = []
     for target in targets:
-        target_rename = None
-        if not install:
-            base_name = rename or CLI_BIN_NAME
-            target_rename = f"{base_name}-{target}"
-
+        # 宿主名称不可附加 target；以目录隔离多架构，保证每个 CLI 的相邻宿主匹配。
+        target_output_dir = REPO_ROOT / "dist" / target
         outputs.append(
             build_codex_cli(
                 profile=profile,
                 target=target,
                 install=install,
-                rename=target_rename,
+                rename=rename,
                 verbose=verbose,
+                output_dir=target_output_dir,
             )
         )
     return outputs
@@ -820,7 +848,7 @@ def main(argv: list[str] | None = None) -> None:
     cli_parser.add_argument(
         "--install",
         action="store_true",
-        help="Stage binary into codex-cli/vendor for local use",
+        help="Stage CLI and Code Mode host into codex-cli/vendor for local use",
     )
     cli_parser.add_argument(
         "--rename",

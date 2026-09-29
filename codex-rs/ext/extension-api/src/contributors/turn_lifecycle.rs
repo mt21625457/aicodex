@@ -1,3 +1,5 @@
+//! Turn lifecycle inputs and scheduling phases for host-owned contributors.
+
 use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
@@ -71,6 +73,13 @@ impl TurnAbortRequest {
     }
 }
 
+/// Runs before task registration or during cancellable regular-task startup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TurnStartPhase {
+    BeforeTaskRegistration,
+    RegularTaskStart,
+}
+
 /// Input supplied when the host starts a turn.
 pub struct TurnStartInput<'a> {
     /// Stable host-owned turn identifier.
@@ -78,7 +87,9 @@ pub struct TurnStartInput<'a> {
     /// Effective collaboration mode for this turn.
     pub collaboration_mode: &'a CollaborationMode,
     /// Total token usage snapshot captured when the turn started.
-    pub token_usage_at_turn_start: &'a TokenUsage,
+    /// Present before task registration; absent during regular-task preparation.
+    /// Token-accounting contributors must remain in `BeforeTaskRegistration`.
+    pub token_usage_at_turn_start: Option<&'a TokenUsage>,
     /// Store scoped to the host session runtime.
     pub session_store: &'a ExtensionData,
     /// Store scoped to this thread runtime.
