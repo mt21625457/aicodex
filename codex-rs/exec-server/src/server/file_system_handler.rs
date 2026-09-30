@@ -9,7 +9,7 @@ use crate::CapabilityRootsDiscoverResponse;
 use crate::ConditionalWritePrecondition;
 use crate::CopyOptions;
 use crate::CreateDirectoryOptions;
-use crate::ExecServerRuntimePaths;
+use crate::ExecServerRuntimeOptions;
 use crate::ExecutorFileSystem;
 use crate::GetMetadataOptions;
 use crate::ReadFileOptions;
@@ -66,7 +66,7 @@ pub(crate) struct FileSystemHandler {
 }
 
 impl FileSystemHandler {
-    pub(crate) fn new(runtime_paths: ExecServerRuntimePaths) -> Self {
+    pub(crate) fn new(runtime_paths: ExecServerRuntimeOptions) -> Self {
         Self {
             file_system: LocalFileSystem::with_runtime_paths(runtime_paths),
             file_reads: FileReadHandleManager::default(),
@@ -438,7 +438,7 @@ mod tests {
     #[tokio::test]
     async fn no_platform_sandbox_policies_do_not_require_configured_sandbox_helper() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
-        let runtime_paths = ExecServerRuntimePaths::new(
+        let runtime_paths = ExecServerRuntimeOptions::new(
             std::env::current_exe().expect("current exe"),
             /*codex_linux_sandbox_exe*/ None,
         )

@@ -478,23 +478,28 @@ The crate exports:
 - `RemoteExecServerConnectArgs`
 - protocol request/response structs for process and filesystem RPCs
 - `DEFAULT_LISTEN_URL` and `ExecServerListenUrlParseError`
-- `ExecServerRuntimePaths`
+- `ExecServerRuntimeOptions`
 - `run_main()` for embedding the websocket server
 - `RemoteEnvironmentConfig` and `run_remote_environment()` for embedding remote
   registration mode
 
-Callers must pass `ExecServerRuntimePaths` to `run_main()`. The top-level
-`aicodex exec-server` command builds these paths from the `aicodex` arg0 dispatch
-state. `RemoteEnvironmentConfig::new(...)` also takes the auth provider that
-remote registration should use; the CLI builds that provider from AICodex auth
-state before starting remote mode.
-Callers must pass `ExecServerRuntimePaths` and an explicitly configured
-`HttpClientFactory` to `run_main()`. The top-level `codex exec-server` command
-builds these paths from the `codex` arg0 dispatch state and resolves its HTTP
-client factory from the effective Codex configuration.
+Callers must pass `ExecServerRuntimeOptions` and an explicitly configured
+`HttpClientFactory` to `run_main()`. The top-level `aicodex exec-server` command
+builds the runtime options from the `aicodex` arg0 dispatch state and startup flags,
+and resolves its HTTP client factory from the effective AICodex configuration.
 `RemoteEnvironmentConfig::new(...)` also takes the auth provider and HTTP client
 factory that remote registration mode should use; the CLI builds the auth
 provider from Codex auth state before starting remote mode.
+
+`--proxy-private-ips-via-upstream` (or
+`CODEX_EXEC_SERVER_PROXY_PRIVATE_IPS_VIA_UPSTREAM=true`) allows permitted private IP
+destinations to use an inherited upstream proxy. If no valid proxy configuration
+applies to the request protocol, routing falls back to a direct connection. This
+includes unset, malformed, or unsupported proxy settings. Setting
+`allow_upstream_proxy=false` also keeps routing direct; loopback always stays local.
+Destination policy still applies to every route. Enforcing mandatory upstream routing
+would require a separate fail-closed mode. A connection failure after selecting an
+upstream proxy is returned as an error, without retrying directly.
 
 ## Example session
 

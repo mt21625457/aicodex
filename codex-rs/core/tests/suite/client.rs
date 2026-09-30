@@ -1683,6 +1683,7 @@ async fn try_provider_auth_request_for_wire_api(
         requires_openai_auth: false,
         supports_websockets: false,
         supports_standalone_web_search: false,
+        include_internal_metadata: false,
     };
 
     try_request_with_provider(provider).await
@@ -3212,6 +3213,7 @@ async fn azure_responses_request_stores_and_preserves_type_valid_item_ids() {
         requires_openai_auth: false,
         supports_websockets: false,
         supports_standalone_web_search: false,
+        include_internal_metadata: false,
     };
 
     let codex_home = TempDir::new().unwrap();
@@ -3428,6 +3430,7 @@ async fn responses_http_omits_type_invalid_web_search_ids_without_mutating_promp
     let provider = ModelProviderInfo {
         gateway_oauth: None,
         model_catalog_url: None,
+        include_internal_metadata: false,
         // Azure Responses uses `store: true`, so this exercises type-specific
         // ID validation rather than the `store: false` rule that removes all IDs.
         name: "azure".into(),
@@ -3999,6 +4002,7 @@ async fn azure_overrides_assign_properties_used_for_responses_url() {
         requires_openai_auth: false,
         supports_websockets: false,
         supports_standalone_web_search: false,
+        include_internal_metadata: false,
     };
 
     // Init session
@@ -4086,6 +4090,7 @@ async fn env_var_overrides_loaded_auth() {
         requires_openai_auth: false,
         supports_websockets: false,
         supports_standalone_web_search: false,
+        include_internal_metadata: false,
     };
 
     // Init session

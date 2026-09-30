@@ -2138,6 +2138,7 @@ dependencies = [
  "codex-utils-cli",
  "codex-utils-json-to-toml",
  "codex-utils-path-uri",
+ "codex-utils-process",
  "codex-utils-pty",
  "codex-web-search-extension",
  "codex-websocket-auth",
@@ -2558,6 +2559,7 @@ dependencies = [
  "codex-utils-cli",
  "codex-utils-path",
  "codex-utils-path-uri",
+ "codex-utils-process",
  "codex-utils-pty",
  "codex-utils-redacted-string",
  "codex-websocket-auth",
@@ -2973,6 +2975,7 @@ dependencies = [
  "codex-utils-path",
  "codex-utils-path-uri",
  "codex-utils-plugins",
+ "codex-utils-process",
  "codex-utils-pty",
  "codex-utils-redacted-string",
  "codex-utils-stream-parser",
@@ -3094,6 +3097,7 @@ dependencies = [
  "codex-utils-path",
  "codex-utils-path-uri",
  "codex-utils-plugins",
+ "codex-utils-process",
  "dirs",
  "flate2",
  "futures",
@@ -3211,6 +3215,7 @@ dependencies = [
  "codex-utils-cargo-bin",
  "codex-utils-home-dir",
  "codex-utils-path-uri",
+ "codex-utils-process",
  "codex-utils-pty",
  "codex-utils-redacted-string",
  "codex-utils-rustls-provider",
@@ -3470,6 +3475,7 @@ dependencies = [
  "codex-protocol",
  "codex-utils-absolute-path",
  "codex-utils-path-uri",
+ "codex-utils-process",
  "codex-utils-pty",
  "futures",
  "gix",
@@ -3568,6 +3574,7 @@ dependencies = [
  "codex-model-provider-info",
  "codex-prompts",
  "codex-protocol",
+ "codex-utils-cargo-bin",
  "core_test_support",
  "dirs",
  "http 1.4.0",
@@ -3578,6 +3585,8 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "wiremock",
+ "zstd",
 ]
 
 [[package]]
@@ -3642,6 +3651,7 @@ dependencies = [
  "codex-utils-absolute-path",
  "codex-utils-output-truncation",
  "codex-utils-path-uri",
+ "codex-utils-process",
  "codex-utils-pty",
  "futures",
  "libc",
@@ -3802,6 +3812,7 @@ dependencies = [
  "codex-protocol",
  "codex-secrets",
  "codex-terminal-detection",
+ "codex-utils-process",
  "codex-utils-template",
  "codex-workload-identity",
  "core_test_support",
@@ -4013,6 +4024,7 @@ dependencies = [
  "codex-protocol",
  "codex-response-debug-context",
  "codex-secrets",
+ "codex-utils-process",
  "codex-utils-redacted-string",
  "http 1.4.0",
  "pretty_assertions",
@@ -4419,6 +4431,7 @@ dependencies = [
  "codex-state",
  "codex-utils-absolute-path",
  "codex-utils-path",
+ "codex-utils-process",
  "codex-utils-string",
  "pretty_assertions",
  "regex",
@@ -4561,6 +4574,7 @@ name = "codex-skills-extension"
 version = "0.1.11"
 dependencies = [
  "assert_matches",
+ "blake3",
  "codex-analytics",
  "codex-config",
  "codex-exec-server",
@@ -5078,6 +5092,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-utils-process"
+version = "0.1.11"
+dependencies = [
+ "pretty_assertions",
+ "tokio",
+]
+
+[[package]]
 name = "codex-utils-pty"
 version = "0.1.11"
 dependencies = [
@@ -5293,6 +5315,7 @@ dependencies = [
  "codex-otel",
  "codex-protocol",
  "codex-utils-absolute-path",
+ "codex-utils-process",
  "codex-utils-pty",
  "codex-utils-string",
  "dirs-next",

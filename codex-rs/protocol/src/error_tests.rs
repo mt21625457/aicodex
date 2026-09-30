@@ -164,6 +164,7 @@ fn with_now_override<T>(now: DateTime<Utc>, f: impl FnOnce() -> T) -> T {
 #[test]
 fn usage_limit_reached_error_formats_plus_plan() {
     let err = UsageLimitReachedError {
+        limit_window_minutes: None,
         plan_type: Some(PlanType::Known(KnownPlan::Plus)),
         resets_at: None,
         rate_limits: Some(Box::new(rate_limit_snapshot())),
@@ -203,6 +204,7 @@ fn usage_limit_reached_error_formats_rate_limit_reached_types() {
 
     for (rate_limit_reached_type, expected) in cases {
         let err = UsageLimitReachedError {
+            limit_window_minutes: None,
             plan_type: Some(PlanType::Known(KnownPlan::Plus)),
             resets_at: None,
             rate_limits: Some(Box::new(rate_limit_snapshot())),
@@ -326,6 +328,7 @@ fn sandbox_denied_reports_exit_code_when_no_output_available() {
 #[test]
 fn usage_limit_reached_error_formats_free_plan() {
     let err = UsageLimitReachedError {
+        limit_window_minutes: None,
         plan_type: Some(PlanType::Known(KnownPlan::Free)),
         resets_at: None,
         rate_limits: Some(Box::new(rate_limit_snapshot())),
@@ -341,6 +344,7 @@ fn usage_limit_reached_error_formats_free_plan() {
 #[test]
 fn usage_limit_reached_error_formats_go_plan() {
     let err = UsageLimitReachedError {
+        limit_window_minutes: None,
         plan_type: Some(PlanType::Known(KnownPlan::Go)),
         resets_at: None,
         rate_limits: Some(Box::new(rate_limit_snapshot())),
@@ -356,6 +360,7 @@ fn usage_limit_reached_error_formats_go_plan() {
 #[test]
 fn usage_limit_reached_error_formats_default_when_none() {
     let err = UsageLimitReachedError {
+        limit_window_minutes: None,
         plan_type: None,
         resets_at: None,
         rate_limits: Some(Box::new(rate_limit_snapshot())),
@@ -375,6 +380,7 @@ fn usage_limit_reached_error_formats_team_plan() {
     with_now_override(base, move || {
         let expected_time = format_retry_timestamp(&resets_at);
         let err = UsageLimitReachedError {
+            limit_window_minutes: None,
             plan_type: Some(PlanType::Known(KnownPlan::Team)),
             resets_at: Some(resets_at),
             rate_limits: Some(Box::new(rate_limit_snapshot())),
@@ -396,6 +402,7 @@ fn usage_limit_reached_error_formats_business_plan_without_reset() {
         KnownPlan::EnterpriseCbpAutomation,
     ] {
         let err = UsageLimitReachedError {
+            limit_window_minutes: None,
             plan_type: Some(PlanType::Known(plan)),
             resets_at: None,
             rate_limits: Some(Box::new(rate_limit_snapshot())),
@@ -412,6 +419,7 @@ fn usage_limit_reached_error_formats_business_plan_without_reset() {
 #[test]
 fn usage_limit_reached_error_formats_self_serve_business_prolite_plan() {
     let err = UsageLimitReachedError {
+        limit_window_minutes: None,
         plan_type: Some(PlanType::Known(KnownPlan::SelfServeBusinessProLite)),
         resets_at: None,
         rate_limits: Some(Box::new(rate_limit_snapshot())),
@@ -427,6 +435,7 @@ fn usage_limit_reached_error_formats_self_serve_business_prolite_plan() {
 #[test]
 fn usage_limit_reached_error_formats_self_serve_business_usage_based_plan() {
     let err = UsageLimitReachedError {
+        limit_window_minutes: None,
         plan_type: Some(PlanType::Known(KnownPlan::SelfServeBusinessUsageBased)),
         resets_at: None,
         rate_limits: Some(Box::new(rate_limit_snapshot())),
@@ -442,6 +451,7 @@ fn usage_limit_reached_error_formats_self_serve_business_usage_based_plan() {
 #[test]
 fn usage_limit_reached_error_formats_enterprise_cbp_usage_based_plan() {
     let err = UsageLimitReachedError {
+        limit_window_minutes: None,
         plan_type: Some(PlanType::Known(KnownPlan::EnterpriseCbpUsageBased)),
         resets_at: None,
         rate_limits: Some(Box::new(rate_limit_snapshot())),
@@ -463,6 +473,7 @@ fn usage_limit_reached_error_formats_default_for_other_plans() {
         KnownPlan::EduPro,
     ] {
         let err = UsageLimitReachedError {
+            limit_window_minutes: None,
             plan_type: Some(PlanType::Known(plan)),
             resets_at: None,
             rate_limits: Some(Box::new(rate_limit_snapshot())),
@@ -483,6 +494,7 @@ fn usage_limit_reached_error_formats_pro_plan_with_reset() {
     with_now_override(base, move || {
         let expected_time = format_retry_timestamp(&resets_at);
         let err = UsageLimitReachedError {
+            limit_window_minutes: None,
             plan_type: Some(PlanType::Known(KnownPlan::Pro)),
             resets_at: Some(resets_at),
             rate_limits: Some(Box::new(rate_limit_snapshot())),
@@ -503,6 +515,7 @@ fn usage_limit_reached_error_hides_upsell_for_non_codex_limit_name() {
     with_now_override(base, move || {
         let expected_time = format_retry_timestamp(&resets_at);
         let err = UsageLimitReachedError {
+            limit_window_minutes: None,
             plan_type: Some(PlanType::Known(KnownPlan::Plus)),
             resets_at: Some(resets_at),
             rate_limits: Some(Box::new(RateLimitSnapshot {
@@ -530,6 +543,7 @@ fn usage_limit_reached_includes_minutes_when_available() {
     with_now_override(base, move || {
         let expected_time = format_retry_timestamp(&resets_at);
         let err = UsageLimitReachedError {
+            limit_window_minutes: None,
             plan_type: None,
             resets_at: Some(resets_at),
             rate_limits: Some(Box::new(rate_limit_snapshot())),
@@ -674,6 +688,7 @@ fn usage_limit_reached_includes_hours_and_minutes() {
     with_now_override(base, move || {
         let expected_time = format_retry_timestamp(&resets_at);
         let err = UsageLimitReachedError {
+            limit_window_minutes: None,
             plan_type: Some(PlanType::Known(KnownPlan::Plus)),
             resets_at: Some(resets_at),
             rate_limits: Some(Box::new(rate_limit_snapshot())),
@@ -695,6 +710,7 @@ fn usage_limit_reached_includes_days_hours_minutes() {
     with_now_override(base, move || {
         let expected_time = format_retry_timestamp(&resets_at);
         let err = UsageLimitReachedError {
+            limit_window_minutes: None,
             plan_type: None,
             resets_at: Some(resets_at),
             rate_limits: Some(Box::new(rate_limit_snapshot())),
@@ -713,6 +729,7 @@ fn usage_limit_reached_less_than_minute() {
     with_now_override(base, move || {
         let expected_time = format_retry_timestamp(&resets_at);
         let err = UsageLimitReachedError {
+            limit_window_minutes: None,
             plan_type: None,
             resets_at: Some(resets_at),
             rate_limits: Some(Box::new(rate_limit_snapshot())),
@@ -731,6 +748,7 @@ fn usage_limit_reached_with_promo_message() {
     with_now_override(base, move || {
         let expected_time = format_retry_timestamp(&resets_at);
         let err = UsageLimitReachedError {
+            limit_window_minutes: None,
             plan_type: None,
             resets_at: Some(resets_at),
             rate_limits: Some(Box::new(rate_limit_snapshot())),

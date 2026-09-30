@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_mxc.rs
+assertion_line: 57
 expression: "context_snapshot::format_request_history_snapshot(\"Resolved local MXC selection preserves workspace-write permissions in a real agent turn.\",\n&mock.requests(), &ContextSnapshotOptions::default(),)"
 ---
 Scenario: Resolved local MXC selection preserves workspace-write permissions in a real agent turn.
@@ -33,7 +34,7 @@ Scenario: Resolved local MXC selection preserves workspace-write permissions in 
       <shell><HOST_SHELL></shell>
       <current_date><CURRENT_DATE></current_date>
       <timezone><HOST_TIMEZONE></timezone>
-      <filesystem><workspace_roots><root><WORKSPACE_ROOT 1></root></workspace_roots><permission_profile type...ntry></file_system></permission_profile></filesystem> [hash=1aac4587381d0473]
+      <filesystem><workspace_roots><root><WORKSPACE_ROOT 1></root></workspace_roots><permission_profile type...ntry></file_system></permission_profile></filesystem> [hash=5a3f4fca1b9739d9]
     </environment_context>
 02:message/user:
     Inspect the sandbox.

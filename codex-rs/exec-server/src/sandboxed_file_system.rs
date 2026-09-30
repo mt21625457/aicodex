@@ -11,7 +11,7 @@ use crate::ConditionalWritePrecondition;
 use crate::CopyOptions;
 use crate::CreateDirectoryOptions;
 use crate::DiscoverV2CapabilitiesResponse;
-use crate::ExecServerRuntimePaths;
+use crate::ExecServerRuntimeOptions;
 use crate::ExecutorFileSystem;
 use crate::ExecutorFileSystemFuture;
 use crate::FILE_READ_CHUNK_SIZE;
@@ -100,7 +100,7 @@ impl SandboxedFileSystem {
             .map_err(map_sandbox_error)
     }
 
-    pub fn new(runtime_paths: ExecServerRuntimePaths) -> Self {
+    pub fn new(runtime_paths: ExecServerRuntimeOptions) -> Self {
         Self {
             sandbox_runner: FileSystemSandboxRunner::new(runtime_paths),
         }
