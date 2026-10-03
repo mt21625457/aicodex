@@ -41,6 +41,7 @@ const PROTECTED_METADATA_GIT_PATH_NAME: &str = ".git";
 const PROTECTED_METADATA_AGENTS_PATH_NAME: &str = ".agents";
 const PROTECTED_METADATA_CODEX_PATH_NAME: &str = ".codex";
 const PROTECTED_METADATA_AICODEX_PATH_NAME: &str = ".aicodex";
+const PROTECTED_METADATA_AWS_PATH_NAME: &str = ".aws";
 
 /// Top-level workspace metadata paths that stay protected under writable roots.
 pub const PROTECTED_METADATA_PATH_NAMES: &[&str] = &[
@@ -48,6 +49,7 @@ pub const PROTECTED_METADATA_PATH_NAMES: &[&str] = &[
     PROTECTED_METADATA_AGENTS_PATH_NAME,
     PROTECTED_METADATA_CODEX_PATH_NAME,
     PROTECTED_METADATA_AICODEX_PATH_NAME,
+    PROTECTED_METADATA_AWS_PATH_NAME,
 ];
 
 /// Returns true when a path basename is one of the protected workspace metadata names.
@@ -248,6 +250,12 @@ pub struct FileSystemSandboxPolicy {
 enum WritableRootPathResolution {
     Effective,
     PreserveMutableComponents,
+}
+
+#[derive(Clone, Copy)]
+enum RootMetadataWriteMounts {
+    Separate,
+    InheritWritableRoot,
 }
 
 impl WritableRootPathResolution {
@@ -855,6 +863,7 @@ impl FileSystemSandboxPolicy {
         append_default_read_only_project_root_subpath_if_no_explicit_rule(&mut entries, ".agents");
         append_default_read_only_project_root_subpath_if_no_explicit_rule(&mut entries, ".codex");
         append_default_read_only_project_root_subpath_if_no_explicit_rule(&mut entries, ".aicodex");
+        append_default_read_only_project_root_subpath_if_no_explicit_rule(&mut entries, ".aws");
         for writable_root in writable_roots {
             for protected_path in default_read_only_subpaths_for_writable_root(
                 writable_root,
@@ -1475,7 +1484,27 @@ impl FileSystemSandboxPolicy {
     /// Returns the writable roots together with read-only carveouts resolved
     /// against the provided cwd.
     pub fn get_writable_roots_with_cwd(&self, cwd: &Path) -> Vec<WritableRoot> {
-        self.get_writable_roots_with_cwd_impl(cwd, WritableRootPathResolution::Effective)
+        self.get_writable_roots_with_cwd_impl(
+            cwd,
+            WritableRootPathResolution::Effective,
+            RootMetadataWriteMounts::Separate,
+        )
+    }
+
+    /// Omits redundant root-metadata mounts when the filesystem root is writable.
+    ///
+    /// Explicit root metadata writes still disable their default protection. Linux
+    /// inherits those writes from its root bind so a metadata symlink cannot cause
+    /// a second bind to reopen its target under an explicitly denied directory.
+    pub fn get_writable_roots_with_cwd_inheriting_root_metadata(
+        &self,
+        cwd: &Path,
+    ) -> Vec<WritableRoot> {
+        self.get_writable_roots_with_cwd_impl(
+            cwd,
+            WritableRootPathResolution::Effective,
+            RootMetadataWriteMounts::InheritWritableRoot,
+        )
     }
 
     /// Reports configured writable roots for diagnostics without inspecting the filesystem.
@@ -1516,6 +1545,7 @@ impl FileSystemSandboxPolicy {
         self.get_writable_roots_with_cwd_impl(
             cwd,
             WritableRootPathResolution::PreserveMutableComponents,
+            RootMetadataWriteMounts::Separate,
         )
     }
 
@@ -1523,6 +1553,7 @@ impl FileSystemSandboxPolicy {
         &self,
         cwd: &Path,
         path_resolution: WritableRootPathResolution,
+        root_metadata_mounts: RootMetadataWriteMounts,
     ) -> Vec<WritableRoot> {
         if self.has_full_disk_write_access() {
             return Vec::new();
@@ -1607,9 +1638,21 @@ impl FileSystemSandboxPolicy {
                 }
             }))
             .collect();
+        let inherits_root_metadata = matches!(
+            root_metadata_mounts,
+            RootMetadataWriteMounts::InheritWritableRoot
+        ) && prepared_entries.iter().any(|entry| {
+            entry.entry.access.can_write() && entry.entry.path.as_path().parent().is_none()
+        });
         let writable_entries: Vec<&PreparedFileSystemEntry<'_>> = prepared_entries
             .iter()
             .filter(|entry| entry.entry.access.can_write())
+            .filter(|entry| {
+                let path = entry.entry.path.as_path();
+                !inherits_root_metadata
+                    || path.parent().is_none_or(|parent| parent.parent().is_some())
+                    || !path.file_name().is_some_and(is_protected_metadata_name)
+            })
             .collect();
 
         let effective_cwd = AbsolutePathBuf::from_absolute_path(cwd)
@@ -1752,6 +1795,27 @@ impl FileSystemSandboxPolicy {
                 .collect(),
             /*normalize_effective_paths*/ true,
         )
+    }
+
+    /// Includes literal denies alongside their resolved targets so Linux can reject a denial
+    /// through a writable symlink instead of only masking the symlink's current target.
+    pub fn get_unreadable_roots_with_cwd_preserving_symlinks(
+        &self,
+        cwd: &Path,
+    ) -> Vec<AbsolutePathBuf> {
+        let mut roots = self.get_unreadable_roots_with_cwd(cwd);
+        if matches!(self.kind, FileSystemSandboxKind::Restricted) {
+            for entry in self.resolved_entries_with_cwd(cwd) {
+                if entry.access == FileSystemAccessMode::Deny
+                    && entry.path.as_path().parent().is_some()
+                    && !self.can_read_local_path_with_cwd(entry.path.as_path(), cwd)
+                    && !roots.contains(&entry.path)
+                {
+                    roots.push(entry.path);
+                }
+            }
+        }
+        roots
     }
 
     /// Returns unreadable glob patterns resolved against the provided cwd.
@@ -2321,6 +2385,12 @@ pub(crate) fn default_read_only_subpaths_for_writable_root(
     let top_level_aicodex = writable_root.join(PROTECTED_METADATA_AICODEX_PATH_NAME);
     if protect_missing_dot_codex || top_level_aicodex.as_path().is_dir() {
         subpaths.push(top_level_aicodex);
+    }
+
+    // AWS profiles can select credential helpers that the application executes.
+    let top_level_aws = writable_root.join(PROTECTED_METADATA_AWS_PATH_NAME);
+    if top_level_aws.as_path().is_dir() {
+        subpaths.push(top_level_aws);
     }
 
     dedup_absolute_paths(subpaths, /*normalize_effective_paths*/ false)
@@ -3321,6 +3391,12 @@ mod tests {
                     },
                     FileSystemAccessMode::Read,
                 ),
+                FileSystemSandboxEntry::skip_missing_path(
+                    FileSystemPath::Special {
+                        value: FileSystemSpecialPath::project_roots(Some(".aws".into())),
+                    },
+                    FileSystemAccessMode::Read,
+                ),
             ])
         );
     }
@@ -3348,52 +3424,55 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn writable_roots_skip_default_dot_codex_when_explicit_user_rule_exists() {
-        let cwd = TempDir::new().expect("tempdir");
-        let expected_root = AbsolutePathBuf::from_absolute_path(
-            cwd.path().canonicalize().expect("canonicalize cwd"),
-        )
-        .expect("absolute canonical root");
-        let explicit_dot_codex = expected_root.join(".codex");
+    fn writable_roots_skip_default_metadata_when_explicit_user_rule_exists() {
+        for name in [".codex", ".aws"] {
+            let cwd = TempDir::new().expect("tempdir");
+            let expected_root = AbsolutePathBuf::from_absolute_path(
+                cwd.path().canonicalize().expect("canonicalize cwd"),
+            )
+            .expect("absolute canonical root");
+            let explicit_metadata = expected_root.join(name);
+            fs::create_dir(&explicit_metadata).expect("create metadata directory");
 
-        let policy = FileSystemSandboxPolicy::restricted(vec![
-            FileSystemSandboxEntry {
-                path: FileSystemPath::Special {
-                    value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
+            let policy = FileSystemSandboxPolicy::restricted(vec![
+                FileSystemSandboxEntry {
+                    path: FileSystemPath::Special {
+                        value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
+                    },
+                    access: FileSystemAccessMode::Write,
+                    missing_path_behavior: None,
                 },
-                access: FileSystemAccessMode::Write,
-                missing_path_behavior: None,
-            },
-            FileSystemSandboxEntry {
-                path: FileSystemPath::Path {
-                    path: explicit_dot_codex.clone().into(),
+                FileSystemSandboxEntry {
+                    path: FileSystemPath::Path {
+                        path: explicit_metadata.clone().into(),
+                    },
+                    access: FileSystemAccessMode::Write,
+                    missing_path_behavior: None,
                 },
-                access: FileSystemAccessMode::Write,
-                missing_path_behavior: None,
-            },
-        ]);
+            ]);
 
-        let writable_roots = policy.get_writable_roots_with_cwd(cwd.path());
-        let workspace_root = writable_roots
-            .iter()
-            .find(|root| root.root == expected_root)
-            .expect("workspace writable root");
-        assert!(
-            !workspace_root
-                .protected_metadata_names
-                .contains(&".codex".to_string()),
-            "explicit .codex rule should remove the metadata-name protection"
-        );
-        assert!(
-            !workspace_root
-                .read_only_subpaths
-                .contains(&explicit_dot_codex),
-            "explicit .codex rule should win over the default protected carveout"
-        );
-        assert!(policy.can_write_local_path_with_cwd(
-            explicit_dot_codex.join("config.toml").as_path(),
-            cwd.path()
-        ));
+            let writable_roots = policy.get_writable_roots_with_cwd(cwd.path());
+            let workspace_root = writable_roots
+                .iter()
+                .find(|root| root.root == expected_root)
+                .expect("workspace writable root");
+            assert!(
+                !workspace_root
+                    .protected_metadata_names
+                    .contains(&name.to_string()),
+                "explicit {name} rule should remove the metadata-name protection"
+            );
+            assert!(
+                !workspace_root
+                    .read_only_subpaths
+                    .contains(&explicit_metadata),
+                "explicit {name} rule should win over the default protected carveout"
+            );
+            assert!(policy.can_write_local_path_with_cwd(
+                explicit_metadata.join("config.toml").as_path(),
+                cwd.path()
+            ));
+        }
     }
 
     #[test]
@@ -3403,6 +3482,7 @@ mod tests {
         let dot_agents_config = cwd.path().join(".agents").join("config");
         let dot_codex_config = cwd.path().join(".codex").join("config.toml");
         let dot_aicodex_config = cwd.path().join(".aicodex").join("config.toml");
+        let dot_aws_config = cwd.path().join(".aws").join("config");
         let root = AbsolutePathBuf::from_absolute_path(cwd.path()).expect("absolute cwd");
         let file_system_policy =
             FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
@@ -3415,6 +3495,7 @@ mod tests {
         assert!(!file_system_policy.can_write_local_path_with_cwd(&dot_agents_config, cwd.path()));
         assert!(!file_system_policy.can_write_local_path_with_cwd(&dot_codex_config, cwd.path()));
         assert!(!file_system_policy.can_write_local_path_with_cwd(&dot_aicodex_config, cwd.path()));
+        assert!(!file_system_policy.can_write_local_path_with_cwd(&dot_aws_config, cwd.path()));
 
         let writable_roots = file_system_policy.get_writable_roots_with_cwd(cwd.path());
         assert_eq!(writable_roots.len(), 1);
@@ -3425,6 +3506,7 @@ mod tests {
             vec![
                 ".agents".to_string(),
                 ".aicodex".to_string(),
+                ".aws".to_string(),
                 ".codex".to_string(),
                 ".git".to_string(),
             ]
@@ -3433,6 +3515,7 @@ mod tests {
         assert!(!writable_roots[0].is_path_writable(&dot_agents_config));
         assert!(!writable_roots[0].is_path_writable(&dot_codex_config));
         assert!(!writable_roots[0].is_path_writable(&dot_aicodex_config));
+        assert!(!writable_roots[0].is_path_writable(&dot_aws_config));
     }
 
     #[test]

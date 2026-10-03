@@ -70,6 +70,7 @@ async fn retries_on_early_close() {
         requires_openai_auth: false,
         supports_websockets: false,
         supports_standalone_web_search: false,
+        include_internal_metadata: false,
     };
 
     let TestCodex { codex, .. } = test_codex()
@@ -132,6 +133,7 @@ async fn grok_retries_after_responses_stream_idle_timeout() {
     let model_provider = ModelProviderInfo {
         gateway_oauth: None,
         model_catalog_url: None,
+        include_internal_metadata: false,
         name: "grok-test".into(),
         base_url: Some(format!("{}/v1", server.uri())),
         env_key: Some("PATH".into()),

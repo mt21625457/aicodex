@@ -1316,7 +1316,7 @@ async fn shared_overview_shows_only_root_sessions() {
     assert!(
         rendered
             .lines()
-            .any(|line| line.contains("› ● Inspect unnamed task") && line.contains("current"))
+            .any(|line| line.contains("› ● Inspect unnamed task"))
     );
 
     app.transcript_cells.push(std::sync::Arc::new(

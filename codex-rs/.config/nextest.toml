@@ -20,6 +20,11 @@ slow-timeout = { period = "1m", terminate-after = 3 }
 filter = 'package(codex-cli) & binary(app_server_daemon) & test(packaged_daemon_)'
 slow-timeout = { period = "1m", terminate-after = 2 }
 
+[[profile.default.overrides]]
+# These cases run several complete diagnostic subprocesses, including network probes.
+filter = 'package(codex-cli) & binary(doctor_path_safety) & (test(=doctor_reports_failed_database_paths) | test(=doctor_reports_only_safe_config_error_metadata))'
+slow-timeout = { period = "30s", terminate-after = 6 }
+
 [profile.default.junit]
 path = "junit.xml"
 

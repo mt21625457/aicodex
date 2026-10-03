@@ -1172,9 +1172,10 @@ async fn turn_start_emits_thread_scoped_warning_notification_for_trimmed_skills(
     std::fs::write(&cache_path, serde_json::to_string_pretty(&cache)?)?;
     let config_path = codex_home.path().join("config.toml");
     let config = std::fs::read_to_string(&config_path)?;
+    let config = config.replace("model = \"mock-model\"", &format!("model = \"{model}\""));
     std::fs::write(
         &config_path,
-        config.replace("model = \"mock-model\"", &format!("model = \"{model}\"")),
+        format!("{config}\n[skills]\nmax_context_tokens = 1\n[skills.bundled]\nenabled = false\n"),
     )?;
     write_test_skill(codex_home.path(), "alpha-skill")?;
     write_test_skill(codex_home.path(), "beta-skill")?;
@@ -1211,7 +1212,7 @@ async fn turn_start_emits_thread_scoped_warning_notification_for_trimmed_skills(
     assert_eq!(warning.thread_id.as_deref(), Some(thread.id.as_str()));
     assert_eq!(
         warning.message,
-        "Exceeded skills context budget. All skill descriptions were removed and 3 additional skills were not included in the model-visible skills list."
+        "Exceeded skills context budget. All skill descriptions were removed and 2 additional skills were not included in the model-visible skills list."
     );
 
     timeout(

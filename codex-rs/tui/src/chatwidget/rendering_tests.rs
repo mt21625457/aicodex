@@ -390,7 +390,7 @@ async fn initial_session_header_starts_at_the_top_of_the_viewport() {
     let header = frame
         .content
         .chunks(usize::from(frame.area.width))
-        .take(/*n*/ 6)
+        .take(/*n*/ 3)
         .map(|row| {
             row.iter()
                 .map(ratatui::buffer::Cell::symbol)
@@ -403,15 +403,10 @@ async fn initial_session_header_starts_at_the_top_of_the_viewport() {
         .replace(SNAPSHOT_CLI_VERSION, "<VERSION>");
 
     let cwd = widget.config.cwd.as_path().display().to_string();
-    let normalized_cwd = format!("{:<width$}", "/tmp/project", width = cwd.len());
 
-    insta::assert_snapshot!(header.replace(&cwd, &normalized_cwd), @r"
-    ╭───────────────────────────────────────╮
-    │ >_ OpenAI Codex (v<VERSION>)              │
-    │                                       │
-    │ model:     loading   /model to change │
-    │ directory: /tmp/project               │
-    ╰───────────────────────────────────────╯
+    insta::assert_snapshot!(header.replace(&cwd, "/tmp/project"), @r"
+      >_ OpenAI Codex (v<VERSION>)
+         /tmp/project
     ");
 }
 

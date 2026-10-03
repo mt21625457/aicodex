@@ -15,6 +15,7 @@ legacy-claude-tests = []
 workspace = true
 
 [dependencies]
+codex-utils-process = { workspace = true }
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
 async-channel = { workspace = true }
