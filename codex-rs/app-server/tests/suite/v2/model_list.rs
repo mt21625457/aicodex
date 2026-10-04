@@ -39,6 +39,74 @@ use wiremock::matchers::path;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
 
+#[tokio::test]
+async fn list_models_returns_expired_cache_during_slow_refresh() -> Result<()> {
+    let server = MockServer::start().await;
+    let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(move |_: &wiremock::Request| {
+            let _ = started_tx.send(());
+            ResponseTemplate::new(/*s*/ 500).set_delay(Duration::from_secs(/*secs*/ 30))
+        })
+        .mount(&server)
+        .await;
+    let home = TempDir::new()?;
+    let server_uri = server.uri();
+    std::fs::write(
+        home.path().join("config.toml"),
+        format!(
+            r#"
+model_provider = "catalog-test"
+[features]
+api_key_model_discovery = true
+[model_providers.catalog-test]
+name = "OpenAI"
+base_url = "{server_uri}/v1"
+requires_openai_auth = true
+model_catalog_url = "{server_uri}/v1/models"
+"#
+        ),
+    )?;
+    login_with_api_key(
+        home.path(),
+        "test-key",
+        AuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )?;
+    write_models_cache(home.path()).await?;
+    let cache_path = home.path().join("models_cache.json");
+    let mut cache: codex_models_manager::cache::ModelsCacheEntry =
+        serde_json::from_slice(&std::fs::read(&cache_path)?)?;
+    cache.fetched_at = chrono::Utc::now() - chrono::Duration::hours(1);
+    std::fs::write(cache_path, serde_json::to_vec(&cache)?)?;
+    let mut app = TestAppServer::builder()
+        .with_codex_home(home.path())
+        .with_env_overrides(&[("OPENAI_API_KEY", None), ("CODEX_API_KEY", None)])
+        .build_initialized()
+        .await?;
+    timeout(DEFAULT_TIMEOUT, started_rx.recv()).await?.unwrap();
+    let response: ModelListResponse = timeout(
+        Duration::from_secs(/*secs*/ 2),
+        app.request(|request_id| ClientRequest::ModelList {
+            request_id,
+            params: ModelListParams {
+                limit: Some(100),
+                ..Default::default()
+            },
+        }),
+    )
+    .await??;
+    assert_eq!(
+        response,
+        ModelListResponse {
+            data: expected_visible_models(),
+            next_cursor: None,
+        }
+    );
+    Ok(())
+}
+
 #[test_case(None, false, true; "default off")]
 #[test_case(None, true, true; "app rollout")]
 #[test_case(Some(false), true, true; "user opt out")]
