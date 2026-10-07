@@ -679,8 +679,10 @@ pub(crate) async fn run_turn(
                 if post_compaction_model_follow_up_active {
                     post_compaction_model_follow_up_active = model_needs_follow_up;
                 }
-                can_drain_pending_input =
-                    !(model_needs_follow_up && post_compaction_model_follow_up_active);
+                // 压缩后的首次恢复请求已完成，工具结果也已写入历史；下一轮必须允许
+                // 消费 Steer。不能把用于压缩 admission 的续跑状态当作输入屏障，
+                // 否则连续工具调用会让已接收的追问一直等到整个任务结束。
+                can_drain_pending_input = true;
                 if model_needs_follow_up
                     && is_minimax_model_slug(&turn_context.model_info().slug)
                     && repeated_follow_up.trip_on_repeat(sampling_request_follow_up_text.as_deref())
