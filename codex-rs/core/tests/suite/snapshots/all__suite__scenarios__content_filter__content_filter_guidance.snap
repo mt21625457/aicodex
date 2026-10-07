@@ -1,0 +1,30 @@
+---
+source: core/tests/suite/scenarios_content_filter.rs
+assertion_line: 63
+expression: "context_snapshot::format_request_history_snapshot(\"Repeated content-filter blocks append catalog guidance and retain delivered output.\",\n&requests, &ContextSnapshotOptions::default().rewrite_known_segments(),)"
+---
+Scenario: Repeated content-filter blocks append catalog guidance and retain delivered output.
+
+## Window 1
+-- request 1 (turn) --
+00:message/developer[2]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <PERMISSIONS_INSTRUCTIONS>
+01:message/user:
+    <ENVIRONMENT_CONTEXT>
+02:message/user:
+    Help me with this topic.
+-- request 2 (turn) --
+03:message/assistant:
+    I can help with this topic.
+04:message/developer:
+    <content_filter_guidance>
+    Your previous response was blocked. Offer a permitted alternative.
+    </content_filter_guidance>
+-- request 3 (turn) --
+05:message/developer:
+    <content_filter_guidance>
+    Your previous response was blocked. Offer a permitted alternative.
+    </content_filter_guidance>
