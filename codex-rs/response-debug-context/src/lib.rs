@@ -79,6 +79,9 @@ pub fn telemetry_api_error_message(error: &ApiError) -> String {
         ApiError::StreamFailure { kind, .. } => format!("provider stream error {kind}"),
         ApiError::StreamIdleTimeout { .. } => "provider stream idle timeout".to_string(),
         ApiError::ProviderMedia { kind, .. } => format!("provider media error {kind}"),
+        ApiError::ContentFilter => {
+            "Incomplete response returned, reason: content_filter".to_string()
+        }
         ApiError::ContextWindowExceeded => "context window exceeded".to_string(),
         ApiError::QuotaExceeded => "quota exceeded".to_string(),
         ApiError::UsageNotIncluded => "usage not included".to_string(),

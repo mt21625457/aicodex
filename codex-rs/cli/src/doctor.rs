@@ -2441,7 +2441,8 @@ fn websocket_error_detail(err: &ApiError) -> String {
         ApiError::ProviderMedia { kind, message } => {
             format!("handshake provider media error ({kind}): {message}")
         }
-        ApiError::ContextWindowExceeded
+        ApiError::ContentFilter
+        | ApiError::ContextWindowExceeded
         | ApiError::QuotaExceeded
         | ApiError::UsageNotIncluded
         | ApiError::Retryable { .. }

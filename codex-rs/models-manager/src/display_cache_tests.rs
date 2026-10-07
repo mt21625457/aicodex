@@ -2,6 +2,72 @@ use super::*;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
+async fn explicit_provider_display_cache_does_not_add_bundled_models() {
+    for models in [
+        vec![],
+        vec![remote_model_with_visibility(
+            "hidden-provider-model",
+            "Hidden provider model",
+            /*priority*/ 0,
+            "hide",
+        )],
+    ] {
+        let home = tempdir().unwrap();
+        let endpoint = TestModelsEndpoint::new(vec![]);
+        let entry = ModelsCacheEntry {
+            fetched_at: Utc::now() - chrono::Duration::hours(1),
+            etag: None,
+            client_version: Some(crate::client_version_to_whole()),
+            identity: endpoint.identity(),
+            models,
+        };
+        let cache =
+            FileModelsCache::new(home.path().join(MODEL_CACHE_FILE), DEFAULT_MODEL_CACHE_TTL);
+        cache.store(&entry).await.unwrap();
+        let manager = openai_manager_for_tests(home.path().to_path_buf(), endpoint.clone())
+            .with_provider_catalog();
+
+        assert_eq!(
+            manager.cached_models_for_display().await,
+            Some(manager.build_available_models(entry.models))
+        );
+        assert_eq!(manager.get_remote_models().await, Vec::<ModelInfo>::new());
+        assert_eq!(endpoint.fetch_count(), 0);
+    }
+}
+
+#[tokio::test]
+async fn older_cache_update_preserves_newer_network_catalog() {
+    let home = tempdir().unwrap();
+    let endpoint = TestModelsEndpoint::new(vec![]);
+    let manager = openai_manager_for_tests(home.path().to_path_buf(), endpoint.clone());
+    let latest = ModelsCacheEntry {
+        fetched_at: Utc::now(),
+        etag: Some("latest-etag".to_string()),
+        client_version: Some(crate::client_version_to_whole()),
+        identity: endpoint.identity(),
+        models: vec![remote_model("latest", "Latest", /*priority*/ 0)],
+    };
+    let older = ModelsCacheEntry {
+        fetched_at: latest.fetched_at - chrono::Duration::minutes(1),
+        etag: Some("older-etag".to_string()),
+        models: vec![remote_model("older", "Older", /*priority*/ 0)],
+        ..latest.clone()
+    };
+    assert!(
+        manager
+            .apply_remote_models(latest.clone(), CatalogUpdateSource::Network)
+            .await
+    );
+    assert!(
+        manager
+            .apply_remote_models(older, CatalogUpdateSource::Cache)
+            .await
+    );
+    assert_eq!(*manager.remote_models.read().await, latest);
+}
+
+#[tokio::test]
 async fn expired_display_cache_survives_restart_without_fetching() {
     let home = tempdir().unwrap();
     let endpoint = TestModelsEndpoint::new(vec![]);

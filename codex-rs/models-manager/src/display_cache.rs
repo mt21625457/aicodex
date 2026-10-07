@@ -78,7 +78,9 @@ impl OpenAiModelsManager {
         if remote_only {
             return remote_models;
         }
-        let mut models = load_remote_models_from_file().unwrap_or_default();
+        let Some(mut models) = self.catalog_source.fallback_models() else {
+            return remote_models;
+        };
         for model in remote_models {
             if let Some(index) = models
                 .iter()

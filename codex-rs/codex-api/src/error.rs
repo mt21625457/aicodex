@@ -128,6 +128,8 @@ pub enum ApiError {
         kind: ProviderMediaErrorKind,
         message: String,
     },
+    #[error("stream error: Incomplete response returned, reason: content_filter")]
+    ContentFilter,
     #[error("context window exceeded")]
     ContextWindowExceeded,
     #[error("quota exceeded")]

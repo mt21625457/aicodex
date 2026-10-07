@@ -247,7 +247,7 @@ pub(crate) async fn run_turn(
                 return Err(err);
             }
             let error = err.to_codex_protocol_error();
-            sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
+            sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone(), err.details())
                 .await;
             // Publish the failure only after prompt hooks finish, so clients cannot react to
             // an error by steering follow-up input into a turn still preserving its prompt.
@@ -328,11 +328,13 @@ pub(crate) async fn run_turn(
     let (world_state, display_roots) = tokio::join!(
         sess.record_context_updates_and_set_reference_context_item(first_step_context.as_ref()),
         async {
-            if first_step_context
-                .turn
-                .config
-                .features
-                .enabled(Feature::CwdRelativeTurnDiffs)
+            // Guardian must not wait for remote Git discovery just to display diff paths.
+            if crate::guardian::is_basic_session_source(&turn_context.session_source)
+                || first_step_context
+                    .turn
+                    .config
+                    .features
+                    .enabled(Feature::CwdRelativeTurnDiffs)
             {
                 first_step_context
                     .environments
@@ -536,7 +538,7 @@ pub(crate) async fn run_turn(
                     }
                     let error = err.to_codex_protocol_error();
                     if error == CodexErrorInfo::UsageLimitExceeded {
-                        sess.emit_turn_error_lifecycle(turn_context.as_ref(), error)
+                        sess.emit_turn_error_lifecycle(turn_context.as_ref(), error, err.details())
                             .await;
                     }
                     error!("Failed to run pre-sampling admission compact");
@@ -770,8 +772,12 @@ pub(crate) async fn run_turn(
                             return Err(err);
                         }
                         let error = err.to_codex_protocol_error();
-                        sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
-                            .await;
+                        sess.emit_turn_error_lifecycle(
+                            turn_context.as_ref(),
+                            error.clone(),
+                            err.details(),
+                        )
+                        .await;
                         return Ok(None);
                     }
                     pending_input_deferred_for_model_follow_up |=
@@ -884,6 +890,16 @@ pub(crate) async fn run_turn(
                         ) {
                             return Err(err);
                         }
+                        let error = err.to_codex_protocol_error();
+                        if matches!(error, CodexErrorInfo::UsageLimitExceeded) {
+                            // Preserve the completed answer while stopping automatic work.
+                            sess.emit_turn_error_lifecycle(
+                                turn_context.as_ref(),
+                                error,
+                                err.details(),
+                            )
+                            .await;
+                        }
                         warn!(error = %err, "Post-turn compaction failed; preserving the completed turn");
                     }
                     break;
@@ -962,6 +978,7 @@ pub(crate) async fn run_turn(
                         sess.emit_turn_error_lifecycle(
                             turn_context.as_ref(),
                             CodexErrorInfo::UsageLimitExceeded,
+                            err.details(),
                         )
                         .await;
                         let event = EventMsg::Error(err.to_error_event(/*message_prefix*/ None));
@@ -991,8 +1008,12 @@ pub(crate) async fn run_turn(
             {
                 sess.track_turn_codex_error(turn_context.as_ref(), &codex_error);
                 let error = CodexErrorInfo::BadRequest;
-                sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
-                    .await;
+                sess.emit_turn_error_lifecycle(
+                    turn_context.as_ref(),
+                    error.clone(),
+                    codex_error.details(),
+                )
+                .await;
                 let event = EventMsg::Error(ErrorEvent {
                     misalignment: None,
                     message: "Invalid image in your last message. Please remove it and try again."
@@ -1011,7 +1032,7 @@ pub(crate) async fn run_turn(
                     sess.conversation.retire_handoffs_for_misalignment().await;
                 }
                 let error = e.to_codex_protocol_error();
-                sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
+                sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone(), e.details())
                     .await;
                 sess.track_turn_codex_error(turn_context.as_ref(), &e);
                 let event = EventMsg::Error(e.to_error_event(/*message_prefix*/ None));
@@ -2056,7 +2077,7 @@ async fn run_sampling_request(
             err,
             client_session,
             &sess,
-            &turn_context,
+            &step_context,
             ResponsesStreamRequest::Sampling,
         )
         .or_cancel(&preempt)
