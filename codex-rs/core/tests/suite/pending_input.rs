@@ -2322,6 +2322,128 @@ async fn steered_user_input_waits_for_model_continuation_after_mid_turn_compact(
     server.shutdown().await;
 }
 
+// 用真实流式响应屏障固定插入时序，避免依赖模型或工具的执行速度。
+#[test_case("before compaction"; "already pending")]
+#[test_case("during continuation"; "arrives after compaction")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn steered_input_is_consumed_after_one_post_compaction_tool_step(arrival: &str) {
+    let (release_first, first_gate) = oneshot::channel();
+    let (release_continuation, continuation_gate) = oneshot::channel();
+    let plan = json!({"plan": [{"step": "Keep working", "status": "in_progress"}]}).to_string();
+    let (server, _) = start_streaming_sse_server(vec![
+        vec![
+            chunk(ev_response_created("work-before-compact")),
+            chunk(ev_function_call("plan-before", "update_plan", &plan)),
+            gated_chunk(
+                first_gate,
+                vec![ev_completed_with_tokens(
+                    "work-before-compact",
+                    /*total_tokens*/ 500,
+                )],
+            ),
+        ],
+        vec![
+            chunk(ev_response_created("compact")),
+            chunk(ev_message_item_done(
+                "summary",
+                "Continue the unfinished task.",
+            )),
+            chunk(ev_completed_with_tokens(
+                "compact", /*total_tokens*/ 50,
+            )),
+        ],
+        vec![
+            chunk(ev_response_created("resumed-tool-work")),
+            chunk(ev_function_call("plan-after", "update_plan", &plan)),
+            gated_chunk(
+                continuation_gate,
+                vec![ev_completed_with_tokens(
+                    "resumed-tool-work",
+                    /*total_tokens*/ 60,
+                )],
+            ),
+        ],
+        vec![
+            chunk(ev_response_created("answer-steer")),
+            chunk(ev_message_item_done(
+                "answer",
+                "Progress reported; original task retained.",
+            )),
+            chunk(ev_completed_with_tokens(
+                "answer-steer",
+                /*total_tokens*/ 70,
+            )),
+        ],
+        // 旧实现会多发这一轮才消费追问；提供终止响应，使回归以请求断言失败而非超时。
+        response_completed_chunks("late-steer"),
+    ])
+    .await;
+    let test = test_codex()
+        .with_model("gpt-5.4")
+        .with_config(|config| {
+            config.model_provider.name = "OpenAI (test)".to_string();
+            config.model_provider.supports_websockets = false;
+            config.model_auto_compact_token_limit = Some(200);
+            config.update_plan_enabled = true;
+            config
+                .features
+                .disable(Feature::InstantInterrupt)
+                .expect("disable preemption");
+        })
+        .build_with_streaming_server(&server)
+        .await
+        .expect("build test session");
+    let codex = &test.codex;
+    submit_user_input(codex, "Finish all requested work.").await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        server.wait_for_request_count(/*count*/ 1),
+    )
+    .await
+    .expect("initial request");
+    if arrival == "before compaction" {
+        steer_user_input(codex, "How many tasks are complete?").await;
+    }
+    release_first.send(()).expect("release first tool step");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        server.wait_for_request_count(/*count*/ 3),
+    )
+    .await
+    .expect("post-compaction request");
+    if arrival == "during continuation" {
+        steer_user_input(codex, "How many tasks are complete?").await;
+    }
+    release_continuation
+        .send(())
+        .expect("release continuation tool step");
+    wait_for_turn_complete(codex).await;
+    let requests = server.requests().await;
+    let resumed: Value = from_slice(&requests[2]).expect("resumed request");
+    let next: Value = from_slice(&requests[3]).expect("next request");
+    assert!(
+        !message_input_texts(&resumed, "user")
+            .iter()
+            .any(|text| text == "How many tasks are complete?")
+    );
+    assert_eq!(
+        message_input_texts(&next, "user")
+            .iter()
+            .filter(|text| *text == "How many tasks are complete?")
+            .count(),
+        1,
+        "追问必须在恢复后的一个工具步骤完成后进入下一次模型请求，不能等整段任务结束"
+    );
+    assert!(
+        next["input"].as_array().expect("input").iter().any(|item| {
+            item["type"] == "function_call_output" && item["call_id"] == "plan-after"
+        }),
+        "消费追问时必须保留已执行工具的输出，不能丢弃或重跑工具"
+    );
+    assert_eq!(requests.len(), 4, "消费追问不应产生额外恢复或重复请求");
+    server.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn steered_user_input_follows_compact_when_only_the_steer_needs_follow_up() {
     let (gate_first_completed_tx, gate_first_completed_rx) = oneshot::channel();
