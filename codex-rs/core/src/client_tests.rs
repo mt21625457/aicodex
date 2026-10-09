@@ -1443,7 +1443,7 @@ fn store_false_strips_all_item_ids_for_third_party_reasoning_models() {
 
     for model in ["grok-4.5", "deepseek-v4-pro", "MiniMax-M3"] {
         let mut prepared = input.clone();
-        prepare_response_items_for_request(&mut prepared, /*store*/ false, model);
+        prepare_response_items_for_request(&mut prepared, /*store*/ false, model).unwrap();
 
         assert!(
             prepared.iter().all(|item| item.id().is_none()),
@@ -1469,7 +1469,7 @@ fn store_false_drops_id_only_official_reasoning_shells() {
     ];
 
     let mut third_party = input.clone();
-    prepare_response_items_for_request(&mut third_party, /*store*/ false, "MiniMax-M3");
+    prepare_response_items_for_request(&mut third_party, /*store*/ false, "MiniMax-M3").unwrap();
     assert_eq!(third_party.len(), 2);
     assert!(matches!(third_party[0], ResponseItem::Reasoning { .. }));
     assert!(
@@ -1479,7 +1479,7 @@ fn store_false_drops_id_only_official_reasoning_shells() {
     assert!(matches!(third_party[1], ResponseItem::Message { .. }));
 
     let mut official = input;
-    prepare_response_items_for_request(&mut official, /*store*/ false, "gpt-5.5");
+    prepare_response_items_for_request(&mut official, /*store*/ false, "gpt-5.5").unwrap();
     assert_eq!(official.len(), 2);
     assert_eq!(
         official[0].id().map(ResponseItemId::as_str),
@@ -1498,7 +1498,7 @@ fn store_false_strips_item_ids_for_compatible_openai_named_models() {
         output_message("assistant", "hello"),
     ];
 
-    prepare_response_items_for_request(&mut input, /*store*/ false, "kimi-k2.7-code");
+    prepare_response_items_for_request(&mut input, /*store*/ false, "kimi-k2.7-code").unwrap();
     assert!(
         input.iter().all(|item| item.id().is_none()),
         "compatible Responses hosts must not receive unstored item IDs"
@@ -1508,7 +1508,7 @@ fn store_false_strips_item_ids_for_compatible_openai_named_models() {
         reasoning_item("rs_server"),
         output_message("assistant", "hello"),
     ];
-    prepare_response_items_for_request(&mut unknown, /*store*/ false, "unknown-slug");
+    prepare_response_items_for_request(&mut unknown, /*store*/ false, "unknown-slug").unwrap();
     assert!(
         unknown.iter().all(|item| item.id().is_none()),
         "unknown Responses slugs must not receive unstored item IDs"
@@ -1526,7 +1526,7 @@ fn store_false_keeps_ids_for_official_gpt_and_reviewer_slugs() {
             reasoning_item("rs_server"),
             output_message("assistant", "hello"),
         ];
-        prepare_response_items_for_request(&mut input, /*store*/ false, model);
+        prepare_response_items_for_request(&mut input, /*store*/ false, model).unwrap();
         assert!(
             input.iter().any(|item| item.id().is_some()),
             "{model} must keep official Responses item IDs"
@@ -1551,7 +1551,7 @@ fn store_true_keeps_type_valid_ids_and_strips_invalid_ids() {
         },
     ];
 
-    prepare_response_items_for_request(&mut input, /*store*/ true, "MiniMax-M3");
+    prepare_response_items_for_request(&mut input, /*store*/ true, "MiniMax-M3").unwrap();
 
     assert_eq!(input[0].id().map(ResponseItemId::as_str), Some("rs_server"));
     assert_eq!(
@@ -1560,6 +1560,39 @@ fn store_true_keeps_type_valid_ids_and_strips_invalid_ids() {
     );
     assert_eq!(input[2].id(), None);
     assert_eq!(input[3].id(), None);
+}
+
+#[test]
+fn official_gpt_request_omits_overlong_message_id_without_changing_history() {
+    let history = vec![output_message(&"x".repeat(79), "keep body")];
+    for store in [false, true] {
+        let mut input = history.clone();
+        prepare_response_items_for_request(&mut input, store, "gpt-6.1-sol").unwrap();
+        let mut expected = history.clone();
+        expected[0].set_id(None);
+        assert_eq!(input, expected);
+        assert_eq!(history[0].id().unwrap().len(), 83);
+    }
+}
+
+#[test]
+fn third_party_stored_ids_do_not_inherit_official_length_limit() {
+    let original = vec![output_message(&"x".repeat(79), "keep body")];
+    let mut input = original.clone();
+    prepare_response_items_for_request(&mut input, true, "MiniMax-M3").unwrap();
+    assert_eq!(input, original);
+}
+
+#[test]
+fn official_request_rejects_opaque_overlong_id_before_transport() {
+    let mut input = vec![reasoning_item(&format!("rs_{}", "x".repeat(80)))];
+    let error = prepare_response_items_for_request(&mut input, false, "gpt-6.1-sol")
+        .expect_err("opaque overlong IDs cannot be rewritten");
+    assert!(
+        error
+            .to_string()
+            .contains("input[0].id (rs): length 83 exceeds 64")
+    );
 }
 
 fn output_message(id: &str, text: &str) -> ResponseItem {
