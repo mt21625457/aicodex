@@ -30,6 +30,9 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use tempfile::tempdir;
 
+#[path = "display_cache_tests.rs"]
+mod display_cache_tests;
+
 #[path = "api_key_discovery_tests.rs"]
 mod api_key_discovery_tests;
 

@@ -16,13 +16,24 @@ use tracing::info;
 /// Asynchronous storage for model catalog snapshots used by the models manager.
 ///
 /// Implementations own cache freshness and lookup partitioning. [`ModelsCache::load`] must not
-/// return stale entries or entries for a different client version. A shared backend must also keep
+/// return stale entries from `load`, or entries for a different client version. Display-only
+/// lookups may explicitly retain stale entries. A shared backend must also keep
 /// catalogs for different providers and tenants separate. The manager also validates the entry
 /// identity against the current endpoint before using it.
 ///
 /// Cache failures are non-fatal. The models manager logs them and falls back to the configured
 /// models endpoint.
 pub trait ModelsCache: fmt::Debug + Send + Sync {
+    /// Loads a display snapshot, optionally ignoring expiry but never the client version.
+    /// Callers must validate its identity and refresh stale data in the background.
+    /// Backends that cannot retain expired entries may use the normal fresh lookup.
+    fn load_for_display<'a>(
+        &'a self,
+        client_version: &'a str,
+    ) -> ModelsCacheFuture<'a, Result<Option<ModelsCacheEntry>, ModelsCacheError>> {
+        self.load(client_version)
+    }
+
     /// Loads a fresh entry for `client_version`.
     ///
     /// Returns `Ok(None)` for a normal miss, including an absent, stale, or version-mismatched
@@ -141,6 +152,18 @@ impl FileModelsCache {
 }
 
 impl ModelsCache for FileModelsCache {
+    fn load_for_display<'a>(
+        &'a self,
+        client_version: &'a str,
+    ) -> ModelsCacheFuture<'a, Result<Option<ModelsCacheEntry>, ModelsCacheError>> {
+        Box::pin(async move {
+            Ok(load_file(&self.cache_path)
+                .await
+                .map_err(cache_error)?
+                .filter(|entry| entry.client_version.as_deref() == Some(client_version)))
+        })
+    }
+
     fn load<'a>(
         &'a self,
         client_version: &'a str,

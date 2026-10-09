@@ -34,6 +34,15 @@ use tracing::info;
 const MODEL_CACHE_FILE: &str = "models_cache.json";
 const DEFAULT_MODEL_CACHE_TTL: Duration = Duration::from_secs(300);
 
+#[path = "display_cache.rs"]
+mod display_cache;
+
+#[derive(PartialEq, Eq)]
+enum CatalogUpdateSource {
+    Cache,
+    Network,
+}
+
 /// Remote endpoint used by the OpenAI-compatible model manager.
 ///
 /// Implementations own provider-specific auth and transport details. The model
@@ -114,6 +123,13 @@ type SharedModelsEndpointClient = Arc<dyn ModelsEndpointClient>;
 
 /// Coordinates model discovery plus cached metadata on disk.
 pub trait ModelsManager: fmt::Debug + Send + Sync {
+    /// Returns an identity-checked display snapshot without resolving credentials or networking.
+    /// Expired snapshots are allowed; callers must arrange a background refresh.
+    /// `None` means discovery must run before a remote catalog can be displayed.
+    fn cached_models_for_display(&self) -> ModelsManagerFuture<'_, Option<Vec<ModelPreset>>> {
+        Box::pin(std::future::ready(None))
+    }
+
     /// Supply startup API-key discovery policy; live changes require a new session.
     /// Static catalogs ignore this setting.
     fn set_api_key_model_discovery_enabled(&self, _enabled: bool) {}
@@ -286,6 +302,8 @@ impl CatalogSource {
 #[derive(Debug)]
 pub struct OpenAiModelsManager {
     remote_models: RwLock<ModelsCacheEntry>,
+    remote_models_loaded: AtomicBool,
+    display_models: RwLock<Option<ModelsCacheEntry>>,
     cache: Option<Arc<dyn ModelsCache>>,
     endpoint_client: SharedModelsEndpointClient,
     catalog_source: CatalogSource,
@@ -351,6 +369,8 @@ impl OpenAiModelsManager {
                 identity: endpoint_client.identity(),
                 models: load_remote_models_from_file().unwrap_or_default(),
             }),
+            remote_models_loaded: AtomicBool::new(false),
+            display_models: RwLock::new(None),
             cache,
             api_key_model_discovery_enabled: AtomicBool::new(false),
             endpoint_client,
@@ -379,6 +399,10 @@ impl StaticModelsManager {
 }
 
 impl ModelsManager for OpenAiModelsManager {
+    fn cached_models_for_display(&self) -> ModelsManagerFuture<'_, Option<Vec<ModelPreset>>> {
+        Box::pin(self.display_snapshot())
+    }
+
     fn set_api_key_model_discovery_enabled(&self, enabled: bool) {
         self.api_key_model_discovery_enabled
             .store(enabled, Ordering::SeqCst);
@@ -646,7 +670,8 @@ impl OpenAiModelsManager {
         {
             error!("failed to write models cache: {err}");
         }
-        self.apply_remote_models(entry).await;
+        self.apply_remote_models(entry, CatalogUpdateSource::Network)
+            .await;
         Ok(())
     }
 
@@ -679,35 +704,26 @@ impl OpenAiModelsManager {
     }
 
     /// Publish only while the request identity still matches, including after async storage.
-    async fn apply_remote_models(&self, mut entry: ModelsCacheEntry) -> bool {
+    async fn apply_remote_models(
+        &self,
+        mut entry: ModelsCacheEntry,
+        source: CatalogUpdateSource,
+    ) -> bool {
         let mut current = self.remote_models.write().await;
         if entry.identity != self.endpoint_client.identity() {
             return false;
         }
-        let remote_only = entry
-            .models
-            .iter()
-            .any(|model| model.visibility == ModelVisibility::List)
-            && (self.supports_api_key_discovery()
-                || self.auth_manager.as_ref().is_some_and(|auth_manager| {
-                    auth_manager
-                        .auth_mode()
-                        .is_some_and(AuthMode::has_chatgpt_account)
-                }));
-        if !remote_only && let Some(mut models) = self.catalog_source.fallback_models() {
-            for model in entry.models {
-                if let Some(index) = models
-                    .iter()
-                    .position(|existing| existing.slug == model.slug)
-                {
-                    models[index] = model;
-                } else {
-                    models.push(model);
-                }
-            }
-            entry.models = models;
+        // A slow disk lookup must not replace a newer background response.
+        if source == CatalogUpdateSource::Cache
+            && self.remote_models_loaded.load(Ordering::Acquire)
+            && current.identity == entry.identity
+            && current.fetched_at > entry.fetched_at
+        {
+            return true;
         }
+        entry.models = self.merge_remote_models(entry.models);
         *current = entry;
+        self.remote_models_loaded.store(true, Ordering::Release);
         true
     }
 
@@ -760,7 +776,8 @@ impl OpenAiModelsManager {
             info!("models cache: provider or auth identity mismatch");
             return false;
         }
-        self.apply_remote_models(cache_entry).await
+        self.apply_remote_models(cache_entry, CatalogUpdateSource::Cache)
+            .await
     }
 }
 
