@@ -355,6 +355,7 @@ fn should_backfill_turn_completed_items_backfills_persisted_summaries_only() {
             thread_id: "thread-1".to_string(),
             turn: codex_app_server_protocol::Turn {
                 id: "turn-1".to_string(),
+                root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Summary,
                 items: Vec::new(),
                 status: codex_app_server_protocol::TurnStatus::Completed,

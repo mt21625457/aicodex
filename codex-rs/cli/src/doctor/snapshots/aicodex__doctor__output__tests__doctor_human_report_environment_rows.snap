@@ -1,7 +1,7 @@
 ---
 source: cli/src/doctor/output.rs
-assertion_line: 1292
-expression: "render_human_report(&sample_report(), detailed_no_color_unicode_options())"
+assertion_line: 1481
+expression: "render_human_report(&report, detailed_no_color_unicode_options())"
 ---
 Codex Doctor v0.0.0
 
@@ -46,6 +46,9 @@ Environment
   ✓ state        state paths inspectable
 
 Configuration
+  ✓ config       loaded
+      feature flags            0 enabled · 0 overridden
+      configured TUI mode      fullscreen
   ✗ auth         token expired — Run `aicodex login`.
       OPENAI_API_KEY           present
 
@@ -70,7 +73,7 @@ Background Server
   ✓ app-server   background server is not running
 
 ─────────────────────────────────────────────────────────────
-15 ok · 5 notes · 3 warn · 1 fail failed
+16 ok · 5 notes · 3 warn · 1 fail failed
 
 --summary compact output           --all expand truncated lists
 --json redacted report

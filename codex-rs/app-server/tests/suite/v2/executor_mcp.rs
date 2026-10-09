@@ -646,7 +646,7 @@ async fn cached_executor_mcp_cannot_read_host_token_after_capability_downgrade()
             "[mcp_servers.cached_executor]\nurl = \"{mcp_url}\"\nbearer_token_env_var = \"{TOKEN_ENV}\"\nrequired = true\nstartup_timeout_sec = 3\n"
         ),
     )?;
-    let mut executor = Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
+    let mut executor = Command::new(codex_utils_cargo_bin::cargo_bin("aicodex")?)
         .args(["exec-server", "--listen", "ws://127.0.0.1:0"])
         .stdout(Stdio::piped())
         .kill_on_drop(true)
@@ -1396,6 +1396,11 @@ startup_timeout_sec = 10
         McpServerOauthLoginCompletedNotification {
             name: OAUTH_MCP_SERVER_NAME.to_string(),
             thread_id: Some(selected_thread.clone()),
+            login_id: Some(
+                response
+                    .login_id
+                    .expect("login response should contain an ID")
+            ),
             success: true,
             error: None,
         }

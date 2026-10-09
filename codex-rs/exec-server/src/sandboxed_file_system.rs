@@ -36,6 +36,7 @@ use crate::protocol::FsConditionalWritePrecondition;
 use crate::protocol::FsCopyParams;
 use crate::protocol::FsCreateDirectoryParams;
 use crate::protocol::FsGetMetadataParams;
+use crate::protocol::FsOpenMode;
 use crate::protocol::FsReadDirectoryParams;
 use crate::protocol::FsReadFileBlockParams;
 use crate::protocol::FsReadFileParams;
@@ -84,9 +85,10 @@ impl SandboxedFileSystem {
             .map_err(map_sandbox_error)
     }
 
-    pub(crate) async fn open_file_for_read(
+    pub(crate) async fn open_file(
         &self,
         path: &PathUri,
+        mode: FsOpenMode,
         sandbox: Option<&FileSystemSandboxContext>,
     ) -> FileSystemResult<tokio::fs::File> {
         let sandbox = require_platform_sandbox(sandbox)?;
@@ -95,7 +97,7 @@ impl SandboxedFileSystem {
             .sandbox_runner
             .sandbox_command(sandbox)
             .map_err(map_sandbox_error)?;
-        crate::sandboxed_file_open::open(command, path.clone())
+        crate::sandboxed_file_open::open(command, path.clone(), mode)
             .await
             .map_err(map_sandbox_error)
     }
@@ -428,7 +430,7 @@ impl ExecutorFileSystem for SandboxedFileSystem {
         sandbox: Option<&'a FileSystemSandboxContext>,
     ) -> ExecutorFileSystemFuture<'a, FileSystemReadStream> {
         Box::pin(async move {
-            let file = self.open_file_for_read(path, sandbox).await?;
+            let file = self.open_file(path, FsOpenMode::Read, sandbox).await?;
             Ok(FileSystemReadStream::new(ReaderStream::with_capacity(
                 file,
                 FILE_READ_CHUNK_SIZE,

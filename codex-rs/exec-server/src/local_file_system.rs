@@ -40,18 +40,10 @@ use crate::WalkOptions;
 use crate::WalkOutcome;
 use crate::WriteFileOptions;
 use crate::no_follow;
+use crate::protocol::FsOpenMode;
 use crate::regular_file;
 use crate::sandboxed_file_system::SandboxedFileSystem;
 use codex_file_system::ConditionalWritePrecondition;
-
-const MAX_READ_FILE_BYTES: u64 = 512 * 1024 * 1024;
-
-fn file_too_large_error() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidInput,
-        format!("file is too large to read: limit is {MAX_READ_FILE_BYTES} bytes"),
-    )
-}
 
 pub static LOCAL_FS: LazyLock<Arc<dyn ExecutorFileSystem>> =
     LazyLock::new(|| -> Arc<dyn ExecutorFileSystem> { Arc::new(LocalFileSystem::unsandboxed()) });
@@ -130,20 +122,23 @@ impl LocalFileSystem {
 }
 
 impl LocalFileSystem {
-    pub(crate) async fn open_file_for_read(
+    pub(crate) async fn open_file(
         &self,
         path: &PathUri,
+        mode: FsOpenMode,
         sandbox: Option<&FileSystemSandboxContext>,
     ) -> FileSystemResult<tokio::fs::File> {
         if let Some(sandbox) = sandbox {
             sandbox.validate_file_system_paths_for_current_host()?;
+            let needs_sandbox = match mode {
+                FsOpenMode::Read => sandbox.should_read_from_sandbox(),
+                FsOpenMode::Replace => sandbox.should_write_into_sandbox(),
+            };
+            if needs_sandbox {
+                return self.sandboxed()?.open_file(path, mode, Some(sandbox)).await;
+            }
         }
-        if sandbox.is_some_and(FileSystemSandboxContext::should_read_from_sandbox) {
-            return self.sandboxed()?.open_file_for_read(path, sandbox).await;
-        }
-        self.unsandboxed
-            .open_file_for_read(path, /*sandbox*/ None)
-            .await
+        regular_file::open(path.to_abs_path()?.as_path(), mode).await
     }
 
     pub(crate) async fn read_file_block(
@@ -168,7 +163,7 @@ impl LocalFileSystem {
                 .read_file_block(path, offset, len, sandbox)
                 .await;
         }
-        let mut file = self.unsandboxed.open_file_for_read(path, sandbox).await?;
+        let mut file = self.open_file(path, FsOpenMode::Read, sandbox).await?;
         file.seek(std::io::SeekFrom::Start(offset)).await?;
         let mut bytes = Vec::with_capacity(len);
         file.take(len as u64).read_to_end(&mut bytes).await?;
@@ -421,17 +416,6 @@ impl ExecutorFileSystem for LocalFileSystem {
 }
 
 impl UnsandboxedFileSystem {
-    async fn open_file_for_read(
-        &self,
-        path: &PathUri,
-        sandbox: Option<&FileSystemSandboxContext>,
-    ) -> FileSystemResult<tokio::fs::File> {
-        reject_platform_sandbox_context(sandbox)?;
-        self.file_system
-            .open_file_for_read(path, /*sandbox*/ None)
-            .await
-    }
-
     async fn canonicalize(
         &self,
         path: &PathUri,
@@ -681,14 +665,14 @@ impl ExecutorFileSystem for UnsandboxedFileSystem {
 }
 
 impl DirectFileSystem {
-    pub(crate) async fn open_file_for_read(
+    pub(crate) async fn open_file(
         &self,
         path: &PathUri,
         sandbox: Option<&FileSystemSandboxContext>,
     ) -> FileSystemResult<tokio::fs::File> {
         reject_sandbox_context(sandbox)?;
         let path = path.to_abs_path()?;
-        regular_file::open(path.as_path()).await
+        regular_file::open(path.as_path(), FsOpenMode::Read).await
     }
 
     async fn canonicalize(
@@ -710,23 +694,8 @@ impl DirectFileSystem {
         sandbox: Option<&FileSystemSandboxContext>,
     ) -> FileSystemResult<Vec<u8>> {
         reject_sandbox_context(sandbox)?;
-        let file = if options.follow_symlinks {
-            self.open_file_for_read(path, /*sandbox*/ None).await?
-        } else {
-            no_follow::open_file(path.to_abs_path()?.as_path()).await?
-        };
-        let metadata = file.metadata().await?;
-        if metadata.len() > MAX_READ_FILE_BYTES {
-            return Err(file_too_large_error());
-        }
-        let mut bytes = Vec::with_capacity(metadata.len() as usize);
-        file.take(MAX_READ_FILE_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .await?;
-        if bytes.len() as u64 > MAX_READ_FILE_BYTES {
-            return Err(file_too_large_error());
-        }
-        Ok(bytes)
+        let path = path.to_abs_path()?;
+        crate::local_file_system_read::read_file(path, options).await
     }
 
     async fn read_file_stream(
@@ -734,7 +703,7 @@ impl DirectFileSystem {
         path: &PathUri,
         sandbox: Option<&FileSystemSandboxContext>,
     ) -> FileSystemResult<FileSystemReadStream> {
-        let file = self.open_file_for_read(path, sandbox).await?;
+        let file = self.open_file(path, sandbox).await?;
         Ok(FileSystemReadStream::new(ReaderStream::with_capacity(
             file,
             FILE_READ_CHUNK_SIZE,

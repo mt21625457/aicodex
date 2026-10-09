@@ -239,7 +239,7 @@ async fn mode_hints_override_reasoning_effort(source: ModeHintSource) -> Result<
         initial_world_state_mode,
         Some(&json!({
             "mode": {"custom": expected_hint},
-            "usage_hint_hash": "0e2a3174d5f40de49ed383507497d69bbff42c5d"
+            "usage_hint_hash": "77b72c45a2e2f65e31467b2ddeb5f0333a755e8f"
         }))
     );
     for texts in [&first_texts, &second_texts] {

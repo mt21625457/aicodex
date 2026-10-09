@@ -158,7 +158,41 @@ fn prepare_sync(mut body: Value, budget: RequestBudget) -> Result<EncodedJsonBod
 }
 
 fn encode(body: &Value) -> Result<EncodedJsonBody, ApiError> {
-    EncodedJsonBody::encode(body).map_err(|_| invalid("Cannot encode Responses request"))
+    EncodedJsonBody::encode(&RoutingFirst(body))
+        .map_err(|_| invalid("Cannot encode Responses request"))
+}
+
+/// Keep gateway routing fields ahead of large inputs after preparing a JSON copy.
+struct RoutingFirst<'a>(&'a Value);
+
+impl serde::Serialize for RoutingFirst<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+
+        let Some(object) = self.0.as_object() else {
+            return self.0.serialize(serializer);
+        };
+        const PREFIX: &[&str] = &[
+            "type",
+            "model",
+            "stream",
+            "service_tier",
+            "previous_response_id",
+            "input",
+        ];
+        let mut map = serializer.serialize_map(Some(object.len()))?;
+        for key in PREFIX {
+            if let Some(value) = object.get(*key) {
+                map.serialize_entry(key, value)?;
+            }
+        }
+        for (key, value) in object {
+            if !PREFIX.contains(&key.as_str()) {
+                map.serialize_entry(key, value)?;
+            }
+        }
+        map.end()
+    }
 }
 
 fn invalid(message: impl Into<String>) -> ApiError {

@@ -32,7 +32,6 @@ async fn typed_provider_requests_send_prepared_history_and_tool_images_once() ->
         ]);
         let request = ResponsesApiRequest {
             model: model.into(),
-            instructions: String::new(),
             input: serde_json::from_value(input)?,
             tools: Some(empty_tools().into()),
             tool_choice: "auto".into(),

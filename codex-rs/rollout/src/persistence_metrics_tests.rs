@@ -1,12 +1,18 @@
+use std::time::Duration;
+
 use codex_protocol::ThreadId;
+use codex_protocol::items::CommandExecutionItem;
+use codex_protocol::items::CommandExecutionStatus;
 use codex_protocol::items::EnteredReviewModeItem;
 use codex_protocol::items::ExitedReviewModeItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::parse_command::ParsedCommand;
 use codex_protocol::protocol::EnteredReviewModeEvent;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::ExitedReviewModeEvent;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::ReviewTarget;
@@ -15,6 +21,7 @@ use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
+use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 
 use super::CompletedTurnMeasurement;
@@ -28,6 +35,7 @@ use super::update_turn_measurements;
 use crate::ResponseItemEnvelope;
 use crate::RolloutItem;
 use crate::policy::EventPersistenceMode;
+use crate::policy::PERSISTED_COMMAND_OUTPUT_MAX_BYTES;
 
 fn retained_message(text: &str) -> RolloutItem {
     RolloutItem::ResponseItem(ResponseItemEnvelope::new(ResponseItem::Message {
@@ -43,6 +51,7 @@ fn retained_message(text: &str) -> RolloutItem {
 
 fn turn_started(turn_id: &str) -> RolloutItem {
     RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+        turn_attribution: None,
         turn_id: turn_id.to_string(),
         root_turn_id: None,
         trace_id: None,
@@ -54,6 +63,7 @@ fn turn_started(turn_id: &str) -> RolloutItem {
 
 fn turn_complete(turn_id: &str) -> RolloutItem {
     RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
+        root_turn_id: None,
         turn_id: turn_id.to_string(),
         started_at: None,
         last_agent_message: None,
@@ -66,6 +76,7 @@ fn turn_complete(turn_id: &str) -> RolloutItem {
 
 fn turn_aborted(turn_id: &str) -> RolloutItem {
     RolloutItem::EventMsg(EventMsg::TurnAborted(TurnAbortedEvent {
+        root_turn_id: None,
         turn_id: Some(turn_id.to_string()),
         started_at: None,
         reason: TurnAbortReason::Interrupted,
@@ -204,7 +215,9 @@ fn extended_mode_sanitizes_exec_command_end_after_measuring_original_payload() {
     assert_eq!(measurement.post_filter.items, 1);
     assert_eq!(
         measurement.post_filter.payload_bytes,
-        original_payload_bytes
+        serde_json::to_vec(&persisted[0])
+            .expect("serialize durable item")
+            .len() as u64
     );
     assert_eq!(
         measurement.items[0].payload_bytes,
@@ -222,9 +235,6 @@ fn extended_mode_sanitizes_exec_command_end_after_measuring_original_payload() {
     let RolloutItem::EventMsg(EventMsg::ExecCommandEnd(event)) = &persisted[0] else {
         panic!("expected sanitized exec_command_end event");
     };
-    assert_eq!(event.stdout, "");
-    assert_eq!(event.stderr, "");
-    assert_eq!(event.formatted_output, "");
     assert!(event.aggregated_output.len() < aggregated_output.len());
     assert!(event.aggregated_output.contains("chars truncated"));
 }
@@ -366,46 +376,59 @@ fn item_completion_persistence_depends_on_history_mode() {
 }
 
 #[test]
-fn paginated_extended_mode_combines_history_and_event_persistence() {
-    let completed_item = RolloutItem::EventMsg(EventMsg::ItemCompleted(ItemCompletedEvent {
+fn projected_items_report_post_projection_bytes() {
+    let original_output = "x".repeat(PERSISTED_COMMAND_OUTPUT_MAX_BYTES * 2);
+    let item = RolloutItem::EventMsg(EventMsg::ItemCompleted(ItemCompletedEvent {
         thread_id: ThreadId::default(),
         turn_id: "turn".to_string(),
-        item: TurnItem::UserMessage(UserMessageItem {
-            id: "item".to_string(),
-            client_id: None,
-            content: Vec::new(),
+        item: TurnItem::CommandExecution(CommandExecutionItem {
+            sandbox_type: None,
+            model_context: None,
+            id: "exec".to_string(),
+            plugin_id: None,
+            script_path: None,
+            process_id: None,
+            command: vec!["echo".to_string()],
+            cwd: std::env::temp_dir().abs().into(),
+            parsed_cmd: vec![ParsedCommand::Unknown {
+                cmd: "echo".to_string(),
+            }],
+            source: ExecCommandSource::Agent,
+            interaction_input: None,
+            status: CommandExecutionStatus::Completed,
+            aggregated_output: Some(original_output),
+            exit_code: Some(0),
+            duration: Some(Duration::ZERO),
         }),
         started_at_ms: Some(0),
         completed_at_ms: 0,
     }));
-    let command_end = exec_command_end_with_output("command output");
-    let items = vec![completed_item.clone(), command_end.clone()];
+    let original_bytes = serde_json::to_vec(&item)
+        .expect("serialize original command")
+        .len() as u64;
 
-    let (limited, _) = measure_and_filter_rollout_items(&items, ThreadHistoryMode::Paginated);
+    let (persisted, measurement) =
+        measure_and_filter_rollout_items(std::slice::from_ref(&item), ThreadHistoryMode::Paginated);
+    let persisted_bytes = serde_json::to_vec(&persisted[0])
+        .expect("serialize persisted command")
+        .len() as u64;
     assert_eq!(
-        serde_json::to_value(limited).expect("serialize limited items"),
-        serde_json::to_value([completed_item.clone()]).expect("serialize expected limited items")
+        measurement.pre_filter,
+        super::RolloutSizeTotals {
+            items: 1,
+            payload_bytes: original_bytes,
+        }
     );
-
-    let (extended, _) = measure_and_filter_rollout_items_with_mode(
-        &items,
-        ThreadHistoryMode::Paginated,
-        EventPersistenceMode::Extended,
-    );
-    let RolloutItem::EventMsg(EventMsg::ExecCommandEnd(mut sanitized_command_end)) = command_end
-    else {
-        panic!("expected exec command end event");
-    };
-    sanitized_command_end.stdout.clear();
-    sanitized_command_end.stderr.clear();
-    sanitized_command_end.formatted_output.clear();
-    let expected = [
-        completed_item,
-        RolloutItem::EventMsg(EventMsg::ExecCommandEnd(sanitized_command_end)),
-    ];
     assert_eq!(
-        serde_json::to_value(extended).expect("serialize extended items"),
-        serde_json::to_value(expected).expect("serialize expected extended items")
+        measurement.post_filter,
+        super::RolloutSizeTotals {
+            items: 1,
+            payload_bytes: persisted_bytes,
+        }
+    );
+    assert!(
+        persisted_bytes < original_bytes,
+        "projection should reduce serialized bytes"
     );
 }
 
@@ -468,5 +491,45 @@ fn review_mode_persistence_depends_on_history_mode() {
     assert_eq!(
         serde_json::to_value(persisted_paginated).expect("serialize persisted items"),
         serde_json::to_value(completed_items).expect("serialize expected items")
+    );
+}
+
+#[test]
+fn paginated_extended_mode_combines_history_and_event_persistence() {
+    let completed_item = RolloutItem::EventMsg(EventMsg::ItemCompleted(ItemCompletedEvent {
+        thread_id: ThreadId::default(),
+        turn_id: "turn".to_string(),
+        item: TurnItem::UserMessage(UserMessageItem {
+            id: "item".to_string(),
+            client_id: None,
+            content: Vec::new(),
+        }),
+        started_at_ms: Some(0),
+        completed_at_ms: 0,
+    }));
+    let command_end = exec_command_end_with_output("command output");
+    let items = vec![completed_item.clone(), command_end.clone()];
+
+    let (limited, _) = measure_and_filter_rollout_items(&items, ThreadHistoryMode::Paginated);
+    assert_eq!(
+        serde_json::to_value(limited).expect("serialize limited items"),
+        serde_json::to_value([completed_item.clone()]).expect("serialize expected limited items")
+    );
+
+    let (extended, _) = measure_and_filter_rollout_items_with_mode(
+        &items,
+        ThreadHistoryMode::Paginated,
+        EventPersistenceMode::Extended,
+    );
+    let RolloutItem::EventMsg(EventMsg::ExecCommandEnd(sanitized_command_end)) = command_end else {
+        panic!("expected exec command end event");
+    };
+    let expected = [
+        completed_item,
+        RolloutItem::EventMsg(EventMsg::ExecCommandEnd(sanitized_command_end)),
+    ];
+    assert_eq!(
+        serde_json::to_value(extended).expect("serialize extended items"),
+        serde_json::to_value(expected).expect("serialize expected extended items")
     );
 }

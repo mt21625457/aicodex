@@ -323,7 +323,7 @@ impl App {
             )),
             footer_hint: Some(standard_popup_hint_line()),
             items,
-            ..SelectionViewParams::picker()
+            ..SelectionViewParams::confirmation()
         });
     }
 

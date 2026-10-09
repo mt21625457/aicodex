@@ -20,7 +20,7 @@ async fn all_models_preserve_large_original_images_when_whole_request_fits() {
         "custom",
     ] {
         let body = json!({"model":model, "input":[{"role":"user", "content":[{"type":"input_image", "detail":"original", "image_url":padded_png()}]}]});
-        let expected = serde_json::to_vec(&body).unwrap();
+        let expected = body.clone();
         let result = prepare(
             body,
             RequestBudget {
@@ -29,7 +29,10 @@ async fn all_models_preserve_large_original_images_when_whole_request_fits() {
         )
         .await
         .unwrap();
-        assert_eq!(result.as_bytes(), expected);
+        assert_eq!(
+            serde_json::from_slice::<Value>(result.as_bytes()).unwrap(),
+            expected
+        );
     }
 }
 
@@ -70,16 +73,17 @@ async fn constrained_route_prepares_full_history_and_tool_outputs_for_every_mode
 fn exact_utf8_budget_includes_envelope_tools_and_text() {
     let body = json!({"type":"response.create", "model":"gpt-6", "previous_response_id":"previous", "input":[], "instructions":"汉字", "tools":[{"description":"schema"}]});
     let exact = serde_json::to_vec(&body).unwrap();
+    let prepared = prepare_sync(
+        body.clone(),
+        RequestBudget {
+            route_bytes: exact.len(),
+        },
+    )
+    .unwrap();
+    assert_eq!(prepared.as_bytes().len(), exact.len());
     assert_eq!(
-        prepare_sync(
-            body.clone(),
-            RequestBudget {
-                route_bytes: exact.len()
-            }
-        )
-        .unwrap()
-        .as_bytes(),
-        exact
+        serde_json::from_slice::<Value>(prepared.as_bytes()).unwrap(),
+        body
     );
     let error = prepare_sync(
         body,
@@ -122,12 +126,12 @@ async fn references_and_lookalike_schema_content_are_preserved() {
     let body = json!({"model":"deepseek-flash", "input":[{"role":"user", "content":[
         {"type":"input_image", "image_url":"https://example.invalid/image.png"},
         {"type":"input_image", "file_id":"file-reference"}]}], "tools":[{"image_url":"data:private-quoted-text"}]});
+    let prepared = prepare(body.clone(), RequestBudget { route_bytes: 4096 })
+        .await
+        .unwrap();
     assert_eq!(
-        prepare(body.clone(), RequestBudget { route_bytes: 4096 })
-            .await
-            .unwrap()
-            .as_bytes(),
-        serde_json::to_vec(&body).unwrap()
+        serde_json::from_slice::<Value>(prepared.as_bytes()).unwrap(),
+        body
     );
     assert!(
         prepare(body, RequestBudget { route_bytes: 1 })

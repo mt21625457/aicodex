@@ -1,5 +1,7 @@
 use super::PreviousSectionState;
+use super::SectionTransition;
 use super::WorldStateSection;
+use super::WorldStateUpdate;
 use crate::context::ContextualUserFragment;
 use codex_protocol::models::ContentItemKind;
 
@@ -43,10 +45,6 @@ impl WorldStateSection for ContextContinuationState {
     const ID: &'static str = "context_continuation";
     type Snapshot = String;
 
-    fn snapshot(&self) -> Self::Snapshot {
-        INSTRUCTIONS.to_string()
-    }
-
     fn matches_legacy_fragment(role: &str, text: &str) -> bool {
         role == "developer" && Self::matches_text(text)
     }
@@ -62,10 +60,13 @@ impl WorldStateSection for ContextContinuationState {
     fn render_diff(
         &self,
         previous: PreviousSectionState<'_, Self::Snapshot>,
-    ) -> Option<Box<dyn ContextualUserFragment>> {
+    ) -> SectionTransition<Self::Snapshot> {
         if matches!(previous, PreviousSectionState::Known(message) if message == INSTRUCTIONS) {
-            return None;
+            return (None, Vec::new());
         }
-        Some(Box::new(self.clone()))
+        (
+            Some(INSTRUCTIONS.to_string()),
+            WorldStateUpdate::optional_boxed_fragment(Some(Box::new(self.clone()))),
+        )
     }
 }

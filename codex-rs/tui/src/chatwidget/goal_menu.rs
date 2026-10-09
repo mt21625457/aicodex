@@ -78,7 +78,7 @@ impl ChatWidget {
                     ..Default::default()
                 },
             ],
-            ..SelectionViewParams::picker()
+            ..SelectionViewParams::confirmation()
         });
     }
 

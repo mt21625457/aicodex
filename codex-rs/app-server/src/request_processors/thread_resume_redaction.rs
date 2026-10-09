@@ -241,6 +241,7 @@ mod tests {
             name: None,
             turns: vec![Turn {
                 id: "turn-1".to_string(),
+                root_turn_id: None,
                 items,
                 items_view: TurnItemsView::Full,
                 status: TurnStatus::Completed,

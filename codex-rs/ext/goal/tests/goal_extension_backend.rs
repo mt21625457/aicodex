@@ -32,6 +32,7 @@ use codex_goal_extension::GoalExtensionConfig;
 use codex_goal_extension::GoalObjectiveUpdate;
 use codex_goal_extension::GoalRuntimeHandle;
 use codex_goal_extension::GoalService;
+use codex_goal_extension::GoalServiceError;
 use codex_goal_extension::GoalSetRequest;
 use codex_goal_extension::GoalTokenBudgetUpdate;
 use codex_goal_extension::install_with_backend;
@@ -820,6 +821,7 @@ async fn terminal_goal_update_revokes_pending_budget_abort_request() -> anyhow::
                 token_budget: GoalTokenBudgetUpdate::Keep,
                 max_goal_token_budget: None,
             },
+            std::future::ready(Ok(())),
         )
         .await?;
     outcome.apply_runtime_effects(&harness.goal_service).await;
@@ -1473,6 +1475,7 @@ async fn goal_service_external_set_active_preserves_concurrent_usage() -> anyhow
                 token_budget: GoalTokenBudgetUpdate::Keep,
                 max_goal_token_budget: None,
             },
+            std::future::ready(Ok(())),
         )
         .await?;
     harness
@@ -1547,7 +1550,7 @@ async fn thread_stop_unregisters_goal_runtime_from_service() -> anyhow::Result<(
     assert!(
         harness
             .goal_service
-            .clear_thread_goal(runtime.as_ref(), thread_id)
+            .clear_thread_goal(runtime.as_ref(), thread_id, std::future::ready(Ok(())))
             .await?
     );
     assert_eq!(Vec::<CapturedGoalEvent>::new(), harness.sink.goal_events());
@@ -1614,17 +1617,28 @@ async fn goal_service_sets_gets_and_clears_thread_goal() -> anyhow::Result<()> {
     seed_thread_metadata(runtime.as_ref(), thread_id).await?;
     let api = GoalService::new();
 
-    let set = api
+    let request = GoalSetRequest {
+        thread_id,
+        objective: GoalObjectiveUpdate::Set(" ship goal API ownership "),
+        status: None,
+        token_budget: GoalTokenBudgetUpdate::Set(Some(123)),
+        max_goal_token_budget: None,
+    };
+    let failure = GoalServiceError::Internal("instruction recording failed".to_owned());
+    let result = api
         .set_thread_goal(
             runtime.as_ref(),
-            GoalSetRequest {
-                thread_id,
-                objective: GoalObjectiveUpdate::Set(" ship goal API ownership "),
-                status: None,
-                token_budget: GoalTokenBudgetUpdate::Set(Some(123)),
-                max_goal_token_budget: None,
-            },
+            request,
+            std::future::ready(Err(failure.clone())),
         )
+        .await;
+    assert_eq!(result.unwrap_err(), failure);
+    assert_eq!(
+        api.get_thread_goal(runtime.as_ref(), thread_id).await?,
+        None
+    );
+    let set = api
+        .set_thread_goal(runtime.as_ref(), request, std::future::ready(Ok(())))
         .await?;
     let get = api
         .get_thread_goal(runtime.as_ref(), thread_id)
@@ -1641,12 +1655,59 @@ async fn goal_service_sets_gets_and_clears_thread_goal() -> anyhow::Result<()> {
     assert_eq!(Some(123), get.token_budget);
     assert_eq!(Some("ship goal API ownership"), metadata.preview.as_deref());
 
-    assert!(api.clear_thread_goal(runtime.as_ref(), thread_id).await?);
+    let replacement = GoalSetRequest {
+        objective: GoalObjectiveUpdate::Set("replacement goal"),
+        ..request
+    };
+    let result = api
+        .replace_thread_goal_with_instruction(
+            runtime.as_ref(),
+            replacement,
+            std::future::ready(Err(failure.clone())),
+        )
+        .await;
+    assert_eq!(result.unwrap_err(), failure);
+    assert_eq!(
+        api.get_thread_goal(runtime.as_ref(), thread_id).await?,
+        Some(get.clone())
+    );
+    let replacement = api
+        .replace_thread_goal_with_instruction(
+            runtime.as_ref(),
+            replacement,
+            std::future::ready(Ok(())),
+        )
+        .await?;
+    assert_eq!(replacement.goal.objective, "replacement goal");
+    assert_eq!(replacement.goal.tokens_used, 0);
+    let get = replacement.goal;
+
+    assert_eq!(
+        api.clear_thread_goal(
+            runtime.as_ref(),
+            thread_id,
+            std::future::ready(Err(failure.clone()))
+        )
+        .await,
+        Err(failure),
+    );
+    assert_eq!(
+        api.get_thread_goal(runtime.as_ref(), thread_id).await?,
+        Some(get)
+    );
+
+    assert!(
+        api.clear_thread_goal(runtime.as_ref(), thread_id, std::future::ready(Ok(())))
+            .await?
+    );
     assert_eq!(
         None,
         api.get_thread_goal(runtime.as_ref(), thread_id).await?
     );
-    assert!(!api.clear_thread_goal(runtime.as_ref(), thread_id).await?);
+    assert!(
+        !api.clear_thread_goal(runtime.as_ref(), thread_id, std::future::ready(Ok(())))
+            .await?
+    );
     Ok(())
 }
 
@@ -1668,6 +1729,7 @@ async fn goal_service_enforces_maximum_token_budget_on_creation_and_updates() ->
                 token_budget: GoalTokenBudgetUpdate::Keep,
                 max_goal_token_budget: Some(100),
             },
+            std::future::ready(Ok(())),
         )
         .await?;
     assert_eq!(goal.goal.token_budget, Some(100));
@@ -1682,6 +1744,7 @@ async fn goal_service_enforces_maximum_token_budget_on_creation_and_updates() ->
                 token_budget: GoalTokenBudgetUpdate::Set(Some(101)),
                 max_goal_token_budget: Some(100),
             },
+            std::future::ready(Ok(())),
         )
         .await
         .expect_err("goal budget above the configured maximum should fail");
@@ -1708,6 +1771,7 @@ async fn goal_service_enforces_maximum_token_budget_on_creation_and_updates() ->
                 token_budget: GoalTokenBudgetUpdate::Set(Some(99)),
                 max_goal_token_budget: Some(100),
             },
+            std::future::ready(Ok(())),
         )
         .await?;
     assert_eq!(goal.goal.token_budget, Some(99));
@@ -1722,6 +1786,7 @@ async fn goal_service_enforces_maximum_token_budget_on_creation_and_updates() ->
                 token_budget: GoalTokenBudgetUpdate::Set(None),
                 max_goal_token_budget: Some(100),
             },
+            std::future::ready(Ok(())),
         )
         .await?;
     assert_eq!(goal.goal.token_budget, Some(100));

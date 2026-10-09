@@ -79,20 +79,15 @@ async fn append_items_with_extended_persistence_keeps_command_completion() {
     });
 
     assert_eq!(
-        command_end.map(|event| {
-            (
-                event.aggregated_output.as_str(),
-                event.stdout.as_str(),
-                event.stderr.as_str(),
-                event.formatted_output.as_str(),
-            )
-        }),
-        Some(("hello from command\n", "", "", ""))
+        command_end.map(|event| event.aggregated_output.as_str()),
+        Some("hello from command\n")
     );
 }
 
 fn create_thread_params(thread_id: ThreadId) -> CreateThreadParams {
     CreateThreadParams {
+        creator_account_id: None,
+        creator_user_id: None,
         session_id: thread_id.into(),
         thread_id,
         extra_config: None,
@@ -131,12 +126,9 @@ fn exec_command_end_item() -> RolloutItem {
         parsed_cmd: Vec::new(),
         source: ExecCommandSource::UserShell,
         interaction_input: None,
-        stdout: "hello from stdout\n".to_string(),
-        stderr: "hello from stderr\n".to_string(),
         aggregated_output: "hello from command\n".to_string(),
         exit_code: 0,
         duration: Duration::from_millis(1),
-        formatted_output: "formatted output".to_string(),
         status: ExecCommandStatus::Completed,
     }))
 }

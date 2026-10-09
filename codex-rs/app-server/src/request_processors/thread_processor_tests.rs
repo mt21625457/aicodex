@@ -123,6 +123,7 @@ mod persisted_resume_approval_policy_tests {
 
     fn turn_started_item(turn_id: &str) -> RolloutItem {
         RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
+            turn_attribution: None,
             root_turn_id: None,
             turn_id: turn_id.to_string(),
             trace_id: None,
@@ -137,27 +138,21 @@ mod persisted_resume_approval_policy_tests {
             turn_id: Some(turn_id.to_string()),
             root_turn_id: None,
             cwd: cwd(),
-            workspace_roots: None,
             disabled_plugin_ids: None,
-            current_date: None,
-            timezone: None,
             approval_policy,
             approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             permission_profile: None,
             active_permission_profile: None,
-            network: None,
             file_system_sandbox_policy: None,
             model: "gpt-5".to_string(),
             comp_hash: None,
-            personality: None,
             collaboration_mode: None,
             multi_agent_version: None,
-            multi_agent_mode: None,
             realtime_active: None,
             cyber_access_program: None,
             effort: None,
-            summary: codex_protocol::config_types::ReasoningSummary::Auto,
+            summary: Some(codex_protocol::config_types::ReasoningSummary::Auto),
         })
     }
 
@@ -460,6 +455,7 @@ mod thread_processor_behavior_tests {
         ))];
         let active_turn = Turn {
             id: "live-turn".to_string(),
+            root_turn_id: None,
             items: vec![ThreadItem::UserMessage {
                 id: "live-user-message".to_string(),
                 client_id: None,
@@ -784,6 +780,7 @@ mod thread_processor_behavior_tests {
             requires_openai_auth: false,
             supports_websockets: true,
             supports_standalone_web_search: false,
+            capabilities: None,
             include_internal_metadata: false,
         };
         let config_manager = ConfigManager::new(
@@ -855,6 +852,7 @@ mod thread_processor_behavior_tests {
             persist_extended_history: false,
         };
         let config_snapshot = ThreadConfigSnapshot {
+            turn_extension_init: Default::default(),
             disabled_plugin_ids: Vec::new(),
             model: "gpt-5".to_string(),
             model_provider_id: "openai".to_string(),
@@ -1371,6 +1369,7 @@ mod thread_processor_behavior_tests {
             state.track_current_turn_event(
                 "turn-1",
                 &EventMsg::TurnStarted(codex_protocol::protocol::TurnStartedEvent {
+                    turn_attribution: None,
                     turn_id: "turn-1".to_string(),
                     root_turn_id: None,
                     trace_id: None,

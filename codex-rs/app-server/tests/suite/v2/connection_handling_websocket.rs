@@ -518,7 +518,8 @@ pub(super) async fn spawn_websocket_server_with_args(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .env("RUST_LOG", "warn");
+        .env("RUST_LOG", "warn")
+        .env("OTEL_METRIC_EXPORT_INTERVAL", "200");
     configure_app_server_test_env(&mut cmd, codex_home);
     #[cfg(windows)]
     cmd.env(

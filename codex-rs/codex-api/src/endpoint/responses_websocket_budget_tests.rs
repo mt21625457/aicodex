@@ -19,7 +19,7 @@ async fn websocket_budget_checks_actual_frame_and_preserves_continuation_metadat
         serde_json::from_str::<serde_json::Value>(&encoded).unwrap(),
         expected
     );
-    request.instructions = "x".repeat(4096);
+    request.input = text_input(&"x".repeat(4096));
     let frame = ResponsesWsRequest::ResponseCreate(ResponseCreateWsRequest::from(&request));
     let error = serialize_websocket_request(&frame, budget(/*limit*/ 4096))
         .await
@@ -29,11 +29,14 @@ async fn websocket_budget_checks_actual_frame_and_preserves_continuation_metadat
             .retry_delay(/*retry_count*/ 1)
             .is_none()
     );
-    request.instructions = "x".repeat(4096);
-    request.input = serde_json::from_value(json!([{"type":"message", "role":"user", "content":[
-        {"type":"input_image", "image_url":"data:image/png;base64,private-invalid"}
-    ]}]))
-    .unwrap();
+    request.input.extend(
+        serde_json::from_value::<Vec<codex_protocol::models::ResponseItem>>(
+            json!([{"type":"message", "role":"user", "content":[
+                {"type":"input_image", "image_url":"data:image/png;base64,private-invalid"}
+            ]}]),
+        )
+        .unwrap(),
+    );
     let frame = ResponsesWsRequest::ResponseCreate(ResponseCreateWsRequest::from(&request));
     let error = serialize_websocket_request(&frame, budget(/*limit*/ 4096))
         .await
@@ -48,12 +51,17 @@ async fn mimo_and_minimax_websocket_frames_prepare_images_and_preserve_metadata(
     let mut png = STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGMQMgkDAAD4AJ3MaiF4AAAAAElFTkSuQmCC").unwrap();
     png.resize(2 * 1024 * 1024, 0);
     for model in ["mimo-v2.6-flash", "MiniMax-M3"] {
-        let original = json!({"type":"response.create", "model":model, "instructions":"keep", "previous_response_id":"previous", "client_metadata":{"route":"keep"},
+        let original = json!({"type":"response.create", "model":model, "previous_response_id":"previous", "client_metadata":{"route":"keep"},
             "input":[{"type":"function_call_output", "call_id":"screen", "output":[{"type":"input_image", "image_url":format!("data:image/png;base64,{}", STANDARD.encode(&png))}]}],
             "tools":[], "tool_choice":"auto", "parallel_tool_calls":false, "store":false, "stream":true, "include":[]});
         let mut request = request(model);
-        request.instructions = "keep".into();
-        request.input = serde_json::from_value(original["input"].clone()).unwrap();
+        request.input = text_input("keep");
+        request.input.extend(
+            serde_json::from_value::<Vec<codex_protocol::models::ResponseItem>>(
+                original["input"].clone(),
+            )
+            .unwrap(),
+        );
         request.client_metadata =
             Some(serde_json::from_value(original["client_metadata"].clone()).unwrap());
         let frame = ResponsesWsRequest::ResponseCreate(ResponseCreateWsRequest {
@@ -66,8 +74,8 @@ async fn mimo_and_minimax_websocket_frames_prepare_images_and_preserve_metadata(
             .unwrap();
         assert!(encoded.len() < 4096);
         let actual: serde_json::Value = serde_json::from_str(&encoded).unwrap();
-        expected["input"][0]["output"][0]["image_url"] =
-            actual["input"][0]["output"][0]["image_url"].clone();
+        expected["input"][1]["output"][0]["image_url"] =
+            actual["input"][1]["output"][0]["image_url"].clone();
         assert_eq!(actual, expected);
     }
 }
@@ -75,7 +83,6 @@ async fn mimo_and_minimax_websocket_frames_prepare_images_and_preserve_metadata(
 fn request(model: &str) -> ResponsesApiRequest {
     ResponsesApiRequest {
         model: model.into(),
-        instructions: String::new(),
         input: Vec::new(),
         tools: None,
         tool_choice: "auto".into(),
@@ -110,4 +117,11 @@ pub(super) fn budget(limit: usize) -> crate::request_budget::RequestBudget {
         stream_idle_timeout: std::time::Duration::from_secs(1),
         request_body_max_bytes: Some(limit),
     })
+}
+
+fn text_input(text: &str) -> Vec<codex_protocol::models::ResponseItem> {
+    serde_json::from_value(json!([{"type":"message", "role":"developer", "content":[
+        {"type":"input_text", "text":text}
+    ]}]))
+    .unwrap()
 }

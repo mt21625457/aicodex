@@ -2,8 +2,6 @@ use super::*;
 use crate::model::bounded_persisted_log_body;
 use std::borrow::Cow;
 
-const LOG_RETENTION_DAYS: i64 = 10;
-
 struct PersistedLogEntry<'a> {
     ts: i64,
     ts_nanos: i64,
@@ -320,30 +318,6 @@ WHERE id IN (
                     .await?;
             }
         }
-        Ok(())
-    }
-
-    pub(crate) async fn delete_logs_before(&self, cutoff_ts: i64) -> anyhow::Result<u64> {
-        let result = sqlx::query("DELETE FROM logs WHERE ts < ?")
-            .bind(cutoff_ts)
-            .execute(self.logs_pool.as_ref())
-            .await?;
-        Ok(result.rows_affected())
-    }
-
-    pub(crate) async fn run_logs_startup_maintenance(&self) -> anyhow::Result<()> {
-        let Some(cutoff) =
-            Utc::now().checked_sub_signed(chrono::Duration::days(LOG_RETENTION_DAYS))
-        else {
-            return Ok(());
-        };
-        self.delete_logs_before(cutoff.timestamp()).await?;
-        // Startup cleanup should not wait behind or block foreground work.
-        // PASSIVE checkpoints copy whatever is immediately available and skip
-        // frames that would require waiting on active readers or writers.
-        sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
-            .execute(self.logs_pool.as_ref())
-            .await?;
         Ok(())
     }
 
@@ -677,6 +651,7 @@ mod tests {
 
     #[tokio::test]
     async fn insert_logs_use_dedicated_log_database() {
+        let now = chrono::Utc::now().timestamp();
         let codex_home = unique_temp_dir();
         let runtime = StateRuntime::init(
             crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
@@ -687,7 +662,7 @@ mod tests {
 
         runtime
             .insert_logs(&[LogEntry {
-                ts: 1,
+                ts: now + 1,
                 ts_nanos: 0,
                 level: "INFO".to_string(),
                 target: "cli".to_string(),
@@ -914,6 +889,7 @@ mod tests {
 
     #[tokio::test]
     async fn query_logs_with_search_matches_rendered_body_substring() {
+        let now = chrono::Utc::now().timestamp();
         let codex_home = unique_temp_dir();
         let runtime = StateRuntime::init(
             crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
@@ -925,7 +901,7 @@ mod tests {
         runtime
             .insert_logs(&[
                 LogEntry {
-                    ts: 1_700_000_001,
+                    ts: now + 1,
                     ts_nanos: 0,
                     level: "INFO".to_string(),
                     target: "cli".to_string(),
@@ -938,7 +914,7 @@ mod tests {
                     module_path: None,
                 },
                 LogEntry {
-                    ts: 1_700_000_002,
+                    ts: now + 2,
                     ts_nanos: 0,
                     level: "INFO".to_string(),
                     target: "cli".to_string(),
@@ -970,6 +946,7 @@ mod tests {
 
     #[tokio::test]
     async fn query_logs_filters_level_set_without_rewriting_stored_level() {
+        let now = chrono::Utc::now().timestamp();
         let codex_home = unique_temp_dir();
         let runtime = StateRuntime::init(
             crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
@@ -981,7 +958,7 @@ mod tests {
         runtime
             .insert_logs(&[
                 LogEntry {
-                    ts: 1,
+                    ts: now + 1,
                     ts_nanos: 0,
                     level: "TRACE".to_string(),
                     target: "cli".to_string(),
@@ -994,7 +971,7 @@ mod tests {
                     module_path: None,
                 },
                 LogEntry {
-                    ts: 2,
+                    ts: now + 2,
                     ts_nanos: 0,
                     level: "INFO".to_string(),
                     target: "cli".to_string(),
@@ -1007,7 +984,7 @@ mod tests {
                     module_path: None,
                 },
                 LogEntry {
-                    ts: 3,
+                    ts: now + 3,
                     ts_nanos: 0,
                     level: "warn".to_string(),
                     target: "cli".to_string(),
@@ -1020,7 +997,7 @@ mod tests {
                     module_path: None,
                 },
                 LogEntry {
-                    ts: 4,
+                    ts: now + 4,
                     ts_nanos: 0,
                     level: "ERROR".to_string(),
                     target: "cli".to_string(),
@@ -1058,6 +1035,7 @@ mod tests {
 
     #[tokio::test]
     async fn insert_logs_prunes_old_rows_when_thread_exceeds_size_limit() {
+        let now = chrono::Utc::now().timestamp();
         let codex_home = unique_temp_dir();
         let runtime = StateRuntime::init(
             crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
@@ -1068,7 +1046,14 @@ mod tests {
 
         let retained_body = "a".repeat(MAX_PERSISTED_LOG_BODY_BYTES);
         let entries: Vec<LogEntry> = (1..=161)
-            .map(|ts| test_log_entry(ts, retained_body.clone(), Some("thread-1"), Some("proc-1")))
+            .map(|ts| {
+                test_log_entry(
+                    now + ts,
+                    retained_body.clone(),
+                    Some("thread-1"),
+                    Some("proc-1"),
+                )
+            })
             .collect();
         runtime
             .insert_logs(&entries)
@@ -1083,7 +1068,7 @@ mod tests {
             .await
             .expect("query thread logs");
 
-        let timestamps: Vec<i64> = rows.iter().map(|row| row.ts).collect();
+        let timestamps: Vec<i64> = rows.iter().map(|row| row.ts - now).collect();
         assert!(timestamps.len() < entries.len());
         assert!(!timestamps.contains(&1));
         assert_eq!(timestamps.last().copied(), Some(161));
@@ -1099,6 +1084,7 @@ mod tests {
 
     #[tokio::test]
     async fn insert_logs_prunes_threadless_rows_per_process_uuid_only() {
+        let now = chrono::Utc::now().timestamp();
         let codex_home = unique_temp_dir();
         let runtime = StateRuntime::init(
             crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
@@ -1111,7 +1097,7 @@ mod tests {
         let mut entries: Vec<LogEntry> = (1..=33)
             .map(|ts| {
                 test_log_entry(
-                    ts,
+                    now + ts,
                     retained_body.clone(),
                     /*thread_id*/ None,
                     Some("proc-1"),
@@ -1119,7 +1105,7 @@ mod tests {
             })
             .collect();
         entries.push(test_log_entry(
-            /*ts*/ 100,
+            /*ts*/ now + 100,
             "thread row stays in the thread partition".to_string(),
             Some("thread-1"),
             Some("proc-1"),
@@ -1138,7 +1124,7 @@ mod tests {
             .await
             .expect("query thread and threadless logs");
 
-        let mut timestamps: Vec<i64> = rows.into_iter().map(|row| row.ts).collect();
+        let mut timestamps: Vec<i64> = rows.into_iter().map(|row| row.ts - now).collect();
         timestamps.sort_unstable();
         assert!(!timestamps.contains(&1));
         assert!(!timestamps.contains(&2));
@@ -1149,6 +1135,7 @@ mod tests {
     }
     #[tokio::test]
     async fn insert_logs_prunes_threadless_rows_with_null_process_uuid() {
+        let now = chrono::Utc::now().timestamp();
         let codex_home = unique_temp_dir();
         let runtime = StateRuntime::init(
             crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
@@ -1161,7 +1148,7 @@ mod tests {
         let mut entries: Vec<LogEntry> = (1..=33)
             .map(|ts| {
                 test_log_entry(
-                    ts,
+                    now + ts,
                     retained_body.clone(),
                     /*thread_id*/ None,
                     /*process_uuid*/ None,
@@ -1169,7 +1156,7 @@ mod tests {
             })
             .collect();
         entries.push(test_log_entry(
-            /*ts*/ 100,
+            /*ts*/ now + 100,
             "separate process row stays".to_string(),
             /*thread_id*/ None,
             Some("proc-1"),
@@ -1187,7 +1174,7 @@ mod tests {
             .await
             .expect("query threadless logs");
 
-        let mut timestamps: Vec<i64> = rows.into_iter().map(|row| row.ts).collect();
+        let mut timestamps: Vec<i64> = rows.into_iter().map(|row| row.ts - now).collect();
         timestamps.sort_unstable();
         assert!(!timestamps.contains(&1));
         assert!(!timestamps.contains(&2));
@@ -1198,6 +1185,7 @@ mod tests {
     }
     #[tokio::test]
     async fn insert_logs_prunes_old_rows_when_thread_exceeds_row_limit() {
+        let now = chrono::Utc::now().timestamp();
         let codex_home = unique_temp_dir();
         let runtime = StateRuntime::init(
             crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
@@ -1208,7 +1196,7 @@ mod tests {
 
         let entries: Vec<LogEntry> = (1..=1_001)
             .map(|ts| LogEntry {
-                ts,
+                ts: now + ts,
                 ts_nanos: 0,
                 level: "INFO".to_string(),
                 target: "cli".to_string(),
@@ -1236,14 +1224,15 @@ mod tests {
 
         let timestamps: Vec<i64> = rows.into_iter().map(|row| row.ts).collect();
         assert_eq!(timestamps.len(), 1_000);
-        assert_eq!(timestamps.first().copied(), Some(2));
-        assert_eq!(timestamps.last().copied(), Some(1_001));
+        assert_eq!(timestamps.first().copied(), Some(now + 2));
+        assert_eq!(timestamps.last().copied(), Some(now + 1_001));
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
 
     #[tokio::test]
     async fn insert_logs_prunes_old_threadless_rows_when_process_exceeds_row_limit() {
+        let now = chrono::Utc::now().timestamp();
         let codex_home = unique_temp_dir();
         let runtime = StateRuntime::init(
             crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
@@ -1254,7 +1243,7 @@ mod tests {
 
         let entries: Vec<LogEntry> = (1..=1_001)
             .map(|ts| LogEntry {
-                ts,
+                ts: now + ts,
                 ts_nanos: 0,
                 level: "INFO".to_string(),
                 target: "cli".to_string(),
@@ -1286,14 +1275,15 @@ mod tests {
             .map(|row| row.ts)
             .collect();
         assert_eq!(timestamps.len(), 1_000);
-        assert_eq!(timestamps.first().copied(), Some(2));
-        assert_eq!(timestamps.last().copied(), Some(1_001));
+        assert_eq!(timestamps.first().copied(), Some(now + 2));
+        assert_eq!(timestamps.last().copied(), Some(now + 1_001));
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
 
     #[tokio::test]
     async fn insert_logs_prunes_old_threadless_null_process_rows_when_row_limit_exceeded() {
+        let now = chrono::Utc::now().timestamp();
         let codex_home = unique_temp_dir();
         let runtime = StateRuntime::init(
             crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
@@ -1304,7 +1294,7 @@ mod tests {
 
         let entries: Vec<LogEntry> = (1..=1_001)
             .map(|ts| LogEntry {
-                ts,
+                ts: now + ts,
                 ts_nanos: 0,
                 level: "INFO".to_string(),
                 target: "cli".to_string(),
@@ -1336,14 +1326,15 @@ mod tests {
             .map(|row| row.ts)
             .collect();
         assert_eq!(timestamps.len(), 1_000);
-        assert_eq!(timestamps.first().copied(), Some(2));
-        assert_eq!(timestamps.last().copied(), Some(1_001));
+        assert_eq!(timestamps.first().copied(), Some(now + 2));
+        assert_eq!(timestamps.last().copied(), Some(now + 1_001));
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
 
     #[tokio::test]
     async fn prune_global_logs_keeps_newest_rows_within_row_limit() {
+        let now = chrono::Utc::now().timestamp();
         let codex_home = unique_temp_dir();
         let runtime = StateRuntime::init(
             crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
@@ -1354,7 +1345,7 @@ mod tests {
 
         let entries: Vec<LogEntry> = (1..=5)
             .map(|ts| LogEntry {
-                ts,
+                ts: now + ts,
                 ts_nanos: 0,
                 level: "INFO".to_string(),
                 target: "cli".to_string(),
@@ -1372,7 +1363,11 @@ mod tests {
             .await
             .expect("insert test logs");
 
-        let mut tx = runtime.logs_pool.begin().await.expect("begin transaction");
+        let mut tx = runtime
+            .logs_pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .expect("begin write transaction");
         prune_global_logs(&mut tx, i64::MAX, /*row_limit*/ 3)
             .await
             .expect("prune global logs");
@@ -1382,7 +1377,7 @@ mod tests {
             .query_logs(&LogQuery::default())
             .await
             .expect("query logs");
-        let timestamps: Vec<i64> = rows.into_iter().map(|row| row.ts).collect();
+        let timestamps: Vec<i64> = rows.into_iter().map(|row| row.ts - now).collect();
         assert_eq!(timestamps, vec![3, 4, 5]);
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
@@ -1390,6 +1385,7 @@ mod tests {
 
     #[tokio::test]
     async fn prune_global_logs_keeps_newest_rows_within_size_limit() {
+        let now = chrono::Utc::now().timestamp();
         let codex_home = unique_temp_dir();
         let runtime = StateRuntime::init(
             crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
@@ -1400,7 +1396,7 @@ mod tests {
 
         let entries: Vec<LogEntry> = (1..=5)
             .map(|ts| LogEntry {
-                ts,
+                ts: now + ts,
                 ts_nanos: 0,
                 level: "INFO".to_string(),
                 target: "cli".to_string(),
@@ -1418,7 +1414,11 @@ mod tests {
             .await
             .expect("insert test logs");
 
-        let mut tx = runtime.logs_pool.begin().await.expect("begin transaction");
+        let mut tx = runtime
+            .logs_pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .expect("begin write transaction");
         prune_global_logs(&mut tx, /*size_limit_bytes*/ 250, i64::MAX)
             .await
             .expect("prune global logs");
@@ -1428,7 +1428,7 @@ mod tests {
             .query_logs(&LogQuery::default())
             .await
             .expect("query logs");
-        let timestamps: Vec<i64> = rows.into_iter().map(|row| row.ts).collect();
+        let timestamps: Vec<i64> = rows.into_iter().map(|row| row.ts - now).collect();
         assert_eq!(timestamps, vec![4, 5]);
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
@@ -1436,6 +1436,7 @@ mod tests {
 
     #[tokio::test]
     async fn query_feedback_logs_returns_newest_lines_within_limit_in_order() {
+        let now = chrono::Utc::now().timestamp();
         let codex_home = unique_temp_dir();
         let runtime = StateRuntime::init(
             crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
@@ -1447,7 +1448,7 @@ mod tests {
         runtime
             .insert_logs(&[
                 LogEntry {
-                    ts: 1,
+                    ts: now + 1,
                     ts_nanos: 0,
                     level: "INFO".to_string(),
                     target: "cli".to_string(),
@@ -1460,7 +1461,7 @@ mod tests {
                     module_path: None,
                 },
                 LogEntry {
-                    ts: 2,
+                    ts: now + 2,
                     ts_nanos: 0,
                     level: "INFO".to_string(),
                     target: "cli".to_string(),
@@ -1473,7 +1474,7 @@ mod tests {
                     module_path: None,
                 },
                 LogEntry {
-                    ts: 3,
+                    ts: now + 3,
                     ts_nanos: 0,
                     level: "INFO".to_string(),
                     target: "cli".to_string(),
@@ -1497,9 +1498,14 @@ mod tests {
         assert_eq!(
             String::from_utf8(bytes).expect("valid utf-8"),
             [
-                format_feedback_log_line(/*ts*/ 1, /*ts_nanos*/ 0, "INFO", "alpha"),
-                format_feedback_log_line(/*ts*/ 2, /*ts_nanos*/ 0, "INFO", "bravo"),
-                format_feedback_log_line(/*ts*/ 3, /*ts_nanos*/ 0, "INFO", "charlie"),
+                format_feedback_log_line(/*ts*/ now + 1, /*ts_nanos*/ 0, "INFO", "alpha"),
+                format_feedback_log_line(/*ts*/ now + 2, /*ts_nanos*/ 0, "INFO", "bravo"),
+                format_feedback_log_line(
+                    /*ts*/ now + 3,
+                    /*ts_nanos*/ 0,
+                    "INFO",
+                    "charlie"
+                ),
             ]
             .concat()
         );
@@ -1509,6 +1515,7 @@ mod tests {
 
     #[tokio::test]
     async fn query_feedback_logs_includes_threadless_rows_from_same_process() {
+        let now = chrono::Utc::now().timestamp();
         let codex_home = unique_temp_dir();
         let runtime = StateRuntime::init(
             crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
@@ -1520,7 +1527,7 @@ mod tests {
         runtime
             .insert_logs(&[
                 LogEntry {
-                    ts: 1,
+                    ts: now + 1,
                     ts_nanos: 0,
                     level: "INFO".to_string(),
                     target: "cli".to_string(),
@@ -1533,7 +1540,7 @@ mod tests {
                     module_path: None,
                 },
                 LogEntry {
-                    ts: 2,
+                    ts: now + 2,
                     ts_nanos: 0,
                     level: "INFO".to_string(),
                     target: "cli".to_string(),
@@ -1546,7 +1553,7 @@ mod tests {
                     module_path: None,
                 },
                 LogEntry {
-                    ts: 3,
+                    ts: now + 3,
                     ts_nanos: 0,
                     level: "INFO".to_string(),
                     target: "cli".to_string(),
@@ -1559,7 +1566,7 @@ mod tests {
                     module_path: None,
                 },
                 LogEntry {
-                    ts: 4,
+                    ts: now + 4,
                     ts_nanos: 0,
                     level: "INFO".to_string(),
                     target: "cli".to_string(),
@@ -1584,19 +1591,19 @@ mod tests {
             String::from_utf8(bytes).expect("valid utf-8"),
             [
                 format_feedback_log_line(
-                    /*ts*/ 1,
+                    /*ts*/ now + 1,
                     /*ts_nanos*/ 0,
                     "INFO",
                     "threadless-before"
                 ),
                 format_feedback_log_line(
-                    /*ts*/ 2,
+                    /*ts*/ now + 2,
                     /*ts_nanos*/ 0,
                     "INFO",
                     "thread-scoped"
                 ),
                 format_feedback_log_line(
-                    /*ts*/ 3,
+                    /*ts*/ now + 3,
                     /*ts_nanos*/ 0,
                     "INFO",
                     "threadless-after"
@@ -1610,6 +1617,7 @@ mod tests {
 
     #[tokio::test]
     async fn query_feedback_logs_excludes_threadless_rows_from_prior_processes() {
+        let now = chrono::Utc::now().timestamp();
         let codex_home = unique_temp_dir();
         let runtime = StateRuntime::init(
             crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
@@ -1621,7 +1629,7 @@ mod tests {
         runtime
             .insert_logs(&[
                 LogEntry {
-                    ts: 1,
+                    ts: now + 1,
                     ts_nanos: 0,
                     level: "INFO".to_string(),
                     target: "cli".to_string(),
@@ -1634,7 +1642,7 @@ mod tests {
                     module_path: None,
                 },
                 LogEntry {
-                    ts: 2,
+                    ts: now + 2,
                     ts_nanos: 0,
                     level: "INFO".to_string(),
                     target: "cli".to_string(),
@@ -1647,7 +1655,7 @@ mod tests {
                     module_path: None,
                 },
                 LogEntry {
-                    ts: 3,
+                    ts: now + 3,
                     ts_nanos: 0,
                     level: "INFO".to_string(),
                     target: "cli".to_string(),
@@ -1660,7 +1668,7 @@ mod tests {
                     module_path: None,
                 },
                 LogEntry {
-                    ts: 4,
+                    ts: now + 4,
                     ts_nanos: 0,
                     level: "INFO".to_string(),
                     target: "cli".to_string(),
@@ -1685,19 +1693,19 @@ mod tests {
             String::from_utf8(bytes).expect("valid utf-8"),
             [
                 format_feedback_log_line(
-                    /*ts*/ 2,
+                    /*ts*/ now + 2,
                     /*ts_nanos*/ 0,
                     "INFO",
                     "old-process-thread"
                 ),
                 format_feedback_log_line(
-                    /*ts*/ 3,
+                    /*ts*/ now + 3,
                     /*ts_nanos*/ 0,
                     "INFO",
                     "new-process-thread"
                 ),
                 format_feedback_log_line(
-                    /*ts*/ 4,
+                    /*ts*/ now + 4,
                     /*ts_nanos*/ 0,
                     "INFO",
                     "new-process-threadless"
@@ -1711,6 +1719,7 @@ mod tests {
 
     #[tokio::test]
     async fn query_feedback_logs_keeps_newest_suffix_across_thread_and_threadless_logs() {
+        let now = chrono::Utc::now().timestamp();
         let codex_home = unique_temp_dir();
         let runtime = StateRuntime::init(
             crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
@@ -1722,7 +1731,7 @@ mod tests {
         let mut entries: Vec<LogEntry> = (1..=159)
             .map(|ts| {
                 test_log_entry(
-                    ts,
+                    now + ts,
                     format!("thread-marker-{ts:03} {retained_body}"),
                     Some("thread-1"),
                     Some("proc-1"),
@@ -1731,7 +1740,7 @@ mod tests {
             .collect();
         entries.extend((160..=190).map(|ts| {
             test_log_entry(
-                ts,
+                now + ts,
                 format!("threadless-marker-{ts:03} {retained_body}"),
                 /*thread_id*/ None,
                 Some("proc-1"),
@@ -1759,6 +1768,7 @@ mod tests {
 
     #[tokio::test]
     async fn query_feedback_logs_for_threads_merges_requested_threads_and_threadless_rows() {
+        let now = chrono::Utc::now().timestamp();
         let codex_home = unique_temp_dir();
         let runtime = StateRuntime::init(
             crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
@@ -1770,7 +1780,7 @@ mod tests {
         runtime
             .insert_logs(&[
                 LogEntry {
-                    ts: 1,
+                    ts: now + 1,
                     ts_nanos: 0,
                     level: "INFO".to_string(),
                     target: "cli".to_string(),
@@ -1783,7 +1793,7 @@ mod tests {
                     module_path: None,
                 },
                 LogEntry {
-                    ts: 2,
+                    ts: now + 2,
                     ts_nanos: 0,
                     level: "INFO".to_string(),
                     target: "cli".to_string(),
@@ -1796,7 +1806,7 @@ mod tests {
                     module_path: None,
                 },
                 LogEntry {
-                    ts: 3,
+                    ts: now + 3,
                     ts_nanos: 0,
                     level: "INFO".to_string(),
                     target: "cli".to_string(),
@@ -1809,7 +1819,7 @@ mod tests {
                     module_path: None,
                 },
                 LogEntry {
-                    ts: 4,
+                    ts: now + 4,
                     ts_nanos: 0,
                     level: "INFO".to_string(),
                     target: "cli".to_string(),
@@ -1822,7 +1832,7 @@ mod tests {
                     module_path: None,
                 },
                 LogEntry {
-                    ts: 5,
+                    ts: now + 5,
                     ts_nanos: 0,
                     level: "INFO".to_string(),
                     target: "cli".to_string(),
@@ -1835,7 +1845,7 @@ mod tests {
                     module_path: None,
                 },
                 LogEntry {
-                    ts: 6,
+                    ts: now + 6,
                     ts_nanos: 0,
                     level: "INFO".to_string(),
                     target: "cli".to_string(),
@@ -1859,16 +1869,26 @@ mod tests {
         assert_eq!(
             String::from_utf8(bytes).expect("valid utf-8"),
             [
-                format_feedback_log_line(/*ts*/ 1, /*ts_nanos*/ 0, "INFO", "thread-1"),
-                format_feedback_log_line(/*ts*/ 2, /*ts_nanos*/ 0, "INFO", "thread-2"),
                 format_feedback_log_line(
-                    /*ts*/ 3,
+                    /*ts*/ now + 1,
+                    /*ts_nanos*/ 0,
+                    "INFO",
+                    "thread-1"
+                ),
+                format_feedback_log_line(
+                    /*ts*/ now + 2,
+                    /*ts_nanos*/ 0,
+                    "INFO",
+                    "thread-2"
+                ),
+                format_feedback_log_line(
+                    /*ts*/ now + 3,
                     /*ts_nanos*/ 0,
                     "INFO",
                     "threadless-proc-1"
                 ),
                 format_feedback_log_line(
-                    /*ts*/ 4,
+                    /*ts*/ now + 4,
                     /*ts_nanos*/ 0,
                     "INFO",
                     "threadless-proc-2"

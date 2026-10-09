@@ -101,6 +101,7 @@ pub(crate) struct TurnSummary {
 
 #[derive(Default)]
 pub(crate) struct ThreadState {
+    goal_resume_lock: Arc<Mutex<()>>,
     pub(crate) pending_interrupts: PendingInterruptQueue,
     pub(crate) turn_summary: TurnSummary,
     pub(crate) declined_command_executions: HashSet<(String, String)>,
@@ -401,6 +402,7 @@ mod tests {
         state.track_current_turn_event(
             "turn-1",
             &EventMsg::TurnStarted(TurnStartedEvent {
+                turn_attribution: None,
                 root_turn_id: None,
                 turn_id: "turn-1".to_string(),
                 trace_id: None,
@@ -442,6 +444,7 @@ mod tests {
         state.track_current_turn_event(
             "turn-1",
             &EventMsg::TurnComplete(TurnCompleteEvent {
+                root_turn_id: None,
                 turn_id: "turn-1".to_string(),
                 started_at: None,
                 last_agent_message: None,
@@ -512,12 +515,10 @@ mod tests {
             source: ExecCommandSource::Agent,
             interaction_input: None,
             status,
-            stdout: None,
-            stderr: None,
+
             aggregated_output: None,
             exit_code: None,
             duration: None,
-            formatted_output: None,
         }
     }
 
@@ -598,6 +599,21 @@ pub(crate) struct ThreadStateManager {
 }
 
 impl ThreadStateManager {
+    /// Coordinates goal edits with cold/path-based resume for just this thread.
+    pub(crate) async fn lock_goal_resume(
+        &self,
+        thread_id: ThreadId,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = self
+            .thread_state(thread_id)
+            .await
+            .lock()
+            .await
+            .goal_resume_lock
+            .clone();
+        lock.lock_owned().await
+    }
+
     pub(crate) fn new() -> Self {
         Self::default()
     }

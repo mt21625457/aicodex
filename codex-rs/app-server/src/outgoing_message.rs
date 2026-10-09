@@ -1666,6 +1666,7 @@ mod tests {
                 TurnCompletedNotification {
                     thread_id: thread_id.to_string(),
                     turn: Turn {
+                        root_turn_id: None,
                         id: "turn-1".to_string(),
                         items: Vec::new(),
                         items_view: TurnItemsView::NotLoaded,

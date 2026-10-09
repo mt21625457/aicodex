@@ -1,6 +1,7 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use codex_exec_server_protocol::JSONRPCErrorError;
+use codex_utils_path_uri::PathUri;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::io;
@@ -46,6 +47,7 @@ use crate::protocol::FsCreateDirectoryParams;
 use crate::protocol::FsCreateDirectoryResponse;
 use crate::protocol::FsGetMetadataParams;
 use crate::protocol::FsGetMetadataResponse;
+use crate::protocol::FsOpenMode;
 use crate::protocol::FsReadDirectoryEntry;
 use crate::protocol::FsReadDirectoryParams;
 use crate::protocol::FsReadDirectoryResponse;
@@ -77,7 +79,7 @@ pub(crate) enum FsHelperRequest {
     #[serde(rename = "capabilityRoots/discoverV1")]
     DiscoverCapabilityRoots(CapabilityRootsDiscoverParams),
     #[serde(rename = "fs/open")]
-    Open(FsReadFileParams),
+    Open(FsHelperOpenParams),
     #[serde(rename = "fs/readFile")]
     ReadFile(FsReadFileParams),
     #[serde(rename = "fs/readFileBlock")]
@@ -100,6 +102,14 @@ pub(crate) enum FsHelperRequest {
     Remove(FsRemoveParams),
     #[serde(rename = "fs/copy")]
     Copy(FsCopyParams),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FsHelperOpenParams {
+    pub(crate) path: PathUri,
+    #[serde(default)]
+    pub(crate) mode: FsOpenMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -354,7 +364,7 @@ pub(crate) async fn run_direct_request(
                 )));
             }
             let mut file = file_system
-                .open_file_for_read(&params.path, /*sandbox*/ None)
+                .open_file(&params.path, /*sandbox*/ None)
                 .await
                 .map_err(map_fs_error)?;
             file.seek(std::io::SeekFrom::Start(params.offset))

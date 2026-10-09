@@ -7,7 +7,9 @@ export JUST_SHELL := justfile_directory() / "scripts/just-shell.py"
 set shell := ["python3", "-c", 'import os, runpy; runpy.run_path(os.environ["JUST_SHELL"], run_name="__main__")']
 set windows-shell := ["python", "-c", 'import os, runpy; runpy.run_path(os.environ["JUST_SHELL"], run_name="__main__")']
 
-rust_min_stack := "8388608"
+# Unoptimized session lifecycle futures require more stack in integration tests.
+
+rust_min_stack := "33554432"
 python := if os_family() == "windows" { "python" } else { "python3" }
 
 # Display help

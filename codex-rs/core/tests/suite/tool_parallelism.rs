@@ -2,7 +2,7 @@
 #![allow(clippy::unwrap_used)]
 
 use codex_core::TurnInputRequest;
-use core_test_support::test_codex::local_selections;
+use core_test_support::test_codex::local_requests;
 use std::fs;
 use std::time::Duration;
 
@@ -47,7 +47,7 @@ async fn run_turn(test: &TestCodex, prompt: &str) -> anyhow::Result<()> {
                 text_elements: Vec::new(),
             }])
             .with_thread_settings(ThreadSettingsOverrides {
-                environments: Some(local_selections(test.config.cwd.clone())),
+                environments: Some(local_requests(test.config.cwd.clone())),
                 approval_policy: Some(AskForApproval::Never),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,
@@ -407,7 +407,7 @@ async fn shell_tools_start_before_response_completed_when_stream_delayed() -> an
                 text_elements: Vec::new(),
             }])
             .with_thread_settings(ThreadSettingsOverrides {
-                environments: Some(local_selections(test.config.cwd.clone())),
+                environments: Some(local_requests(test.config.cwd.clone())),
                 approval_policy: Some(AskForApproval::Never),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,
