@@ -9,6 +9,7 @@ node_modules
 
 # build
 dist/
+/bin/
 bazel-*
 user.bazelrc
 build/
