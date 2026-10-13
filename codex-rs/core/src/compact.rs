@@ -26,7 +26,6 @@ use crate::session::step_context::StepContext;
 use crate::session::turn::get_last_assistant_message_from_turn;
 use crate::session::turn_context::TurnContext;
 use crate::state::AutoCompactWindowIds;
-use crate::util::backoff;
 use codex_analytics::CodexCompactionEvent;
 use codex_analytics::CompactionImplementation;
 use codex_analytics::CompactionPhase;
@@ -368,9 +367,12 @@ async fn run_compact_task_inner_impl(
                 return Err(e);
             }
             Err(e) => {
-                if retries < max_retries {
+                // 压缩与正常采样共用终止错误和 Retry-After 策略，避免额度或权限
+                // 拒绝被压缩自己的重试循环再次发送；次数仍由本轮上限约束。
+                if retries < max_retries
+                    && let Some(delay) = e.retry_delay(retries + 1)
+                {
                     retries += 1;
-                    let delay = backoff(retries);
                     sess.notify_stream_error(
                         turn_context.as_ref(),
                         format!("Reconnecting... {retries}/{max_retries}"),

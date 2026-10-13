@@ -1031,3 +1031,65 @@ fn map_api_error_does_not_treat_unrelated_400_as_context_window() {
         CodexErrorDetails::InvalidRequest(_)
     ));
 }
+
+// 网关可能用 402/403 返回额度错误；分类依据结构化代码，不匹配中文文案。
+#[test]
+fn quota_codes_on_payment_and_forbidden_responses_stop_usage() {
+    for status in [402, 403, 429] {
+        for error in [
+            serde_json::json!({"type": "insufficient_quota"}),
+            serde_json::json!({"code": "insufficient_quota"}),
+            serde_json::json!({"code": "credit_balance_exhausted"}),
+            serde_json::json!({"code": "organization_spend_limit_exceeded"}),
+            serde_json::json!({"code": "project_spend_limit_exceeded"}),
+            serde_json::json!({"code": "organization_usage_limit_exceeded"}),
+            serde_json::json!({"type": "usage_not_included"}),
+        ] {
+            let body = serde_json::json!({"error": error}).to_string();
+            let status = http::StatusCode::from_u16(status).unwrap();
+            for input in [
+                ApiError::Api {
+                    status,
+                    message: body.clone(),
+                },
+                ApiError::Transport(TransportError::Http {
+                    retry_after: None,
+                    status,
+                    url: None,
+                    headers: None,
+                    body: Some(body.clone()),
+                }),
+            ] {
+                assert_eq!(
+                    map_api_error(input).to_codex_protocol_error(),
+                    CodexErrorInfo::UsageLimitExceeded,
+                    "{status}: {body}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn forbidden_without_quota_code_remains_a_permission_error() {
+    for body in [
+        "额度不足",
+        "not authorized",
+        r#"{"error":{"code":"permission_denied","message":"insufficient_quota"}}"#,
+        r#"{"error":{"code":"rate_limit_exceeded"}}"#,
+    ] {
+        let error = map_api_error(ApiError::Transport(TransportError::Http {
+            retry_after: None,
+            status: http::StatusCode::FORBIDDEN,
+            url: None,
+            headers: None,
+            body: Some(body.to_string()),
+        }));
+        assert_eq!(
+            error.to_codex_protocol_error(),
+            CodexErrorInfo::HttpConnectionFailed {
+                http_status_code: Some(403)
+            }
+        );
+    }
+}

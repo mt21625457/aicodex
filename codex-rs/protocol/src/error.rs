@@ -432,6 +432,14 @@ impl CodexErr {
             | CodexErrorDetails::CyberPolicy { .. }
             | CodexErrorDetails::BioPolicy { .. }
             | CodexErrorDetails::MisalignmentPolicyViolation { .. } => None,
+            // 身份、权限、余额和无效请求等 4xx 需要外部修复；服务端延迟建议
+            // 也不能把它们变成可重试错误。408/429 仍使用现有临时错误策略。
+            CodexErrorDetails::UnexpectedStatus(error)
+                if error.status.is_client_error()
+                    && !matches!(error.status.as_u16(), 408 | 429) =>
+            {
+                None
+            }
             CodexErrorDetails::ServerOverloaded | CodexErrorDetails::RetryLimit(_) => {
                 self.server_retry_delay()
             }

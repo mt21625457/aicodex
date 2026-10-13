@@ -535,10 +535,10 @@ pub(crate) async fn run_turn(
                         return Err(err);
                     }
                     let error = err.to_codex_protocol_error();
-                    if error == CodexErrorInfo::UsageLimitExceeded {
-                        sess.emit_turn_error_lifecycle(turn_context.as_ref(), error, err.details())
-                            .await;
-                    }
+                    // 压缩失败会结束本轮；必须先通知目标调度器停止续跑。
+                    // 普通 403 和重试耗尽同样属于最终失败，不能只处理额度错误。
+                    sess.emit_turn_error_lifecycle(turn_context.as_ref(), error, err.details())
+                        .await;
                     error!("Failed to run pre-sampling admission compact");
                     return Ok(None);
                 }
