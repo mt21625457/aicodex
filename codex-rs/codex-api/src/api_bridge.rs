@@ -66,6 +66,13 @@ fn http_quota_error(status: http::StatusCode, body: &str) -> Option<CodexErr> {
     if error.error_type.as_deref() == Some("usage_not_included") {
         return Some(CodexErr::UsageNotIncluded);
     }
+    // 429 的 usage_limit_reached 还带 resets_at、plan_type 和限速头。
+    // 它与额度 code 同时出现时，留给后面的窗口解析，不能先收成 QuotaExceeded。
+    if status == http::StatusCode::TOO_MANY_REQUESTS
+        && error.error_type.as_deref() == Some("usage_limit_reached")
+    {
+        return None;
+    }
     if error.error_type.as_deref() == Some("insufficient_quota")
         || matches!(
             error.code.as_deref(),

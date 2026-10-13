@@ -719,6 +719,41 @@ fn map_api_error_distinguishes_http_quota_errors_from_rate_limits() {
 }
 
 #[test]
+fn map_api_error_keeps_usage_limit_window_when_quota_code_is_also_present() {
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        retry_after: None,
+        status: http::StatusCode::TOO_MANY_REQUESTS,
+        url: None,
+        headers: None,
+        body: Some(
+            serde_json::json!({
+                "error": {
+                    "type": "usage_limit_reached",
+                    "code": "insufficient_quota",
+                    "plan_type": "pro",
+                    "resets_at": 1_700_000_000
+                }
+            })
+            .to_string(),
+        ),
+    }));
+
+    let CodexErrorDetails::UsageLimitReached(usage_limit) = err.details() else {
+        panic!("expected usage-limit window, got {err:?}");
+    };
+    assert_eq!(
+        usage_limit.plan_type,
+        Some(codex_protocol::auth::PlanType::Known(
+            codex_protocol::auth::KnownPlan::Pro
+        ))
+    );
+    assert_eq!(
+        usage_limit.resets_at.map(|time| time.timestamp()),
+        Some(1_700_000_000)
+    );
+}
+
+#[test]
 fn map_api_error_preserves_optional_usage_limit_window() {
     let cases = [
         (None, None),

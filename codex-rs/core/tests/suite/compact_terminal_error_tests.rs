@@ -84,6 +84,20 @@ async fn run_admission_compaction_failure() -> Result<()> {
             thread_settings: Default::default(),
         })
         .await?;
+    let expected_error = CodexErrorInfo::HttpConnectionFailed {
+        http_status_code: Some(403),
+    };
+    let error_event = wait_for_event(&test.codex, |event| {
+        matches!(
+            event,
+            EventMsg::Error(error) if error.codex_error_info.as_ref() == Some(&expected_error)
+        )
+    })
+    .await;
+    assert!(
+        matches!(error_event, EventMsg::Error(_)),
+        "admission compact failure must publish the provider error"
+    );
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })

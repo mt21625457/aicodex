@@ -10,7 +10,6 @@ use crate::state::TaskKind;
 use codex_features::Feature;
 use codex_model_provider::RemoteCompactionSupport;
 use codex_protocol::error::CodexErrorDetails;
-use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::user_input::UserInput;
 use tokio_util::sync::CancellationToken;
 
@@ -98,9 +97,9 @@ impl SessionTask for CompactTask {
             if matches!(err.details(), CodexErrorDetails::TurnAborted) {
                 return Err(err);
             }
-            let error = err.to_codex_protocol_error();
-            if matches!(error, CodexErrorInfo::UsageLimitExceeded) {
-                // Compaction already emitted the error; notify extensions without emitting it twice.
+            if !matches!(err.details(), CodexErrorDetails::Interrupted) {
+                // 独立压缩已经发出错误事件。其余最终失败都通知扩展，且不再发第二次。
+                let error = err.to_codex_protocol_error();
                 session
                     .emit_turn_error_lifecycle(ctx.as_ref(), error, err.details())
                     .await;
