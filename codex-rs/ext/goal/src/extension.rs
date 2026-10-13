@@ -398,21 +398,9 @@ where
 
             let reason = match input.error {
                 CodexErrorInfo::UsageLimitExceeded => ActiveGoalStopReason::UsageLimit,
-                // Infrastructure and transient errors: account usage but keep
-                // the goal Active so automatic continuation can retry. Do not
-                // burn a "blocked" slot on transient failures such as context
-                // overflow, network blips, or server overload.
-                CodexErrorInfo::ContextWindowExceeded
-                | CodexErrorInfo::ServerOverloaded
-                | CodexErrorInfo::HttpConnectionFailed { .. }
-                | CodexErrorInfo::ResponseStreamConnectionFailed { .. }
-                | CodexErrorInfo::InternalServerError
-                | CodexErrorInfo::ResponseStreamDisconnected { .. }
-                | CodexErrorInfo::ResponseTooManyFailedAttempts { .. } => {
-                    ActiveGoalStopReason::TransientError
-                }
-                // Genuine blockers: errors that indicate the agent cannot make
-                // progress without user intervention or a configuration change.
+                // 此回调只处理回合最终失败，单轮内部已负责传输恢复策略。
+                // 即使原因为临时故障，也必须持久化停止状态；否则 idle 会新建
+                // 回合并重置重试预算，导致无上限的请求、压缩和历史增长。
                 _ => ActiveGoalStopReason::TurnError,
             };
             if let Err(err) = runtime

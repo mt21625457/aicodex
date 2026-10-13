@@ -535,10 +535,24 @@ pub(crate) async fn run_turn(
                         return Err(err);
                     }
                     let error = err.to_codex_protocol_error();
-                    if error == CodexErrorInfo::UsageLimitExceeded {
-                        sess.emit_turn_error_lifecycle(turn_context.as_ref(), error, err.details())
-                            .await;
-                    }
+                    // 压缩失败会结束本轮；必须先通知目标调度器停止续跑。
+                    // 普通 403 和重试耗尽同样属于最终失败，不能只处理额度错误。
+                    sess.emit_turn_error_lifecycle(turn_context.as_ref(), error, err.details())
+                        .await;
+                    // PreTurn 压缩不自行发送错误事件。不补发时 terminal_error 为空，
+                    // 回合会被记为完成并触发空闲续跑。
+                    let message_prefix =
+                        match turn_context.provider.capabilities().remote_compaction {
+                            RemoteCompactionSupport::V2 => {
+                                Some("Error running remote compact task".to_string())
+                            }
+                            RemoteCompactionSupport::Unsupported => None,
+                        };
+                    sess.send_event(
+                        turn_context.as_ref(),
+                        EventMsg::Error(err.to_error_event(message_prefix)),
+                    )
+                    .await;
                     error!("Failed to run pre-sampling admission compact");
                     return Ok(None);
                 }
@@ -968,22 +982,11 @@ pub(crate) async fn run_turn(
                         return Err(err);
                     }
                     info!("Context-window recovery compact failed: {err:#}");
-                    if err.to_codex_protocol_error() == CodexErrorInfo::UsageLimitExceeded {
-                        sess.emit_turn_error_lifecycle(
-                            turn_context.as_ref(),
-                            CodexErrorInfo::UsageLimitExceeded,
-                            err.details(),
-                        )
+                    let error = err.to_codex_protocol_error();
+                    sess.emit_turn_error_lifecycle(turn_context.as_ref(), error, err.details())
                         .await;
-                        let event = EventMsg::Error(err.to_error_event(/*message_prefix*/ None));
-                        sess.send_event(&turn_context, event).await;
-                    } else {
-                        let event = EventMsg::Error(
-                            CodexErr::ContextWindowExceeded
-                                .to_error_event(/*message_prefix*/ None),
-                        );
-                        sess.send_event(&turn_context, event).await;
-                    }
+                    // MidTurn 压缩已经发出真实错误。再改写成 ContextWindowExceeded
+                    // 会覆盖 terminal_error，额度和其他终止错误都会被当成可重试的窗口溢出。
                     break;
                 }
                 can_drain_pending_input = false;

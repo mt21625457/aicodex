@@ -763,3 +763,31 @@ fn usage_limit_reached_with_promo_message() {
         assert_eq!(err.to_string(), expected);
     });
 }
+
+#[test]
+fn permanent_http_rejections_do_not_retry_but_transient_statuses_do() {
+    for (status, retryable) in [
+        (400, false),
+        (401, false),
+        (402, false),
+        (403, false),
+        (404, false),
+        (408, true),
+        (429, true),
+        (500, true),
+        (503, true),
+    ] {
+        let error = CodexErr::UnexpectedStatus(UnexpectedResponseError {
+            status: StatusCode::from_u16(status).unwrap(),
+            body: "fixture rejection".into(),
+            user_message: None,
+            url: None,
+            cf_ray: None,
+            request_id: None,
+            identity_authorization_error: None,
+            identity_error_code: None,
+        });
+        assert_eq!(error.retry_delay(1).is_some(), retryable, "HTTP {status}");
+        assert_eq!(error.retry_delay(3).is_some(), retryable, "HTTP {status}");
+    }
+}

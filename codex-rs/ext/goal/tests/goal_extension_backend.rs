@@ -56,6 +56,9 @@ use tempfile::TempDir;
 #[path = "goal_extension_backend/budget_context_tests.rs"]
 mod budget_context;
 
+#[path = "goal_extension_backend/terminal_error_tests.rs"]
+mod terminal_error;
+
 #[tokio::test]
 async fn installed_goal_tools_create_goal_and_fill_empty_preview() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
