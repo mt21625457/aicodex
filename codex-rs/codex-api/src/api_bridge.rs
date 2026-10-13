@@ -53,6 +53,43 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
     }
 }
 
+/// 网关的额度拒绝可使用 402、403 或 429；仅结构化代码可以确认额度不足。
+/// 普通权限拒绝和限速保留原分类，不依赖本地化文案推测错误类型。
+fn http_quota_error(status: http::StatusCode, body: &str) -> Option<CodexErr> {
+    if !matches!(status.as_u16(), 402 | 403 | 429) {
+        return None;
+    }
+    let Ok(response) = serde_json::from_str::<UsageErrorResponse>(body) else {
+        return None;
+    };
+    let error = response.error;
+    if error.error_type.as_deref() == Some("usage_not_included") {
+        return Some(CodexErr::UsageNotIncluded);
+    }
+    // 429 的 usage_limit_reached 还带 resets_at、plan_type 和限速头。
+    // 它与额度 code 同时出现时，留给后面的窗口解析，不能先收成 QuotaExceeded。
+    if status == http::StatusCode::TOO_MANY_REQUESTS
+        && error.error_type.as_deref() == Some("usage_limit_reached")
+    {
+        return None;
+    }
+    if error.error_type.as_deref() == Some("insufficient_quota")
+        || matches!(
+            error.code.as_deref(),
+            Some(
+                "insufficient_quota"
+                    | "credit_balance_exhausted"
+                    | "organization_spend_limit_exceeded"
+                    | "project_spend_limit_exceeded"
+                    | "organization_usage_limit_exceeded"
+            )
+        )
+    {
+        return Some(CodexErr::QuotaExceeded);
+    }
+    None
+}
+
 fn map_api_error_details(err: ApiError) -> CodexErr {
     match err {
         ApiError::ContextWindowExceeded => CodexErr::ContextWindowExceeded,
@@ -76,6 +113,9 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
         ApiError::ServerOverloaded { .. } => CodexErr::ServerOverloaded,
         ApiError::FlexUnavailable => CodexErr::new(CodexErrorDetails::FlexUnavailable),
         ApiError::Api { status, message } => {
+            if let Some(error) = http_quota_error(status, &message) {
+                return error;
+            }
             if is_context_window_http_error(status, &message) {
                 return CodexErr::ContextWindowExceeded;
             }
@@ -116,6 +156,9 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
             } => {
                 let body_text = body.unwrap_or_default();
                 let retry_disabled = headers.as_ref().is_some_and(server_disables_retry);
+                if let Some(error) = http_quota_error(status, &body_text) {
+                    return error;
+                }
 
                 if let Some(kind) = ProviderMediaErrorKind::classify(Some(status), &body_text) {
                     return map_provider_media_error(kind, body_text);
@@ -241,21 +284,6 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                                 promo_message,
                                 rate_limit_reached_type,
                             });
-                        } else if err.error.error_type.as_deref() == Some("usage_not_included") {
-                            return CodexErr::UsageNotIncluded;
-                        } else if err.error.error_type.as_deref() == Some("insufficient_quota")
-                            || matches!(
-                                err.error.code.as_deref(),
-                                Some(
-                                    "insufficient_quota"
-                                        | "credit_balance_exhausted"
-                                        | "organization_spend_limit_exceeded"
-                                        | "project_spend_limit_exceeded"
-                                        | "organization_usage_limit_exceeded"
-                                )
-                            )
-                        {
-                            return CodexErr::QuotaExceeded;
                         }
                     }
 
