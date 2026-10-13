@@ -5,15 +5,20 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import sys
 import tempfile
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
+from http.client import IncompleteRead
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
 from .targets import REPO_ROOT, TargetSpec
 
 DOWNLOAD_TIMEOUT_SECS = 120
+DOWNLOAD_ATTEMPTS = 3
 V8_ARTIFACT_PROFILE = "ptrcomp_sandbox_release"
 
 
@@ -213,9 +218,36 @@ def download_file(url: str, dest: Path) -> None:
     temp_path = dest.with_suffix(f"{dest.suffix}.tmp")
     temp_path.unlink(missing_ok=True)
     try:
-        with urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECS) as response:
-            with temp_path.open("wb") as output:
-                shutil.copyfileobj(response, output)
-        temp_path.replace(dest)
+        for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+            print(
+                f"  → Downloading V8 {dest.name} (attempt {attempt}/{DOWNLOAD_ATTEMPTS})",
+                file=sys.stderr,
+            )
+            try:
+                with urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECS) as response:
+                    with temp_path.open("wb") as output:
+                        shutil.copyfileobj(response, output)
+                temp_path.replace(dest)
+                return
+            except (URLError, TimeoutError, ConnectionError, IncompleteRead) as exc:
+                temp_path.unlink(missing_ok=True)
+                if isinstance(exc, HTTPError):
+                    exc.close()
+                retryable = not isinstance(exc, HTTPError) or exc.code in {
+                    408, 429, 500, 502, 503, 504
+                }
+                if not retryable or attempt == DOWNLOAD_ATTEMPTS:
+                    raise RuntimeError(
+                        f"Failed to download V8 artifact {dest.name} after {attempt} attempt(s): {exc}.\n"
+                        f"URL: {url}\n"
+                        "Check your network and HTTPS_PROXY or system proxy settings, "
+                        "then rerun the build; verified cached artifacts will be reused."
+                    ) from exc
+                delay = 2 ** (attempt - 1)
+                print(
+                    f"  → V8 download failed: {exc}; retrying in {delay}s",
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
     finally:
         temp_path.unlink(missing_ok=True)

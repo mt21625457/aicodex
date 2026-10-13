@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from urllib.error import HTTPError, URLError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -306,6 +307,69 @@ class FetchCodexV8ArtifactsTest(unittest.TestCase):
                     v8.resolve_codex_v8_cargo_env(spec, environ=environ), {}
                 )
                 fetch.assert_not_called()
+
+
+class DownloadFileTest(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.dest = Path(temporary.name) / "archive.gz"
+        self.url = "https://example.com/archive.gz"
+        sleep = patch.object(v8.time, "sleep")
+        self.sleep = sleep.start()
+        self.addCleanup(sleep.stop)
+
+    def test_retries_connection_timeout_then_succeeds(self) -> None:
+        with patch.object(
+            v8, "urlopen", side_effect=[URLError(TimeoutError("timed out")), io.BytesIO(b"complete")]
+        ) as download:
+            v8.download_file(self.url, self.dest)
+        self.assertEqual(download.call_count, 2)
+        self.assertEqual(self.dest.read_bytes(), b"complete")
+        self.sleep.assert_called_once_with(1)
+
+    def test_interrupted_transfer_restarts_without_partial_bytes(self) -> None:
+        class InterruptedResponse(io.BytesIO):
+            def read(self, size=-1):
+                if self.tell():
+                    raise ConnectionResetError("connection reset")
+                return super().read(size)
+
+        with patch.object(
+            v8, "urlopen", side_effect=[InterruptedResponse(b"partial"), io.BytesIO(b"complete")]
+        ):
+            v8.download_file(self.url, self.dest)
+        self.assertEqual(self.dest.read_bytes(), b"complete")
+        self.assertFalse(list(self.dest.parent.glob("*.tmp")))
+
+    def test_exhausted_retries_preserve_existing_file_and_explain_recovery(self) -> None:
+        self.dest.write_bytes(b"previous")
+        with (
+            patch.object(v8, "urlopen", side_effect=URLError(TimeoutError("timed out"))) as download,
+            self.assertRaisesRegex(RuntimeError, "HTTPS_PROXY") as error,
+        ):
+            v8.download_file(self.url, self.dest)
+        self.assertEqual(download.call_count, v8.DOWNLOAD_ATTEMPTS)
+        self.assertIn(self.url, str(error.exception))
+        self.assertEqual(self.dest.read_bytes(), b"previous")
+        self.assertFalse(list(self.dest.parent.glob("*.tmp")))
+
+    def test_http_404_fails_without_retry(self) -> None:
+        with (
+            patch.object(v8, "urlopen", side_effect=HTTPError(self.url, 404, "Not Found", {}, None)) as download,
+            self.assertRaisesRegex(RuntimeError, "404"),
+        ):
+            v8.download_file(self.url, self.dest)
+        download.assert_called_once()
+        self.sleep.assert_not_called()
+
+    def test_http_503_retries(self) -> None:
+        with patch.object(
+            v8, "urlopen", side_effect=[HTTPError(self.url, 503, "Unavailable", {}, None), io.BytesIO(b"complete")]
+        ) as download:
+            v8.download_file(self.url, self.dest)
+        self.assertEqual(download.call_count, 2)
+        self.assertEqual(self.dest.read_bytes(), b"complete")
 
 
 if __name__ == "__main__":
