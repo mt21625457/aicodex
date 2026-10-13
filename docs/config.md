@@ -20,6 +20,27 @@ transports, use the exact versioned product token `aicodex/<workspace package ve
 `User-Agent`, independent of the selected wire protocol. Host-protocol identity returned by
 app-server or MCP initialization is a separate compatibility surface.
 
+## DeepSeek Responses image history
+
+DeepSeek Responses requests exceeding 80% of their effective uncompressed request
+byte budget replace the oldest inline tool-result images with explicit text notices
+until the request reaches that target or no eligible images remain. This applies to
+`deepseek-*` model names, including provider-prefixed names; other models sharing
+the same provider are unaffected.
+
+User attachments, standalone host-delivered inputs without a call ID, and the latest
+image-bearing tool batch (including parallel results) are retained. Images using a
+file ID or remote URL also establish the latest batch but are never omission
+candidates. Tool arguments, file/page references, surrounding text, and existing
+conclusions remain in place so the model can reload an older image when
+needed. Only the outgoing request copy changes; local images and durable history
+are preserved, including when switching back to another model.
+
+The effective budget still uses `model_providers.<id>.request_body_max_bytes` and
+the existing DeepSeek ceiling of 40 MiB. The 80% target is best effort: protected
+images may exceed it. Existing image encoding optimization and the hard request
+limit still apply, so a request that cannot fit fails before it is sent.
+
 ## Lifecycle hooks
 
 Admins can set top-level `allow_managed_hooks_only = true` in

@@ -5,6 +5,79 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 
 #[tokio::test]
+async fn deepseek_history_budget_changes_only_wire_copy_and_model_switch_restores_images()
+-> Result<()> {
+    let state = RecordingState::default();
+    let mut png = STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGMQMgkDAAD4AJ3MaiF4AAAAAElFTkSuQmCC")?;
+    png.resize(8192, 0);
+    let image = json!({"type":"input_image", "detail":"original", "image_url":format!("data:image/png;base64,{}", STANDARD.encode(png))});
+    let mut request = ResponsesApiRequest {
+        model: "gateway:deepseek-v4-flash".into(),
+        input: serde_json::from_value(json!([
+            {"type":"message", "role":"user", "content":[image]},
+            {"type":"function_call_output", "name":"send_message_to_thread", "namespace":"codex_app", "output":[image]},
+            {"type":"function_call", "call_id":"old", "name":"view_image", "arguments":"{\"path\":\"/tmp/old.png\"}"},
+            {"type":"function_call_output", "call_id":"old", "output":[image, {"type":"input_text", "text":"Page 1 checked"}]},
+            {"type":"message", "role":"assistant", "content":[{"type":"output_text", "text":"Check the revised page"}]},
+            {"type":"function_call", "call_id":"latest", "name":"view_image", "arguments":"{\"path\":\"/tmp/latest.png\"}"},
+            {"type":"function_call_output", "call_id":"latest", "output":[image]}
+        ]))?,
+        tools: Some(empty_tools().into()),
+        tool_choice: "auto".into(),
+        parallel_tool_calls: false,
+        reasoning: None,
+        max_output_tokens: None,
+        store: false,
+        stream: true,
+        stream_options: None,
+        include: Vec::new(),
+        service_tier: None,
+        prompt_cache_key: None,
+        text: None,
+        client_metadata: None,
+        access_programs: None,
+    };
+    let original = serde_json::to_value(&request)?;
+    let limit = serde_json::to_vec(&original)?.len();
+    let mut settings = provider("shared-gateway");
+    settings.request_body_max_bytes = Some(limit);
+    let client = ResponsesClient::new(
+        RecordingTransport::new(state.clone()),
+        settings,
+        Arc::new(NoAuth),
+    );
+    // Repeated sends must not accumulate notices or mutate replayable history.
+    for _ in 0..2 {
+        let _stream = client
+            .stream_request(request.clone(), ResponsesOptions::default())
+            .await?;
+        let sent = state.take_stream_requests();
+        assert_eq!(sent.len(), 1);
+        let bytes = request_body_bytes(&sent[0]);
+        assert!(bytes.len() <= limit - limit.div_ceil(5));
+        let actual: serde_json::Value = serde_json::from_slice(bytes)?;
+        assert_eq!(actual["input"][3]["output"][0]["type"], "input_text");
+        // The resulting notice is a valid typed tool-output content item.
+        let _: Vec<ResponseItem> = serde_json::from_value(actual["input"].clone())?;
+        let mut expected = original.clone();
+        expected["input"][3]["output"][0] = actual["input"][3]["output"][0].clone();
+        assert_eq!(actual, expected);
+        assert_eq!(serde_json::to_value(&request)?, original);
+    }
+    request.model = "gpt-6".into();
+    let _stream = client
+        .stream_request(request.clone(), ResponsesOptions::default())
+        .await?;
+    let sent = state.take_stream_requests();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(request_body_bytes(&sent[0]))?,
+        serde_json::to_value(&request)?
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn typed_provider_requests_send_prepared_history_and_tool_images_once() -> Result<()> {
     for model in [
         "deepseek-flash",
