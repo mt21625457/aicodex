@@ -614,6 +614,9 @@ ignored = [
 # use CARGO_PROFILE_DEV_DEBUG=full (or CARGO_PROFILE_TEST_DEBUG=full) for locals.
 debug = "line-tables-only"
 
+[profile.test]
+debug = "line-tables-only"
+
 [profile.dev-small]
 inherits = "dev"
 opt-level = 0
