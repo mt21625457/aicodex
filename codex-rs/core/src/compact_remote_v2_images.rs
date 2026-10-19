@@ -15,7 +15,7 @@ use codex_utils_output_truncation::truncate_text;
 pub(super) fn content_item_token_count(item: &ContentItem) -> usize {
     match item {
         ContentItem::InputText { text }
-        | ContentItem::OutputText { text }
+        | ContentItem::OutputText { text, .. }
         | ContentItem::OutputTextWithCitations { text, .. } => approx_token_count(text),
         ContentItem::InputImage { image, detail } => usize::try_from(
             approx_tokens_from_byte_count_i64(estimate_image_reference_bytes(image, *detail)),
@@ -73,7 +73,7 @@ pub(super) fn truncate_message_to_token_budget(
         let mut item = content.pop()?;
         match item.content_mut() {
             ContentItem::InputText { text }
-            | ContentItem::OutputText { text }
+            | ContentItem::OutputText { text, .. }
             | ContentItem::OutputTextWithCitations { text, .. } => {
                 if remaining == 0 {
                     continue;

@@ -1,5 +1,6 @@
 use super::AuthRequestTelemetryContext;
 use super::ModelClient;
+use super::NonIncrementalReason;
 use super::PendingUnauthorizedRetry;
 use super::Prompt;
 use super::UnauthorizedRecoveryExecution;
@@ -24,6 +25,7 @@ use codex_api::AgentIdentityTelemetry;
 use codex_api::ApiError;
 use codex_api::ResponseEvent;
 use codex_api::TransportError;
+use codex_history::HistoryInitialization;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
 use codex_login::AuthManager;
@@ -134,6 +136,7 @@ fn test_model_client_with_thread_id(
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
         /*concurrent_reasoning_summaries_enabled*/ false,
+        /*output_token_replay_enabled*/ false,
         /*attestation_provider*/ None,
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         codex_model_provider::WorkspaceRoutingContext::new(
@@ -161,6 +164,7 @@ fn only_openai_gpt_models_enable_responses_websocket_when_provider_supports_it()
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
         /*concurrent_reasoning_summaries_enabled*/ false,
+        /*output_token_replay_enabled*/ false,
         /*attestation_provider*/ None,
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         codex_model_provider::WorkspaceRoutingContext::new(
@@ -990,11 +994,173 @@ fn websocket_incremental_reuse_tracks_raw_result_metadata() -> anyhow::Result<()
                 continuation.items,
                 continuation.from_untraced_warmup,
             )),
-            expect_incremental.then_some(("previous-response".to_string(), vec![follow_up], false)),
+            if expect_incremental {
+                Ok(("previous-response".to_string(), vec![follow_up], false))
+            } else {
+                Err(NonIncrementalReason::InputMismatch {
+                    previous: "custom_tool_call_output",
+                    current: "custom_tool_call_output",
+                })
+            },
             "{scenario}",
         );
     }
     Ok(())
+}
+
+#[test]
+fn websocket_continuation_reports_unavailable_response_state() {
+    let client = test_model_client(SessionSource::Cli);
+    let request = client
+        .build_responses_request(
+            &Prompt::default(),
+            &test_model_info(),
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::None,
+            /*service_tier*/ None,
+            &test_responses_metadata_for_client(
+                &client,
+                /*turn_id*/ None,
+                format!("{}:0", client.state.thread_id),
+                /*parent_thread_id*/ None,
+                TestCodexResponsesRequestKind::Turn,
+            ),
+            /*include_internal*/ true,
+        )
+        .expect("build continuation request");
+    let mut session = client.new_session();
+    session.websocket_session.last_request = Some(request.clone());
+    assert_eq!(
+        session.prepare_websocket_request(&request).err(),
+        Some(NonIncrementalReason::NoPreviousResponse),
+    );
+
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    session.websocket_session.last_response_rx = Some(receiver);
+    assert_eq!(
+        session.prepare_websocket_request(&request).err(),
+        Some(NonIncrementalReason::NoPreviousResponse),
+    );
+    drop(sender);
+
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    drop(sender);
+    session.websocket_session.last_response_rx = Some(receiver);
+    assert_eq!(
+        session.prepare_websocket_request(&request).err(),
+        Some(NonIncrementalReason::NoPreviousResponse),
+    );
+
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    sender
+        .send(super::LastResponse {
+            response_id: String::new(),
+            items_added: Vec::new(),
+        })
+        .unwrap();
+    session.websocket_session.last_response_rx = Some(receiver);
+    assert_eq!(
+        session.prepare_websocket_request(&request).err(),
+        Some(NonIncrementalReason::NoPreviousResponseId),
+    );
+}
+
+#[test]
+fn websocket_continuation_rejects_unstored_compatible_provider() {
+    let client = test_model_client(SessionSource::Cli);
+    let mut model = test_model_info();
+    model.slug = "deepseek-v4-pro".to_string();
+    let request = client
+        .build_responses_request(
+            &Prompt::default(),
+            &model,
+            None,
+            codex_protocol::config_types::ReasoningSummary::None,
+            None,
+            &test_responses_metadata_for_client(
+                &client,
+                None,
+                format!("{}:0", client.state.thread_id),
+                None,
+                TestCodexResponsesRequestKind::Turn,
+            ),
+            true,
+        )
+        .expect("build compatible request");
+    assert!(!request.store);
+    let mut session = client.new_session();
+    session.websocket_session.last_request = Some(request.clone());
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    sender
+        .send(super::LastResponse {
+            response_id: "unstored-response".to_string(),
+            items_added: Vec::new(),
+        })
+        .unwrap();
+    session.websocket_session.last_response_rx = Some(receiver);
+    let failure = session
+        .prepare_websocket_request(&request)
+        .err()
+        .expect("continuation rejected");
+    assert_eq!(failure, NonIncrementalReason::UnstoredCompatibleProvider);
+    assert_eq!(failure.as_str(), "unstored_compatible_provider");
+    assert_eq!(failure.item_types(), ("none", "none"));
+}
+
+#[test]
+fn incremental_request_preserves_reasoning_normalization_and_output_limit_guard() {
+    let client = test_model_client(SessionSource::Cli);
+    let mut request = client
+        .build_responses_request(
+            &Prompt::default(),
+            &test_model_info(),
+            None,
+            codex_protocol::config_types::ReasoningSummary::None,
+            None,
+            &test_responses_metadata_for_client(
+                &client,
+                None,
+                format!("{}:0", client.state.thread_id),
+                None,
+                TestCodexResponsesRequestKind::Turn,
+            ),
+            true,
+        )
+        .expect("build request");
+    request.model = "deepseek-v4-pro".to_string();
+    let previous_reasoning = ResponseItem::Reasoning {
+        id: Some(ResponseItemId::from_server("rs_previous".to_string())),
+        summary: Vec::new(),
+        content: Some(vec![ReasoningItemContent::Text {
+            text: "reasoning".to_string(),
+        }]),
+        encrypted_content: Some("previous".to_string()),
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let mut current_reasoning = previous_reasoning.clone();
+    strip_reasoning_content_for_responses_input(
+        std::slice::from_mut(&mut current_reasoning),
+        ResponsesReasoningReplay::RawReasoningText,
+    );
+    request.input = vec![previous_reasoning];
+    let mut session = client.new_session();
+    session.websocket_session.last_request = Some(request.clone());
+    request.input = vec![current_reasoning];
+    let response = super::LastResponse {
+        response_id: "response".to_string(),
+        items_added: Vec::new(),
+    };
+    assert_eq!(
+        session.get_incremental_items(&request, &response),
+        Ok(Vec::new())
+    );
+    request.max_output_tokens = Some(123);
+    assert_eq!(
+        session.get_incremental_items(&request, &response),
+        Err(NonIncrementalReason::RequestPropertyChanged {
+            reason: "max_output_tokens_changed",
+        })
+    );
 }
 
 #[tokio::test]
@@ -1431,6 +1597,8 @@ fn store_false_strips_all_item_ids_for_third_party_reasoning_models() {
         reasoning_item("rs_server"),
         output_message("assistant", "hello"),
         ResponseItem::Message {
+            status: None,
+            encrypted_content: None,
             id: Some(ResponseItemId::from_server("legacy-id".to_string())),
             role: "user".to_string(),
             content: vec![ContentItem::InputText {
@@ -1541,6 +1709,8 @@ fn store_true_keeps_type_valid_ids_and_strips_invalid_ids() {
         output_message("assistant", "hello"),
         reasoning_item("msg_wrong-type"),
         ResponseItem::Message {
+            status: None,
+            encrypted_content: None,
             id: Some(ResponseItemId::from_server("legacy-id".to_string())),
             role: "user".to_string(),
             content: vec![ContentItem::InputText {
@@ -1597,9 +1767,13 @@ fn official_request_rejects_opaque_overlong_id_before_transport() {
 
 fn output_message(id: &str, text: &str) -> ResponseItem {
     ResponseItem::Message {
+        status: None,
+        encrypted_content: None,
         id: Some(codex_protocol::ResponseItemId::with_suffix("msg", id)),
         role: "assistant".to_string(),
         content: vec![ContentItem::OutputText {
+            annotations: None,
+            logprobs: None,
             text: text.to_string(),
         }],
         phase: None,
@@ -1871,13 +2045,14 @@ fn build_ws_client_metadata_includes_window_lineage_and_turn_metadata() {
 
     let thread_id = client.state.thread_id.to_string();
     let expected_window_id = format!("{thread_id}:1");
-    let responses_metadata = test_responses_metadata_for_client(
+    let mut responses_metadata = test_responses_metadata_for_client(
         &client,
         Some("turn-123"),
         expected_window_id.clone(),
         Some(parent_thread_id),
         TestCodexResponsesRequestKind::Turn,
     );
+    responses_metadata.history_initialization = Some(HistoryInitialization::WarmFork);
     let client_metadata = client.build_ws_client_metadata(
         &responses_metadata,
         /*include_internal*/ true,
@@ -1890,6 +2065,7 @@ fn build_ws_client_metadata_includes_window_lineage_and_turn_metadata() {
             .expect("turn metadata"),
     )
     .expect("valid turn metadata");
+    assert_eq!(turn_metadata["history_initialization"], "warm_fork");
     for (client_key, metadata_key, expected) in [
         (
             X_CODEX_INSTALLATION_ID_HEADER,
@@ -1947,6 +2123,85 @@ fn new_session_for_provider_uses_turn_provider_without_mutating_default_client()
         default_session.provider_info().base_url.as_deref(),
         Some("https://example.com/v1")
     );
+}
+
+#[test]
+fn provider_scoped_client_preserves_output_replay_without_exposing_it_to_compatible_providers() {
+    let mut client = test_model_client(SessionSource::Cli);
+    Arc::get_mut(&mut client.state)
+        .expect("unique test client")
+        .output_token_replay_enabled = true;
+    let providers = [
+        (
+            ModelProviderInfo::create_openai_provider(Some(
+                "https://openai.example.com/v1".to_string(),
+            )),
+            true,
+        ),
+        (
+            create_oss_provider_with_base_url(
+                "https://compatible.example.com/v1",
+                WireApi::Responses,
+            ),
+            false,
+        ),
+    ];
+    let message = ResponseItem::Message {
+        id: None,
+        role: "assistant".to_string(),
+        content: vec![ContentItem::OutputText {
+            text: "retained output".to_string(),
+            annotations: Some(vec![]),
+            logprobs: Some(vec![]),
+        }],
+        encrypted_content: Some("encrypted-output".to_string()),
+        status: Some("completed".to_string()),
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let prompt = Prompt {
+        input: vec![message.clone()],
+        ..Default::default()
+    };
+    for (provider, expect_output_replay) in providers {
+        let session = client.new_session_for_provider(create_model_provider(provider, None));
+        let request = session
+            .client
+            .build_responses_request(
+                &prompt,
+                &test_model_info(),
+                None,
+                codex_protocol::config_types::ReasoningSummary::None,
+                None,
+                &test_responses_metadata_for_client(
+                    &session.client,
+                    None,
+                    format!("{}:0", client.state.thread_id),
+                    None,
+                    TestCodexResponsesRequestKind::Turn,
+                ),
+                true,
+            )
+            .expect("build provider-scoped request");
+        assert_eq!(
+            request
+                .include
+                .iter()
+                .any(|field| field == "output.encrypted_content"),
+            expect_output_replay
+        );
+        let response_message = request
+            .input
+            .iter()
+            .find(|item| matches!(item, ResponseItem::Message { role, .. } if role == "assistant"))
+            .expect("assistant output retained");
+        let mut expected_message = message.clone();
+        if !expect_output_replay {
+            expected_message.clear_encrypted_content();
+        }
+        assert_eq!(response_message, &expected_message);
+        assert_eq!(prompt.input, vec![message.clone()]);
+    }
 }
 
 #[tokio::test]
@@ -2373,6 +2628,7 @@ fn model_client_with_counting_attestation(
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
         /*concurrent_reasoning_summaries_enabled*/ false,
+        /*output_token_replay_enabled*/ false,
         Some(Arc::new(CountingAttestationProvider {
             calls: attestation_calls.clone(),
         })),

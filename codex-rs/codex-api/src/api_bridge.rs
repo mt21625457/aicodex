@@ -35,6 +35,7 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
         | ApiError::ProviderMedia { .. }
         | ApiError::Stream(_)
         | ApiError::ContentFilter
+        | ApiError::ResponseIncomplete(_)
         | ApiError::ContextWindowExceeded
         | ApiError::QuotaExceeded
         | ApiError::UsageNotIncluded
@@ -110,6 +111,9 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
         }
         ApiError::Stream(msg) => CodexErr::Stream(msg),
         ApiError::ContentFilter => CodexErr::new(CodexErrorDetails::ContentFilter),
+        ApiError::ResponseIncomplete(incomplete) => {
+            CodexErr::new(CodexErrorDetails::ResponseIncomplete(incomplete))
+        }
         ApiError::ServerOverloaded { .. } => CodexErr::ServerOverloaded,
         ApiError::FlexUnavailable => CodexErr::new(CodexErrorDetails::FlexUnavailable),
         ApiError::Api { status, message } => {

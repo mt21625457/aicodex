@@ -1,10 +1,11 @@
 load("//:defs.bzl", "MACOS_WEBRTC_RUSTC_LINK_FLAGS", "codex_rust_crate")
 load("//bazel/platforms:release_binaries.bzl", "multiplatform_binaries")
 load("//bazel/rules:e2e_benchmark.bzl", "codex_e2e_benchmark")
+load("//bazel/rules:runtime_package.bzl", "release_binary")
 
 codex_rust_crate(
     name = "cli",
-    binaries_with_build_commit = ["codex"],
+    binaries_with_build_commit = ["aicodex"],
     crate_name = "codex_cli",
     extra_binaries = [
         "//codex-rs/bwrap:bwrap",
@@ -13,8 +14,15 @@ codex_rust_crate(
     test_data_extra = glob(["src/**/snapshots/**"]),
 )
 
-multiplatform_binaries(
+release_binary(
+    binary = ":aicodex",
+)
+
+# Keep upstream test and helper labels pointing at the AICodex executable.
+alias(
     name = "codex",
+    actual = ":aicodex",
+    visibility = ["//visibility:public"],
 )
 
 multiplatform_binaries(

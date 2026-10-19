@@ -75,7 +75,7 @@ impl AgentResponseLogger {
         let text = content
             .iter()
             .filter_map(|content| match content {
-                ContentItem::OutputText { text }
+                ContentItem::OutputText { text, .. }
                 | ContentItem::OutputTextWithCitations { text, .. } => Some(text.as_str()),
                 ContentItem::InputText { .. }
                 | ContentItem::InputImage { .. }

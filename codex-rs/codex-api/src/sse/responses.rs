@@ -15,6 +15,7 @@ use codex_client::ByteStream;
 use codex_client::StreamResponse;
 use codex_http_client::RetryAfter;
 use codex_protocol::ResponseUsageMetadata;
+use codex_protocol::error::ResponseIncompleteError;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::ModelVerification;
 use codex_protocol::protocol::TokenUsage;
@@ -451,8 +452,24 @@ pub fn process_responses_event(
                     return Err(ResponsesEventError::Api(ApiError::ContentFilter));
                 }
                 if reason != "interrupted" {
-                    let message = format!("Incomplete response returned, reason: {reason}");
-                    return Err(ResponsesEventError::Api(ApiError::Stream(message)));
+                    let response = event.response.as_ref();
+                    let response_id = response
+                        .and_then(|response| response.get("id"))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                    let token_usage = response
+                        .and_then(|response| response.get("usage"))
+                        .and_then(|usage| {
+                            serde_json::from_value::<ResponseCompletedUsage>(usage.clone()).ok()
+                        })
+                        .map(Into::into);
+                    return Err(ResponsesEventError::Api(ApiError::ResponseIncomplete(
+                        Box::new(ResponseIncompleteError {
+                            reason: reason.to_string(),
+                            response_id,
+                            token_usage,
+                        }),
+                    )));
                 }
             }
             if let Some(resp_val) = event.response {
@@ -891,6 +908,8 @@ mod tests {
         ] if start_content.is_empty()
             && text == "First result."
             && done_content == &vec![codex_protocol::models::ContentItem::OutputText {
+                annotations: None,
+                logprobs: None,
                 text: "First result.".to_string()
             }]);
     }
@@ -1451,6 +1470,38 @@ mod tests {
                 message,
             })] if message == "invalid_image: Could not process image"
         );
+    }
+
+    #[tokio::test]
+    async fn incomplete_response_preserves_usage_and_terminates_stream() {
+        let incomplete = json!({
+            "type": "response.incomplete",
+            "response": {
+                "id": "resp_incomplete",
+                "incomplete_details": { "reason": "max_output_tokens" },
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 20,
+                    "total_tokens": 30
+                }
+            }
+        });
+        let completed = json!({
+            "type": "response.completed",
+            "response": { "id": "resp_incomplete" }
+        });
+        let sse = format!("data: {incomplete}\n\ndata: {completed}\n\n");
+
+        let events = collect_events(&[sse.as_bytes()]).await;
+
+        assert_matches!(events.as_slice(), [Err(ApiError::ResponseIncomplete(error))] => {
+            assert_eq!(error.reason, "max_output_tokens");
+            assert_eq!(error.response_id.as_deref(), Some("resp_incomplete"));
+            let usage = error.token_usage.as_ref().expect("incomplete response usage");
+            assert_eq!(usage.input_tokens, 10);
+            assert_eq!(usage.output_tokens, 20);
+            assert_eq!(usage.total_tokens, 30);
+        });
     }
 
     #[tokio::test]
