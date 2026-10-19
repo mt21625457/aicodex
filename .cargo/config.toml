@@ -1,5 +1,14 @@
+[build]
+# Avoid retaining incremental compiler state in ordinary local builds.
+# CARGO_INCREMENTAL=1 remains available for an explicit local override.
+incremental = false
+
 [env]
 # Ask compatible jemalloc processes for transparent huge pages.
 # Cargo passes this to all child processes, including tests and cargo run.
 # An explicit MALLOC_CONF (even empty) keeps precedence.
 MALLOC_CONF = { value = "thp:always", force = false }
+# Default cache budget when this repository starts a new sccache daemon.
+# This does not reconfigure an already running shared daemon; an explicit user
+# SCCACHE_CACHE_SIZE environment variable takes precedence.
+SCCACHE_CACHE_SIZE = { value = "10G", force = false }

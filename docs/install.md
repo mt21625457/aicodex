@@ -49,6 +49,9 @@ just test
 # time and `target/` disk usage by compiling additional feature combinations.
 ```
 
+For consistent local build commands, full-debug opt-in, and safe cache inspection
+and pruning, see [Local build storage](build-storage.md).
+
 ## Tracing / verbose logging
 
 Codex is written in Rust, so it honors the `RUST_LOG` environment variable to configure its logging behavior.

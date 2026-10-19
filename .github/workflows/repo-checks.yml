@@ -41,7 +41,12 @@ jobs:
         run: uv run --no-project --with packaging==26.2 python -m unittest discover -s .github/scripts -p 'test_verify_pypi_release.py'
 
       - name: Test Codex package builder
+        env:
+          CODEX_REPO_ROOT: ${{ github.workspace }}
         run: python3 -m unittest discover -s scripts/codex_package -p 'test_*.py'
+
+      - name: Test local build storage policy and cache cleanup
+        run: python3 -m unittest scripts.test_build_storage_config scripts.test_dev_cargo scripts.test_build_cache
 
       - name: Test standalone installer
         run: python3 -m unittest discover -s scripts/install -p 'test_*.py'

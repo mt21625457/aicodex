@@ -608,18 +608,26 @@ ignored = [
 ]
 
 [profile.dev]
-# The test profile inherits dev. Keep source locations in ordinary builds;
-# use CARGO_PROFILE_DEV_DEBUG=full (or CARGO_PROFILE_TEST_DEBUG=full) for locals.
-debug = "line-tables-only"
+# Keep ordinary local builds small. Opt into full debugging with --profile
+# dev-debug (including packed debug information for macOS).
+debug = "none"
+split-debuginfo = "off"
 
 [profile.test]
-debug = "line-tables-only"
+debug = "none"
+split-debuginfo = "off"
 
 [profile.dev-small]
+# Compatibility alias for the storage-conscious default development profile.
 inherits = "dev"
 opt-level = 0
 debug = "none"
-strip = "symbols"
+split-debuginfo = "off"
+
+[profile.dev-debug]
+inherits = "dev"
+debug = "full"
+split-debuginfo = "packed"
 
 [profile.release]
 lto = "thin"
