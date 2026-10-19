@@ -51,9 +51,8 @@ class RuntimeBuildTest(unittest.TestCase):
                 patch.object(build, "build_rust") as cargo,
             ):
                 self.make_artifacts(target)
-                output = build.build_codex_cli(
-                    target=target, output_dir=self.root / target
-                )
+                output = build.build_codex_cli(target=target)
+                self.assertEqual(output.parent, self.root / "bin")
                 cargo.assert_called_once_with(
                     profile="release",
                     target=target,
@@ -70,7 +69,8 @@ class RuntimeBuildTest(unittest.TestCase):
     def test_missing_host_does_not_replace_existing_cli(self):
         target = "aarch64-apple-darwin"
         self.make_artifacts(target, host=False)
-        installed = self.root / "aicodex"
+        installed = self.root / "bin" / "aicodex"
+        installed.parent.mkdir()
         installed.write_text("existing-runtime")
         with (
             patch.object(build, "build_rust"),
@@ -96,7 +96,7 @@ class RuntimeBuildTest(unittest.TestCase):
         with patch.object(build, "build_rust"):
             outputs = build.build_codex_cli_targets(targets=targets)
         for target, output in zip(targets, outputs, strict=True):
-            self.assertEqual(output.parent, self.root / "dist" / target)
+            self.assertEqual(output.parent, self.root / "bin" / target)
             self.assertEqual(
                 (output.parent / "codex-code-mode-host").read_text(),
                 f"codex-code-mode-host:{target}",

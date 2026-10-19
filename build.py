@@ -8,7 +8,7 @@ Supports building:
 - CLI and its required Code Mode host, built and staged together
 
 Usage:
-    ./build.py                     # Default: build all in minimized release mode, output binary named "aicodex"
+    ./build.py                     # Default: build all in minimized release mode, output to bin/
     ./build.py --help
     ./build.py rust                # Build all Rust crates in minimized release mode
     ./build.py rust --fast         # Build Rust in fast local mode
@@ -17,7 +17,7 @@ Usage:
     ./build.py all --fast          # Build everything in fast local mode
     ./build.py codex-cli           # Build the aicodex CLI binary in minimized release mode
     ./build.py codex-cli --fast    # Build the aicodex CLI binary in fast local mode
-    ./build.py codex-cli --all-targets  # Separate runtime pairs under dist/<target>/
+    ./build.py codex-cli --all-targets  # Separate runtime pairs under bin/<target>/
     ./build.py clean --dry-run     # Show build artifacts that can be removed
 """
 
@@ -504,6 +504,7 @@ def clean_build_outputs(
     for path in CLEAN_BUILD_DIRS:
         remove_path(path, dry_run=dry_run)
     if include_root_binaries:
+        remove_path(REPO_ROOT / "bin", dry_run=dry_run)
         for path in root_binary_paths():
             remove_path(path, dry_run=dry_run)
 
@@ -712,7 +713,7 @@ def build_codex_cli(
         dest = dest_dir / dest_name
 
     else:
-        dest_dir = output_dir or REPO_ROOT
+        dest_dir = output_dir or (REPO_ROOT / "bin")
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest = dest_dir / dest_name
 
@@ -736,7 +737,7 @@ def build_codex_cli_targets(
     outputs = []
     for target in targets:
         # 宿主名称不可附加 target；以目录隔离多架构，保证每个 CLI 的相邻宿主匹配。
-        target_output_dir = REPO_ROOT / "dist" / target
+        target_output_dir = REPO_ROOT / "bin" / target
         outputs.append(
             build_codex_cli(
                 profile=profile,
