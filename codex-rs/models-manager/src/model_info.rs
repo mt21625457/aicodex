@@ -19,9 +19,13 @@ use tracing::warn;
 pub const BASE_INSTRUCTIONS: &str = include_str!("../prompt.md");
 const DEFAULT_FALLBACK_CONTEXT_WINDOW: i64 = 272_000;
 const DEEPSEEK_FALLBACK_CONTEXT_WINDOW: i64 = 1_048_576;
+const SOL_DEFAULT_CONTEXT_WINDOW: i64 = 500_000;
 const PERSONALITY_SECTION_HEADER: &str = "# Personality";
 
+/// 统一目录默认值与用户覆盖；每次解析模型时计算，不修改共享目录或会话配置。
+/// 官方目录、provider 目录、模型切换及子代理均经此入口，避免预算跨模型残留。
 pub fn with_config_overrides(mut model: ModelInfo, config: &ModelsManagerConfig) -> ModelInfo {
+    apply_default_context_window(&mut model);
     if model.multi_agent_version.is_none() && is_grok_model_slug(&model.slug) {
         model.multi_agent_version = Some(MultiAgentVersion::V2);
     }
@@ -64,6 +68,20 @@ pub fn with_config_overrides(mut model: ModelInfo, config: &ModelsManagerConfig)
     }
 
     model
+}
+
+/// 精确匹配产品模型名；保留服务商能力上限、输出预留与显式压缩策略。
+/// 用户窗口覆盖随后处理，仍遵循原有的最大能力上限约束。
+fn apply_default_context_window(model: &mut ModelInfo) {
+    if model.slug == "gpt-6.1-sol" {
+        model.context_window = Some(
+            model
+                .max_context_window
+                .map_or(SOL_DEFAULT_CONTEXT_WINDOW, |maximum| {
+                    maximum.min(SOL_DEFAULT_CONTEXT_WINDOW)
+                }),
+        );
+    }
 }
 
 fn strip_personality_section(mut instructions: String) -> String {
@@ -210,6 +228,10 @@ fn unprefixed_model_slug(model: &str) -> String {
 }
 
 fn fallback_context_window_for_slug(slug: &str) -> i64 {
+    // 缺失目录时的能力兜底与产品默认一致，避免虚构的 272k 上限截断 Sol 预算。
+    if slug == "gpt-6.1-sol" {
+        return SOL_DEFAULT_CONTEXT_WINDOW;
+    }
     let normalized = slug.rsplit(':').next().unwrap_or(slug).to_ascii_lowercase();
     if normalized == "k3" {
         1_048_576
