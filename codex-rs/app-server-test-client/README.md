@@ -1,4 +1,5 @@
 # App Server Test Client
+
 Quickstart for running and hitting `aicodex app-server`.
 
 ## Quickstart
@@ -34,9 +35,9 @@ testing.
 export CODEX_HOME="$(mktemp -d)"
 printf 'cli_auth_credentials_store = "file"\n' > "$CODEX_HOME/config.toml"
 
-cargo build -p codex-cli --bin codex
+cargo build -p codex-cli --bin aicodex
 cargo run -p codex-app-server-test-client -- \
-  --codex-bin ./target/debug/codex \
+  --codex-bin ./target/debug/aicodex \
   test-login \
   --amazon-bedrock \
   --api-key "<BEDROCK_API_KEY>" \
@@ -54,7 +55,7 @@ isolated directory when testing credential cleanup.
 
 ```bash
 cargo run -p codex-app-server-test-client -- \
-  --codex-bin ./target/debug/codex \
+  --codex-bin ./target/debug/aicodex \
   test-logout
 ```
 
@@ -72,10 +73,10 @@ retries ephemeral turns while the installed remote bundle finishes syncing.
 
 ```bash
 # Build a debug Codex binary; analytics capture is unavailable in release builds.
-cargo build -p codex-cli --bin codex
+cargo build -p codex-cli --bin aicodex
 
 cargo run -p codex-app-server-test-client -- \
-  --codex-bin ./target/debug/codex \
+  --codex-bin ./target/debug/aicodex \
   plugin-analytics-smoke \
   --plugin-id linear@openai-curated-remote
 ```
@@ -111,7 +112,7 @@ local `<plugin>@<marketplace>` ID.
 
 ```bash
 cargo run -p codex-app-server-test-client -- \
-  --codex-bin ./target/debug/codex \
+  --codex-bin ./target/debug/aicodex \
   plugin-analytics-mutation-smoke \
   --remote-plugin-id <REMOTE_PLUGIN_ID> \
   --confirm-account-mutation \
@@ -134,7 +135,7 @@ For a dirty or uncertain result, retry cleanup with:
 
 ```bash
 cargo run -p codex-app-server-test-client -- \
-  --codex-bin ./target/debug/codex \
+  --codex-bin ./target/debug/aicodex \
   plugin-remote-uninstall \
   --remote-plugin-id <REMOTE_PLUGIN_ID> \
   --confirm-account-mutation

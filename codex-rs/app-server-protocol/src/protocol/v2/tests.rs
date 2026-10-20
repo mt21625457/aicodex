@@ -621,6 +621,10 @@ fn thread_resume_response_round_trips_initial_turns_page() {
 
     let read_response = ThreadReadResponse {
         thread: thread.clone(),
+        read_state: Some(ThreadReadState {
+            first_unread: Some(ThreadUnreadPosition::ThreadStart),
+            revision: "revision_1".to_string(),
+        }),
         runtime_lifecycle: Some(ThreadRuntimeLifecycle {
             active_turn_id: Some("turn_active".to_string()),
             active_turn_started_at: Some(42),
@@ -642,6 +646,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
 
     let no_live_lifecycle = ThreadReadResponse {
         thread: thread.clone(),
+        read_state: None,
         runtime_lifecycle: None,
     };
     assert_eq!(

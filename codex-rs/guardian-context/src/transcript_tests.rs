@@ -34,6 +34,54 @@ fn transcript_config() -> ConversationTranscriptConfig {
 }
 
 #[test]
+fn inherited_manual_approval_filters_all_supported_text_variants() {
+    for content in [
+        ContentItem::InputText {
+            text: MANUAL_APPROVAL_DEVELOPER_PREFIX.to_string(),
+        },
+        ContentItem::OutputText {
+            text: MANUAL_APPROVAL_DEVELOPER_PREFIX.to_string(),
+            annotations: None,
+            logprobs: None,
+        },
+        ContentItem::OutputTextWithCitations {
+            text: MANUAL_APPROVAL_DEVELOPER_PREFIX.to_string(),
+            citations: Vec::new(),
+        },
+    ] {
+        let mut envelope = codex_history::ResponseItemEnvelope {
+            item: ResponseItem::Message {
+                status: None,
+                encrypted_content: None,
+                id: None,
+                role: "developer".to_string(),
+                content: vec![content],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+            metadata: Some(codex_history::CodexHarnessMetadata {
+                inherited_user_message: true,
+                ..Default::default()
+            }),
+        };
+        assert!(super::is_inherited_manual_approval(&envelope));
+
+        envelope.metadata = None;
+        assert!(!super::is_inherited_manual_approval(&envelope));
+
+        envelope.metadata = Some(codex_history::CodexHarnessMetadata {
+            inherited_user_message: true,
+            ..Default::default()
+        });
+        let ResponseItem::Message { role, .. } = &mut envelope.item else {
+            unreachable!()
+        };
+        *role = "user".to_string();
+        assert!(!super::is_inherited_manual_approval(&envelope));
+    }
+}
+
+#[test]
 fn heartbeat_references_preserve_positions_changes_and_human_messages() {
     let make = |time: &str, instructions: &str, kind: &str| {
         serde_json::from_value::<ResponseItem>(serde_json::json!({
@@ -105,6 +153,8 @@ fn registered_transcript_filters_roles_and_preserves_node_repl_tool_attribution(
     );
     let history = vec![
         ResponseItem::Message {
+            status: None,
+            encrypted_content: None,
             id: None,
             role: "user".to_string(),
             content: vec![ContentItem::InputText {
@@ -114,6 +164,8 @@ fn registered_transcript_filters_roles_and_preserves_node_repl_tool_attribution(
             internal_chat_message_metadata_passthrough: None,
         },
         ResponseItem::Message {
+            status: None,
+            encrypted_content: None,
             id: None,
             role: "developer".to_string(),
             content: vec![ContentItem::InputText {
@@ -123,6 +175,8 @@ fn registered_transcript_filters_roles_and_preserves_node_repl_tool_attribution(
             internal_chat_message_metadata_passthrough: None,
         },
         ResponseItem::Message {
+            status: None,
+            encrypted_content: None,
             id: None,
             role: "developer".to_string(),
             content: vec![ContentItem::InputText {
@@ -132,24 +186,34 @@ fn registered_transcript_filters_roles_and_preserves_node_repl_tool_attribution(
             internal_chat_message_metadata_passthrough: None,
         },
         ResponseItem::Message {
+            status: None,
+            encrypted_content: None,
             id: None,
             role: "assistant".to_string(),
             content: vec![ContentItem::OutputText {
+                annotations: None,
+                logprobs: None,
                 text: "The first result is ready.".to_string(),
             }],
             phase: Some(MessagePhase::PartialAnswer),
             internal_chat_message_metadata_passthrough: None,
         },
         ResponseItem::Message {
+            status: None,
+            encrypted_content: None,
             id: None,
             role: "assistant".to_string(),
             content: vec![ContentItem::OutputText {
+                annotations: None,
+                logprobs: None,
                 text: "Inspection complete.".to_string(),
             }],
             phase: Some(MessagePhase::FinalAnswer),
             internal_chat_message_metadata_passthrough: None,
         },
         ResponseItem::FunctionCall {
+            status: None,
+            encrypted_content: None,
             id: None,
             name: "read_file".to_string(),
             namespace: Some("mcp__node_repl__".to_string()),
@@ -229,6 +293,8 @@ fn registered_transcript_filters_roles_and_preserves_node_repl_tool_attribution(
 fn excluded_tool_calls_still_attribute_included_results() {
     let history = vec![
         ResponseItem::FunctionCall {
+            status: None,
+            encrypted_content: None,
             id: None,
             name: "read_file".to_string(),
             namespace: None,
@@ -344,6 +410,7 @@ fn outputs_with_call_ids_or_explicit_names_are_retained() {
         custom_output(/*name*/ None, "orphaned custom output"),
         custom_output(Some("notifications"), "named orphaned custom output"),
         ResponseItem::LocalShellCall {
+            encrypted_content: None,
             id: None,
             call_id: Some("shell-1".to_string()),
             status: LocalShellStatus::Completed,
@@ -414,6 +481,8 @@ fn outputs_with_call_ids_or_explicit_names_are_retained() {
 fn reused_registry_applies_current_history_sources_and_entry_limits() {
     let text = "é🙂".repeat(/*n*/ 10_000);
     let mut history = vec![ResponseItem::Message {
+        status: None,
+        encrypted_content: None,
         id: None,
         role: "user".to_string(),
         content: vec![ContentItem::InputText { text: text.clone() }],
@@ -452,6 +521,8 @@ fn reused_registry_applies_current_history_sources_and_entry_limits() {
     }
 
     history.push(ResponseItem::FunctionCall {
+        status: None,
+        encrypted_content: None,
         id: None,
         name: "exec_command".to_string(),
         namespace: None,
@@ -526,6 +597,8 @@ fn encrypted_messages_preserve_order_and_budget_for_both_reviewers() {
         internal_chat_message_metadata_passthrough: None,
     };
     let user = ResponseItem::Message {
+        status: None,
+        encrypted_content: None,
         id: None,
         role: "user".into(),
         content: vec![ContentItem::InputText {

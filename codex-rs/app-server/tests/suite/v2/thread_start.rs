@@ -683,6 +683,7 @@ stream_max_retries = 0
 
     let list_id = mcp
         .send_thread_list_request(ThreadListParams {
+            excluded_thread_ids: None,
             originators: None,
             cursor: None,
             limit: Some(50),

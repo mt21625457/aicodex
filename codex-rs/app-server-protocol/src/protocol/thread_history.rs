@@ -2372,6 +2372,8 @@ mod tests {
             })),
             RolloutItem::ResponseItem(
                 ResponseItem::FunctionCall {
+                    encrypted_content: None,
+                    status: None,
                     id: Some(ResponseItemId::from_server("fc-1".into())),
                     name: "exec_command".into(),
                     namespace: None,
@@ -2470,6 +2472,8 @@ mod tests {
             })),
             RolloutItem::ResponseItem(
                 ResponseItem::FunctionCall {
+                    encrypted_content: None,
+                    status: None,
                     id: Some(ResponseItemId::from_server("fc-1".into())),
                     name: "exec_command".into(),
                     namespace: None,
@@ -2534,6 +2538,8 @@ mod tests {
             })),
             RolloutItem::ResponseItem(
                 ResponseItem::FunctionCall {
+                    encrypted_content: None,
+                    status: None,
                     id: Some(ResponseItemId::from_server("fc-1".into())),
                     name: "exec_command".into(),
                     namespace: None,
@@ -5993,6 +5999,8 @@ mod tests {
             })),
             RolloutItem::ResponseItem(
                 codex_protocol::models::ResponseItem::Message {
+                    status: None,
+                    encrypted_content: None,
                     id: Some(codex_protocol::ResponseItemId::with_suffix("msg", "1")),
                     role: "user".into(),
                     content: vec![codex_protocol::models::ContentItem::InputText {

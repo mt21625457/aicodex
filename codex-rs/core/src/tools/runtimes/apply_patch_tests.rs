@@ -12,6 +12,7 @@ use codex_protocol::protocol::EnvironmentConfig;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::GranularApprovalConfig;
 use codex_protocol::protocol::TurnEnvironmentSelection;
+use codex_protocol::sandbox::SandboxOverride;
 use codex_sandboxing::SandboxManager;
 use codex_sandboxing::SandboxType;
 use codex_sandboxing::policy_transforms::effective_file_system_sandbox_policy;
@@ -245,6 +246,7 @@ async fn file_system_sandbox_context_preserves_executor_workspace_permissions() 
     let manager = SandboxManager::new();
     let sandbox_policy_cwd = PathUri::from_abs_path(&path);
     let attempt = SandboxAttempt {
+        sandbox_override: SandboxOverride::NoOverride,
         sandbox: SandboxType::MacosSeatbelt,
         sandbox_requested: true,
         permissions: &permissions,
@@ -312,6 +314,7 @@ async fn file_system_sandbox_context_respects_sandbox_request() {
     let manager = SandboxManager::new();
     let sandbox_policy_cwd = PathUri::from_abs_path(&path);
     let attempt = SandboxAttempt {
+        sandbox_override: SandboxOverride::NoOverride,
         sandbox: SandboxType::None,
         sandbox_requested: false,
         permissions: &permissions,
@@ -349,6 +352,7 @@ async fn file_system_sandbox_context_respects_sandbox_request() {
     assert_eq!(
         ApplyPatchRuntime::file_system_sandbox_context_for_attempt(&req, &attempt),
         Some(FileSystemSandboxContext {
+            sandbox_override: SandboxOverride::NoOverride,
             permissions,
             cwd: cwd.clone(),
             workspace_roots: vec![cwd],
@@ -384,6 +388,7 @@ async fn conditional_write_receives_executor_home_in_sandbox_context() {
     let permissions = PermissionProfile::workspace_write();
     let manager = SandboxManager::new();
     let attempt = SandboxAttempt {
+        sandbox_override: SandboxOverride::BypassSandboxFirstAttempt,
         sandbox: SandboxType::None,
         sandbox_requested: true,
         permissions: &permissions,
@@ -406,6 +411,7 @@ async fn conditional_write_receives_executor_home_in_sandbox_context() {
         assert_eq!(
             sandbox,
             Some(FileSystemSandboxContext {
+                sandbox_override: SandboxOverride::BypassSandboxFirstAttempt,
                 permissions: expected_permissions,
                 cwd: expected_cwd.clone(),
                 workspace_roots: vec![expected_cwd],

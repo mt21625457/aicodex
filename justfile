@@ -84,6 +84,21 @@ install:
     cargo fetch
     exit $LASTEXITCODE
 
+# Stable package/feature groups for routine local Cargo validation.
+dev-check *args:
+    {{ python }} ../scripts/dev_cargo.py check {args}
+
+dev-build *args:
+    {{ python }} ../scripts/dev_cargo.py build {args}
+
+dev-test *args:
+    {{ python }} ../scripts/dev_cargo.py test {args}
+
+# Inspect local build storage; defaults to a read-only report.
+[no-cd]
+build-cache *args:
+    {{ python }} scripts/build_cache.py {args}
+
 # Run nextest with --no-fail-fast so all tests are run.
 #
 # Run `cargo install --locked cargo-nextest` if you don't have it installed.

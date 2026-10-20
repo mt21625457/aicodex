@@ -6,6 +6,8 @@ use codex_protocol::models::ResponseItem;
 
 fn message(length: usize) -> ResponseItem {
     ResponseItem::Message {
+        status: None,
+        encrypted_content: None,
         id: Some(ResponseItemId::from_server(format!(
             "msg_{}",
             "x".repeat(length - 4)
@@ -40,6 +42,8 @@ fn boundary_lengths_and_repeated_preparation_preserve_history() {
 fn function_call_and_output_keep_correlation_and_payload() {
     let mut items = vec![
         ResponseItem::FunctionCall {
+            encrypted_content: None,
+            status: None,
             id: Some(ResponseItemId::from_server(format!(
                 "fc_{}",
                 "x".repeat(80)
@@ -97,6 +101,8 @@ fn opaque_reasoning_fails_without_mutating_any_item_or_leaking_id() {
 #[test]
 fn encrypted_function_arguments_are_not_reidentified() {
     let mut items = vec![ResponseItem::FunctionCall {
+        encrypted_content: None,
+        status: None,
         id: Some(ResponseItemId::from_server(format!(
             "fc_{}",
             "x".repeat(80)

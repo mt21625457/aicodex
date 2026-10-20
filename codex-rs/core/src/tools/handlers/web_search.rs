@@ -540,9 +540,13 @@ fn push_visible_message(messages: &mut Vec<ResponseItem>, item: &ResponseItem) {
         } => {
             if let Some(text) = plaintext_agent_message_content(content) {
                 messages.push(ResponseItem::Message {
+                    encrypted_content: None,
+                    status: None,
                     id: None,
                     role: ASSISTANT_ROLE.to_string(),
                     content: vec![ContentItem::OutputText {
+                        annotations: None,
+                        logprobs: None,
                         text: format!("Agent message from {author}:\n{text}"),
                     }],
                     phase: None,
@@ -556,6 +560,7 @@ fn push_visible_message(messages: &mut Vec<ResponseItem>, item: &ResponseItem) {
             content,
             phase,
             internal_chat_message_metadata_passthrough: metadata,
+            ..
         } if role == USER_ROLE
             && matches!(
                 crate::parse_turn_item(item),
@@ -569,6 +574,8 @@ fn push_visible_message(messages: &mut Vec<ResponseItem>, item: &ResponseItem) {
                 .collect::<Vec<_>>();
             if !content.is_empty() {
                 messages.push(ResponseItem::Message {
+                    encrypted_content: None,
+                    status: None,
                     id: None,
                     role: role.clone(),
                     content,

@@ -321,7 +321,7 @@ fn conversation_text_from_item(item: &RolloutItem) -> Option<String> {
 fn content_item_text(item: &ContentItem) -> Option<&str> {
     match item {
         ContentItem::InputText { text }
-        | ContentItem::OutputText { text }
+        | ContentItem::OutputText { text, .. }
         | ContentItem::OutputTextWithCitations { text, .. } => Some(text.as_str()),
         ContentItem::InputImage { .. } | ContentItem::InputAudio { .. } => None,
     }

@@ -37,6 +37,7 @@ fn test_model(model_messages: Option<ModelMessages>) -> ModelInfo {
         truncation_policy: TruncationPolicyConfig::bytes(/*limit*/ 10_000),
         supports_image_detail_original: false,
         context_window: None,
+        max_output_tokens: None,
         max_context_window: None,
         auto_compact_token_limit: None,
         comp_hash: None,

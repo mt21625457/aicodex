@@ -353,12 +353,16 @@ async fn snapshot_for_config_merges_extension_host_and_legacy_plugin_roots() {
         .snapshot_for_config(&input, Some(Arc::clone(&LOCAL_FS)))
         .await;
     // The host also discovers real user roots; compare only this fixture's skills.
-    let fixture_root = dunce::canonicalize(codex_home.path()).expect("canonical fixture root");
+    let fixture_root = PathUri::from_abs_path(
+        &dunce::canonicalize(codex_home.path())
+            .expect("canonical fixture root")
+            .abs(),
+    );
     let skills = snapshot
         .outcome()
         .skills
         .iter()
-        .filter(|skill| skill.path_to_skills_md.as_path().starts_with(&fixture_root))
+        .filter(|skill| skill.path_to_skills_md.starts_with(&fixture_root))
         .map(|skill| (skill.name.as_str(), skill.plugin_id.as_deref()))
         .collect::<Vec<_>>();
 
@@ -405,10 +409,14 @@ async fn snapshot_for_config_preserves_host_precedence_for_symlinked_plugin_root
     .await;
 
     // Keep host/plugin precedence assertions independent of installed user skills.
-    let fixture_root = dunce::canonicalize(codex_home.path()).expect("canonical fixture root");
+    let fixture_root = PathUri::from_abs_path(
+        &dunce::canonicalize(codex_home.path())
+            .expect("canonical fixture root")
+            .abs(),
+    );
     outcome
         .skills
-        .retain(|skill| skill.path_to_skills_md.as_path().starts_with(&fixture_root));
+        .retain(|skill| skill.path_to_skills_md.starts_with(&fixture_root));
 
     assert_eq!(
         outcome.skills,
