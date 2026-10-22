@@ -15,6 +15,9 @@ use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ResponseItem;
 use codex_utils_output_truncation::approx_token_count;
 
+#[path = "responses_flash_reasoning.rs"]
+mod flash;
+
 /// Per-item cap on raw reasoning replayed into a Responses request.
 pub(crate) const RAW_REASONING_REPLAY_ITEM_MAX_TOKENS: usize = 8_000;
 const COMPACT_RETAINED_REASONING_MAX_TOKENS: usize = 8_000;
@@ -27,13 +30,17 @@ pub(crate) enum ResponsesReasoningReplay {
     EncryptedHandoff { is_openai_provider: bool },
     /// DeepSeek / MiniMax: keep `reasoning_text` so the next turn can continue thinking.
     RawReasoningText,
+    /// Flash 保留完整推理，由模型上下文预算触发压缩，不复用其他模型的逐项截断。
+    FlashCompleteReasoning,
 }
 
 pub(crate) fn responses_reasoning_replay(
     model_slug: &str,
     is_openai_provider: bool,
 ) -> ResponsesReasoningReplay {
-    if is_deepseek_model_slug(model_slug) || is_minimax_model_slug(model_slug) {
+    if flash::is_flash(model_slug) {
+        ResponsesReasoningReplay::FlashCompleteReasoning
+    } else if is_deepseek_model_slug(model_slug) || is_minimax_model_slug(model_slug) {
         ResponsesReasoningReplay::RawReasoningText
     } else {
         ResponsesReasoningReplay::EncryptedHandoff { is_openai_provider }
@@ -45,6 +52,10 @@ pub(crate) fn strip_reasoning_content_for_responses_input(
     replay: ResponsesReasoningReplay,
 ) {
     match replay {
+        ResponsesReasoningReplay::FlashCompleteReasoning => {
+            // 只清理跨供应商状态；完整推理交由现有模型上下文预算和压缩控制。
+            sanitize_raw_reasoning_for_replay(input, usize::MAX);
+        }
         ResponsesReasoningReplay::RawReasoningText => {
             sanitize_raw_reasoning_for_replay(input, RAW_REASONING_REPLAY_ITEM_MAX_TOKENS);
         }
@@ -189,6 +200,9 @@ pub(crate) fn last_turn_reasoning_for_raw_replay(
     model_slug: &str,
     is_openai_provider: bool,
 ) -> Vec<ResponseItemEnvelope> {
+    if flash::is_flash(model_slug) {
+        return flash::last_turn_complete_reasoning(items);
+    }
     if !matches!(
         responses_reasoning_replay(model_slug, is_openai_provider),
         ResponsesReasoningReplay::RawReasoningText
