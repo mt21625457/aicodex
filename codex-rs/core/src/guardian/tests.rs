@@ -167,6 +167,8 @@ async fn guardian_test_session_turn_and_rx(
         .thread_id = fixed_guardian_parent_session_id();
     let mut config = (*turn.config).clone();
     config.model_provider.base_url = Some(format!("{}/v1", server.uri()));
+    // 本夹具只提供 HTTP/SSE 响应，不能继承真实 provider 的 WebSocket 能力。
+    config.model_provider.supports_websockets = false;
     let config = Arc::new(config);
     let models_manager = test_support::models_manager_with_provider(
         config.codex_home.to_path_buf(),
@@ -233,6 +235,8 @@ async fn guardian_test_session_and_turn_with_base_url(
     session.thread_id = fixed_guardian_parent_session_id();
     let mut config = (*turn.config).clone();
     config.model_provider.base_url = Some(format!("{base_url}/v1"));
+    // 本夹具只提供 HTTP/SSE 响应，不能继承真实 provider 的 WebSocket 能力。
+    config.model_provider.supports_websockets = false;
     let config = Arc::new(config);
     let models_manager = test_support::models_manager_with_provider(
         config.codex_home.to_path_buf(),
@@ -2273,6 +2277,8 @@ async fn guardian_review_request_layout_matches_model_visible_request_snapshot()
     let mut config = (*turn.config).clone();
     config.cwd = temp_cwd.abs();
     config.model_provider.base_url = Some(format!("{}/v1", server.uri()));
+    // 本夹具只提供 HTTP/SSE 响应，不能继承真实 provider 的 WebSocket 能力。
+    config.model_provider.supports_websockets = false;
     config.memories.use_memories = true;
     config
         .features
@@ -3111,6 +3117,8 @@ async fn guardian_review_surfaces_responses_api_errors_in_rejection_reason() -> 
         crate::session::tests::make_session_and_context_with_rx().await;
     let mut config = (*turn.config).clone();
     config.model_provider.base_url = Some(format!("{}/v1", server.uri()));
+    // 本夹具只提供 HTTP/SSE 响应，不能继承真实 provider 的 WebSocket 能力。
+    config.model_provider.supports_websockets = false;
     let config = Arc::new(config);
     let models_manager = test_support::models_manager_with_provider(
         config.codex_home.to_path_buf(),
@@ -3151,7 +3159,7 @@ async fn guardian_review_surfaces_responses_api_errors_in_rejection_reason() -> 
     let ReviewDecision::Denied { rejection } = decision else {
         panic!("guardian error should deny the approval");
     };
-    assert_eq!(request_log.requests().len(), 1);
+    assert_eq!(request_log.requests().len(), 1, "rejection: {rejection}");
 
     let mut warnings = Vec::new();
     let mut denial_rationales = Vec::new();
