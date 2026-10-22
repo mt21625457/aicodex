@@ -659,3 +659,26 @@ fn encrypted_messages_preserve_order_and_budget_for_both_reviewers() {
         );
     }
 }
+
+#[test]
+fn reasoning_evidence_remains_complete_above_message_budget() {
+    let text = "完整推理".repeat(10_000);
+    let history = vec![ResponseItem::Reasoning {
+        id: None,
+        summary: vec![],
+        content: Some(vec![
+            codex_protocol::models::ReasoningItemContent::ReasoningText { text: text.clone() },
+        ]),
+        encrypted_content: None,
+        internal_chat_message_metadata_passthrough: None,
+    }];
+    let original = history.clone();
+    let mut config = transcript_config();
+    config.options.include_reasoning = true;
+    config.entry_limits.message_tokens = 1;
+    let entries = collect_transcript(&history, &config);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].kind, ConversationTranscriptEntryKind::Reasoning);
+    assert_eq!(entries[0].content, crate::TranscriptContent::Text(text));
+    assert_eq!(history, original);
+}

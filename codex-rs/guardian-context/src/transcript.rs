@@ -76,7 +76,7 @@ impl Default for ConversationTranscriptOptions {
 /// Per-entry caps resolved by the caller for the current review.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TranscriptEntryLimits {
-    /// Cap for assistant and plaintext reasoning entries; user and manual approvals stay complete.
+    /// Cap for assistant entries; user, manual approvals, and reasoning stay complete.
     pub message_tokens: usize,
     /// Cap for tool calls and ordinary tool outputs.
     pub tool_tokens: usize,
@@ -385,12 +385,12 @@ pub fn collect_transcript(
             heartbeat_versions.clear();
         }
         let text = match &kind {
-            ConversationTranscriptEntryKind::User | ConversationTranscriptEntryKind::Developer => {
-                text
-            }
+            // 推理证据不能在项内截断；后续总预算可以整项省略，不能构造残缺推理。
+            ConversationTranscriptEntryKind::User
+            | ConversationTranscriptEntryKind::Developer
+            | ConversationTranscriptEntryKind::Reasoning => text,
             ConversationTranscriptEntryKind::Assistant
-            | ConversationTranscriptEntryKind::ProtectedAssistant
-            | ConversationTranscriptEntryKind::Reasoning => {
+            | ConversationTranscriptEntryKind::ProtectedAssistant => {
                 truncate_text(&text, config.entry_limits.message_tokens)
             }
             ConversationTranscriptEntryKind::ToolCall(_)

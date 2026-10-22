@@ -65,7 +65,7 @@ fn flash_responses_preserve_complete_large_items_and_source_history() {
 }
 
 #[test]
-fn other_model_policies_keep_existing_caps_and_encrypted_handoff() {
+fn raw_model_policies_preserve_complete_content_and_other_models_keep_encrypted_handoff() {
     for model in ["deepseek-v4-pro", "deepseek-flash-next", "MiniMax-M3"] {
         assert_eq!(
             responses_reasoning_replay(model, false),
@@ -79,7 +79,10 @@ fn other_model_policies_keep_existing_caps_and_encrypted_handoff() {
         let ResponseItem::Reasoning { content, .. } = &input[0] else {
             panic!("reasoning");
         };
-        assert!(raw_reasoning_content_tokens(content) <= RAW_REASONING_REPLAY_ITEM_MAX_TOKENS);
+        assert_eq!(
+            raw_reasoning_content_tokens(content),
+            approx_token_count(&"a".repeat(80_000))
+        );
     }
     for model in ["gpt-6.1-sol", "grok-4.7", "claude-sonnet"] {
         assert_eq!(
@@ -123,13 +126,15 @@ fn compaction_preserves_oversized_newest_item_instead_of_partial_reasoning() {
     let retained = last_turn_reasoning_for_raw_replay(&items, "deepseek-flash", false);
     assert_eq!(retained.len(), 1);
     assert_eq!(text(&retained[0]), newest);
-    assert!(last_turn_complete_reasoning(&[reasoning("no user boundary")]).is_empty());
+    assert!(
+        last_turn_complete_reasoning(&[reasoning("no user boundary")], "deepseek-flash").is_empty()
+    );
 }
 
 #[test]
 fn compaction_retains_order_when_multiple_complete_items_fit() {
     let items = vec![user("task"), reasoning("first"), reasoning("second")];
-    let retained = last_turn_complete_reasoning(&items);
+    let retained = last_turn_complete_reasoning(&items, "deepseek-flash");
     assert_eq!(
         retained.iter().map(text).collect::<Vec<_>>(),
         vec!["first", "second"]
@@ -137,22 +142,25 @@ fn compaction_retains_order_when_multiple_complete_items_fit() {
 }
 
 #[test]
-fn flash_slug_matching_preserves_gateway_suffixes_without_matching_other_models() {
+fn all_raw_models_preserve_oversized_complete_items_after_compaction() {
+    let original = reasoning(&"完整推理".repeat(70_000));
     for slug in [
+        "deepseek-flash",
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
         "deepseek/deepseek-flash:free",
-        "gateway/DEEPSEEK-FLASH:paid",
-        " gateway:deepseek-flash ",
+        "gateway/deepseek-v4-pro:free",
+        "MiniMax-M3",
+        "minimax/MiniMax-M3:free",
+        "gateway:MiniMax-M3",
     ] {
-        assert!(is_flash(slug), "expected Flash policy for {slug}");
-        let items = vec![user("task"), reasoning(&"a".repeat(80_000))];
+        let items = vec![user("task"), original.clone()];
         let retained = last_turn_reasoning_for_raw_replay(&items, slug, false);
-        assert_eq!(text(&retained[0]), text(&items[1]));
-    }
-    for slug in [
-        "deepseek/deepseek-flash-next:free",
-        "deepseek/deepseek-v4-pro:free",
-        "deepseek-flash/other-model",
-    ] {
-        assert!(!is_flash(slug), "unexpected Flash policy for {slug}");
+        assert_eq!(retained.len(), 1, "missing reasoning for {slug}");
+        assert_eq!(
+            text(&retained[0]),
+            text(&original),
+            "truncated reasoning for {slug}"
+        );
     }
 }

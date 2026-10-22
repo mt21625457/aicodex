@@ -98,8 +98,8 @@ fn raw_replay_normalizes_legacy_text_and_clears_provider_state() {
 }
 
 #[test]
-fn raw_replay_caps_each_reasoning_and_normalizes_missing_content() {
-    let oversized = "n".repeat((RAW_REASONING_REPLAY_ITEM_MAX_TOKENS + 100) * 4);
+fn raw_replay_preserves_complete_reasoning_and_normalizes_missing_content() {
+    let oversized = "n".repeat(300_000);
     let mut input = vec![
         reasoning_item("old", "old thought").item,
         reasoning_item("middle", "middle thought").item,
@@ -138,8 +138,7 @@ fn raw_replay_caps_each_reasoning_and_normalizes_missing_content() {
     };
     let retained_tokens = raw_reasoning_content_tokens(&Some(new_content.clone()));
     assert!(retained_tokens > 0);
-    assert!(retained_tokens <= RAW_REASONING_REPLAY_ITEM_MAX_TOKENS);
-    assert!(retained_tokens < approx_token_count(&oversized));
+    assert_eq!(retained_tokens, approx_token_count(&oversized));
     assert_eq!(new_encrypted_content, &None);
 }
 
@@ -175,7 +174,7 @@ fn last_turn_reasoning_keeps_only_items_after_the_last_real_user() {
 fn last_turn_reasoning_prefers_newest_items_when_over_budget() {
     let items = vec![
         user_message("hello"),
-        reasoning_item("old", &"a".repeat(40_000)),
+        reasoning_item("old", &"a".repeat(300_000)),
         reasoning_item("new", "short thought"),
     ];
 
@@ -201,8 +200,8 @@ fn last_turn_reasoning_prefers_newest_items_when_over_budget() {
 }
 
 #[test]
-fn last_turn_reasoning_truncates_an_oversized_newest_item_to_the_hard_cap() {
-    let oversized = "n".repeat((RAW_REASONING_REPLAY_ITEM_MAX_TOKENS + 100) * 4);
+fn last_turn_reasoning_preserves_an_oversized_newest_item() {
+    let oversized = "n".repeat(300_000);
     let items = vec![user_message("hello"), reasoning_item("new", &oversized)];
 
     let retained = last_turn_reasoning_for_raw_replay(
@@ -227,7 +226,65 @@ fn last_turn_reasoning_truncates_an_oversized_newest_item_to_the_hard_cap() {
     };
     let retained_tokens = raw_reasoning_content_tokens(&Some(content.clone()));
     assert!(retained_tokens > 0);
-    assert!(retained_tokens <= RAW_REASONING_REPLAY_ITEM_MAX_TOKENS);
-    assert!(retained_tokens < approx_token_count(&oversized));
+    assert_eq!(retained_tokens, approx_token_count(&oversized));
     assert_eq!(encrypted_content, &None);
+}
+
+#[test]
+fn raw_replay_preserves_every_part_across_all_raw_model_families() {
+    let first = "前段".repeat(40_000);
+    let last = "后段".repeat(40_000);
+    let original = ResponseItem::Reasoning {
+        id: None,
+        summary: vec![],
+        content: Some(vec![
+            ReasoningItemContent::Text {
+                text: first.clone(),
+            },
+            ReasoningItemContent::ReasoningText { text: last.clone() },
+        ]),
+        encrypted_content: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    for model in [
+        "deepseek-flash",
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+        "MiniMax-M3",
+    ] {
+        let mut input = vec![original.clone()];
+        strip_reasoning_content_for_responses_input(
+            &mut input,
+            responses_reasoning_replay(model, false),
+        );
+        let wire = serde_json::to_value(&input[0]).unwrap();
+        assert_eq!(wire["content"][0]["text"], first);
+        assert_eq!(wire["content"][1]["text"], last);
+    }
+}
+
+#[test]
+fn encrypted_handoff_preserves_large_ciphertext_without_token_truncation() {
+    let ciphertext = "opaque".repeat(60_000);
+    for model in ["gpt-6.1-sol", "grok-4.7", "claude-sonnet", "unknown-model"] {
+        for is_openai in [true, false] {
+            let mut item = reasoning_item("rs_native", "").item;
+            if let ResponseItem::Reasoning {
+                content,
+                encrypted_content,
+                ..
+            } = &mut item
+            {
+                *content = Some(Vec::new());
+                *encrypted_content = Some(ciphertext.clone());
+            }
+            let mut input = vec![item];
+            strip_reasoning_content_for_responses_input(
+                &mut input,
+                responses_reasoning_replay(model, is_openai),
+            );
+            let wire = serde_json::to_value(&input[0]).unwrap();
+            assert_eq!(wire["encrypted_content"], ciphertext);
+        }
+    }
 }
