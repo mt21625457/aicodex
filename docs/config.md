@@ -72,3 +72,10 @@ Codex-managed flattened tool names and local execution.
 Claude server-tool result blocks and citation metadata are preserved for
 follow-up turns. Clients that do not understand structured citations still
 receive visible source markers as a compatibility fallback.
+
+### Attestation（客户端证明）
+
+本分支在代码层面禁用自动生成及发送 `x-oai-attestation`。即使使用 ChatGPT
+认证且宿主声明 `requestAttestation` 能力，也不会调用宿主生成证明；配置无法
+重新开启。此行为覆盖共用证明入口的 HTTP、WebSocket 和实时请求，不改变 OAuth
+登录、令牌刷新或服务端认证要求，也不清除用户通过自定义请求头显式注入的值。

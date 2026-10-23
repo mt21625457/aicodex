@@ -2737,7 +2737,7 @@ fn thread_responses_headers_are_scoped_to_model_and_backend_auth() {
 #[test_case::test_case(/*session_id_override*/ None; "own_session_id")]
 #[test_case::test_case(Some("parent-session"); "inherited_session_id")]
 #[tokio::test]
-async fn websocket_handshake_includes_attestation_for_chatgpt_codex_responses(
+async fn websocket_handshake_omits_attestation_for_chatgpt_codex_responses(
     session_id_override: Option<&str>,
 ) {
     let (mut model_client, attestation_calls) =
@@ -2759,9 +2759,9 @@ async fn websocket_handshake_includes_attestation_for_chatgpt_codex_responses(
         headers
             .get(crate::attestation::X_OAI_ATTESTATION_HEADER)
             .and_then(|value| value.to_str().ok()),
-        Some("v1.header-1"),
+        None,
     );
-    assert_eq!(attestation_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(attestation_calls.load(Ordering::Relaxed), 0);
     assert_eq!(
         headers["session-id"],
         session_id_override.unwrap_or(&responses_metadata.session_id)
@@ -2770,7 +2770,7 @@ async fn websocket_handshake_includes_attestation_for_chatgpt_codex_responses(
 }
 
 #[tokio::test]
-async fn existing_call_sideband_headers_include_attestation() {
+async fn existing_call_sideband_headers_omit_attestation() {
     let (model_client, attestation_calls) =
         model_client_with_counting_attestation(/*include_attestation*/ true);
 
@@ -2783,9 +2783,9 @@ async fn existing_call_sideband_headers_include_attestation() {
         headers
             .get(crate::attestation::X_OAI_ATTESTATION_HEADER)
             .and_then(|value| value.to_str().ok()),
-        Some("v1.header-1"),
+        None,
     );
-    assert_eq!(attestation_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(attestation_calls.load(Ordering::Relaxed), 0);
 }
 
 #[tokio::test]
@@ -2947,3 +2947,30 @@ mod flash_responses_tests;
 
 #[path = "client_lazy_token_tests.rs"]
 mod lazy_token_tests;
+
+// 即使提供方和宿主均支持证明，也不得调用宿主生成证明。
+#[tokio::test]
+async fn attestation_stays_disabled_across_provider_switch() {
+    let (client, calls) = model_client_with_counting_attestation(true);
+    assert!(client.generate_attestation_header_for().await.is_none());
+    let headers = client
+        .realtime_sideband_headers(http::HeaderMap::new())
+        .await
+        .unwrap();
+    assert!(!headers.contains_key(crate::attestation::X_OAI_ATTESTATION_HEADER));
+    let provider = create_model_provider(
+        ModelProviderInfo::create_openai_provider(Some("https://example.com/v1".to_string())),
+        Some(AuthManager::from_auth_for_testing(
+            CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        )),
+    );
+    let scoped = client.new_session_for_provider(provider);
+    assert!(
+        scoped
+            .client
+            .generate_attestation_header_for()
+            .await
+            .is_none()
+    );
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
+}

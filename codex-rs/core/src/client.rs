@@ -1111,7 +1111,10 @@ impl ModelClient {
     }
 
     async fn generate_attestation_header_for(&self) -> Option<HeaderValue> {
-        if !self.state.include_attestation {
+        // 本分支在代码层面禁用自动证明，配置及宿主能力声明均不能重新开启。
+        // 在所有 HTTP、WebSocket 和实时请求共用的入口阻止调用宿主。
+        const ATTESTATION_ENABLED: bool = false;
+        if !ATTESTATION_ENABLED || !self.state.include_attestation {
             return None;
         }
 
