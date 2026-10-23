@@ -356,3 +356,6 @@ pub fn is_persisted_rollout_item_with_mode(
 ) -> bool {
     persisted_rollout_item_with_mode(item, history_mode, event_mode).is_some()
 }
+#[cfg(test)]
+#[path = "policy_tests.rs"]
+mod tests;

@@ -16,7 +16,7 @@ from codex_package.targets import TARGET_SPECS, TargetSpec
 
 
 class FetchCodexV8ArtifactsTest(unittest.TestCase):
-    version = "150.4.0"
+    version = "152.2.0"
 
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
@@ -61,7 +61,7 @@ class FetchCodexV8ArtifactsTest(unittest.TestCase):
 
         if create_pins:
             pins = (
-                self.root / "third_party/v8/rusty_v8_150_4_0_release_manifests.sha256"
+                self.root / "third_party/v8/rusty_v8_152_2_0_release_manifests.sha256"
             )
             pins.parent.mkdir(parents=True)
             digest = trusted_digest or hashlib.sha256(manifest).hexdigest()
@@ -212,7 +212,7 @@ class FetchCodexV8ArtifactsTest(unittest.TestCase):
                 spec, version=self.version, cache_root=self.root / "cache"
             )
             pins = (
-                self.root / "third_party/v8/rusty_v8_150_4_0_release_manifests.sha256"
+                self.root / "third_party/v8/rusty_v8_152_2_0_release_manifests.sha256"
             )
             pins.write_text(f"{'0' * 64}  {name}\n")
             download.reset_mock()

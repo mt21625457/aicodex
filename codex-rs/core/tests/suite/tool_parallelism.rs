@@ -149,30 +149,16 @@ async fn shell_tools_run_in_parallel() -> anyhow::Result<()> {
     let mut builder = test_codex().with_model("gpt-5.4");
     let test = builder.build(&server).await?;
 
-    let first_marker = test.cwd.path().join("parallel-shell-one");
-    let second_marker = test.cwd.path().join("parallel-shell-two");
-    let first_command = format!(
-        "touch '{}'; i=0; while [ ! -f '{}' ] && [ $i -lt 2000 ]; do sleep 0.01; i=$((i+1)); done; test -f '{}'",
-        first_marker.display(),
-        second_marker.display(),
-        second_marker.display(),
-    );
-    let second_command = format!(
-        "touch '{}'; i=0; while [ ! -f '{}' ] && [ $i -lt 2000 ]; do sleep 0.01; i=$((i+1)); done; test -f '{}'",
-        second_marker.display(),
-        first_marker.display(),
-        first_marker.display(),
-    );
-    let args_one = serde_json::to_string(&json!({
-        "cmd": first_command,
-        "login": false,
-        "yield_time_ms": 25_000,
-    }))?;
-    let args_two = serde_json::to_string(&json!({
-        "cmd": second_command,
-        "login": false,
-        "yield_time_ms": 25_000,
-    }))?;
+    let shell_args = |call_id: &str| {
+        json!({
+            "cmd": format!(": > {call_id}.started; while [ ! -f release ]; do sleep 0.01; done; echo {call_id}"),
+            "login": false,
+            "yield_time_ms": 30_000,
+        })
+        .to_string()
+    };
+    let args_one = shell_args("call-1");
+    let args_two = shell_args("call-2");
 
     let first_response = sse(vec![
         json!({"type": "response.created", "response": {"id": "resp-1"}}),
@@ -186,19 +172,29 @@ async fn shell_tools_run_in_parallel() -> anyhow::Result<()> {
     ]);
     let responses = mount_sse_sequence(&server, vec![first_response, second_response]).await;
 
-    run_turn(&test, "run exec_command twice").await?;
-    let request = responses
-        .last_request()
-        .expect("tool outputs should be posted");
+    let release_commands = async {
+        let overlap = tokio::time::timeout(Duration::from_secs(5), async {
+            while !test.cwd.path().join("call-1.started").exists()
+                || !test.cwd.path().join("call-2.started").exists()
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        fs::write(test.cwd.path().join("release"), "")?;
+        overlap.map_err(|_| anyhow::anyhow!("shell commands did not overlap"))
+    };
+    let (turn_result, overlap_result) =
+        tokio::join!(run_turn(&test, "run exec_command twice"), release_commands);
+    overlap_result?;
+    turn_result?;
+
     for call_id in ["call-1", "call-2"] {
-        let output_item = request.function_call_output(call_id);
-        let output = output_item["output"]
-            .as_str()
-            .expect("shell output should be text");
-        assert!(
-            output.contains("Process exited with code 0"),
-            "{call_id}: {output}"
-        );
+        let output = responses
+            .function_call_output_text(call_id)
+            .expect("missing exec output");
+        assert!(output.contains("Process exited with code 0"), "{output}");
+        assert!(output.contains(&format!("Output:\n{call_id}")), "{output}");
     }
 
     Ok(())

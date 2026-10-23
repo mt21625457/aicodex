@@ -312,14 +312,18 @@ impl WebSearchTool {
                 "Moonshot web search could not resolve the primary provider URL".to_string(),
             )
         })?;
-        let provider_bearer = self
-            .primary_provider
-            .api_auth()
-            .await
-            .ok()
-            .and_then(|auth| {
-                codex_web_search::provider_token_from_auth_headers(&auth.to_auth_headers())
-            });
+        let provider_bearer = match self.primary_provider.api_auth().await.ok() {
+            Some(auth) => {
+                let headers = auth.resolve_auth_headers().await.map_err(|_| {
+                    FunctionCallError::RespondToModel(
+                        "Moonshot web search could not resolve the primary provider authentication"
+                            .to_string(),
+                    )
+                })?;
+                codex_web_search::provider_token_from_auth_headers(&headers)
+            }
+            None => None,
+        };
         let resolved = resolve_moonshot_search_config(
             &self.moonshot_search,
             Some(&provider.base_url),

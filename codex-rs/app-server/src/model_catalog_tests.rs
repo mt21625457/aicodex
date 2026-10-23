@@ -89,8 +89,15 @@ async fn queued_discovery_rechecks_provider_requirements() {
         endpoint.clone(),
         /*auth_manager*/ None,
     ));
-    let catalog = Arc::new(ModelCatalog::new(config_manager, config, models_manager));
-    let refresh = catalog.refresh.lock().await;
+    let catalog = Arc::new(ModelCatalog::new(
+        config_manager,
+        None,
+        config,
+        models_manager,
+        AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing()),
+    ));
+    let refresh_lock = Arc::clone(&catalog.state.lock().await.refresh);
+    let refresh = refresh_lock.lock().await;
     let request = tokio::spawn({
         let catalog = Arc::clone(&catalog);
         async move { catalog.list_models(RefreshStrategy::OnlineIfUncached).await }
@@ -147,7 +154,13 @@ async fn cached_catalog(home: &std::path::Path, endpoint: Arc<SlowEndpoint>) -> 
             CodexAuth::create_dummy_chatgpt_auth_for_testing(),
         )),
     ));
-    Arc::new(ModelCatalog::new(config_manager, config, models_manager))
+    Arc::new(ModelCatalog::new(
+        config_manager,
+        None,
+        config,
+        models_manager,
+        AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing()),
+    ))
 }
 
 #[tokio::test]
@@ -155,11 +168,8 @@ async fn stale_catalog_returns_while_refresh_is_blocked_and_coalesces_requests()
     let home = tempfile::tempdir().unwrap();
     let endpoint = Arc::new(SlowEndpoint::default());
     let catalog = cached_catalog(home.path(), endpoint.clone()).await;
-    let expected = catalog
-        .models_manager
-        .cached_models_for_display()
-        .await
-        .unwrap();
+    let models_manager = catalog.current().await.unwrap().1;
+    let expected = models_manager.cached_models_for_display().await.unwrap();
     let first = tokio::time::timeout(
         Duration::from_secs(/*secs*/ 2),
         catalog.list_models(RefreshStrategy::OnlineIfUncached),
@@ -186,7 +196,8 @@ async fn stale_catalog_returns_while_refresh_is_blocked_and_coalesces_requests()
     }
     assert_eq!(endpoint.requests.load(Ordering::SeqCst), 1);
     endpoint.release.notify_one();
-    let refresh = tokio::time::timeout(Duration::from_secs(/*secs*/ 2), catalog.refresh.lock())
+    let refresh_lock = Arc::clone(&catalog.state.lock().await.refresh);
+    let refresh = tokio::time::timeout(Duration::from_secs(/*secs*/ 2), refresh_lock.lock())
         .await
         .unwrap();
     drop(refresh);
@@ -196,9 +207,7 @@ async fn stale_catalog_returns_while_refresh_is_blocked_and_coalesces_requests()
         .unwrap();
     assert_eq!(
         updated,
-        catalog
-            .models_manager
-            .build_available_models(vec![visible_model("updated-model")])
+        models_manager.build_available_models(vec![visible_model("updated-model")])
     );
     assert_eq!(endpoint.requests.load(Ordering::SeqCst), 1);
 }
@@ -217,7 +226,8 @@ async fn failed_refresh_preserves_catalog_and_backs_off() {
         .await
         .unwrap();
     endpoint.release.notify_one();
-    let refresh = tokio::time::timeout(Duration::from_secs(/*secs*/ 2), catalog.refresh.lock())
+    let refresh_lock = Arc::clone(&catalog.state.lock().await.refresh);
+    let refresh = tokio::time::timeout(Duration::from_secs(/*secs*/ 2), refresh_lock.lock())
         .await
         .unwrap();
     drop(refresh);
@@ -232,7 +242,7 @@ async fn failed_refresh_preserves_catalog_and_backs_off() {
     }
     assert_eq!(endpoint.requests.load(Ordering::SeqCst), 1);
     // Expire only the retry deadline; no wall-clock sleep or clock mutation is needed.
-    *catalog.refresh.lock().await = Some(Instant::now() - Duration::from_secs(/*secs*/ 31));
+    *refresh_lock.lock().await = Some(Instant::now() - Duration::from_secs(/*secs*/ 31));
     assert_eq!(
         catalog
             .list_models(RefreshStrategy::OnlineIfUncached)
@@ -245,8 +255,51 @@ async fn failed_refresh_preserves_catalog_and_backs_off() {
         .unwrap();
     assert_eq!(endpoint.requests.load(Ordering::SeqCst), 2);
     endpoint.release.notify_one();
-    let refresh = tokio::time::timeout(Duration::from_secs(/*secs*/ 2), catalog.refresh.lock())
+    let refresh_lock = Arc::clone(&catalog.state.lock().await.refresh);
+    let refresh = tokio::time::timeout(Duration::from_secs(/*secs*/ 2), refresh_lock.lock())
         .await
         .unwrap();
     drop(refresh);
+}
+
+/// Reloads must neither replace a same-route refresh guard nor inherit an old route's backoff.
+#[tokio::test]
+#[expect(
+    clippy::await_holding_invalid_type,
+    reason = "Hold the previous route's refresh lock while checking reload and replacement isolation."
+)]
+async fn reload_scopes_refresh_state_to_the_current_model_manager() {
+    let home = tempfile::tempdir().unwrap();
+    let endpoint = Arc::new(SlowEndpoint::default());
+    let catalog = cached_catalog(home.path(), endpoint).await;
+    let (old_config, old_models) = catalog.current().await.unwrap();
+    let expected_old_catalog = old_models
+        .list_models(RefreshStrategy::Offline, old_config.http_client_factory())
+        .await;
+    let old_refresh = catalog.refresh_for_snapshot(&old_models).await;
+    let old_guard = old_refresh.clone().lock_owned().await;
+
+    catalog.invalidate().await;
+    let (_, same_models) = catalog.current().await.unwrap();
+    assert!(Arc::ptr_eq(&same_models, &old_models));
+    assert!(Arc::ptr_eq(
+        &catalog.refresh_for_snapshot(&same_models).await,
+        &old_refresh,
+    ));
+
+    std::fs::write(home.path().join("config.toml"), "model_provider = 'ollama'").unwrap();
+    catalog.invalidate().await;
+    let (new_config, new_models) = catalog.current().await.unwrap();
+    assert_eq!(new_config.model_provider_id, "ollama");
+    assert!(!Arc::ptr_eq(&new_models, &old_models));
+    let new_refresh = catalog.refresh_for_snapshot(&new_models).await;
+    assert!(!Arc::ptr_eq(&new_refresh, &old_refresh));
+    assert_eq!(*new_refresh.try_lock().unwrap(), None);
+    // A request already holding the old routing snapshot still sees its old catalog.
+    let old_catalog = catalog
+        .list_models_from_snapshot(old_config, old_models, RefreshStrategy::Offline)
+        .await
+        .unwrap();
+    assert_eq!(old_catalog, expected_old_catalog);
+    drop(old_guard);
 }

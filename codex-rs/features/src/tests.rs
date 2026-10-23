@@ -53,6 +53,28 @@ fn sleep_tool_config_rejects_unknown_mode() {
 }
 
 #[test]
+fn runtime_auth_config_accepts_modes_without_implicitly_enabling_the_feature() {
+    for mode in ["dual_header", "assertion_only"] {
+        let config: FeaturesToml =
+            toml::from_str(&format!("[runtime_agent_instances]\nmode = '{mode}'")).unwrap();
+        let mut features = Features::with_defaults();
+        features.apply_toml(&config);
+        assert!(!features.enabled(Feature::RuntimeAgentInstances));
+
+        let config: FeaturesToml = toml::from_str(&format!(
+            "[runtime_agent_instances]\nenabled = true\nmode = '{mode}'"
+        ))
+        .unwrap();
+        features.apply_toml(&config);
+        assert!(features.enabled(Feature::RuntimeAgentInstances));
+    }
+    assert!(
+        toml::from_str::<FeaturesToml>("[runtime_agent_instances]\nmode = 'credential_only'")
+            .is_err()
+    );
+}
+
+#[test]
 fn under_development_features_are_disabled_by_default() {
     for spec in crate::FEATURES {
         // Instant interrupts are enabled by default while retaining their development stage.
@@ -974,6 +996,91 @@ fn async_compaction_materializes_absent_and_boolean_configs() {
             config.materialize_resolved_enabled(&features);
             assert_eq!(config.async_compaction, Some(FeatureToml::Enabled(enabled)));
             assert_eq!(config.entries().get("async_compaction"), Some(&enabled));
+        }
+    }
+}
+
+#[test]
+fn retired_worktree_and_voice_config_overrides_are_ignored() {
+    for enabled in [false, true] {
+        let features_toml = FeaturesToml::from(BTreeMap::from([
+            ("worktrees".to_string(), enabled),
+            ("realtime_conversation".to_string(), enabled),
+        ]));
+        let features = Features::from_sources(
+            FeatureConfigSource {
+                features: Some(&features_toml),
+                ..Default::default()
+            },
+            FeatureConfigSource::default(),
+            FeatureOverrides::default(),
+        );
+        assert_eq!(features, Features::with_defaults());
+    }
+}
+
+#[test]
+fn runtime_auth_materializes_enabled_without_losing_mode() {
+    for mode in ["dual_header", "assertion_only"] {
+        let mut config: FeaturesToml =
+            toml::from_str(&format!("[runtime_agent_instances]\nmode = '{mode}'"))
+                .expect("parse mode-only runtime auth config");
+        let Some(FeatureToml::Config(original)) = config.runtime_agent_instances.clone() else {
+            panic!("runtime auth table should remain structured")
+        };
+        let mut features = Features::with_defaults();
+        for enabled in [true, false] {
+            config
+                .entries
+                .insert("runtime_agent_instances".to_string(), !enabled);
+            features.set_enabled(Feature::RuntimeAgentInstances, enabled);
+            config.materialize_resolved_enabled(&features);
+            assert_eq!(
+                config.runtime_agent_instances,
+                Some(FeatureToml::Config(
+                    crate::RuntimeAgentInstancesConfigToml {
+                        enabled: Some(enabled),
+                        mode: original.mode,
+                    }
+                ))
+            );
+            assert!(!config.entries.contains_key("runtime_agent_instances"));
+            let serialized = toml::to_string(&config).expect("serialize resolved runtime auth");
+            let restored: FeaturesToml =
+                toml::from_str(&serialized).expect("round trip resolved runtime auth");
+            assert_eq!(
+                restored.runtime_agent_instances,
+                config.runtime_agent_instances
+            );
+            let mut restored_features = Features::with_defaults();
+            restored_features.apply_toml(&restored);
+            assert_eq!(
+                restored_features.enabled(Feature::RuntimeAgentInstances),
+                enabled
+            );
+        }
+    }
+}
+
+#[test]
+fn runtime_auth_materializes_absent_and_boolean_configs() {
+    for original in [None, Some(FeatureToml::Enabled(false))] {
+        let mut config = FeaturesToml {
+            runtime_agent_instances: original,
+            ..Default::default()
+        };
+        let mut features = Features::with_defaults();
+        for enabled in [true, false] {
+            features.set_enabled(Feature::RuntimeAgentInstances, enabled);
+            config.materialize_resolved_enabled(&features);
+            assert_eq!(
+                config.runtime_agent_instances,
+                Some(FeatureToml::Enabled(enabled))
+            );
+            assert_eq!(
+                config.entries().get("runtime_agent_instances"),
+                Some(&enabled)
+            );
         }
     }
 }

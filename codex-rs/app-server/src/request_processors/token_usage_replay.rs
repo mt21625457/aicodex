@@ -394,20 +394,22 @@ mod tests {
             ThreadRolledBackEvent { num_turns: 1 },
         )));
         items.push(usage());
-        items.push(RolloutItem::Compacted(codex_rollout::CompactedItem {
-            message: "summary".to_string(),
-            replacement_history: None,
-            retained_context: None,
-            guardian_history: None,
-            mcp_resource_origins: None,
-            window_number: None,
-            first_window_id: None,
-            previous_window_id: None,
-            window_id: None,
-            compaction_response_id: None,
-            latest_token_usage_record: None,
-            resume_metadata: None,
-        }));
+        items.push(RolloutItem::Compacted(Box::new(
+            codex_rollout::CompactedItem {
+                message: "summary".to_string(),
+                replacement_history: None,
+                retained_context: None,
+                guardian_history: None,
+                mcp_resource_origins: None,
+                window_number: None,
+                first_window_id: None,
+                previous_window_id: None,
+                window_id: None,
+                compaction_response_id: None,
+                latest_token_usage_record: None,
+                resume_metadata: None,
+            },
+        )));
         items.push(usage());
         items.push(RolloutItem::EventMsg(EventMsg::TokenCount(
             TokenCountEvent {

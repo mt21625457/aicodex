@@ -63,12 +63,11 @@ Settings: relative to window 1
     <MODEL_INSTRUCTIONS>
 02:message/user:
     Keep the working tree unchanged.
-03:message/developer[3]:
-    [01] <MODEL_SWITCH>
-    [02] <context_continuation>
+03:message/developer[2]:
+    [01] <context_continuation>
         The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
         </context_continuation>
-    [03] <PERMISSIONS_INSTRUCTIONS>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 04:message/user:
     <ENVIRONMENT_CONTEXT>
 05:message/user:
@@ -86,13 +85,13 @@ Settings: relative to window 2
   reasoning: {"context":"all_turns","effort":"low"}
   text: {"format":{"name":"codex_output_schema","schema":{"additionalProperties":false,"properties":{"outcome":{"enum":["allow","deny"],"type":"string"},"rationale":{"type":"string"},"risk_level":{"enum":["low","medium","high","critical"],"type":"string"},"user_authorization":{"enum":["unknown","low","medium","high"],"type":"string"}},"required":["outcome"],"type":"object"},"strict":false,"type":"json_schema"},"verbosity":"low"}
 -- request 6 (turn) --
-00:additional_tools/developer (1; hash=65a86311792f6c71):
+00:compaction:encrypted=true; chars=39; hash=4010be12538dbedf
+01:additional_tools/developer (1; hash=65a86311792f6c71):
         - namespace/functions; hash=dcfbcf0da1c2d607
           - custom/exec
           - function/wait
-01:message/developer:
+02:message/developer:
     <GUARDIAN_INSTRUCTIONS>
-02:compaction:encrypted=true; chars=39; hash=4010be12538dbedf
 03:message/developer:
     <PERMISSIONS_INSTRUCTIONS>
 04:message/user:
@@ -194,12 +193,11 @@ Settings: same as window 2
     <MODEL_INSTRUCTIONS>
 02:message/user:
     Keep the working tree unchanged.
-03:message/developer[3]:
-    [01] <MODEL_SWITCH>
-    [02] <context_continuation>
+03:message/developer[2]:
+    [01] <context_continuation>
         The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
         </context_continuation>
-    [03] <PERMISSIONS_INSTRUCTIONS>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 04:message/user:
     <ENVIRONMENT_CONTEXT>
 05:message/user:
@@ -246,13 +244,13 @@ Settings: same as window 2
 ## Window 6 (after request 9: input diverged at item 00)
 Settings: same as window 3
 -- request 10 (turn) --
-00:additional_tools/developer (1; hash=65a86311792f6c71):
+00:compaction:encrypted=true; chars=33; hash=5c07b4383c427607
+01:additional_tools/developer (1; hash=65a86311792f6c71):
         - namespace/functions; hash=dcfbcf0da1c2d607
           - custom/exec
           - function/wait
-01:message/developer:
+02:message/developer:
     <GUARDIAN_INSTRUCTIONS>
-02:compaction:encrypted=true; chars=33; hash=5c07b4383c427607
 03:message/developer:
     <PERMISSIONS_INSTRUCTIONS>
 04:message/user:

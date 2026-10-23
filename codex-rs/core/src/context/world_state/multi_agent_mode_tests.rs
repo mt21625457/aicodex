@@ -4,6 +4,7 @@ use crate::context::MultiAgentRoleInstructions;
 use crate::context::world_state::WorldState;
 use crate::context::world_state::test_support::FragmentSectionTestExt as _;
 use codex_protocol::models::ResponseItem;
+use codex_protocol_test_support::ContentItemTestExt;
 use codex_utils_output_truncation::approx_token_count;
 use pretty_assertions::assert_eq;
 
@@ -91,10 +92,11 @@ fn unchanged_mode_is_reemitted_after_usage_hint_migration() {
         .expect("unchanged mode should follow migrated usage instructions");
 
     assert_eq!(
-        instructions.render(),
+        instructions.render().expect_text(),
         MultiAgentModeInstructions::from_mode(MultiAgentMode::Proactive)
             .expect("proactive mode should render")
             .render()
+            .expect_text()
     );
 }
 
@@ -138,8 +140,12 @@ fn catalog_role_updates_remain_separate_from_active_mode() {
     assert_eq!(
         updates,
         vec![
-            ContextualUserFragment::into(current_role),
-            ContextualUserFragment::into(expected_mode),
+            ContextualUserFragment::into(current_role.with_metadata(
+                codex_protocol::models::ContentItemMetadata::tool(/*namespace*/ None)
+            )),
+            ContextualUserFragment::into(expected_mode.with_metadata(
+                codex_protocol::models::ContentItemMetadata::tool(/*namespace*/ None)
+            )),
         ],
     );
 }
@@ -161,6 +167,42 @@ fn custom_mode_is_bounded_before_snapshot_and_rendering() {
         .render_fragment_diff(PreviousSectionState::Absent)
         .1
         .expect("custom mode should render")
-        .render();
+        .render()
+        .expect_text();
     assert!(approx_token_count(&rendered) < 1_000);
+}
+
+#[test]
+fn bounded_role_keeps_markers_and_tool_namespace() {
+    let role = MultiAgentRoleInstructions::Composed {
+        base: "catalog role instructions ".repeat(2_000),
+        marked: true,
+        omit_update_plan_instructions: false,
+        max_concurrency: 4,
+        wait_agent_enabled: true,
+        expose_model_overrides: true,
+    };
+    let hint =
+        MultiAgentUsageHintState::new(role).with_namespace(ContentItemNamespace::Collaboration);
+    let fragment = hint
+        .render_fragment_diff(PreviousSectionState::Absent)
+        .1
+        .expect("new role should render");
+
+    assert_eq!(
+        fragment.markers(),
+        ("<multi_agent_role>", "</multi_agent_role>")
+    );
+    assert_eq!(
+        fragment.content_kind().as_str(),
+        "multi_agent.role_instructions"
+    );
+    assert_eq!(
+        fragment.content_metadata(),
+        ContentItemMetadata::tool(Some(ContentItemNamespace::Collaboration))
+    );
+    assert!(
+        approx_token_count(&fragment.body().expect_text())
+            <= crate::config::MULTI_AGENT_USAGE_HINT_MAX_TOKENS
+    );
 }

@@ -35,12 +35,14 @@ Settings:
         The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
         </context_continuation>
     [02] <PERMISSIONS_INSTRUCTIONS>
-03:message/developer:
-    <context_window>
-    Agent name: /root
-    First context window id: <UUID 1>
-    Current context window id: <UUID 1>
-    </context_window>
+03:message/developer[3]:
+    [01] <context_window>
+    [02]
+        Agent name: /root
+        First context window id: <UUID 1>
+        Current context window id: <UUID 1>
+
+    [03] </context_window>
 04:message/user:
     <ENVIRONMENT_CONTEXT>
 05:message/user:
@@ -73,13 +75,15 @@ Settings: same as window 1
         The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
         </context_continuation>
     [02] <PERMISSIONS_INSTRUCTIONS>
-03:message/developer:
-    <context_window>
-    Agent name: /root
-    First context window id: <UUID 1>
-    Current context window id: <UUID 2>
-    Previous context window id: <UUID 1>
-    </context_window>
+03:message/developer[3]:
+    [01] <context_window>
+    [02]
+        Agent name: /root
+        First context window id: <UUID 1>
+        Current context window id: <UUID 2>
+        Previous context window id: <UUID 1>
+
+    [03] </context_window>
 04:message/user:
     <ENVIRONMENT_CONTEXT>
 05:message/user:

@@ -387,3 +387,43 @@ async fn provider_switch_rejects_previous_candidate_and_routes_new_attempt(
     );
     shutdown(&sess).await;
 }
+
+#[tokio::test]
+async fn empty_candidate_remains_pending_but_closed_candidate_is_discarded() {
+    let (sess, turn, _events) =
+        crate::session::tests::make_session_and_context_with_auth_and_config_and_rx(
+            CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+            Vec::new(),
+            |config| {
+                config.features.enable(Feature::AsyncCompaction).unwrap();
+                config.features.disable(Feature::TokenBudget).unwrap();
+            },
+        )
+        .await;
+    assert!(enabled(&turn));
+    let step = sess
+        .capture_step_context(Arc::clone(&turn), &CancellationToken::new())
+        .await
+        .expect("capture compaction step");
+    let (sender, receiver) = oneshot::channel();
+    {
+        let mut state = sess.state.lock().await;
+        state.async_compaction.last_attempt = Some(CompactionAttempt {
+            history_version: state.history.history_version(),
+            model_slug: turn.model_info().slug.clone(),
+            provider_info: turn.provider.info().clone(),
+            compaction_hash: turn.model_info().comp_hash.clone(),
+            auth_owner_generation: provider_auth_owner_generation(&turn),
+        });
+        state.async_compaction.result = Some(receiver);
+    }
+
+    assert!(take_ready(&sess, &turn).await.is_none());
+    assert!(sess.state.lock().await.async_compaction.result.is_some());
+    drop(sender);
+    assert!(take_ready(&sess, &turn).await.is_none());
+    assert!(sess.state.lock().await.async_compaction.result.is_none());
+    // A manual compact after the readiness poll must not await an already consumed receiver.
+    assert!(wait_for_pending(&sess, &step).await.is_none());
+    assert!(take_ready(&sess, &turn).await.is_none());
+}

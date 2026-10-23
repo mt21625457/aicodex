@@ -674,7 +674,7 @@ async fn synthetic_call_output_id_is_stable_across_resumes() -> anyhow::Result<(
         RolloutLine {
             timestamp: "2024-01-01T00:00:00.000Z".to_string(),
             ordinal: None,
-            item: RolloutItem::SessionMeta(SessionMetaLine {
+            item: RolloutItem::SessionMeta(Box::new(SessionMetaLine {
                 meta: SessionMeta {
                     session_id: thread_id.into(),
                     id: thread_id,
@@ -687,7 +687,7 @@ async fn synthetic_call_output_id_is_stable_across_resumes() -> anyhow::Result<(
                     ..Default::default()
                 },
                 git: None,
-            }),
+            })),
         },
         RolloutLine {
             timestamp: "2024-01-01T00:00:01.000Z".to_string(),
@@ -1188,7 +1188,7 @@ async fn resume_replays_legacy_js_repl_image_rollout_shapes() {
         RolloutLine {
             timestamp: "2024-01-01T00:00:00.000Z".to_string(),
             ordinal: None,
-            item: RolloutItem::SessionMeta(SessionMetaLine {
+            item: RolloutItem::SessionMeta(Box::new(SessionMetaLine {
                 meta: SessionMeta {
                     session_id: thread_id.into(),
                     id: thread_id,
@@ -1201,7 +1201,7 @@ async fn resume_replays_legacy_js_repl_image_rollout_shapes() {
                     ..Default::default()
                 },
                 git: None,
-            }),
+            })),
         },
         RolloutLine {
             timestamp: "2024-01-01T00:00:01.000Z".to_string(),
@@ -1332,7 +1332,7 @@ async fn resume_replays_image_tool_outputs_with_detail() {
         RolloutLine {
             timestamp: "2024-01-01T00:00:00.000Z".to_string(),
             ordinal: None,
-            item: RolloutItem::SessionMeta(SessionMetaLine {
+            item: RolloutItem::SessionMeta(Box::new(SessionMetaLine {
                 meta: SessionMeta {
                     session_id: thread_id.into(),
                     id: thread_id,
@@ -1345,7 +1345,7 @@ async fn resume_replays_image_tool_outputs_with_detail() {
                     ..Default::default()
                 },
                 git: None,
-            }),
+            })),
         },
         RolloutLine {
             timestamp: "2024-01-01T00:00:01.000Z".to_string(),

@@ -1131,6 +1131,36 @@ async fn provider_default_apply_patch_keeps_fallback_model_editing() {
 }
 
 #[tokio::test]
+async fn apply_patch_respects_disabled_environment_access_without_losing_stable_tools() {
+    for fallback_model in [false, true] {
+        for ephemeral in [false, true] {
+            for (has_environment, shell_enabled) in [(false, false), (false, true), (true, false)] {
+                let plan = probe(|turn| {
+                    set_feature(turn, Feature::ShellTool, shell_enabled);
+                    update_config(turn, |config| config.ephemeral = ephemeral);
+                    if !has_environment {
+                        turn.initial_environments.environments.clear();
+                    }
+                    update_model_info(turn, |model_info| {
+                        model_info.used_fallback_model_metadata = fallback_model;
+                        model_info.apply_patch_tool_type =
+                            (!fallback_model).then_some(ApplyPatchToolType::Freeform);
+                    });
+                })
+                .await;
+                if !ephemeral || has_environment || shell_enabled {
+                    plan.assert_visible_contains(&["apply_patch"]);
+                    plan.assert_registered_contains(&["apply_patch"]);
+                } else {
+                    plan.assert_visible_lacks(&["apply_patch"]);
+                    plan.assert_registered_lacks(&["apply_patch"]);
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn environment_tools_follow_the_step_context() {
     let (_session, mut turn) = make_session_and_context().await;
     update_turn_settings_for_test(&mut turn, |settings| {

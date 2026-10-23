@@ -10,11 +10,13 @@ use codex_http_client::HttpClientFactory;
 use codex_login::AuthManager;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::config_types::CollaborationModeMask;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result as CoreResult;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelVisibility;
 use codex_protocol::openai_models::ModelsResponse;
+use std::borrow::Cow;
 use std::fmt;
 use std::future::Future;
 use std::path::PathBuf;
@@ -51,7 +53,8 @@ enum CatalogUpdateSource {
 pub trait ModelsEndpointClient: fmt::Debug + Send + Sync {
     /// Opaque identity of the current provider and credentials, without resolving auth.
     ///
-    /// Must change when account, email, plan, provider, or API credentials change.
+    /// Must distinguish provider routing and authenticated principals within the
+    /// manager and cache's caller-established scope.
     /// Return `None` when identity is unavailable; cached catalog reuse is then disabled.
     fn identity(&self) -> Option<String>;
 
@@ -453,36 +456,20 @@ impl ModelsManager for OpenAiModelsManager {
     fn get_remote_models(&self) -> ModelsManagerFuture<'_, Vec<ModelInfo>> {
         Box::pin(async move {
             let entry = self.remote_models.read().await;
-            if !self.api_key_discovery_disabled()
-                && entry.identity.is_some()
-                && entry.identity == self.endpoint_client.identity()
-            {
-                entry.models.clone()
-            } else {
-                self.catalog_source.fallback_models().unwrap_or_default()
-            }
+            self.models_for_entry(&entry).into_owned()
         })
     }
 
     fn try_get_remote_models(&self) -> Result<Vec<ModelInfo>, TryLockError> {
         let entry = self.remote_models.try_read()?;
-        Ok(
-            if !self.api_key_discovery_disabled()
-                && entry.identity.is_some()
-                && entry.identity == self.endpoint_client.identity()
-            {
-                entry.models.clone()
-            } else {
-                self.catalog_source.fallback_models().unwrap_or_default()
-            },
-        )
+        Ok(self.models_for_entry(&entry).into_owned())
     }
 
     fn auth_manager(&self) -> Option<&AuthManager> {
         self.auth_manager.as_deref()
     }
 
-    #[tracing::instrument(skip_all, fields(model))]
+    #[tracing::instrument(skip_all, fields(model = model))]
     fn get_model_info<'a>(
         &'a self,
         model: &'a str,
@@ -537,6 +524,18 @@ impl ModelsManager for OpenAiModelsManager {
 }
 
 impl OpenAiModelsManager {
+    /// Selects the catalog available under the current provider and auth identity.
+    fn models_for_entry<'a>(&self, entry: &'a ModelsCacheEntry) -> Cow<'a, [ModelInfo]> {
+        if !self.api_key_discovery_disabled()
+            && entry.identity.is_some()
+            && entry.identity == self.endpoint_client.identity()
+        {
+            Cow::Borrowed(&entry.models)
+        } else {
+            Cow::Owned(self.catalog_source.fallback_models().unwrap_or_default())
+        }
+    }
+
     async fn raw_model_catalog(
         &self,
         refresh_strategy: RefreshStrategy,
@@ -635,7 +634,19 @@ impl OpenAiModelsManager {
         {
             Ok(response) => response,
             Err(error) => {
-                if matches!(&self.catalog_source, CatalogSource::ExplicitProvider(_)) {
+                // A failed fetch is not an authoritative empty catalog. Keep the last
+                // successful snapshot (and its original freshness) unless access was
+                // explicitly rejected. Provider/auth identity checks still govern reuse.
+                let is_provider_catalog =
+                    matches!(&self.catalog_source, CatalogSource::ExplicitProvider(_));
+                let access_denied = matches!(error.http_status_code_value(), Some(401 | 403));
+                let credentials_rejected = matches!(
+                    error.details(),
+                    CodexErrorDetails::RefreshTokenFailed(_)
+                        | CodexErrorDetails::GatewayLoginRequired(_)
+                );
+
+                if is_provider_catalog && (access_denied || credentials_rejected) {
                     {
                         let mut current = self.remote_models.write().await;
                         if request_identity != self.endpoint_client.identity() {
@@ -757,7 +768,7 @@ impl OpenAiModelsManager {
         };
         {
             let current = self.remote_models.read().await;
-            // A failed fetch must not be replaced by stale cache data even if invalidation failed.
+            // An access rejection must not be replaced by stale cache data if invalidation failed.
             if current.fetched_at == DateTime::<Utc>::MIN_UTC
                 && current.identity.as_ref() == Some(&identity)
             {
