@@ -1,0 +1,45 @@
+{
+  "baseline": "daf61e7a3d08c004cce53df531094a69795da819",
+  "branch": "dev",
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "profile": "dev [unoptimized]; both binaries built with identical Cargo arguments",
+  "cargo_arguments": [
+    "build",
+    "--locked",
+    "--offline",
+    "-p",
+    "codex-cli",
+    "-p",
+    "codex-v8-poc",
+    "--features",
+    "codex-v8-poc/sandbox",
+    "-j6"
+  ],
+  "environment": "scripts.dev_cargo.resolve_v8_env; RUST_MIN_STACK=33554432; no real credentials or API calls",
+  "samples": "7 paired alternating runs, 40 sequential turns each, 16384 ASCII padding bytes per user turn; fixed local SSE response; complete normalized request JSON and output hashes must match",
+  "scope": "whole child process CPU and max RSS; turn/start to turn/completed latency. Full-process allocations not instrumented. Does not exercise TUI viewers, shell tool outputs, message-history navigation, real network/model inference, WS or production concurrency.",
+  "source_sha256": {
+    "codex-rs/core/src/client.rs": "a5e919fb35786ebf7dc714188f6bc02d5d9e85bd748d92191bbcc81232793801",
+    "codex-rs/core/src/client_common.rs": "11ee9fcc4e7525dd11ae7bdc1311f9e3c2c5f4bbc8872eb719495331d3d4d69d",
+    "codex-rs/core/src/client_common_tests.rs": "7f7de9d04916307305e5be7941e33a0c1a428a72eb1adc742238e1139bd2b6a7",
+    "codex-rs/core/src/client_tests.rs": "726dc7e6c859e76833040200f58f59682a9b7135656bfdcdbffe9eac9e7a6256",
+    "codex-rs/message-history/src/lookup_index.rs": "298d00537c9497cbec23808cbce5a77211919fc5d352e13d6d72b9a80305de34",
+    "codex-rs/model-provider/src/amazon_bedrock/catalog.rs": "41767f0e47dd0b01ed0c59d502cac95b166da3dac3e25dce1369674f1fc70f5c",
+    "codex-rs/models-manager/src/lib.rs": "58a775808edf39c1dddded6ae7329effe432812d55ddae1e643398a5023ddab4",
+    "codex-rs/models-manager/src/manager.rs": "21eafb05ff261f7b22e7aa957701838b772a5bcee463a4d7e676790789198586",
+    "codex-rs/models-manager/src/manager_tests.rs": "b1fd3956cd60e3f905eb640861674214154015cea21a908a6a9f10be5b783c12",
+    "codex-rs/tui/src/inline_visualization.rs": "347b2792d0e0d869c661f98558a0e1a78c792a324be039bc1641b04a65afa26a",
+    "codex-rs/tui/src/inline_visualization/viewer.rs": "205265dbb94ddc115eed2e0a7b13db7805e5be146ea5dbde22457591aff12a0a",
+    "codex-rs/core/src/client_lazy_token_tests.rs": "c9f3a16f4a9f765fa8e911f5aa962c2d14ebb4ad2de172b2cf4c2038a4493b67",
+    "codex-rs/core/src/client_output_token_budget.rs": "22e2b89c28bc1821b7ba6e176f8162651ee20ddb259b0be564c6c88f6f0c1549",
+    "codex-rs/core/src/client_shell_cache_tests.rs": "b57759241dfd910ca269a70675ece0164fd1b5c1a0e204075549df3288257180",
+    "codex-rs/message-history/src/lookup_index_tests.rs": "8f7bb69161df8573edfde8d469f4f3d81fe06231e366e9ef7db7ffeacc20d1dd",
+    "codex-rs/tui/src/inline_visualization/viewer_tests.rs": "85a2dc889a3e63d16c62a9b2aeb0659db2bfe9364e09bc5d774608bee530f427"
+  },
+  "binary_sha256": {
+    "before": "fedacf91c53122a109fdf1a7611c15f549052bc30656d4899931254f521c6b0f",
+    "after": "569653fa328a08be9ca43c2dbc51fa5a3aea4edef1f3094f440a4ba730a91ff4"
+  },
+  "background": "No Cargo or other benchmark ran concurrently; normal desktop services remained active. Not a dedicated isolated benchmark host."
+}

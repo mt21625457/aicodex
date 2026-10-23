@@ -7,6 +7,7 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 
 const STRIDE: usize = 256;
+const _: () = assert!(STRIDE.is_power_of_two());
 const MAX_ANCHORS: usize = 4096;
 const MAX_FILES: usize = 16;
 
@@ -43,6 +44,7 @@ struct Entry {
     path: PathBuf,
     revision: Revision,
     anchors: Vec<(usize, u64)>,
+    stride: usize,
 }
 
 fn cache() -> &'static Mutex<VecDeque<Entry>> {
@@ -54,6 +56,7 @@ pub(super) struct ScanCursor {
     path: PathBuf,
     revision: Option<Revision>,
     anchors: Vec<(usize, u64)>,
+    stride: usize,
     pub(super) row: usize,
     pub(super) position: u64,
 }
@@ -63,16 +66,16 @@ impl ScanCursor {
     pub(super) fn new(path: &Path, metadata: &Metadata, offset: usize, use_index: bool) -> Self {
         // 有容量上限的历史可能原地裁剪；与 batch lookup 一样，不为该模式复用索引。
         let revision = use_index.then(|| revision(metadata)).flatten();
-        let anchors = revision
+        let (anchors, stride) = revision
             .as_ref()
             .and_then(|revision| {
                 let entries = cache().lock().ok()?;
                 entries
                     .iter()
                     .find(|entry| entry.path == path && &entry.revision == revision)
-                    .map(|entry| entry.anchors.clone())
+                    .map(|entry| (entry.anchors.clone(), entry.stride))
             })
-            .unwrap_or_default();
+            .unwrap_or_else(|| (Vec::new(), STRIDE));
         let (row, position) = anchors
             .iter()
             .rev()
@@ -83,6 +86,7 @@ impl ScanCursor {
             path: path.to_owned(),
             revision,
             anchors,
+            stride,
             row,
             position,
         }
@@ -93,11 +97,23 @@ impl ScanCursor {
         self.position += bytes as u64;
         // 禁用索引的平台或历史模式只线性扫描，不构造最终无法复用的锚点。
         if self.revision.is_some()
-            && self.row.is_multiple_of(STRIDE)
-            && self.anchors.len() < MAX_ANCHORS
+            // 初始 stride 为 2 的幂且只翻倍；用掩码避免每个扫描行执行变量除法。
+            && self.row & (self.stride - 1) == 0
             && self.anchors.last().is_none_or(|(row, _)| *row < self.row)
         {
-            self.anchors.push((self.row, self.position));
+            if self.anchors.len() == MAX_ANCHORS {
+                // 容量饱和后均匀稀疏化已验证的锚点，并继续覆盖长尾。不能只丢弃
+                // 早期锚点，否则反向查询会重新退化为全文扫描。保留的锚点仍来自
+                // 同一 revision 的成功 UTF-8 读取，不推算或创建未验证的字节位置。
+                let Some(stride) = self.stride.checked_mul(2) else {
+                    return;
+                };
+                self.stride = stride;
+                self.anchors.retain(|(row, _)| row.is_multiple_of(stride));
+            }
+            if self.row & (self.stride - 1) == 0 {
+                self.anchors.push((self.row, self.position));
+            }
         }
     }
 
@@ -114,10 +130,15 @@ impl ScanCursor {
             path: self.path,
             revision,
             anchors: self.anchors,
+            stride: self.stride,
         });
         entries.truncate(MAX_FILES);
     }
 }
+
+#[cfg(test)]
+#[path = "lookup_index_tests.rs"]
+mod adaptive_tests;
 
 #[cfg(test)]
 mod tests {
@@ -137,7 +158,7 @@ mod tests {
         assert_eq!(cursor.anchors.len(), if supported { 8 } else { 0 });
         cursor.save();
         let cached = ScanCursor::new(&path, &metadata, 2047, true);
-        // 性能证据采用扫描行数而非机器相关耗时：暖查询最多扫描一个 stride。
+        // 该历史尚未触发稀疏化，暖查询最多扫描一个初始 stride。
         assert_eq!(cached.row, if supported { 1792 } else { 0 });
         assert_eq!(cached.position, (cached.row * 2) as u64);
         let mut uncached = ScanCursor::new(&path, &metadata, 2047, false);

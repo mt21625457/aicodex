@@ -820,6 +820,82 @@ async fn get_model_info_uses_custom_catalog() {
 }
 
 #[tokio::test]
+async fn borrowed_model_selection_preserves_first_match_and_owned_overrides() {
+    // 同长度的重复模型必须仍取第一项，前缀更长才覆盖；配置不能回写借用目录。
+    let catalog = ModelsResponse {
+        models: vec![
+            remote_model("model", "Short", 0),
+            remote_model("model-long", "First long", 1),
+            remote_model("model-long", "Second long", 2),
+        ],
+    };
+    let manager = static_manager_for_tests(catalog.clone());
+    let config = ModelsManagerConfig {
+        base_instructions: Some("caller override".to_string()),
+        ..Default::default()
+    };
+    for query in ["model-long-version", "custom/model-long-version"] {
+        let actual = manager.get_model_info(query, &config).await;
+        assert_eq!(actual.display_name, "First long");
+        assert_eq!(actual.slug, query);
+        assert!(!actual.used_fallback_model_metadata);
+        assert_eq!(
+            actual,
+            construct_model_info(query, Some(catalog.models[1].clone()), &config)
+        );
+    }
+    assert_eq!(manager.get_remote_models().await, catalog.models);
+}
+
+#[tokio::test]
+async fn borrowed_openai_lookup_matches_owned_catalog_authority() {
+    // 覆盖身份变化、API-key 发现开关和显式 provider，防止快路径绕过原目录门控。
+    let config = ModelsManagerConfig::default();
+    for explicit in [false, true] {
+        let mut manager = OpenAiModelsManager::new_without_cache(
+            TestModelsEndpoint::new(Vec::new()),
+            Some(AuthManager::from_auth_for_testing(CodexAuth::from_api_key(
+                "test-key",
+            ))),
+        );
+        if explicit {
+            manager = manager.with_provider_catalog();
+        }
+        for identity in [Some("test-provider"), Some("different-account"), None] {
+            {
+                let mut entry = manager.remote_models.write().await;
+                entry.identity = identity.map(str::to_string);
+                entry.models = vec![
+                    remote_model("model-long", "First", 0),
+                    remote_model("model-long", "Second", 1),
+                ];
+            }
+            for enabled in [false, true] {
+                manager.set_api_key_model_discovery_enabled(enabled);
+                let owned_catalog = manager.get_remote_models().await;
+                for query in [
+                    "model-long",
+                    "model-long-version",
+                    "custom/model-long",
+                    "gpt-6-sol",
+                ] {
+                    let expected = if explicit {
+                        construct_model_info(
+                            query,
+                            owned_catalog.iter().find(|m| m.slug == query).cloned(),
+                            &config,
+                        )
+                    } else {
+                        construct_model_info_from_candidates(query, &owned_catalog, &config)
+                    };
+                    assert_eq!(manager.get_model_info(query, &config).await, expected);
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn get_model_info_matches_namespaced_suffix() {
     let config = ModelsManagerConfig::default();
     let mut remote = remote_model("gpt-image", "Image", /*priority*/ 0);

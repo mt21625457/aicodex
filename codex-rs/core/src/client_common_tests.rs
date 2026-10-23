@@ -413,3 +413,6 @@ async fn shell_cache_reports_repeat_work_benchmark_and_bypasses_small_outputs() 
     // 不以机器相关耗时作为通过条件；功能全等与小输入绕开缓存是确定性验收条件。
     assert_eq!(parse_structured_shell_output(&raw).unwrap(), expected);
 }
+
+#[path = "client_shell_cache_tests.rs"]
+mod shell_cache_tests;

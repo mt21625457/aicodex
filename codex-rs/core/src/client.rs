@@ -35,6 +35,9 @@ use std::sync::atomic::Ordering;
 #[path = "client_tool_metadata.rs"]
 mod tool_metadata;
 
+#[path = "client_output_token_budget.rs"]
+mod output_token_budget;
+
 use crate::CodexResponsesHeaders;
 use crate::tools::ExecutedToolCalls;
 use async_channel::Sender;
@@ -1261,12 +1264,16 @@ impl ModelClient {
         }
         let client_metadata = responses_metadata.client_metadata(include_internal);
         let provider = self.state.provider.info();
-        let tool_tokens = tools
-            .as_ref()
-            .map(crate::context_manager::estimate_serialized_tokens)
-            .unwrap_or(0);
-        let estimated_input = crate::context_manager::estimate_request_input_tokens("", &input)
-            .saturating_add(tool_tokens);
+        let max_output_tokens = output_token_budget::clamp_with_lazy_input(model_info, || {
+            // 这里只延迟输出预算使用的估算；前面的真实工具序列化、ID 生成和输入规范化
+            // 仍无条件完成，因此不会掩盖原有请求构建错误或改变持久化历史。
+            let tool_tokens = tools
+                .as_ref()
+                .map(crate::context_manager::estimate_serialized_tokens)
+                .unwrap_or(0);
+            crate::context_manager::estimate_request_input_tokens("", &input)
+                .saturating_add(tool_tokens)
+        });
         let request = ResponsesApiRequest {
             model: model_info.slug.clone(),
             input,
@@ -1274,7 +1281,7 @@ impl ModelClient {
             tool_choice: "auto".to_string(),
             parallel_tool_calls: prompt.parallel_tool_calls && !model_info.use_responses_lite,
             reasoning: Some(reasoning),
-            max_output_tokens: model_info.clamped_max_output_tokens(Some(estimated_input)),
+            max_output_tokens,
             store: codex_api::is_azure_responses_provider(
                 &provider.name,
                 provider.base_url.as_deref(),

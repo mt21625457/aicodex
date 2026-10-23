@@ -37,7 +37,7 @@ pub(crate) struct InlineVisualizationContext {
     visualizations_dir: PathBuf,
     thread_dir: PathBuf,
     viewer_dir: PathBuf,
-    materialized_viewers: Arc<Mutex<HashMap<PathBuf, String>>>,
+    materialized_viewers: Arc<Mutex<HashMap<PathBuf, viewer::ViewerSource>>>,
 }
 
 impl InlineVisualizationContext {

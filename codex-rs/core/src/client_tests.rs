@@ -2890,3 +2890,6 @@ async fn inference_tools_changes_follow_full_specs_across_turns() {
 // Flash 的请求边界回归独立维护，避免继续向本测试文件堆入场景。
 #[path = "client_flash_responses_tests.rs"]
 mod flash_responses_tests;
+
+#[path = "client_lazy_token_tests.rs"]
+mod lazy_token_tests;
