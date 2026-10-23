@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios.rs
+assertion_line: 2099
 expression: "context_snapshot::format_request_history_snapshot(\"The parent finishes above the compaction threshold. Its prediction fork retains the parent's context and reminder, but neither compacts nor adds another reminder after a tool call.\",\n&requests, &ContextSnapshotOptions::default().include_request_settings(),)"
 ---
 Scenario: The parent finishes above the compaction threshold. Its prediction fork retains the parent's context and reminder, but neither compacts nor adds another reminder after a tool call.
@@ -16,8 +17,8 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=696793f2090ba3e3):
-        - namespace/functions; hash=eb439da1f745d8d5
+00:additional_tools/developer (3; hash=f694c5bec1278535):
+        - namespace/functions; hash=4f94ea1f9e03629b
           - custom/exec
           - function/wait
           - function/request_user_input
@@ -50,12 +51,15 @@ Settings:
     - Relevance: Determine what a plugin can help with from explicit user mention or from the plugin-associa..., MCP tools, and apps exposed elsewhere in this turn. [hash=620459a4e7b590f0]
     - Missing/blocked: If the user requests a plugin that does not have relevant callable capabilities for t..., say so briefly and continue with the best fallback. [hash=746b0469a8f6cb3e]
 
-02:message/developer[2]:
-    [01] <permissions instructions>
+02:message/developer[3]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <permissions instructions>
         Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `danger-full-access`...ll commands are permitted. Network access is enabled. [hash=c134061cebb94a1b]
         Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.
         </permissions instructions>
-    [02] <collaboration_mode># Collaboration Mode: Default
+    [03] <collaboration_mode># Collaboration Mode: Default
 
         You are now in Default mode. Any previous instructions for other modes (e.g. Plan mode) are no longer active.
 
@@ -116,4 +120,4 @@ Settings:
     Suggest my next message.
 -- request 3 (turn) --
 11:function_call/functions.get_context_remaining:{}
-12:function_call_output:You have 0 tokens left in this context window.
+12:function_call_output:You have 0 tokens left before this context window is reset.

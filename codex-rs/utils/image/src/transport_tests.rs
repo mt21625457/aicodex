@@ -187,3 +187,76 @@ fn png_gamma_is_not_discarded_by_either_encoding_path() {
         );
     }
 }
+
+#[test]
+fn request_cache_reuses_pixels_and_matches_independent_encoding() {
+    for alpha in [255, 127] {
+        let url = data_url_from_bytes("image/png", &noisy_png(alpha));
+        let mut cache = TransportImagePreparationCache::default();
+        let mut pixels = None;
+        for encoding in [
+            TransportImageEncoding::Lossless,
+            TransportImageEncoding::Jpeg85,
+            TransportImageEncoding::Jpeg75,
+            TransportImageEncoding::Jpeg65,
+            TransportImageEncoding::Lossless,
+        ] {
+            assert_eq!(
+                cache.optimize(&url, encoding).unwrap(),
+                optimize_data_url_for_transport(&url, encoding).unwrap()
+            );
+            let prepared = cache.entries.get(&sha1_digest(url.as_bytes())).unwrap();
+            let pointer = prepared.decoded.as_bytes().as_ptr();
+            if let Some(previous) = pixels {
+                assert_eq!(pointer, previous);
+            }
+            pixels = Some(pointer);
+            assert_eq!(cache.entries.len(), 1);
+        }
+    }
+}
+
+#[test]
+fn request_cache_retention_limit_does_not_change_output() {
+    // 模拟已有图片占满预算，后续图片仍编码但不常驻缓存。
+    let url = data_url_from_bytes("image/png", &noisy_png(255));
+    let mut cache = TransportImagePreparationCache {
+        retained_bytes: MAX_PREPARED_IMAGE_BYTES,
+        ..Default::default()
+    };
+    assert_eq!(
+        cache
+            .optimize(&url, TransportImageEncoding::Jpeg75)
+            .unwrap(),
+        optimize_data_url_for_transport(&url, TransportImageEncoding::Jpeg75).unwrap()
+    );
+    assert!(cache.entries.is_empty());
+    assert_eq!(cache.retained_bytes, MAX_PREPARED_IMAGE_BYTES);
+}
+
+#[test]
+fn four_encoding_steps_decode_source_once_per_request() {
+    let url = data_url_from_bytes("image/png", &noisy_png(255));
+    let encodings = [
+        TransportImageEncoding::Lossless,
+        TransportImageEncoding::Jpeg85,
+        TransportImageEncoding::Jpeg75,
+        TransportImageEncoding::Jpeg65,
+    ];
+    TRANSPORT_DECODE_COUNT.with(|count| count.set(0));
+    let mut cache = TransportImagePreparationCache::default();
+    let actual: Vec<_> = encodings
+        .iter()
+        .map(|encoding| cache.optimize(&url, *encoding).unwrap())
+        .collect();
+    let optimized = TRANSPORT_DECODE_COUNT.with(std::cell::Cell::get);
+    TRANSPORT_DECODE_COUNT.with(|count| count.set(0));
+    let expected: Vec<_> = encodings
+        .iter()
+        .map(|encoding| optimize_data_url_for_transport(&url, *encoding).unwrap())
+        .collect();
+    let previous = TRANSPORT_DECODE_COUNT.with(std::cell::Cell::get);
+    assert_eq!(actual, expected);
+    assert_eq!((optimized, previous), (1, 4));
+    eprintln!("Image four-step source decodes: previous={previous}, optimized={optimized}");
+}

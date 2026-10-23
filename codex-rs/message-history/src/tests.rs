@@ -218,3 +218,48 @@ async fn append_entry_trims_history_to_soft_cap() {
     assert_eq!(pruned_len, long_entry_len);
     assert!(pruned_len <= soft_cap_bytes.max(long_entry_len));
 }
+
+#[test]
+fn indexed_lookup_matches_linear_lookup_with_crlf_invalid_json_and_missing_newline() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join(HISTORY_FILENAME);
+    let mut contents = String::new();
+    for row in 0..800 {
+        if row == 300 {
+            contents.push_str("invalid json\r\n");
+            continue;
+        }
+        let entry = HistoryEntry {
+            session_id: "test".into(),
+            ts: row,
+            text: format!("消息 {row}"),
+        };
+        contents.push_str(&serde_json::to_string(&entry).unwrap());
+        if row != 799 {
+            contents.push_str("\r\n");
+        }
+    }
+    std::fs::write(&path, &contents).unwrap();
+    // 先建立稀疏索引，再按倒序验证。坏 JSON 占行，末尾无换行仍是有效行。
+    assert!(lookup_history_entry(&path, 0, 799).is_some());
+    for offset in [800, 799, 700, 512, 301, 300, 299, 0] {
+        let expected = contents
+            .lines()
+            .nth(offset)
+            .and_then(|line| serde_json::from_str::<HistoryEntry>(line).ok());
+        assert_eq!(lookup_history_entry(&path, 0, offset), expected);
+    }
+    // 同路径截断后绝不能从陈旧偏移读取。
+    std::fs::write(
+        &path,
+        "{\"session_id\":\"new\",\"ts\":1,\"text\":\"replacement\"}\n",
+    )
+    .unwrap();
+    assert_eq!(
+        lookup_history_entry(&path, 0, 0).unwrap().text,
+        "replacement"
+    );
+    assert!(lookup_history_entry(&path, 0, 700).is_none());
+    std::fs::write(&path, [0xff, b'\n', b'{', b'}']).unwrap();
+    assert!(lookup_history_entry(&path, 0, 1).is_none());
+}

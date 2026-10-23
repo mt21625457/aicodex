@@ -10,6 +10,7 @@ use super::thread_enrichment::enrich_loaded_threads;
 use super::thread_fork_goal::inherit_thread_goal_snapshot;
 use super::thread_input::can_accept_direct_input;
 use super::thread_input::loaded_thread_can_accept_direct_input;
+use super::token_usage_replay::resolve_token_usage_turn_id;
 use super::*;
 use crate::error_code::method_not_found;
 use codex_app_server_protocol::SelectedCapabilityRoot;
@@ -106,9 +107,8 @@ pub(super) struct ThreadReadView {
 
 struct ThreadReadTokenUsageReplay {
     thread_id: ThreadId,
-    thread: Thread,
     info: TokenUsageInfo,
-    turn_id: Option<String>,
+    turn_id: String,
 }
 
 // Persisted inputs that can change while loading configuration without the metadata permit.
@@ -912,7 +912,6 @@ impl ThreadRequestProcessor {
                 &self.outgoing,
                 connection_id,
                 replay.thread_id,
-                &replay.thread,
                 replay.info,
                 replay.turn_id,
             )
@@ -2994,9 +2993,10 @@ impl ThreadRequestProcessor {
             .token_usage_info
             .map(|info| ThreadReadTokenUsageReplay {
                 thread_id: thread_uuid,
-                thread: view.thread.clone(),
                 info,
-                turn_id: view.token_usage_turn_id,
+                // 在 response 取得 Thread 所有权前确定归属即可；通知仍然在 response
+                // 发送完成后发出，无需为等待发送保留整段会话的深拷贝。
+                turn_id: resolve_token_usage_turn_id(&view.thread.turns, view.token_usage_turn_id),
             });
         Ok((
             ThreadReadResponse {

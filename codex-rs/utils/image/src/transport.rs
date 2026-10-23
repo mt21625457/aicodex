@@ -22,10 +22,69 @@ pub fn optimize_data_url_for_transport(
     url: &str,
     encoding: TransportImageEncoding,
 ) -> Result<String, String> {
-    let key = (sha1_digest(url.as_bytes()), encoding);
-    if let Some(prepared) = CACHE.get(&key) {
-        return Ok(prepared);
+    TransportImagePreparationCache::default().optimize(url, encoding)
+}
+
+/// 仅属于一次请求预算计算的解码缓存，避免跨编码档位反复解码原图。
+/// 最多保留 32 张图片、合计 64 MiB 像素与元数据；超限仍即时处理，不丢弃图片。
+#[derive(Default)]
+pub struct TransportImagePreparationCache {
+    entries: std::collections::HashMap<[u8; 20], PreparedTransportImage>,
+    retained_bytes: usize,
+}
+
+const MAX_PREPARED_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+#[cfg(test)]
+thread_local! {
+    static TRANSPORT_DECODE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+struct PreparedTransportImage {
+    format: ImageFormat,
+    metadata: ImageMetadata,
+    decoded: DynamicImage,
+    transparent: bool,
+}
+
+impl TransportImagePreparationCache {
+    /// 各档位均从同一原始像素编码，保持首次满足预算的选择顺序与输出。
+    /// 与单次优化入口相同，应从 blocking worker 调用。
+    pub fn optimize(
+        &mut self,
+        url: &str,
+        encoding: TransportImageEncoding,
+    ) -> Result<String, String> {
+        let key = (sha1_digest(url.as_bytes()), encoding);
+        if let Some(encoded) = CACHE.get(&key) {
+            return Ok(encoded);
+        }
+        if let Some(prepared) = self.entries.get(&key.0) {
+            return encode_prepared_transport_image(url, encoding, key, prepared);
+        }
+        let Some(prepared) = prepare_transport_image(url, encoding)? else {
+            return Ok(url.to_owned());
+        };
+        let result = encode_prepared_transport_image(url, encoding, key, &prepared)?;
+        let retained_bytes = prepared
+            .decoded
+            .as_bytes()
+            .len()
+            .saturating_add(prepared.metadata.icc_profile.as_ref().map_or(0, Vec::len))
+            .saturating_add(prepared.metadata.exif.as_ref().map_or(0, Vec::len));
+        if self.entries.len() < 32
+            && self.retained_bytes.saturating_add(retained_bytes) <= MAX_PREPARED_IMAGE_BYTES
+        {
+            self.retained_bytes += retained_bytes;
+            self.entries.insert(key.0, prepared);
+        }
+        Ok(result)
     }
+}
+
+fn prepare_transport_image(
+    url: &str,
+    encoding: TransportImageEncoding,
+) -> Result<Option<PreparedTransportImage>, String> {
     let (prefix, encoded) = url.split_once(";base64,").ok_or("Invalid image data URL")?;
     if encoded.len() > MAX_SOURCE_BYTES.div_ceil(3) * 4 {
         return Err("Image exceeds the 50 MiB preparation limit; crop it before sending".into());
@@ -45,7 +104,7 @@ pub fn optimize_data_url_for_transport(
         return Err("Image content does not match a supported media type".into());
     }
     if format == ImageFormat::Jpeg && encoding == TransportImageEncoding::Lossless {
-        return Ok(url.to_owned());
+        return Ok(None);
     }
     // Animation remains unchanged; the request planner reports any remaining oversize.
     if format == ImageFormat::Gif
@@ -59,7 +118,7 @@ pub fn optimize_data_url_for_transport(
                 .map_err(|_| "Invalid WebP")?
                 .has_animation())
     {
-        return Ok(url.to_owned());
+        return Ok(None);
     }
     if format == ImageFormat::Png {
         // The encoder can carry ICC/EXIF but not these color interpretation
@@ -77,7 +136,7 @@ pub fn optimize_data_url_for_transport(
                 &chunks[4..8],
                 b"gAMA" | b"cHRM" | b"sRGB" | b"cICP" | b"mDCV" | b"cLLI"
             ) {
-                return Ok(url.to_owned());
+                return Ok(None);
             }
             if &chunks[4..8] == b"IEND" {
                 break;
@@ -111,16 +170,52 @@ pub fn optimize_data_url_for_transport(
             .as_ref()
             .is_some_and(|profile| profile.get(16..20) != Some(b"RGB "))
     {
-        return Ok(url.to_owned());
+        return Ok(None);
     }
+    #[cfg(test)]
+    TRANSPORT_DECODE_COUNT.with(|count| count.set(count.get() + 1));
     let decoded = DynamicImage::from_decoder(decoder)
         .map_err(|_| "Cannot decode image within resource limits")?;
     // Inspect alpha at native precision: 65534/65535 must not round to opaque.
     let transparent = match &decoded {
         DynamicImage::ImageRgba16(pixels) => pixels.pixels().any(|pixel| pixel[3] != u16::MAX),
         DynamicImage::ImageLumaA16(pixels) => pixels.pixels().any(|pixel| pixel[1] != u16::MAX),
-        _ => decoded.to_rgba8().pixels().any(|pixel| pixel[3] != 255),
+        DynamicImage::ImageRgba8(pixels) => pixels.pixels().any(|pixel| pixel[3] != u8::MAX),
+        DynamicImage::ImageLumaA8(pixels) => pixels.pixels().any(|pixel| pixel[1] != u8::MAX),
+        _ if decoded.color().has_alpha() => {
+            decoded.to_rgba8().pixels().any(|pixel| pixel[3] != 255)
+        }
+        _ => false,
     };
+    Ok(Some(PreparedTransportImage {
+        format,
+        metadata,
+        decoded,
+        transparent,
+    }))
+}
+
+fn encode_prepared_transport_image(
+    url: &str,
+    encoding: TransportImageEncoding,
+    key: ([u8; 20], TransportImageEncoding),
+    prepared: &PreparedTransportImage,
+) -> Result<String, String> {
+    let PreparedTransportImage {
+        format,
+        metadata,
+        decoded,
+        transparent,
+    } = prepared;
+    if (*format == ImageFormat::Jpeg && encoding == TransportImageEncoding::Lossless)
+        || (encoding != TransportImageEncoding::Lossless
+            && metadata
+                .icc_profile
+                .as_ref()
+                .is_some_and(|profile| profile.get(16..20) != Some(b"RGB ")))
+    {
+        return Ok(url.to_owned());
+    }
     let mut best = url.to_owned();
     if encoding == TransportImageEncoding::Lossless {
         // Keep native channel precision. The general prompt encoder converts
@@ -129,8 +224,8 @@ pub fn optimize_data_url_for_transport(
         let mut encoder = PngEncoder::new(&mut png);
         apply_image_metadata(
             &mut encoder,
-            metadata.icc_profile,
-            metadata.exif,
+            metadata.icc_profile.clone(),
+            metadata.exif.clone(),
             ImageFormat::Png,
         )
         .map_err(|_| "Cannot preserve image metadata")?;
@@ -146,7 +241,7 @@ pub fn optimize_data_url_for_transport(
         if candidate.len() < best.len() {
             best = candidate;
         }
-    } else if !transparent {
+    } else if !*transparent {
         let quality = match encoding {
             TransportImageEncoding::Lossless => unreachable!(),
             TransportImageEncoding::Jpeg85 => 85,
@@ -157,8 +252,8 @@ pub fn optimize_data_url_for_transport(
         let mut encoder = JpegEncoder::new_with_quality(&mut jpeg, quality);
         apply_image_metadata(
             &mut encoder,
-            metadata.icc_profile,
-            metadata.exif,
+            metadata.icc_profile.clone(),
+            metadata.exif.clone(),
             ImageFormat::Jpeg,
         )
         .map_err(|_| "Cannot preserve image metadata")?;

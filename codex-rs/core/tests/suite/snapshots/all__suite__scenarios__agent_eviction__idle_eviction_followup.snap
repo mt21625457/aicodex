@@ -1,6 +1,6 @@
 ---
 source: core/tests/suite/scenarios_agent_eviction_tests.rs
-assertion_line: 183
+assertion_line: 213
 expression: "format!(\"{history}\\n\\nResumed worker mailbox:\\n{mailbox}\")"
 ---
 Scenario: A parent delegates an API migration, queues a note while the worker is idle, and follows up after idle eviction. The same worker resumes with its earlier answer and the unread note. Complete model streams are grouped as parent, then worker.
@@ -21,8 +21,11 @@ Scenario: A parent delegates an API migration, queues a note while the worker is
           - function/wait_agent
 01:message/developer:
     <MODEL_INSTRUCTIONS>
-02:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+02:message/developer[2]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 03:message/developer:
     You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.
 
@@ -80,8 +83,11 @@ Scenario: A parent delegates an API migration, queues a note while the worker is
           - function/wait_agent
 01:message/developer:
     <MODEL_INSTRUCTIONS>
-02:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+02:message/developer[2]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 03:message/developer:
     You are an agent in a team of agents collaborating to complete a task.
 

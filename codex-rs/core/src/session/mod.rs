@@ -4311,7 +4311,7 @@ impl Session {
                         || state.history.annotated_items().len() < prefix.len
                         || state.session_configuration.provider.info()
                             != turn_context.provider.info()
-                        || async_compaction::provider_auth_owner_generation(&turn_context)
+                        || async_compaction::provider_auth_owner_generation(turn_context)
                             != prefix.auth_owner_generation
                     {
                         return false;

@@ -135,6 +135,7 @@ use crate::cyber_access_program;
 use crate::feedback_tags;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::subagent_header_value;
+use crate::responses_reasoning_replay::ResponsesReasoningReplay;
 use crate::responses_reasoning_replay::responses_reasoning_replay;
 use crate::responses_reasoning_replay::strip_reasoning_content_for_responses_input;
 use crate::util::emit_feedback_auth_recovery_tags;
@@ -549,6 +550,20 @@ fn responses_request_properties_mismatch(
         return None;
     };
     Some(reason)
+}
+
+/// 比较视图只复制需要规范化的 reasoning；正文、图片和工具结果仍借用历史。
+/// 当前 replay 策略按单个 item 计算预算，不跨 item 累积，故逐项调用与整段规范化等价。
+fn normalized_incremental_item(
+    item: &ResponseItem,
+    replay: ResponsesReasoningReplay,
+) -> std::borrow::Cow<'_, ResponseItem> {
+    if !matches!(item, ResponseItem::Reasoning { .. }) {
+        return std::borrow::Cow::Borrowed(item);
+    }
+    let mut normalized = item.clone();
+    strip_reasoning_content_for_responses_input(std::slice::from_mut(&mut normalized), replay);
+    std::borrow::Cow::Owned(normalized)
 }
 
 fn response_items_equal_ignoring_internal_metadata(
@@ -1717,32 +1732,33 @@ impl ModelClientSession {
         // To compare the inputs, we concatenate the previous request items with the response items,
         // then compare that against the equivalent slice of request items, ignoring metadata. If
         // they match, we can consider the remaining items the incremental request.
-        let mut previous_items = previous_request.input.clone();
-        previous_items.extend_from_slice(&last_response.items_added);
+        let previous_items = previous_request
+            .input
+            .iter()
+            .chain(&last_response.items_added);
+        let previous_len = previous_request.input.len() + last_response.items_added.len();
         let is_openai = self.client.state.provider.info().is_openai();
         let reasoning_replay = responses_reasoning_replay(&request.model, is_openai);
-        strip_reasoning_content_for_responses_input(&mut previous_items, reasoning_replay);
-
-        let mut current_items_normalized = request.input.clone();
-        strip_reasoning_content_for_responses_input(
-            &mut current_items_normalized,
-            reasoning_replay,
-        );
-        let mut current_items = current_items_normalized.iter();
-        for previous in &previous_items {
+        let mut current_items = request.input.iter();
+        for previous in previous_items {
             let Some(current) = current_items.next() else {
                 return Err(NonIncrementalReason::InputShortened {
                     previous: previous.item_type(),
                 });
             };
-            if !response_items_equal_ignoring_internal_metadata(previous, current) {
+            if previous == current {
+                continue;
+            }
+            let previous = normalized_incremental_item(previous, reasoning_replay);
+            let current = normalized_incremental_item(current, reasoning_replay);
+            if !response_items_equal_ignoring_internal_metadata(&previous, &current) {
                 return Err(NonIncrementalReason::InputMismatch {
                     previous: previous.item_type(),
                     current: current.item_type(),
                 });
             }
         }
-        Ok(request.input[previous_items.len()..].to_vec())
+        Ok(request.input[previous_len..].to_vec())
     }
 
     fn get_last_response(&mut self) -> Option<LastResponse> {
@@ -3325,3 +3341,7 @@ impl WebsocketTelemetry for ApiTelemetry {
 #[cfg(test)]
 #[path = "client_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "client_incremental_performance_tests.rs"]
+mod incremental_performance_tests;

@@ -223,6 +223,11 @@ pub(crate) fn last_turn_reasoning_for_raw_replay(
     let mut selected = Vec::new();
     let mut remaining = COMPACT_RETAINED_REASONING_MAX_TOKENS;
     for envelope in items[last_real_user_index + 1..].iter().rev() {
+        // 先借用检查类型，避免为最终会丢弃的大段工具输出或图片复制整个 envelope。
+        // reasoning 的选择顺序、预算和后续规范化逻辑保持不变。
+        if !matches!(&envelope.item, ResponseItem::Reasoning { .. }) {
+            continue;
+        }
         let mut envelope = envelope.clone();
         let ResponseItem::Reasoning {
             id,

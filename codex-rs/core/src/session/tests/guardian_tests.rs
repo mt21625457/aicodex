@@ -215,6 +215,8 @@ async fn request_permissions_routes_to_guardian_when_reviewer_is_enabled() {
         .expect("test setup should allow enabling guardian approvals");
     config.approvals_reviewer = ApprovalsReviewer::AutoReview;
     config.model_provider.base_url = Some(format!("{}/v1", server.uri()));
+    // 此 fixture 只提供 HTTP/SSE，不能继承真实 provider 的 WebSocket 能力。
+    config.model_provider.supports_websockets = false;
     let config = Arc::new(config);
     let models_manager = models_manager_with_provider(
         config.codex_home.to_path_buf(),
@@ -435,6 +437,8 @@ async fn request_permissions_guardian_review_stops_when_cancelled(
         .expect("test setup should allow enabling guardian approvals");
     config.approvals_reviewer = ApprovalsReviewer::AutoReview;
     config.model_provider.base_url = Some(format!("{}/v1", server.uri()));
+    // 此 fixture 只提供 HTTP/SSE，不能继承真实 provider 的 WebSocket 能力。
+    config.model_provider.supports_websockets = false;
     let config = Arc::new(config);
     let models_manager = models_manager_with_provider(
         config.codex_home.to_path_buf(),
@@ -585,6 +589,8 @@ async fn guardian_allows_exec_command_additional_permissions_requests_past_polic
         .enable(Feature::GuardianApproval)
         .expect("test setup should allow enabling guardian approvals");
     config.model_provider.base_url = Some(format!("{}/v1", server.uri()));
+    // 此 fixture 只提供 HTTP/SSE，不能继承真实 provider 的 WebSocket 能力。
+    config.model_provider.supports_websockets = false;
     let config = Arc::new(config);
     let models_manager = models_manager_with_provider(
         config.codex_home.to_path_buf(),
@@ -700,6 +706,8 @@ async fn strict_auto_review_turn_grant_forces_guardian_for_exec_command_policy_s
         config.permissions.permission_profile_state().snapshot();
     config.approvals_reviewer = ApprovalsReviewer::User;
     config.model_provider.base_url = Some(format!("{}/v1", server.uri()));
+    // 此 fixture 只提供 HTTP/SSE，不能继承真实 provider 的 WebSocket 能力。
+    config.model_provider.supports_websockets = false;
     let config = Arc::new(config);
     let models_manager = models_manager_with_provider(
         config.codex_home.to_path_buf(),

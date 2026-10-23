@@ -82,6 +82,8 @@ pub(crate) mod preferences;
 mod source_tables;
 mod streaming;
 pub(crate) use streaming::render_with_copy_sources;
+#[cfg(test)]
+pub(crate) use streaming::take_render_work;
 mod table_key_value;
 mod task_lists;
 mod web_links;
@@ -430,6 +432,30 @@ struct LinkState {
 
 fn should_render_link_destination(dest_url: &str) -> bool {
     !is_local_path_like_link(dest_url)
+}
+
+/// 稳定块边界只保存最后一行布局状态，不复制已完成的输出。
+struct RenderedLineBoundary {
+    completed: usize,
+    pending: Option<Line<'static>>,
+    width: Option<usize>,
+    initial_indent: Vec<Span<'static>>,
+    subsequent_indent: Vec<Span<'static>>,
+}
+
+impl RenderedLineBoundary {
+    fn line_count(self) -> usize {
+        let Some(line) = self.pending else {
+            return self.completed;
+        };
+        let Some(width) = self.width else {
+            return self.completed + 1;
+        };
+        let opts = RtOptions::new(width)
+            .initial_indent(self.initial_indent.into())
+            .subsequent_indent(self.subsequent_indent.into());
+        self.completed + crate::wrapping::adaptive_wrap_line_with_source(&line, opts).len()
+    }
 }
 
 /// Stateful pulldown-cmark event consumer that builds styled `ratatui` output.
@@ -2306,6 +2332,32 @@ impl<'a, 'policy> Writer<'a, 'policy> {
             .is_some_and(|character| !character.is_whitespace());
         if needs_space {
             self.push_local_link_label_span(" ".into());
+        }
+    }
+
+    /// 保存边界处尚未提交的一行，最终只对最后一个边界计算换行，避免每个块额外布局。
+    fn line_boundary(&self) -> RenderedLineBoundary {
+        let width = if self.current_line_in_code_block {
+            None
+        } else {
+            self.wrap_width
+        };
+        let Some((line, width)) = self.current_line_content.as_ref().zip(width) else {
+            return RenderedLineBoundary {
+                completed: self.text.len() + usize::from(self.current_line_content.is_some()),
+                pending: None,
+                width: None,
+                initial_indent: Vec::new(),
+                subsequent_indent: Vec::new(),
+            };
+        };
+        // 超链接和复制源映射对每一行一对一处理，不影响行数，边界快照只保存排版输入。
+        RenderedLineBoundary {
+            completed: self.text.len(),
+            pending: Some(line.line.clone()),
+            width: Some(width),
+            initial_indent: self.current_initial_indent.clone(),
+            subsequent_indent: self.current_subsequent_indent.clone(),
         }
     }
 

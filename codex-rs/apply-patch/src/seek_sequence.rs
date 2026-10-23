@@ -9,8 +9,8 @@
 ///  • Empty `pattern` → returns `Some(start)` (no-op match)
 ///  • `pattern.len() > lines.len()` → returns `None` (cannot match, avoids
 ///    out‑of‑bounds panic that occurred pre‑2025‑04‑12)
-pub(crate) fn seek_sequence(
-    lines: &[String],
+pub(crate) fn seek_sequence<T: AsRef<str>>(
+    lines: &[T],
     pattern: &[String],
     start: usize,
     eof: bool,
@@ -34,7 +34,11 @@ pub(crate) fn seek_sequence(
     };
     // Exact match first.
     for i in search_start..=lines.len().saturating_sub(pattern.len()) {
-        if lines[i..i + pattern.len()] == *pattern {
+        if lines[i..i + pattern.len()]
+            .iter()
+            .zip(pattern)
+            .all(|(line, pat)| line.as_ref() == pat)
+        {
             return Some(i);
         }
     }
@@ -42,7 +46,7 @@ pub(crate) fn seek_sequence(
     for i in search_start..=lines.len().saturating_sub(pattern.len()) {
         let mut ok = true;
         for (p_idx, pat) in pattern.iter().enumerate() {
-            if lines[i + p_idx].trim_end() != pat.trim_end() {
+            if lines[i + p_idx].as_ref().trim_end() != pat.trim_end() {
                 ok = false;
                 break;
             }
@@ -55,7 +59,7 @@ pub(crate) fn seek_sequence(
     for i in search_start..=lines.len().saturating_sub(pattern.len()) {
         let mut ok = true;
         for (p_idx, pat) in pattern.iter().enumerate() {
-            if lines[i + p_idx].trim() != pat.trim() {
+            if lines[i + p_idx].as_ref().trim() != pat.trim() {
                 ok = false;
                 break;
             }
@@ -97,7 +101,7 @@ pub(crate) fn seek_sequence(
     for i in search_start..=lines.len().saturating_sub(pattern.len()) {
         let mut ok = true;
         for (p_idx, pat) in pattern.iter().enumerate() {
-            if normalise(&lines[i + p_idx]) != normalise(pat) {
+            if normalise(lines[i + p_idx].as_ref()) != normalise(pat) {
                 ok = false;
                 break;
             }

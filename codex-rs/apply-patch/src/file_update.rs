@@ -30,6 +30,17 @@ pub(crate) async fn derive_new_contents_from_chunks(
     follow_symlinks: bool,
     sandbox: Option<&FileSystemSandboxContext>,
 ) -> std::result::Result<AppliedPatch, ApplyPatchError> {
+    derive_patch(path, chunks, fs, follow_symlinks, sandbox, true).await
+}
+
+async fn derive_patch(
+    path: &PathUri,
+    chunks: &[UpdateFileChunk],
+    fs: &dyn ExecutorFileSystem,
+    follow_symlinks: bool,
+    sandbox: Option<&FileSystemSandboxContext>,
+    encode_bytes: bool,
+) -> std::result::Result<AppliedPatch, ApplyPatchError> {
     let original_file = read_patchable_text_file(path, fs, follow_symlinks, sandbox)
         .await
         .map_err(|err| {
@@ -50,7 +61,12 @@ pub(crate) async fn derive_new_contents_from_chunks(
     let replacements = compute_replacements(&original_lines, &path_text, chunks)?;
     source_file.apply_replacements(&replacements);
     let new_contents = source_file.into_contents();
-    let new_bytes = encoding.encode(&new_contents).map_err(|err| {
+    let new_bytes = if encode_bytes {
+        encoding.encode(&new_contents)
+    } else {
+        encoding.validate(&new_contents).map(|()| Vec::new())
+    }
+    .map_err(|err| {
         ApplyPatchError::IoError(IoError {
             context: format!(
                 "Failed to encode updated file {}",
@@ -70,7 +86,7 @@ pub(crate) async fn derive_new_contents_from_chunks(
 /// new lines, given the patch `chunks`. Each replacement is returned as
 /// `(start_index, old_len, new_lines)`.
 fn compute_replacements(
-    original_lines: &[String],
+    original_lines: &[&str],
     path: &str,
     chunks: &[UpdateFileChunk],
 ) -> std::result::Result<Vec<Replacement>, ApplyPatchError> {
@@ -205,8 +221,10 @@ pub async fn unified_diff_from_chunks_with_context(
         original_contents,
         new_contents,
         ..
-    } = derive_new_contents_from_chunks(path, chunks, fs, /*follow_symlinks*/ true, sandbox)
-        .await?;
+    } = derive_patch(
+        path, chunks, fs, /*follow_symlinks*/ true, sandbox, false,
+    )
+    .await?;
     let text_diff = TextDiff::from_lines(&original_contents, &new_contents);
     let unified_diff = text_diff.unified_diff().context_radius(context).to_string();
     Ok(ApplyPatchFileUpdate {

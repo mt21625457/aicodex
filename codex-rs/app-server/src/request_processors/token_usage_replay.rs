@@ -12,7 +12,6 @@
 use std::sync::Arc;
 
 use codex_app_server_protocol::ServerNotification;
-use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadHistoryBuilder;
 use codex_app_server_protocol::ThreadTokenUsage;
 use codex_app_server_protocol::ThreadTokenUsageUpdatedNotification;
@@ -59,12 +58,9 @@ pub(super) async fn send_thread_token_usage_info_update_to_connection(
     outgoing: &Arc<OutgoingMessageSender>,
     connection_id: ConnectionId,
     thread_id: ThreadId,
-    thread: &Thread,
     info: TokenUsageInfo,
-    token_usage_turn_id: Option<String>,
+    token_usage_turn_id: String,
 ) {
-    let token_usage_turn_id =
-        token_usage_turn_id.unwrap_or_else(|| latest_token_usage_turn_id(&thread.turns));
     send_thread_token_usage_update(
         outgoing,
         connection_id,
@@ -131,7 +127,14 @@ pub(super) fn latest_token_usage_turn_id_from_rollout_items(
     let mut token_usage_turn_owner = None;
     let mut explicit_turn_id = None;
 
-    for item in rollout_items {
+    // 最后一个有效 usage 之后的事件不会再改变已捕获的归属；返回值仍使用调用方
+    // 提供的完整 turns 进行显式 id / position 回退，因此无需重放尾部的大正文。
+    let last_usage_index = rollout_items.iter().rposition(|item| {
+        matches!(
+            item, RolloutItem::EventMsg(EventMsg::TokenCount(event)) if event.info.is_some()
+        )
+    })?;
+    for item in &rollout_items[..=last_usage_index] {
         if let RolloutItem::EventMsg(EventMsg::TurnStarted(event)) = item {
             explicit_turn_id = Some(event.turn_id.as_str());
         }
@@ -139,14 +142,13 @@ pub(super) fn latest_token_usage_turn_id_from_rollout_items(
             item,
             RolloutItem::EventMsg(EventMsg::TokenCount(event)) if event.info.is_some()
         ) {
-            token_usage_turn_owner =
-                builder
-                    .active_turn_snapshot()
-                    .map(|turn| TokenUsageTurnOwner {
-                        has_explicit_id: explicit_turn_id == Some(turn.id.as_str()),
-                        id: turn.id,
-                        position: builder.active_turn_position(),
-                    });
+            // 归属判断只读取 id 和位置；借用访问器保留完整快照的最后完成 turn 回退，
+            // 避免每条 TokenCount 都复制此前累计的正文。事件重放顺序保持不变。
+            token_usage_turn_owner = builder.active_turn_id().map(|turn_id| TokenUsageTurnOwner {
+                has_explicit_id: explicit_turn_id == Some(turn_id),
+                id: turn_id.to_owned(),
+                position: builder.active_turn_position(),
+            });
         }
         builder.handle_rollout_item(item);
     }
@@ -160,6 +162,11 @@ pub(super) fn latest_token_usage_turn_id_from_rollout_items(
             .and_then(|position| turns.get(position))
             .map(|turn| turn.id.clone())
     }
+}
+
+/// 在 Thread 移入响应之前解析通知归属；Some("") 也是明确给定的 id，不能触发回退。
+pub(super) fn resolve_token_usage_turn_id(turns: &[Turn], turn_id: Option<String>) -> String {
+    turn_id.unwrap_or_else(|| latest_token_usage_turn_id(turns))
 }
 
 /// Chooses a fallback turn id that should own a replayed token usage update.
@@ -283,6 +290,146 @@ mod tests {
             latest_token_usage_turn_id_from_rollout_items(&rollout_items, turns.as_slice()),
             Some(turns[2].id.clone())
         );
+    }
+
+    #[test]
+    fn replay_notification_turn_id_preserves_explicit_and_fallback_ids() {
+        let mut turns = build_turns_from_rollout_items(&token_usage_history());
+        turns[0].status = TurnStatus::Completed;
+        turns[1].status = TurnStatus::InProgress;
+        assert_eq!(resolve_token_usage_turn_id(&turns, None), turns[0].id);
+        turns[0].status = TurnStatus::Failed;
+        assert_eq!(resolve_token_usage_turn_id(&turns, None), turns[0].id);
+        turns[0].status = TurnStatus::Interrupted;
+        assert_eq!(resolve_token_usage_turn_id(&turns, None), turns[1].id);
+        assert_eq!(resolve_token_usage_turn_id(&turns, Some(String::new())), "");
+        assert_eq!(
+            resolve_token_usage_turn_id(&[], Some("explicit".to_string())),
+            "explicit"
+        );
+        assert_eq!(resolve_token_usage_turn_id(&[], None), "");
+    }
+
+    // 保留旧的完整快照实现作为差分参照，避免测试只重复新访问器的实现细节。
+    fn snapshot_replay_reference(items: &[RolloutItem], turns: &[Turn]) -> Option<String> {
+        let mut builder = ThreadHistoryBuilder::new();
+        let mut owner = None;
+        let mut explicit_turn_id = None;
+        for item in items {
+            if let RolloutItem::EventMsg(EventMsg::TurnStarted(event)) = item {
+                explicit_turn_id = Some(event.turn_id.as_str());
+            }
+            if matches!(item, RolloutItem::EventMsg(EventMsg::TokenCount(event)) if event.info.is_some())
+            {
+                owner = builder
+                    .active_turn_snapshot()
+                    .map(|turn| TokenUsageTurnOwner {
+                        has_explicit_id: explicit_turn_id == Some(turn.id.as_str()),
+                        id: turn.id,
+                        position: builder.active_turn_position(),
+                    });
+            }
+            builder.handle_rollout_item(item);
+        }
+        let owner = owner?;
+        if owner.has_explicit_id || turns.iter().any(|turn| turn.id == owner.id) {
+            Some(owner.id)
+        } else {
+            owner
+                .position
+                .and_then(|position| turns.get(position))
+                .map(|turn| turn.id.clone())
+        }
+    }
+
+    #[test]
+    fn replay_attribution_matches_full_snapshots_at_every_history_prefix() {
+        use codex_protocol::protocol::ThreadRolledBackEvent;
+        use codex_protocol::protocol::TurnAbortReason;
+        use codex_protocol::protocol::TurnAbortedEvent;
+        use codex_protocol::protocol::TurnStartedEvent;
+
+        let usage = || {
+            RolloutItem::EventMsg(EventMsg::TokenCount(TokenCountEvent {
+                info: Some(TokenUsageInfo::empty(None)),
+                rate_limits: None,
+            }))
+        };
+        let mut items = vec![usage()];
+        items.extend(token_usage_history());
+        items.push(RolloutItem::EventMsg(EventMsg::TurnStarted(
+            TurnStartedEvent {
+                turn_attribution: None,
+                root_turn_id: None,
+                turn_id: "explicit-turn".to_string(),
+                trace_id: None,
+                started_at: Some(42),
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            },
+        )));
+        items.push(RolloutItem::EventMsg(EventMsg::AgentMessage(
+            AgentMessageEvent {
+                message: "large answer 汉字\n".repeat(8192),
+                phase: None,
+                memory_citation: None,
+                delivery: None,
+                questions: None,
+            },
+        )));
+        items.push(usage());
+        items.push(RolloutItem::EventMsg(EventMsg::TurnAborted(
+            TurnAbortedEvent {
+                root_turn_id: None,
+                turn_id: Some("explicit-turn".to_string()),
+                reason: TurnAbortReason::Replaced,
+                error: None,
+                started_at: None,
+                completed_at: Some(43),
+                duration_ms: Some(1000),
+            },
+        )));
+        items.push(usage());
+        items.push(RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
+            ThreadRolledBackEvent { num_turns: 1 },
+        )));
+        items.push(usage());
+        items.push(RolloutItem::Compacted(codex_rollout::CompactedItem {
+            message: "summary".to_string(),
+            replacement_history: None,
+            retained_context: None,
+            guardian_history: None,
+            mcp_resource_origins: None,
+            window_number: None,
+            first_window_id: None,
+            previous_window_id: None,
+            window_id: None,
+            compaction_response_id: None,
+            latest_token_usage_record: None,
+            resume_metadata: None,
+        }));
+        items.push(usage());
+        items.push(RolloutItem::EventMsg(EventMsg::TokenCount(
+            TokenCountEvent {
+                info: None,
+                rate_limits: None,
+            },
+        )));
+        for end in 0..=items.len() {
+            let prefix = &items[..end];
+            let turns = build_turns_from_rollout_items(prefix);
+            let mut remapped = turns.clone();
+            for (index, turn) in remapped.iter_mut().enumerate() {
+                turn.id = format!("rebuilt-{index}");
+            }
+            for projected in [&turns[..], &remapped[..], &[]] {
+                assert_eq!(
+                    latest_token_usage_turn_id_from_rollout_items(prefix, projected),
+                    snapshot_replay_reference(prefix, projected),
+                    "history prefix {end}"
+                );
+            }
+        }
     }
 
     fn token_usage_history() -> Vec<RolloutItem> {

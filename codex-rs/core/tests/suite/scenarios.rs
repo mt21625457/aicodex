@@ -58,9 +58,9 @@ use codex_protocol::request_user_input::RequestUserInputAnswer;
 use codex_protocol::request_user_input::RequestUserInputResponse;
 use codex_protocol::user_input::UserInput;
 use codex_skills_extension::ExecutorSkillProvider;
+use codex_skills_extension::SkillProvider;
 use codex_skills_extension::SkillProviders;
 use codex_skills_extension::SkillsExtensionConfig;
-use codex_skills_extension::install;
 use codex_skills_extension::install_with_providers;
 use codex_utils_path_uri::PathUri;
 use core_test_support::context_snapshot;
@@ -174,15 +174,77 @@ mod skill_catalog_dedup;
 #[path = "scenarios_compaction_tests.rs"]
 mod compaction;
 
-fn skills_extensions() -> Arc<ExtensionRegistry<Config>> {
+// 场景快照只使用本测试创建的技能，不能混入开发者 ~/.agents 中的内容。
+struct ScenarioHostSkills {
+    root: PathBuf,
+    provider: codex_skills_extension::HostSkillProvider,
+}
+
+impl SkillProvider for ScenarioHostSkills {
+    fn list(
+        &self,
+        mut query: codex_skills_extension::provider::SkillListQuery,
+    ) -> codex_skills_extension::provider::SkillProviderFuture<
+        '_,
+        codex_skills_extension::catalog::SkillCatalog,
+    > {
+        if let Some(snapshot) = query.host_snapshot.as_ref() {
+            let mut outcome = snapshot.outcome().clone();
+            outcome.skills.retain(|skill| {
+                skill
+                    .path_to_skills_md
+                    .to_abs_path()
+                    .is_ok_and(|path| path.as_path().starts_with(&self.root))
+            });
+            outcome
+                .errors
+                .retain(|error| error.path.as_path().starts_with(&self.root));
+            query.host_snapshot = Some(Arc::new(codex_skills_extension::HostSkillsSnapshot::new(
+                Arc::new(outcome),
+            )));
+        }
+        self.provider.list(query)
+    }
+
+    fn read<'a>(
+        &'a self,
+        request: codex_skills_extension::provider::SkillReadRequest<'a>,
+    ) -> codex_skills_extension::provider::SkillProviderFuture<
+        'a,
+        codex_skills_extension::catalog::SkillReadResult,
+    > {
+        self.provider.read(request)
+    }
+
+    fn search(
+        &self,
+        request: codex_skills_extension::provider::SkillSearchRequest,
+    ) -> codex_skills_extension::provider::SkillProviderFuture<
+        '_,
+        codex_skills_extension::catalog::SkillSearchResult,
+    > {
+        self.provider.search(request)
+    }
+}
+
+fn skills_extensions(home: &Path) -> Arc<ExtensionRegistry<Config>> {
     let mut extensions = ExtensionRegistryBuilder::<Config>::new();
-    install(&mut extensions, |config: &Config| SkillsExtensionConfig {
-        include_instructions: config.include_skill_instructions,
-        max_context_tokens: config.skill_max_context_tokens,
-        bundled_skills_enabled: config.bundled_skills_enabled(),
-        cloud_skill_enabled: config.cloud_skill_enabled,
-        shadow_selection_enabled: config.features.enabled(Feature::SkillSearch),
-    });
+    install_with_providers(
+        &mut extensions,
+        SkillProviders::new().with_host_provider(Arc::new(ScenarioHostSkills {
+            // 与 PathUri/AbsolutePathBuf 一致，移除 Windows 的扩展路径前缀，
+            // 避免同一目录的技能因路径表示不同而被隔离过滤器误删。
+            root: dunce::canonicalize(home).expect("canonical scenario home"),
+            provider: codex_skills_extension::HostSkillProvider::new(),
+        })),
+        |config: &Config| SkillsExtensionConfig {
+            include_instructions: config.include_skill_instructions,
+            max_context_tokens: config.skill_max_context_tokens,
+            bundled_skills_enabled: config.bundled_skills_enabled(),
+            cloud_skill_enabled: config.cloud_skill_enabled,
+            shadow_selection_enabled: config.features.enabled(Feature::SkillSearch),
+        },
+    );
     Arc::new(extensions.build())
 }
 
@@ -650,9 +712,9 @@ async fn astra_kickoff_with_skills_plugins_and_remote_compaction() -> Result<()>
     .await;
     let mut builder = test_codex()
         .with_model("gpt-6-astra")
-        .with_home(home)
+        .with_home(Arc::clone(&home))
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
-        .with_extensions(skills_extensions())
+        .with_extensions(skills_extensions(home.path()))
         .with_workspace_setup(|cwd, fs| async move {
             fs.write_file(
                 &executor_path_uri(cwd.join("AGENTS.md"))?,
@@ -782,9 +844,9 @@ enabled = true
     let chatgpt_base_url = server.uri();
     let test = test_codex()
         .with_model("gpt-6-astra")
-        .with_home(home)
+        .with_home(Arc::clone(&home))
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
-        .with_extensions(skills_extensions())
+        .with_extensions(skills_extensions(home.path()))
         .with_config(move |config| {
             configure_scenario_catalog(config);
             config.chatgpt_base_url = chatgpt_base_url;
@@ -1811,7 +1873,7 @@ async fn astra_refreshes_plugin_tools_and_skills_in_an_existing_thread() -> Resu
         .with_model("gpt-6-astra")
         .with_home(Arc::clone(&home))
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
-        .with_extensions(skills_extensions())
+        .with_extensions(skills_extensions(home.path()))
         .with_config(configure_scenario_catalog);
     let test = builder.build(&server).await?;
 

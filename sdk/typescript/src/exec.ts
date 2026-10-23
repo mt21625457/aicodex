@@ -1,3 +1,4 @@
+import { StringDecoder } from "node:string_decoder";
 import { spawn } from "node:child_process";
 import { statSync } from "node:fs";
 import path from "node:path";
@@ -219,11 +220,13 @@ export class CodexExec {
       child.kill();
       throw new Error("Child process has no stdout");
     }
-    const stderrChunks: Buffer[] = [];
+    // 增量解码保留跨 chunk 的 UTF-8 字符，避免退出时再分配完整 Buffer。
+    const stderrDecoder = new StringDecoder("utf8");
+    let stderrText = "";
 
     if (child.stderr) {
       child.stderr.on("data", (data) => {
-        stderrChunks.push(data);
+        stderrText += stderrDecoder.write(data);
       });
     }
 
@@ -249,9 +252,9 @@ export class CodexExec {
       if (spawnError) throw spawnError;
       const { code, signal } = await exitPromise;
       if (code !== 0 || signal) {
-        const stderrBuffer = Buffer.concat(stderrChunks);
+        stderrText += stderrDecoder.end();
         const detail = signal ? `signal ${signal}` : `code ${code ?? 1}`;
-        throw new Error(`Codex Exec exited with ${detail}: ${stderrBuffer.toString("utf8")}`);
+        throw new Error(`Codex Exec exited with ${detail}: ${stderrText}`);
       }
     } finally {
       rl.close();

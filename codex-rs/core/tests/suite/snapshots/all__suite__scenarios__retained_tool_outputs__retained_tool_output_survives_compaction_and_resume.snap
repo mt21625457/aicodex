@@ -1,6 +1,7 @@
 ---
 source: core/tests/suite/scenarios_retained_tool_outputs.rs
-expression: "context_snapshot::format_request_history_snapshot(\"Retained thread instructions stop emergency tool-output trimming. Compaction keeps whole outputs within the shared 64K retention budget, dropping oversized task details and older instructions. A cold resume preserves the latest instruction unchanged.\",\n&requests, &ContextSnapshotOptions::default().rewrite_known_segments(),)"
+assertion_line: 141
+expression: "context_snapshot::format_request_history_snapshot(if enabled\n{\n    \"Retained thread instructions stop emergency tool-output trimming. Compaction keeps whole outputs within the shared 64K retention budget, dropping oversized task details and older instructions. A cold resume preserves the latest instruction unchanged.\"\n} else\n{\n    \"With retention disabled, the client can still send retain=true. Tool outputs use ordinary emergency trimming and are not retained after compaction and cold resume.\"\n}, &requests, &ContextSnapshotOptions::default().rewrite_known_segments(),)"
 ---
 Scenario: Retained thread instructions stop emergency tool-output trimming. Compaction keeps whole outputs within the shared 64K retention budget, dropping oversized task details and older instructions. A cold resume preserves the latest instruction unchanged.
 
@@ -23,9 +24,12 @@ Scenario: Retained thread instructions stop emergency tool-output trimming. Comp
           - function/wait_agent
 01:message/developer:
     <MODEL_INSTRUCTIONS>
-02:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <COLLABORATION_MODE>
+02:message/developer[3]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <COLLABORATION_MODE>
 03:message/developer:
     <MULTI_AGENT_ROLE>
 04:message/developer:
@@ -64,9 +68,12 @@ Scenario: Retained thread instructions stop emergency tool-output trimming. Comp
           - function/wait_agent
 01:message/developer:
     <MODEL_INSTRUCTIONS>
-02:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <COLLABORATION_MODE>
+02:message/developer[3]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <COLLABORATION_MODE>
 03:message/developer:
     <MULTI_AGENT_ROLE>
 04:message/developer:

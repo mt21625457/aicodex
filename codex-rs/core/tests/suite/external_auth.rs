@@ -659,10 +659,7 @@ async fn amazon_bedrock_aws_auth_refresh_resigns() -> anyhow::Result<()> {
     server.reset().await;
     let rejected = mount_response_sequence(
         &server,
-        vec![
-            ResponseTemplate::new(403).set_body_string("ExpiredTokenException");
-            2 * recovery_attempts
-        ],
+        vec![ResponseTemplate::new(403).set_body_string("ExpiredTokenException"); 2],
     )
     .await;
     test.codex
@@ -685,26 +682,26 @@ async fn amazon_bedrock_aws_auth_refresh_resigns() -> anyhow::Result<()> {
         unreachable!("predicate guarantees a turn complete event");
     };
     assert_eq!(completed.error, Some(error));
-    assert_eq!(rejected.requests().len(), 2 * recovery_attempts);
+    assert_eq!(rejected.requests().len(), 2);
     assert_eq!(
         std::fs::read_to_string(refresh_invocations)?,
-        "refresh\n".repeat(1 + recovery_attempts)
+        "refresh\n".repeat(2)
     );
     if export_mode {
         assert_eq!(
             std::fs::read_to_string(export_invocations)?
                 .lines()
                 .collect::<Vec<_>>(),
-            vec!["invoked"; 2 + recovery_attempts]
+            vec!["invoked"; 3]
         );
 
-        // A transient auth rejection can succeed on an outer stream retry.
+        // 403 刷新后仍被拒绝必须终止；刷新后的临时 503 可以走外层重试。
         server.reset().await;
         let retried = mount_response_sequence(
             &server,
             vec![
                 ResponseTemplate::new(403).set_body_string("ExpiredTokenException"),
-                ResponseTemplate::new(403).set_body_string("ExpiredTokenException"),
+                ResponseTemplate::new(503).set_body_string("temporarily unavailable"),
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "text/event-stream")
                     .set_body_string(sse(vec![

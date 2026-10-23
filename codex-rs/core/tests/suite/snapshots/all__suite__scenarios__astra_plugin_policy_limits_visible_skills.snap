@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios.rs
+assertion_line: 864
 expression: "context_snapshot::format_request_history_snapshot(\"Astra sees the permitted calendar plugin and standalone skills, but not the unlisted notes plugin.\",\n&requests, &ContextSnapshotOptions::default().include_request_settings(),)"
 ---
 Scenario: Astra sees the permitted calendar plugin and standalone skills, but not the unlisted notes plugin.
@@ -49,8 +50,11 @@ Settings:
     - Relevance: Determine what a plugin can help with from explicit user mention or from the plugin-associa..., MCP tools, and apps exposed elsewhere in this turn. [hash=620459a4e7b590f0]
     - Missing/blocked: If the user requests a plugin that does not have relevant callable capabilities for t..., say so briefly and continue with the best fallback. [hash=746b0469a8f6cb3e]
 
-02:message/developer[3]:
-    [01] <skills_instructions>
+02:message/developer[4]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <skills_instructions>
         ## Skills
         A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list ...ed into an absolute path using the skill roots table. [hash=ca27c3957f42502b]
         ### Skill roots
@@ -61,11 +65,11 @@ Settings:
         - final-check: Review a final brief (file: r0/final-check/SKILL.md)
         - outline: Draft a project outline (file: r0/outline/SKILL.md)
         </skills_instructions>
-    [02] <permissions instructions>
+    [03] <permissions instructions>
         Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `danger-full-access`...ll commands are permitted. Network access is enabled. [hash=c134061cebb94a1b]
         Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.
         </permissions instructions>
-    [03] <collaboration_mode># Collaboration Mode: Default
+    [04] <collaboration_mode># Collaboration Mode: Default
 
         You are now in Default mode. Any previous instructions for other modes (e.g. Plan mode) are no longer active.
 

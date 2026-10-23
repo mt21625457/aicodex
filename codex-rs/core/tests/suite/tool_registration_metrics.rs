@@ -194,7 +194,8 @@ async fn sampling_records_tool_registrations_once_across_stream_retry() -> Resul
             ("deferred".to_string(), (1, 1.0)),
             ("deferred_model_only".to_string(), (1, 0.0)),
             ("code_mode_only".to_string(), (1, 0.0)),
-            ("hidden".to_string(), (1, 0.0)),
+            // Hosted web search 保留一个隐藏的本地兼容处理器，需计入运行时注册指标。
+            ("hidden".to_string(), (1, 1.0)),
         ])
     );
     metrics.shutdown()?;

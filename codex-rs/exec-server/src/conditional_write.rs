@@ -54,9 +54,8 @@ async fn write_file_matching_sha256(
 ) -> io::Result<()> {
     #[cfg(any(unix, windows))]
     {
-        let (file, current, metadata) =
-            open_and_read_regular_file(path, FileAccess::ReadOnly).await?;
-        verify_sha256(&current, expected)?;
+        let (file, current, metadata) = open_and_hash_regular_file(path).await?;
+        verify_digest(current, expected)?;
         if has_multiple_hard_links(&file, &metadata)? {
             drop(file);
             if let HardLinkWriteOutcome::Written =
@@ -80,15 +79,14 @@ async fn write_file_matching_sha256(
 
     #[cfg(any(unix, windows))]
     {
-        let (file, current, metadata) =
-            match open_and_read_regular_file(path, FileAccess::ReadOnly).await {
-                Ok(current) => current,
-                Err(error) => {
-                    let _ = tokio::fs::remove_file(&temp_path).await;
-                    return Err(error);
-                }
-            };
-        if let Err(error) = verify_sha256(&current, expected) {
+        let (file, current, metadata) = match open_and_hash_regular_file(path).await {
+            Ok(current) => current,
+            Err(error) => {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                return Err(error);
+            }
+        };
+        if let Err(error) = verify_digest(current, expected) {
             let _ = tokio::fs::remove_file(&temp_path).await;
             return Err(error);
         }
@@ -141,7 +139,11 @@ async fn write_file_matching_sha256(
 }
 
 fn verify_sha256(contents: &[u8], expected: [u8; 32]) -> io::Result<()> {
-    if Sha256::digest(contents).as_slice() == expected {
+    verify_digest(Sha256::digest(contents).into(), expected)
+}
+
+fn verify_digest(actual: [u8; 32], expected: [u8; 32]) -> io::Result<()> {
+    if actual == expected {
         return Ok(());
     }
     Err(io::Error::new(
@@ -187,12 +189,10 @@ async fn write_and_flush(file: &mut tokio::fs::File, contents: &[u8]) -> io::Res
 }
 
 #[cfg(any(unix, windows))]
-async fn open_and_read_regular_file(
+async fn open_regular_file(
     path: &Path,
     access: FileAccess,
-) -> io::Result<(tokio::fs::File, Vec<u8>, std::fs::Metadata)> {
-    use tokio::io::AsyncReadExt;
-
+) -> io::Result<(tokio::fs::File, std::fs::Metadata)> {
     let mut options = tokio::fs::OpenOptions::new();
     options.read(true);
     if matches!(access, FileAccess::ReadWrite) {
@@ -202,7 +202,7 @@ async fn open_and_read_regular_file(
     options.custom_flags(libc::O_NOFOLLOW);
     #[cfg(windows)]
     options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
-    let mut file = options.open(path).await?;
+    let file = options.open(path).await?;
     let metadata = file.metadata().await?;
     if metadata.file_type().is_symlink() {
         return Err(io::Error::new(
@@ -216,6 +216,37 @@ async fn open_and_read_regular_file(
             "conditional write target is not a regular file",
         ));
     }
+    Ok((file, metadata))
+}
+
+/// 普通路径只需要摘要，固定缓冲避免两次校验分别分配整个旧文件。
+/// 两次打开、句柄上的 metadata 和硬链接检测仍保持原来的顺序。
+#[cfg(any(unix, windows))]
+async fn open_and_hash_regular_file(
+    path: &Path,
+) -> io::Result<(tokio::fs::File, [u8; 32], std::fs::Metadata)> {
+    use tokio::io::AsyncReadExt;
+    let (mut file, metadata) = open_regular_file(path, FileAccess::ReadOnly).await?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok((file, hasher.finalize().into(), metadata))
+}
+
+/// 硬链接原地写入仍保留完整旧内容，以便写入失败时回滚。
+#[cfg(any(unix, windows))]
+async fn open_and_read_regular_file(
+    path: &Path,
+    access: FileAccess,
+) -> io::Result<(tokio::fs::File, Vec<u8>, std::fs::Metadata)> {
+    use tokio::io::AsyncReadExt;
+    let (mut file, metadata) = open_regular_file(path, access).await?;
     let mut contents = Vec::with_capacity(metadata.len() as usize);
     file.read_to_end(&mut contents).await?;
     Ok((file, contents, metadata))

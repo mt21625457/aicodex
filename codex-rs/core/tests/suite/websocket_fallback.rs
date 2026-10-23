@@ -87,6 +87,12 @@ async fn websocket_fallback_switches_to_http_after_retries_exhausted() -> Result
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
+    // 明确模拟可重试的握手故障；未注册路由的 404 属于永久失败。
+    Mock::given(method("GET"))
+        .and(path_regex(".*/responses$"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
     let response_mock = mount_sse_once(
         &server,
         sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
@@ -132,6 +138,12 @@ async fn websocket_fallback_hides_first_websocket_retry_stream_error() -> Result
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
+    // 明确模拟可重试的握手故障；未注册路由的 404 属于永久失败。
+    Mock::given(method("GET"))
+        .and(path_regex(".*/responses$"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
     let response_mock = mount_sse_once(
         &server,
         sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
@@ -224,6 +236,12 @@ async fn websocket_fallback_is_sticky_across_turns() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
+    // 明确模拟可重试的握手故障；未注册路由的 404 属于永久失败。
+    Mock::given(method("GET"))
+        .and(path_regex(".*/responses$"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
     let response_mock = mount_sse_sequence(
         &server,
         vec![

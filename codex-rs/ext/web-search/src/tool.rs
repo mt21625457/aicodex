@@ -51,6 +51,32 @@ const WEB_RUN_DESCRIPTION: &str = include_str!("../web_run_description.md");
 const OPENAI_SEARCH_FALLBACK_MODEL: &str = "gpt-5.2-codex";
 const RESULTS_PAYLOAD_BYTES_METRIC: &str = "codex.web_search.results.payload_bytes";
 
+/// 指标只需要序列化后的 UTF-8 字节数；丢弃输出，避免复制整份搜索正文。
+/// 仍使用 serde_json 的同一紧凑序列化器，所以转义、Unicode 和数字格式完全一致。
+#[derive(Default)]
+struct JsonByteCounter {
+    bytes: usize,
+}
+
+impl std::io::Write for JsonByteCounter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        // 超大输入沿用指标最终饱和到 i64::MAX 的规则，不发生整数回绕。
+        self.bytes = self.bytes.saturating_add(bytes.len());
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn results_payload_bytes(results: &[serde_json::Value]) -> serde_json::Result<i64> {
+    let mut counter = JsonByteCounter::default();
+    // 不吞掉序列化错误：调用方仍仅在 Ok 时记录 histogram，与原 to_vec 一致。
+    serde_json::to_writer(&mut counter, results)?;
+    Ok(i64::try_from(counter.bytes).unwrap_or(i64::MAX))
+}
+
 pub(crate) struct WebSearchTool {
     pub(crate) session_id: String,
     pub(crate) http_client_factory: HttpClientFactory,
@@ -181,9 +207,8 @@ impl WebSearchTool {
         let results = response.results;
         if let Some(results) = results.as_ref()
             && let Some(metrics) = codex_otel::global()
-            && let Ok(payload) = serde_json::to_vec(results)
+            && let Ok(payload_bytes) = results_payload_bytes(results)
         {
-            let payload_bytes = i64::try_from(payload.len()).unwrap_or(i64::MAX);
             let _ = metrics.histogram(RESULTS_PAYLOAD_BYTES_METRIC, payload_bytes, &[]);
         }
         let legacy_action = match &command_action {
@@ -752,3 +777,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "payload_metrics_tests.rs"]
+mod payload_metrics_tests;

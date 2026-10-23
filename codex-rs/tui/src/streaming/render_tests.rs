@@ -563,3 +563,191 @@ fn rejected_math_openers_allow_bounded_incremental_rendering() {
         }
     }
 }
+
+#[test]
+fn recompute_with_unused_visualization_context_matches_full_renderer() {
+    let cwd = test_cwd();
+    let context = InlineVisualizationContext::new(&cwd, ThreadId::new()).unwrap();
+    // 引用、代码块、表格和数学公式的样式与超链接元数据必须与原全量路径相同。
+    for source in [
+        "First paragraph.\n\nSecond paragraph.\n",
+        "[link][ref]\n\n[ref]: https://example.com\n",
+        "```rust\nlet x = 1;\n```\n",
+        "|a|b|\n|-|-|\n|1|2|\n",
+        "before $x^2$ after\n",
+    ] {
+        for width in [None, Some(12), Some(80)] {
+            let mut render = StreamingRender::new();
+            render.recompute(source, width, &cwd, HistoryRenderMode::Rich, Some(&context));
+            assert_eq!(
+                render.lines,
+                render_source(source, width, &cwd, HistoryRenderMode::Rich, Some(&context))
+            );
+        }
+    }
+}
+
+#[test]
+fn renderer_stable_line_boundaries_match_independent_prefix_rendering() {
+    use crate::markdown_render::ListSpacing;
+    let cwd = test_cwd();
+    // 前缀独立渲染是旧实现的行边界基准；覆盖列表结束时回写间距、HTML拼接和换行布局。
+    let blocks = [
+        "paragraph with enough words to wrap across several lines\n\n",
+        "- first\n- second long item that wraps\n\n",
+        "1. outer\n   - nested\n\n",
+        "<div>raw html</div>\n\n",
+        "```rust\nlet x = 1;\n```\n\n",
+        "> quoted paragraph\n\n",
+        "---\n\n",
+        "| a | b |\n|---|---|\n| 1 | 2 |\n\n",
+    ];
+    for first in blocks {
+        for last in blocks {
+            for width in [None, Some(12), Some(80)] {
+                for spacing in [
+                    ListSpacing::AfterMultiline,
+                    ListSpacing::Compact,
+                    ListSpacing::Uniform,
+                ] {
+                    let source = format!("{first}{last}");
+                    let rendered = render_streaming_markdown_agent_with_links_and_cwd(
+                        &source,
+                        width,
+                        Some(&cwd),
+                        spacing,
+                    );
+                    if let Some(boundary) = rendered.last_top_level_block_start {
+                        let prefix = render_streaming_markdown_agent_with_links_and_cwd(
+                            &source[..boundary],
+                            width,
+                            Some(&cwd),
+                            spacing,
+                        );
+                        assert_eq!(
+                            rendered.last_top_level_rendered_len,
+                            Some(prefix.lines.len()),
+                            "source: {source:?}, width: {width:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn reference_definitions_reuse_plain_tail_and_fall_back_for_new_reference_syntax() {
+    let cwd = test_cwd();
+    let mut render = StreamingRender::new();
+    let mut source = String::new();
+    for chunk in [
+        "[known][ref] and [future][later]\n\n[ref]: https://example.com\n\n",
+        "plain tail\n\n",
+        "more plain words\n\n",
+        "[later]: https://example.org\n\n",
+        "another tail\n\n",
+        "[known][ref]\n\n",
+    ] {
+        append_rich_and_assert_matches_full(&mut render, &mut source, chunk, Some(24), &cwd);
+        if chunk == "more plain words\n\n" {
+            assert!(
+                render.stable_source_len > 0,
+                "reference-free tail should retain its stable prefix"
+            );
+        }
+    }
+}
+
+#[test]
+fn reference_definition_incomplete_title_keeps_full_render_fallback() {
+    let cwd = test_cwd();
+    for (open, close) in [('"', '"'), ('\'', '\''), ('(', ')')] {
+        let mut render = StreamingRender::new();
+        let mut source = String::new();
+        for chunk in [
+            format!("[known][ref]\n\n[ref]: https://example.com\n{open}unfinished\n"),
+            format!("title{close}\n\n"),
+            "plain tail\n\n".to_string(),
+            "more text\n".to_string(),
+        ] {
+            append_rich_and_assert_matches_full(&mut render, &mut source, &chunk, Some(24), &cwd);
+        }
+    }
+}
+
+#[test]
+fn stable_prefix_reuse_parses_only_the_mutable_source_once() {
+    let cwd = test_cwd();
+    let mut render = StreamingRender::new();
+    let mut source = "first stable paragraph\n\nmutable paragraph\n".to_string();
+    crate::markdown_render::take_render_work();
+    render.append(
+        &source,
+        &source,
+        Some(24),
+        &cwd,
+        HistoryRenderMode::Rich,
+        None,
+    );
+    assert_eq!(
+        crate::markdown_render::take_render_work(),
+        (1, source.len())
+    );
+    let stable_bytes = render.stable_source_len;
+    source.push_str("more text\n\nlast paragraph\n");
+    render.append(
+        &source,
+        "more text\n\nlast paragraph\n",
+        Some(24),
+        &cwd,
+        HistoryRenderMode::Rich,
+        None,
+    );
+    assert_eq!(
+        crate::markdown_render::take_render_work(),
+        (1, source.len() - stable_bytes)
+    );
+    assert_eq!(
+        render.lines,
+        render_source(&source, Some(24), &cwd, HistoryRenderMode::Rich, None)
+    );
+}
+
+#[test]
+fn reference_prefix_blank_line_gate_matches_markdown_ascii_whitespace() {
+    let cwd = test_cwd();
+    for (separator, reusable) in [
+        ("\n\n", true),
+        ("\r\n\r\n", true),
+        ("\n \n", true),
+        ("\n  \n", true),
+        // pulldown-cmark 将含 tab 的分隔行末尾换行保留在下一段范围内，
+        // 此时边界前没有完整空行，保守路径必须继续全量渲染。
+        ("\n\t\n", false),
+        ("\n \t\n", false),
+        ("\n\u{a0}\n", false),
+    ] {
+        let mut source =
+            format!("[known][ref]\n\n[ref]: https://example.com{separator}plain tail\n");
+        let mut render = StreamingRender::new();
+        render.recompute(&source, Some(24), &cwd, HistoryRenderMode::Rich, None);
+        if reusable {
+            assert!(render.stable_source_len > 0, "separator: {separator:?}");
+        } else {
+            assert_eq!(render.stable_source_len, 0, "separator: {separator:?}");
+        }
+        assert_eq!(
+            render.lines,
+            render_source(&source, Some(24), &cwd, HistoryRenderMode::Rich, None)
+        );
+        // 触发条件和输出等价分别验收；包括保守回退的 tab/NBSP 也必须跨 chunk 等价。
+        append_rich_and_assert_matches_full(
+            &mut render,
+            &mut source,
+            "continued tail\n\nnext paragraph\n",
+            Some(24),
+            &cwd,
+        );
+    }
+}

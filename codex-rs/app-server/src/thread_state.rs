@@ -177,9 +177,11 @@ impl ThreadState {
     }
 
     pub(crate) fn runtime_lifecycle_snapshot(&self) -> ThreadRuntimeLifecycle {
-        let active_turn = self.active_turn_snapshot();
+        // 生命周期只需要元数据；该快照与完整快照具有相同的“最后完成 turn”回退语义，
+        // 但不会复制长回答、图片及工具输出等正文。
+        let active_turn = self.active_turn_metadata_snapshot();
         ThreadRuntimeLifecycle {
-            active_turn_id: active_turn.as_ref().map(|turn| turn.id.clone()),
+            active_turn_id: active_turn.as_ref().map(|turn| turn.turn_id.clone()),
             active_turn_started_at: active_turn.and_then(|turn| turn.started_at),
             last_terminal_turn_id: self.last_terminal_turn_id.clone(),
         }
@@ -189,13 +191,8 @@ impl ThreadState {
         let item_id = item.id().to_string();
         let metadata = self
             .current_turn_history
-            .turn_snapshot(turn_id)
-            .and_then(|turn| {
-                turn.items
-                    .into_iter()
-                    .find(|candidate| candidate.id() == item_id)
-                    .and_then(|candidate| candidate.transcript_metadata().cloned())
-            })
+            .item_transcript_metadata(turn_id, &item_id)
+            .cloned()
             .or_else(|| {
                 self.transcript_metadata_by_item
                     .get(&(turn_id.to_string(), item_id))
@@ -247,29 +244,28 @@ impl ThreadState {
             self.turn_summary.last_agent_message =
                 Some(ThreadItem::from(CoreTurnItem::AgentMessage(item.clone())));
         }
-        self.current_turn_history.handle_event(event);
-        self.remember_transcript_metadata_for_turn(event_turn_id);
-        if let Some(turn_id) = transcript_metadata_turn_id(event)
-            && turn_id != event_turn_id
-        {
-            self.remember_transcript_metadata_for_turn(turn_id);
+        // 只处理本次真正变动的 item。delta/usage 等不修改历史的事件不再复制整段 turn。
+        // 保留旧逻辑的两个归属范围，也保留已完成 turn 的缓存，供晚到 completion 使用。
+        let changes = self.current_turn_history.handle_event_with_changes(event);
+        let metadata_turn_id = transcript_metadata_turn_id(event);
+        for change in changes.changed_items {
+            if change.turn_id != event_turn_id && metadata_turn_id != Some(change.turn_id.as_str())
+            {
+                continue;
+            }
+            if let Some(metadata) = self
+                .current_turn_history
+                .last_item_transcript_metadata(&change.turn_id, change.item.id())
+                .cloned()
+            {
+                self.transcript_metadata_by_item
+                    .insert((change.turn_id, change.item.id().to_string()), metadata);
+            }
         }
         if matches!(event, EventMsg::TurnAborted(_) | EventMsg::TurnComplete(_)) {
             self.last_terminal_turn_id = Some(event_turn_id.to_string());
             if !self.current_turn_history.has_active_turn() {
                 self.current_turn_history.reset();
-            }
-        }
-    }
-
-    fn remember_transcript_metadata_for_turn(&mut self, turn_id: &str) {
-        let Some(turn) = self.current_turn_history.turn_snapshot(turn_id) else {
-            return;
-        };
-        for item in turn.items {
-            if let Some(metadata) = item.transcript_metadata().cloned() {
-                self.transcript_metadata_by_item
-                    .insert((turn.id.clone(), item.id().to_string()), metadata);
             }
         }
     }
@@ -398,6 +394,82 @@ mod tests {
     }
 
     #[test]
+    fn lifecycle_metadata_matches_full_snapshot_through_terminal_and_reset_states() {
+        use codex_protocol::protocol::TurnAbortReason;
+        use codex_protocol::protocol::TurnAbortedEvent;
+
+        let mut state = ThreadState::default();
+        let assert_matches_full_snapshot = |state: &ThreadState| {
+            // 参照优化前的完整快照结果，同时覆盖最后完成 turn 的回退行为。
+            let full = state.active_turn_snapshot();
+            assert_eq!(
+                state.runtime_lifecycle_snapshot(),
+                ThreadRuntimeLifecycle {
+                    active_turn_id: full.as_ref().map(|turn| turn.id.clone()),
+                    active_turn_started_at: full.and_then(|turn| turn.started_at),
+                    last_terminal_turn_id: state.last_terminal_turn_id.clone(),
+                }
+            );
+        };
+        assert_matches_full_snapshot(&state);
+        let events = [
+            EventMsg::TurnStarted(TurnStartedEvent {
+                turn_attribution: None,
+                root_turn_id: None,
+                turn_id: "turn-large".to_string(),
+                trace_id: None,
+                started_at: Some(42),
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            }),
+            EventMsg::AgentMessage(AgentMessageEvent {
+                message: "large answer 汉字\n".repeat(8192),
+                questions: None,
+                phase: None,
+                memory_citation: None,
+                delivery: None,
+            }),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                root_turn_id: None,
+                turn_id: "turn-large".to_string(),
+                started_at: Some(42),
+                last_agent_message: None,
+                error: None,
+                completed_at: Some(43),
+                duration_ms: Some(1000),
+                time_to_first_token_ms: None,
+            }),
+            EventMsg::TurnStarted(TurnStartedEvent {
+                turn_attribution: None,
+                root_turn_id: None,
+                turn_id: "turn-aborted".to_string(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            }),
+            EventMsg::TurnAborted(TurnAbortedEvent {
+                root_turn_id: None,
+                turn_id: Some("turn-aborted".to_string()),
+                reason: TurnAbortReason::Replaced,
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+            }),
+        ];
+        for event in events {
+            // 直接驱动 builder，以验证其保留最后完成 turn 时两种快照仍等价；
+            // track_current_turn_event 的终止清理由既有 late-command 测试覆盖。
+            state.current_turn_history.handle_event(&event);
+            assert_matches_full_snapshot(&state);
+        }
+        state.last_terminal_turn_id = Some("turn-aborted".to_string());
+        state.current_turn_history.reset();
+        assert_matches_full_snapshot(&state);
+    }
+
+    #[test]
     fn transcript_metadata_survives_turn_reset_for_late_command_completion() {
         let mut state = ThreadState::default();
         let thread_id = ThreadId::new();
@@ -497,6 +569,98 @@ mod tests {
         assert_eq!(metadata.backend_item_id.as_deref(), Some("cmd-1"));
         assert_eq!(metadata.order_index, Some(1));
         assert_eq!(metadata.event_sequence, Some(2));
+    }
+
+    #[test]
+    fn incremental_metadata_matches_full_snapshot_cache_for_each_event() {
+        let mut state = ThreadState::default();
+        let mut oracle = ThreadHistoryBuilder::new();
+        let mut expected = HashMap::new();
+        let thread_id = ThreadId::new();
+        let mut events = vec![EventMsg::TurnStarted(TurnStartedEvent {
+            turn_attribution: None,
+            root_turn_id: None,
+            turn_id: "turn-1".into(),
+            trace_id: None,
+            started_at: Some(42),
+            model_context_window: None,
+            collaboration_mode_kind: Default::default(),
+        })];
+        // 显式 item-1 与下一条 legacy 自动分配 item-1 碰撞：实时查询 first-wins，
+        // 终止后缓存必须保留旧算法的 last-wins，即使第一项后来被 upsert。
+        events.push(EventMsg::ItemStarted(ItemStartedEvent {
+            thread_id,
+            turn_id: "turn-1".into(),
+            item: TurnItem::CommandExecution(command_execution_item(
+                "item-1",
+                CoreCommandExecutionStatus::InProgress,
+            )),
+            started_at_ms: 43,
+        }));
+        // 多个带较大正文的 item、重复更新和终止后的晚到完成覆盖缓存与顺序。
+        for index in 0..40 {
+            events.push(EventMsg::AgentMessage(AgentMessageEvent {
+                message: format!("{index}:{}", "正文".repeat(1000)),
+                questions: None,
+                phase: None,
+                memory_citation: None,
+                delivery: None,
+            }));
+            if index == 0 {
+                events.push(EventMsg::ItemStarted(ItemStartedEvent {
+                    thread_id,
+                    turn_id: "turn-1".into(),
+                    item: TurnItem::CommandExecution(command_execution_item(
+                        "item-1",
+                        CoreCommandExecutionStatus::InProgress,
+                    )),
+                    started_at_ms: 43,
+                }));
+            }
+        }
+        events.push(EventMsg::ItemStarted(ItemStartedEvent {
+            thread_id,
+            turn_id: "turn-1".into(),
+            item: TurnItem::CommandExecution(command_execution_item(
+                "cmd-1",
+                CoreCommandExecutionStatus::InProgress,
+            )),
+            started_at_ms: 43,
+        }));
+        events.push(EventMsg::ItemCompleted(
+            codex_protocol::protocol::ItemCompletedEvent {
+                thread_id,
+                turn_id: "turn-1".into(),
+                item: TurnItem::CommandExecution(command_execution_item(
+                    "item-1",
+                    CoreCommandExecutionStatus::Completed,
+                )),
+                started_at_ms: Some(43),
+                completed_at_ms: 44,
+            },
+        ));
+        events.push(EventMsg::TurnComplete(TurnCompleteEvent {
+            root_turn_id: None,
+            turn_id: "turn-1".into(),
+            started_at: Some(42),
+            last_agent_message: None,
+            error: None,
+            completed_at: Some(44),
+            duration_ms: Some(2),
+            time_to_first_token_ms: None,
+        }));
+        for event in events {
+            oracle.handle_event(&event);
+            if let Some(turn) = oracle.turn_snapshot("turn-1") {
+                for item in turn.items {
+                    if let Some(metadata) = item.transcript_metadata().cloned() {
+                        expected.insert(("turn-1".to_string(), item.id().to_string()), metadata);
+                    }
+                }
+            }
+            state.track_current_turn_event("turn-1", &event);
+            assert_eq!(state.transcript_metadata_by_item, expected);
+        }
     }
 
     fn command_execution_item(

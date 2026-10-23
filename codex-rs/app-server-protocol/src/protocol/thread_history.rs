@@ -327,6 +327,51 @@ impl ThreadHistoryBuilder {
             })
     }
 
+    /// 只借用指定 item 的元数据；不构造包含正文、图片和工具输出的 Turn 副本。
+    pub fn item_transcript_metadata(
+        &self,
+        turn_id: &str,
+        item_id: &str,
+    ) -> Option<&TranscriptMetadata> {
+        let turn = self
+            .current_turn
+            .as_ref()
+            .filter(|turn| turn.id == turn_id)
+            .or_else(|| self.turns.iter().find(|turn| turn.id == turn_id))?;
+        let item = match &turn.item_index.positions {
+            Some(positions) => turn.items.get(*positions.get(item_id)?),
+            None => turn.items.iter().find(|item| item.id() == item_id),
+        }?;
+        item.transcript_metadata()
+    }
+
+    /// 缓存重放沿用旧的从前向后覆盖规则：重复 ID 的最后一项胜出。
+    /// 实时 attach 仍使用上面的第一项查询，二者有意保留不同的历史语义。
+    pub fn last_item_transcript_metadata(
+        &self,
+        turn_id: &str,
+        item_id: &str,
+    ) -> Option<&TranscriptMetadata> {
+        let turn = self
+            .current_turn
+            .as_ref()
+            .filter(|turn| turn.id == turn_id)
+            .or_else(|| self.turns.iter().find(|turn| turn.id == turn_id))?;
+        if let Some(positions) = &turn.item_index.last_positions {
+            let item = turn.items.get(*positions.get(item_id)?)?;
+            if let Some(metadata) = item.transcript_metadata() {
+                return Some(metadata);
+            }
+            // Sleep 等扩展项没有 metadata。若它与早前项重名，旧缓存会跳过 None，
+            // 而非删除较早的有效值；仅此罕见情况退回反向查找。
+        }
+        turn.items
+            .iter()
+            .rev()
+            .filter(|item| item.id() == item_id)
+            .find_map(ThreadItem::transcript_metadata)
+    }
+
     /// Returns the index of the active turn snapshot within the finished turn list.
     ///
     /// When a turn is still open, this is the index it will occupy after
@@ -1989,6 +2034,8 @@ const TURN_ITEM_INDEX_THRESHOLD: usize = 32;
 #[derive(Default)]
 struct TurnItemIndex {
     positions: Option<HashMap<String, usize>>,
+    // 与 first-position 索引同时懒构建，缓存 metadata 时保留重复 ID 的 last-wins。
+    last_positions: Option<HashMap<String, usize>>,
 }
 
 impl TurnItemIndex {
@@ -1998,16 +2045,22 @@ impl TurnItemIndex {
                 .entry(item.id().to_string())
                 .or_insert(items.len());
         }
+        if let Some(positions) = &mut self.last_positions {
+            positions.insert(item.id().to_string(), items.len());
+        }
         items.push(item);
     }
 
     fn upsert<'a>(&mut self, items: &'a mut Vec<ThreadItem>, item: ThreadItem) -> &'a ThreadItem {
         if self.positions.is_none() && items.len() >= TURN_ITEM_INDEX_THRESHOLD {
             let mut positions = HashMap::with_capacity(items.len());
+            let mut last_positions = HashMap::with_capacity(items.len());
             for (index, existing) in items.iter().enumerate() {
                 positions.entry(existing.id().to_string()).or_insert(index);
+                last_positions.insert(existing.id().to_string(), index);
             }
             self.positions = Some(positions);
+            self.last_positions = Some(last_positions);
         }
 
         let existing_index = match &self.positions {
@@ -3038,6 +3091,50 @@ mod tests {
                 id: "sleep-1".to_string(),
                 duration_ms: 1_000,
             })]
+        );
+    }
+
+    #[test]
+    fn last_metadata_skips_metadata_less_duplicate_before_and_after_indexing() {
+        let mut builder = ThreadHistoryBuilder::new();
+        builder.ensure_turn().id = "turn-1".into();
+        builder.handle_event(&EventMsg::AgentMessage(AgentMessageEvent {
+            message: "original".into(),
+            questions: None,
+            phase: None,
+            memory_citation: None,
+            delivery: None,
+        }));
+        let expected = builder
+            .item_transcript_metadata("turn-1", "item-1")
+            .cloned()
+            .unwrap();
+        // Sleep 本身不携带 metadata，真实可达，不能假定所有历史项都能写入元数据。
+        builder.push_item_in_current_turn(indexed_sleep_item("item-1", 1));
+        assert_eq!(
+            builder.last_item_transcript_metadata("turn-1", "item-1"),
+            Some(&expected)
+        );
+        for index in 0..64 {
+            builder.upsert_item_in_current_turn(indexed_sleep_item(&format!("sleep-{index}"), 1));
+        }
+        assert!(
+            builder
+                .current_turn
+                .as_ref()
+                .unwrap()
+                .item_index
+                .last_positions
+                .is_some()
+        );
+        assert_eq!(
+            builder.last_item_transcript_metadata("turn-1", "item-1"),
+            Some(&expected)
+        );
+        builder.finish_current_turn();
+        assert_eq!(
+            builder.last_item_transcript_metadata("turn-1", "item-1"),
+            Some(&expected)
         );
     }
 

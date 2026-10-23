@@ -2824,6 +2824,8 @@ async fn guardian_mode_skips_auto_when_annotations_do_not_require_approval() {
         .expect("test setup should allow updating approval policy");
     let mut config = (*turn_context.config).clone();
     config.model_provider.base_url = Some(format!("{}/v1", server.uri()));
+    // 此 fixture 只提供 HTTP/SSE，不能继承真实 provider 的 WebSocket 能力。
+    config.model_provider.supports_websockets = false;
     config.approvals_reviewer = ApprovalsReviewer::AutoReview;
     let config = Arc::new(config);
     let models_manager = models_manager_with_provider(
@@ -3157,6 +3159,8 @@ async fn guardian_mode_mcp_denial_returns_rationale_message_inner() {
         .expect("test setup should allow updating approval policy");
     let mut config = (*turn_context.config).clone();
     config.model_provider.base_url = Some(format!("{}/v1", server.uri()));
+    // 此 fixture 只提供 HTTP/SSE，不能继承真实 provider 的 WebSocket 能力。
+    config.model_provider.supports_websockets = false;
     config.approvals_reviewer = ApprovalsReviewer::User;
     let config = Arc::new(config);
     let models_manager = models_manager_with_provider(
@@ -3517,6 +3521,8 @@ async fn approve_mode_skips_guardian_in_every_permission_mode() {
         let mut config = (*turn_context.config).clone();
         config.chatgpt_base_url = server.uri();
         config.model_provider.base_url = Some(format!("{}/v1", server.uri()));
+        // 此 fixture 只提供 HTTP/SSE，不能继承真实 provider 的 WebSocket 能力。
+        config.model_provider.supports_websockets = false;
         config.approvals_reviewer = ApprovalsReviewer::User;
         let config = Arc::new(config);
         let models_manager = models_manager_with_provider(

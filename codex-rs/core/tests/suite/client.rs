@@ -3874,6 +3874,11 @@ async fn context_window_error_sets_total_tokens_to_model_window() -> anyhow::Res
         .build(&server)
         .await?;
 
+    // 本例验证窗口溢出事件本身；自动压缩恢复由独立 compaction 套件覆盖。
+    codex
+        .thread_extension_data()
+        .insert(codex_core::compact::AutoCompactionDisabled);
+
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "seed turn".into(),
@@ -3891,6 +3896,10 @@ async fn context_window_error_sets_total_tokens_to_model_window() -> anyhow::Res
         .await?;
 
     let token_event = wait_for_event(&codex, |event| {
+        assert!(
+            !matches!(event, EventMsg::TurnComplete(_)),
+            "turn ended before full-window usage: {event:?}"
+        );
         matches!(
             event,
             EventMsg::TokenCount(payload)

@@ -38,6 +38,7 @@ use codex_config::types::History;
 use codex_config::types::HistoryPersistence;
 
 mod batch;
+mod lookup_index;
 pub use batch::HistoryBatch;
 pub use batch::HistoryBatchCursor;
 pub use batch::HistoryBatchEntry;
@@ -299,7 +300,7 @@ pub async fn history_metadata(config: &HistoryConfig) -> (u64, usize) {
 /// `spawn_blocking`.
 pub fn lookup(log_id: u64, offset: usize, config: &HistoryConfig) -> Option<HistoryEntry> {
     let path = history_filepath(config);
-    lookup_history_entry(&path, log_id, offset)
+    lookup_history_entry_with_index(&path, log_id, offset, config.max_bytes.is_none())
 }
 
 /// On Unix systems, ensure the file permissions are `0o600` (rw-------). If the
@@ -353,7 +354,17 @@ async fn history_metadata_for_file(path: &Path) -> (u64, usize) {
     (log_id, count)
 }
 
+#[cfg(test)]
 fn lookup_history_entry(path: &Path, log_id: u64, offset: usize) -> Option<HistoryEntry> {
+    lookup_history_entry_with_index(path, log_id, offset, true)
+}
+
+fn lookup_history_entry_with_index(
+    path: &Path,
+    log_id: u64,
+    offset: usize,
+    use_index: bool,
+) -> Option<HistoryEntry> {
     use std::io::BufRead;
     use std::io::BufReader;
 
@@ -386,28 +397,39 @@ fn lookup_history_entry(path: &Path, log_id: u64, offset: usize) -> Option<Histo
 
         match lock_result {
             Ok(()) => {
-                let reader = BufReader::new(&file);
-                for (idx, line_res) in reader.lines().enumerate() {
-                    let line = match line_res {
-                        Ok(l) => l,
-                        Err(e) => {
-                            tracing::warn!(error = %e, "failed to read line from history file");
+                let metadata = file.metadata().ok()?;
+                let mut cursor = lookup_index::ScanCursor::new(path, &metadata, offset, use_index);
+                let mut reader = BufReader::new(&file);
+                reader.seek(SeekFrom::Start(cursor.position)).ok()?;
+                // 复用缓冲，避免为每个被跳过的历史行分配 String；read_line 与旧 lines()
+                // 一样检查 UTF-8。JSON 解析仍只针对目标行，坏 JSON 仍占据原来的 offset。
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    let bytes = match reader.read_line(&mut line) {
+                        Ok(bytes) => bytes,
+                        Err(error) => {
+                            tracing::warn!(error = %error, "failed to read line from history file");
                             return None;
                         }
                     };
-
-                    if idx == offset {
-                        match serde_json::from_str::<HistoryEntry>(&line) {
-                            Ok(entry) => return Some(entry),
-                            Err(e) => {
-                                tracing::warn!(error = %e, "failed to parse history entry");
-                                return None;
-                            }
-                        }
+                    if bytes == 0 {
+                        cursor.save();
+                        return None;
                     }
+                    if cursor.row == offset {
+                        cursor.advance(bytes);
+                        cursor.save();
+                        return match serde_json::from_str::<HistoryEntry>(&line) {
+                            Ok(entry) => Some(entry),
+                            Err(error) => {
+                                tracing::warn!(error = %error, "failed to parse history entry");
+                                None
+                            }
+                        };
+                    }
+                    cursor.advance(bytes);
                 }
-                // Not found at requested offset.
-                return None;
             }
             Err(std::fs::TryLockError::WouldBlock) => {
                 std::thread::sleep(RETRY_SLEEP);

@@ -6785,7 +6785,7 @@ async fn absolute_cwd_update_with_turn_environment_is_allowed() {
 }
 
 #[tokio::test]
-async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
+async fn session_new_ignores_removed_zsh_fork_without_packaged_zsh() {
     let codex_home = tempfile::tempdir().expect("create temp dir");
     let mut config = build_test_config(codex_home.path()).await;
     config
@@ -6916,12 +6916,11 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
     )
     .await;
 
-    let err = match result {
-        Ok(_) => panic!("expected startup to fail"),
-        Err(err) => err,
-    };
-    let msg = format!("{err:#}");
-    assert!(msg.contains("zsh fork feature enabled, but no packaged zsh fork is available"));
+    // ShellZshFork 已移除；兼容旧配置时应忽略该开关，不能再次要求打包 zsh。
+    assert!(
+        result.is_ok(),
+        "removed zsh fork flag must not block startup"
+    );
 }
 
 async fn build_initial_context(

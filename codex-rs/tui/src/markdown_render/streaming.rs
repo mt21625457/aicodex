@@ -16,6 +16,16 @@ use super::math::MathMarkdown;
 use std::ops::Range;
 use std::path::Path;
 
+#[cfg(test)]
+thread_local! {
+    static RENDER_WORK: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+#[cfg(test)]
+pub(crate) fn take_render_work() -> (usize, usize) {
+    RENDER_WORK.with(|work| work.replace((0, 0)))
+}
+
 /// Rendered lines and the block metadata needed to keep only the final block mutable.
 pub(crate) struct StreamingMarkdownRender {
     /// Styled output produced by the same parser pass that collected the metadata below.
@@ -24,6 +34,8 @@ pub(crate) struct StreamingMarkdownRender {
     pub(crate) pending_math_start: Option<usize>,
     /// Byte offset of the final top-level block when at least one earlier block exists.
     pub(crate) last_top_level_block_start: Option<usize>,
+    /// 与最终块起点对应的稳定前缀行数，由同一次渲染的布局状态计算。
+    pub(crate) last_top_level_rendered_len: Option<usize>,
     /// Whether a reference definition can retroactively change another block's rendering.
     pub(crate) has_reference_link_definition: bool,
     /// Whether the first block is raw HTML, which joins a retained prefix without a separator.
@@ -61,6 +73,11 @@ pub(crate) fn render_with_copy_sources(
     list_spacing: ListSpacing,
     code_sources: Vec<crate::markdown_copy::SourceBlock>,
 ) -> StreamingMarkdownRender {
+    #[cfg(test)]
+    RENDER_WORK.with(|work| {
+        let (calls, bytes) = work.get();
+        work.set((calls + 1, bytes + input.len()));
+    });
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TABLES);
@@ -88,19 +105,32 @@ pub(crate) fn render_with_copy_sources(
     let mut parser = parser;
     writer.list_spacing = list_spacing;
     writer.code_sources = code_sources;
-    writer.run(&mut parser);
+    let mut last_top_level_rendered_boundary = None;
+    let mut previous_block_count = 0;
+    while let Some((event, range)) = parser.next() {
+        if parser.block_count != previous_block_count {
+            last_top_level_rendered_boundary = Some(writer.line_boundary());
+            previous_block_count = parser.block_count;
+        }
+        writer.handle_event(event, range, &mut parser);
+    }
+    writer.flush_current_line();
+    let last_top_level_block_start = (parser.block_count > 1)
+        .then_some(parser.last_start)
+        .filter(|start| math.pending_start.is_none_or(|pending| *start <= pending))
+        .filter(|start| {
+            !math
+                .display_ranges
+                .iter()
+                .any(|range| range.start < *start && *start < range.end)
+        });
     StreamingMarkdownRender {
         lines: writer.text,
         pending_math_start: math.pending_start,
-        last_top_level_block_start: (parser.block_count > 1)
-            .then_some(parser.last_start)
-            .filter(|start| math.pending_start.is_none_or(|pending| *start <= pending))
-            .filter(|start| {
-                !math
-                    .display_ranges
-                    .iter()
-                    .any(|range| range.start < *start && *start < range.end)
-            }),
+        last_top_level_block_start,
+        last_top_level_rendered_len: last_top_level_block_start.and_then(|_| {
+            last_top_level_rendered_boundary.map(super::RenderedLineBoundary::line_count)
+        }),
         has_reference_link_definition,
         first_top_level_block_is_html: parser.first_is_html,
         mutable_fence_start: parser.mutable_fence_start,

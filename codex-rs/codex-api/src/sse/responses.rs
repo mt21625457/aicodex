@@ -630,27 +630,10 @@ async fn process_sse_with_treatment(
         if data.is_empty() || matches!(data, "ping" | "keepalive") {
             continue;
         }
-        if let Some(error) = provider_stream_error_from_data(data) {
-            let _ = tx_event.send(Err(error)).await;
-            return;
-        }
-
-        let event: ResponsesStreamEvent = match serde_json::from_str(data) {
+        let event = match parse_responses_stream_event(data) {
             Ok(event) => event,
-            Err(e) => {
-                debug!(
-                    error_category = ?e.classify(),
-                    error_line = e.line(),
-                    error_column = e.column(),
-                    payload_bytes = data.len(),
-                    "Failed to parse SSE event: {e}, data: {data}"
-                );
-                let _ = tx_event
-                    .send(Err(provider_stream_error(
-                        ProviderStreamErrorKind::ParseError,
-                        format!("failed to parse Responses SSE event: {e}"),
-                    )))
-                    .await;
+            Err(error) => {
+                let _ = tx_event.send(Err(error)).await;
                 return;
             }
         };
@@ -730,14 +713,53 @@ fn provider_error_or_retryable(message: String, delay: Option<Duration>) -> ApiE
     }
 }
 
-/// Parses provider error frames before the typed Responses event parser.
+#[cfg(test)]
+thread_local! {
+    static STREAM_FRAME_PARSE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn deserialize_stream_frame<'a, T: serde::Deserialize<'a>>(
+    data: &'a str,
+) -> Result<T, serde_json::Error> {
+    // 仅测试构建统计实际文本解析次数，发布构建没有计数或同步开销。
+    #[cfg(test)]
+    STREAM_FRAME_PARSE_COUNT.with(|count| count.set(count.get() + 1));
+    serde_json::from_str(data)
+}
+
+/// Parses ordinary events once while preserving provider error precedence.
 ///
 /// Grok gateways use both the OpenAI envelope (`error` object) and a flat proxy envelope
-/// (`code` plus string `error`) in addition to the typed `response.error` event. Keeping this
-/// compatibility parser ahead of `ResponsesStreamEvent` preserves the provider error category
+/// (`code` plus string `error`) in addition to the typed `response.error` event. Checking compatibility before returning a typed parse error preserves the provider error category
 /// instead of misreporting a known error frame as malformed SSE.
+fn parse_responses_stream_event(data: &str) -> Result<ResponsesStreamEvent, ApiError> {
+    let parsed = deserialize_stream_frame::<ResponsesStreamEvent>(data);
+    // 常规带 type 的事件在旧兼容解析器中立即被排除，无需先构建完整 JSON DOM。
+    // 错误事件以及类型解析失败的帧仍执行原兼容逻辑，保留 error 优先于畸形帧的语义。
+    let needs_error_compatibility = match &parsed {
+        Ok(event) => matches!(event.kind.as_str(), "error" | "response.error"),
+        Err(_) => true,
+    };
+    if needs_error_compatibility && let Some(error) = provider_stream_error_from_data(data) {
+        return Err(error);
+    }
+    parsed.map_err(|e| {
+        debug!(
+            error_category = ?e.classify(),
+            error_line = e.line(),
+            error_column = e.column(),
+            payload_bytes = data.len(),
+            "Failed to parse SSE event: {e}, data: {data}"
+        );
+        provider_stream_error(
+            ProviderStreamErrorKind::ParseError,
+            format!("failed to parse Responses SSE event: {e}"),
+        )
+    })
+}
+
 fn provider_stream_error_from_data(data: &str) -> Option<ApiError> {
-    let value = serde_json::from_str::<Value>(data).ok()?;
+    let value = deserialize_stream_frame::<Value>(data).ok()?;
     let event_type = value.get("type").and_then(Value::as_str);
     if matches!(event_type, Some("response.failed")) {
         return None;
@@ -2461,3 +2483,7 @@ mod tests {
 
     const CYBER_RESTRICTED_MODEL_FOR_TESTS: &str = "gpt-5.3-codex";
 }
+
+#[cfg(test)]
+#[path = "responses_parse_performance_tests.rs"]
+mod parse_performance_tests;

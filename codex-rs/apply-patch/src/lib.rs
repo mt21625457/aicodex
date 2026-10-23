@@ -619,7 +619,7 @@ async fn apply_hunks_to_files(
                         write_file_conditional_with_missing_parent_retry(
                             fs,
                             &dest_uri,
-                            new_bytes.clone(),
+                            new_bytes,
                             precondition,
                             follow_symlinks,
                             sandbox,
