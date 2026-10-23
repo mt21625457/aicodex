@@ -4271,7 +4271,8 @@ impl Config {
             .as_ref()
             .and_then(|skills| skills.max_context_tokens);
         let include_environment_context = cfg.include_environment_context.unwrap_or(true);
-        let include_environment_context_time = cfg.include_environment_context_time.unwrap_or(true);
+        // 默认不向模型注入本机日期和时区；仅在配置显式开启时发送。
+        let include_environment_context_time = cfg.include_environment_context_time.unwrap_or(false);
         let guardian_policy_config =
             guardian_policy_config_from_requirements(config_layer_stack.requirements_toml())
                 .or_else(|| {
