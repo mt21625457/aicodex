@@ -6,6 +6,7 @@ use codex_core::context::InternalModelContextFragment;
 use codex_extension_api::ContextContributor;
 use codex_extension_api::ExtensionFuture;
 use codex_extension_api::PromptFragment;
+use codex_extension_api::PromptSlot;
 use codex_extension_api::TurnContextContributionInput;
 use codex_protocol::models::ResponseItem;
 use codex_state::ThreadGoalStatus;
@@ -77,9 +78,9 @@ Earlier goal tool results, continuation instructions, and assistant claims that 
 Handle the current user request without resuming the stopped goal. Do not automatically continue the stopped goal, reset its usage, raise its budget, or change its status to bypass the limit. \
 Resuming autonomous goal execution requires a user-controlled goal update. This snapshot does not override later user-controlled goal updates. Follow the current collaboration mode, permissions, and other usage limits.",
             );
-            vec![PromptFragment::developer_policy(
-                fragment.render(),
-                fragment.content_kind(),
+            vec![PromptFragment::from_fragment(
+                PromptSlot::DeveloperPolicy,
+                &fragment,
             )]
         })
     }

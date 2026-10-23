@@ -85,8 +85,10 @@ impl StreamingRender {
         self.mutable_fence_start = None;
         self.completed_source_len = 0;
         self.has_inline_visualization_directive = contains_inline_visualization(source);
+        let mut reference_stable_boundary = None;
         self.lines = match (render_mode, inline_visualization_context) {
-            (HistoryRenderMode::Rich, None) if !self.has_inline_visualization_directive => {
+            // 没有可视化指令时上下文不会改写源文本，直接复用一次渲染的结果和元数据。
+            (HistoryRenderMode::Rich, _) if !self.has_inline_visualization_directive => {
                 let rendered = render_streaming_markdown_agent_with_links_and_cwd(
                     source,
                     width,
@@ -97,6 +99,22 @@ impl StreamingRender {
                 self.completed_source_len = rendered.last_top_level_block_start.unwrap_or(0);
                 self.pending_math_start = rendered.pending_math_start;
                 self.mutable_fence_start = rendered.mutable_fence_start;
+                // 引用定义只影响含方括号的引用语法。最终块不含该语法时，前缀里的
+                // 定义和已渲染引用不会被纯文本尾部改变；遇到方括号仍回退全量解析。
+                // 边界前还必须有完整空行，否则后续引号可能补全前一定义的多行标题。
+                if rendered.has_reference_link_definition
+                    && let Some(boundary) = rendered.last_top_level_block_start
+                    && !source[boundary..].contains(['[', ']'])
+                    && source[..boundary]
+                        .trim_end_matches([' ', '\t'])
+                        .strip_suffix('\n')
+                        .and_then(|prefix| prefix.rsplit('\n').next())
+                        .is_some_and(|line| line.trim_matches([' ', '\t', '\r']).is_empty())
+                {
+                    reference_stable_boundary = rendered
+                        .last_top_level_rendered_len
+                        .map(|line_count| (boundary, line_count));
+                }
                 rendered.lines
             }
             _ => {
@@ -123,8 +141,8 @@ impl StreamingRender {
                 )
             }
         };
-        self.stable_source_len = 0;
-        self.stable_rendered_len = 0;
+        (self.stable_source_len, self.stable_rendered_len) =
+            reference_stable_boundary.unwrap_or((0, 0));
     }
 
     /// Append newly committed source while retaining only the final markdown block as mutable.
@@ -162,7 +180,10 @@ impl StreamingRender {
             return;
         }
 
-        if self.has_reference_link_definition {
+        if self.has_reference_link_definition
+            && (self.stable_source_len == 0
+                || raw_source[self.stable_source_len..].contains(['[', ']']))
+        {
             self.recompute(
                 raw_source,
                 width,
@@ -207,7 +228,11 @@ impl StreamingRender {
             return;
         }
 
-        let final_block_start = pending.last_top_level_block_start.unwrap_or(/*default*/ 0);
+        // 只有源边界和行边界同时有效才提交稳定前缀；缺失任一边界时保留整个尾部可变。
+        let stable_boundary = pending
+            .last_top_level_block_start
+            .zip(pending.last_top_level_rendered_len);
+        let final_block_start = stable_boundary.map_or(0, |(boundary, _)| boundary);
         self.completed_source_len = self.stable_source_len + final_block_start;
         self.open_code_fence = OpenCodeFence::detect(
             &pending_source[final_block_start..],
@@ -216,18 +241,10 @@ impl StreamingRender {
         );
 
         let mut newly_stable_rendered_len = None;
-        if let Some(boundary) = pending.last_top_level_block_start {
-            let newly_stable_source = &pending_source[..boundary];
-            let newly_stable = render_source_with_list_spacing(
-                newly_stable_source,
-                width,
-                cwd,
-                render_mode,
-                inline_visualization_context,
-                self.list_spacing,
-            );
+        if let Some((boundary, rendered_len)) = stable_boundary {
+            // 行边界与 pending.lines 来自同一次解析，避免为稳定前缀再做完整渲染。
             self.stable_source_len += boundary;
-            newly_stable_rendered_len = Some(newly_stable.len());
+            newly_stable_rendered_len = Some(rendered_len);
         }
 
         self.lines.truncate(self.stable_rendered_len);

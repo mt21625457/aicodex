@@ -13,6 +13,92 @@ use std::sync::Arc;
 
 use super::*;
 
+// 保留优化前的格式化算法作为差分基准，确保大正文和边界头部的输出逐字节不变。
+fn structured_output_before_borrowing(parsed: &ExecOutputJson) -> String {
+    let mut sections = vec![
+        format!("Exit code: {}", parsed.metadata.exit_code),
+        format!("Wall time: {} seconds", parsed.metadata.duration_seconds),
+    ];
+    let mut output = parsed.output.clone();
+    if let Some((stripped, total_lines)) = strip_total_output_header(&parsed.output) {
+        sections.push(format!("Total output lines: {total_lines}"));
+        output = stripped.to_string();
+    }
+    sections.push("Output:".to_string());
+    sections.push(output);
+    sections.join("\n")
+}
+
+#[test]
+fn structured_shell_output_matches_previous_format_for_boundary_and_large_outputs() {
+    let mut outputs = [
+        "",
+        "普通输出🦀\n第二行\r\n",
+        "Total output lines: 0\n",
+        "Total output lines: 2\nfirst\nsecond\n",
+        "Total output lines: 2\n\nfirst\nsecond\n",
+        "Total output lines: 2\n\n\nfirst\nsecond\n",
+        "Total output lines: 4294967295\nlast",
+        "Total output lines: 4294967296\nunchanged",
+        "Total output lines: invalid\nunchanged",
+        "Total output lines: 2",
+        "Total output lines: 2\r\nunchanged",
+        "prefix\nTotal output lines: 2\nunchanged",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    let large_output = "日志🦀\n".repeat(128 * 1024);
+    outputs.push(large_output.clone());
+    outputs.push(format!("Total output lines: 131072\n\n{large_output}"));
+
+    for output in outputs {
+        for (exit_code, duration_seconds) in [
+            (0, 0.0),
+            (-1, -0.0),
+            (i32::MAX, f32::MAX),
+            (i32::MIN, f32::MIN_POSITIVE),
+            (1, 1.2345),
+            (1, f32::INFINITY),
+            (1, f32::NAN),
+        ] {
+            let parsed = ExecOutputJson {
+                output: output.clone(),
+                metadata: ExecOutputMetadataJson {
+                    exit_code,
+                    duration_seconds,
+                },
+            };
+            assert_eq!(
+                build_structured_output(&parsed),
+                structured_output_before_borrowing(&parsed),
+                "output length={}, exit_code={exit_code}, duration={duration_seconds}",
+                output.len()
+            );
+        }
+    }
+}
+
+#[test]
+fn structured_shell_output_preserves_json_validation_and_header_semantics() {
+    for invalid in [
+        "not json",
+        r#"{"output":"ok"}"#,
+        r#"{"output":null,"metadata":{"exit_code":0,"duration_seconds":1}}"#,
+        r#"{"output":"ok","metadata":{"exit_code":"0","duration_seconds":1}}"#,
+    ] {
+        assert_eq!(parse_structured_shell_output(invalid), None);
+    }
+    assert_eq!(
+        parse_structured_shell_output(
+            r#"{"output":"Total output lines: 2\n\n一\n二\n","metadata":{"exit_code":-1,"duration_seconds":0.5}}"#
+        ),
+        Some(
+            "Exit code: -1\nWall time: 0.5 seconds\nTotal output lines: 2\nOutput:\n一\n二\n"
+                .to_owned()
+        )
+    );
+}
+
 fn empty_tools() -> Arc<RawValue> {
     Arc::from(RawValue::from_string("[]".to_string()).expect("valid tool JSON"))
 }
@@ -277,3 +363,56 @@ fn serializes_flex_service_tier_when_set() {
         Some("flex")
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shell_format_cache_reuses_pure_result_and_invalidates_changed_content() {
+    // 完整原文作为键，晚到输出改变时不能复用旧值；共享 Arc 证明命中时没有重新格式化。
+    let raw = serde_json::json!({"output":"cache-regression-first".repeat(1024),"metadata":{"exit_code":0,"duration_seconds":0.125}}).to_string();
+    let raw = raw.as_str();
+    let first = parse_structured_shell_output(raw).unwrap();
+    let first_cached = SHELL_OUTPUT_CACHE.get(raw).unwrap().unwrap();
+    assert_eq!(parse_structured_shell_output(raw).unwrap(), first);
+    let second_cached = SHELL_OUTPUT_CACHE.get(raw).unwrap().unwrap();
+    assert!(Arc::ptr_eq(&first_cached, &second_cached));
+    let changed = raw.replace("cache-regression-first", "cache-regression-late");
+    assert!(
+        parse_structured_shell_output(&changed)
+            .unwrap()
+            .contains("cache-regression-late")
+    );
+    let large = serde_json::json!({"output":"x".repeat(SHELL_OUTPUT_CACHE_MAX_BYTES + 1),"metadata":{"exit_code":0,"duration_seconds":1}}).to_string();
+    assert!(parse_structured_shell_output(&large).is_some());
+    assert!(SHELL_OUTPUT_CACHE.get(large.as_str()).is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shell_cache_reports_repeat_work_benchmark_and_bypasses_small_outputs() {
+    let small =
+        r#"{"output":"small-output-bypass","metadata":{"exit_code":0,"duration_seconds":1}}"#;
+    assert!(parse_structured_shell_output(small).is_some());
+    assert!(SHELL_OUTPUT_CACHE.get(small).is_none());
+    let raw = serde_json::json!({"output":"large shell benchmark 汉字\n".repeat(4096),"metadata":{"exit_code":0,"duration_seconds":1}}).to_string();
+    let expected = build_structured_output(&serde_json::from_str::<ExecOutputJson>(&raw).unwrap());
+    assert_eq!(parse_structured_shell_output(&raw).unwrap(), expected);
+    let start = std::time::Instant::now();
+    for _ in 0..1000 {
+        std::hint::black_box(build_structured_output(
+            &serde_json::from_str::<ExecOutputJson>(std::hint::black_box(&raw)).unwrap(),
+        ));
+    }
+    let previous = start.elapsed();
+    let start = std::time::Instant::now();
+    for _ in 0..1000 {
+        std::hint::black_box(parse_structured_shell_output(std::hint::black_box(&raw)).unwrap());
+    }
+    tracing::info!(
+        ?previous,
+        cached = ?start.elapsed(),
+        "Shell repeated large output (1000 iterations)"
+    );
+    // 不以机器相关耗时作为通过条件；功能全等与小输入绕开缓存是确定性验收条件。
+    assert_eq!(parse_structured_shell_output(&raw).unwrap(), expected);
+}
+
+#[path = "client_shell_cache_tests.rs"]
+mod shell_cache_tests;

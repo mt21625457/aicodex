@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_agent_message_board_remote.rs
+assertion_line: 376
 expression: "context_snapshot::format_context_snapshot(\"Permission discovery preserves legacy output, exposes reply-only access, and returns a denied post before an allowed reply.\",\n&bodies.iter().map(SnapshotEntry::body).collect::<Vec<_>>(),\n&ContextSnapshotOptions::default().rewrite_known_segments(),)"
 ---
 Scenario: Permission discovery preserves legacy output, exposes reply-only access, and returns a denied post before an allowed reply.
@@ -35,9 +36,12 @@ Scenario: Permission discovery preserves legacy output, exposes reply-only acces
           - function/wait_agent
 01:message/developer:
     <MODEL_INSTRUCTIONS>
-02:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <COLLABORATION_MODE>
+02:message/developer[3]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <COLLABORATION_MODE>
 03:message/developer:
     <MULTI_AGENT_ROLE>
 04:message/developer:

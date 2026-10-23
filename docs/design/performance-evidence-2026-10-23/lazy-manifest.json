@@ -1,0 +1,33 @@
+{
+  "baseline": "daf61e7a3d08c004cce53df531094a69795da819",
+  "sources": {
+    "before:codex-rs/core/src/context_manager/history.rs": "02ffec190c002f4364664a8269fd820689d5d64e9ef6e8b64d466a60f2d38a8a",
+    "before:codex-rs/core/src/utils/json.rs": "2b6f119540dc4f36abc0a10a63e2420b5846791ee3873fb210de852ececab7c0",
+    "before:codex-rs/codex-api/src/common.rs": "39ddf2cf5ba6431297b1d970233160afd1b8b672c84f5b1be8d84a116e8334f1",
+    "before:codex-rs/core/src/client.rs": "690ffbfdbb59ed86c2046a2999a32010e25ef57355b3cb19211cdc4b420851ba",
+    "after:codex-rs/core/src/context_manager/history.rs": "02ffec190c002f4364664a8269fd820689d5d64e9ef6e8b64d466a60f2d38a8a",
+    "after:codex-rs/core/src/utils/json.rs": "2b6f119540dc4f36abc0a10a63e2420b5846791ee3873fb210de852ececab7c0",
+    "after:codex-rs/codex-api/src/common.rs": "39ddf2cf5ba6431297b1d970233160afd1b8b672c84f5b1be8d84a116e8334f1",
+    "after:codex-rs/core/src/client.rs": "a5e919fb35786ebf7dc714188f6bc02d5d9e85bd748d92191bbcc81232793801",
+    "after:codex-rs/core/src/client_output_token_budget.rs": "22e2b89c28bc1821b7ba6e176f8162651ee20ddb259b0be564c6c88f6f0c1549",
+    "before:codex-rs/models-manager/models.json": "84207bbe031148dabdd0f9652594f459b3bed03e7b6aca301a946145a0cd7b7f"
+  },
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "scope": "request output-budget stage only; real ResponseItem and serialized tools; no complete Prompt/client/network",
+  "libraries": {
+    "libc": "/Users/mt/code/mt-ai/aicodex/aicodex/codex-rs/target/debug/deps/liblibc-36a5a2eae67c4a52.rlib",
+    "serde": "/Users/mt/code/mt-ai/aicodex/aicodex/codex-rs/target/debug/deps/libserde-a33ccde596cf21f4.rlib",
+    "serde_json": "/Users/mt/code/mt-ai/aicodex/aicodex/codex-rs/target/debug/deps/libserde_json-3025a82708a329a0.rlib",
+    "codex_protocol": "/Users/mt/code/mt-ai/aicodex/aicodex/codex-rs/target/debug/deps/libcodex_protocol-eaa0c8a450bceb53.rlib",
+    "codex_utils_cache": "/Users/mt/code/mt-ai/aicodex/aicodex/codex-rs/target/debug/deps/libcodex_utils_cache-4ef4fbcff01d164a.rlib",
+    "codex_utils_audio": "/Users/mt/code/mt-ai/aicodex/aicodex/codex-rs/target/debug/deps/libcodex_utils_audio-5c3f171b03ad30c7.rlib",
+    "codex_utils_output_truncation": "/Users/mt/code/mt-ai/aicodex/aicodex/codex-rs/target/debug/deps/libcodex_utils_output_truncation-41092aec93a31762.rlib",
+    "base64": "/Users/mt/code/mt-ai/aicodex/aicodex/codex-rs/target/debug/deps/libbase64-d1b08eeced20e816.rlib",
+    "image": "/Users/mt/code/mt-ai/aicodex/aicodex/codex-rs/target/debug/deps/libimage-af0667babca22cbf.rlib",
+    "tracing": "/Users/mt/code/mt-ai/aicodex/aicodex/codex-rs/target/debug/deps/libtracing-ccd73e774ba80e83.rlib"
+  },
+  "binary_sha256": "727bfb49e34ad69cd4785f0ab45e7954f42eab13748d3f0e1dbd43cbd185fd84",
+  "generated_sha256": "fffdbc2a3056481774a2e976f45bb27d8e15c0d503f45ba068d5775238edabde",
+  "fixture_sha256": "5413e25a2ac3981658dceb61f6de8915b629ab356ffa386bbdddf62a23d72b7e"
+}

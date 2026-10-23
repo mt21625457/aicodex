@@ -1,4 +1,5 @@
 use super::*;
+use codex_protocol_test_support::ContentItemTestExt;
 use codex_utils_output_truncation::approx_token_count;
 
 #[test]
@@ -8,7 +9,7 @@ fn usage_hint_is_bounded_at_the_fragment_boundary() {
             "multi-agent usage hint ".repeat(2_000),
         ));
 
-    assert!(approx_token_count(&hint.body()) <= MULTI_AGENT_USAGE_HINT_MAX_TOKENS);
+    assert!(approx_token_count(&hint.body().expect_text()) <= MULTI_AGENT_USAGE_HINT_MAX_TOKENS);
 }
 
 #[test]
@@ -23,7 +24,7 @@ fn composed_role_is_bounded_after_runtime_guidance_is_added() {
     };
     let hint = MultiAgentUsageHint::from_role(&role);
 
-    assert!(approx_token_count(&hint.body()) <= MULTI_AGENT_USAGE_HINT_MAX_TOKENS);
+    assert!(approx_token_count(&hint.body().expect_text()) <= MULTI_AGENT_USAGE_HINT_MAX_TOKENS);
     pretty_assertions::assert_eq!(
         hint.markers(),
         ("<multi_agent_role>", "</multi_agent_role>")

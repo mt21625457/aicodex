@@ -256,39 +256,37 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                     {
                         return map_api_error(error);
                     }
-                    if let Ok(err) = serde_json::from_str::<UsageErrorResponse>(&body_text) {
-                        if err.error.error_type.as_deref() == Some("usage_limit_reached") {
-                            let limit_id = extract_header(headers.as_ref(), ACTIVE_LIMIT_HEADER);
-                            let promo_message = headers.as_ref().and_then(parse_promo_message);
-                            let rate_limit_reached_type =
-                                headers.as_ref().and_then(parse_rate_limit_reached_type);
-                            let rate_limits = headers
-                                .as_ref()
-                                .and_then(|map| {
-                                    parse_rate_limit_for_limit(map, limit_id.as_deref())
-                                })
-                                .map(|mut snapshot| {
-                                    snapshot.rate_limit_reached_type = rate_limit_reached_type;
-                                    snapshot
-                                });
-                            let resets_at = err
-                                .error
-                                .resets_at
-                                .and_then(|seconds| DateTime::<Utc>::from_timestamp(seconds, 0));
-                            return CodexErr::UsageLimitReached(UsageLimitReachedError {
-                                plan_type: err.error.plan_type,
-                                resets_at,
-                                limit_window_minutes: err
-                                    .error
-                                    .limit_window_minutes
-                                    .as_ref()
-                                    .and_then(Value::as_u64)
-                                    .and_then(|minutes| u16::try_from(minutes).ok()),
-                                rate_limits: rate_limits.map(Box::new),
-                                promo_message,
-                                rate_limit_reached_type,
+                    if let Ok(err) = serde_json::from_str::<UsageErrorResponse>(&body_text)
+                        && err.error.error_type.as_deref() == Some("usage_limit_reached")
+                    {
+                        let limit_id = extract_header(headers.as_ref(), ACTIVE_LIMIT_HEADER);
+                        let promo_message = headers.as_ref().and_then(parse_promo_message);
+                        let rate_limit_reached_type =
+                            headers.as_ref().and_then(parse_rate_limit_reached_type);
+                        let rate_limits = headers
+                            .as_ref()
+                            .and_then(|map| parse_rate_limit_for_limit(map, limit_id.as_deref()))
+                            .map(|mut snapshot| {
+                                snapshot.rate_limit_reached_type = rate_limit_reached_type;
+                                snapshot
                             });
-                        }
+                        let resets_at = err
+                            .error
+                            .resets_at
+                            .and_then(|seconds| DateTime::<Utc>::from_timestamp(seconds, 0));
+                        return CodexErr::UsageLimitReached(UsageLimitReachedError {
+                            plan_type: err.error.plan_type,
+                            resets_at,
+                            limit_window_minutes: err
+                                .error
+                                .limit_window_minutes
+                                .as_ref()
+                                .and_then(Value::as_u64)
+                                .and_then(|minutes| u16::try_from(minutes).ok()),
+                            rate_limits: rate_limits.map(Box::new),
+                            promo_message,
+                            rate_limit_reached_type,
+                        });
                     }
 
                     CodexErr::RetryLimit(RetryLimitReachedError {

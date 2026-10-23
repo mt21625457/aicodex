@@ -35,7 +35,11 @@ use std::sync::atomic::Ordering;
 #[path = "client_tool_metadata.rs"]
 mod tool_metadata;
 
+#[path = "client_output_token_budget.rs"]
+mod output_token_budget;
+
 use crate::CodexResponsesHeaders;
+use crate::PromptCacheKey;
 use crate::tools::ExecutedToolCalls;
 use async_channel::Sender;
 use codex_api::AgentIdentityTelemetry;
@@ -135,6 +139,7 @@ use crate::cyber_access_program;
 use crate::feedback_tags;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::subagent_header_value;
+use crate::responses_reasoning_replay::ResponsesReasoningReplay;
 use crate::responses_reasoning_replay::responses_reasoning_replay;
 use crate::responses_reasoning_replay::strip_reasoning_content_for_responses_input;
 use crate::util::emit_feedback_auth_recovery_tags;
@@ -357,7 +362,8 @@ impl RequestRouteTelemetry {
 pub struct ModelClient {
     state: Arc<ModelClientState>,
     agent_identity_policy: AgentIdentityAuthPolicy,
-    prompt_cache_key_override: Option<String>,
+    prompt_cache_key_policy: PromptCacheKey,
+    session_id_override: Option<String>,
     codex_responses_headers: Option<Arc<CodexResponsesHeaders>>,
     event_sender: Option<Sender<ProtocolEvent>>,
     http_client_factory: HttpClientFactory,
@@ -551,6 +557,20 @@ fn responses_request_properties_mismatch(
     Some(reason)
 }
 
+/// 比较视图只复制需要规范化的 reasoning；正文、图片和工具结果仍借用历史。
+/// 当前 replay 策略按单个 item 计算预算，不跨 item 累积，故逐项调用与整段规范化等价。
+fn normalized_incremental_item(
+    item: &ResponseItem,
+    replay: ResponsesReasoningReplay,
+) -> std::borrow::Cow<'_, ResponseItem> {
+    if !matches!(item, ResponseItem::Reasoning { .. }) {
+        return std::borrow::Cow::Borrowed(item);
+    }
+    let mut normalized = item.clone();
+    strip_reasoning_content_for_responses_input(std::slice::from_mut(&mut normalized), replay);
+    std::borrow::Cow::Owned(normalized)
+}
+
 fn response_items_equal_ignoring_internal_metadata(
     previous: &ResponseItem,
     current: &ResponseItem,
@@ -621,10 +641,12 @@ pub(crate) struct RealtimeWebrtcCallStart {
 /// API-key sessions send that API bearer. ChatGPT-auth sessions send their bearer plus account id;
 /// transceiver is responsible for accepting that same call-create identity on the direct
 /// `api.openai.com` sideband path.
-fn sideband_websocket_auth_headers(api_auth: &dyn AuthProvider) -> ApiHeaderMap {
+fn sideband_websocket_auth_headers(
+    api_auth: &dyn AuthProvider,
+) -> std::result::Result<ApiHeaderMap, ApiError> {
     let mut headers = ApiHeaderMap::new();
-    api_auth.add_auth_headers(&mut headers);
-    headers
+    api_auth.add_auth_headers(&mut headers)?;
+    Ok(headers)
 }
 
 impl ModelClient {
@@ -697,7 +719,8 @@ impl ModelClient {
                 last_inference_tools: StdMutex::new(None),
             }),
             agent_identity_policy,
-            prompt_cache_key_override: None,
+            prompt_cache_key_policy: PromptCacheKey::default(),
+            session_id_override: None,
             codex_responses_headers: None,
             event_sender: None,
             http_client_factory,
@@ -727,30 +750,45 @@ impl ModelClient {
 
     pub(crate) fn with_session_context(
         mut self,
-        prompt_cache_key_override: Option<String>,
+        prompt_cache_key: PromptCacheKey,
+        session_id_override: Option<String>,
         event_sender: Sender<ProtocolEvent>,
         codex_responses_headers: Option<Arc<CodexResponsesHeaders>>,
         api_key_cyber_access_programs: cyber_access_program::ApiKeyCyberAccessPrograms,
     ) -> Self {
-        self.prompt_cache_key_override = prompt_cache_key_override;
+        self.prompt_cache_key_policy = prompt_cache_key;
+        self.session_id_override = session_id_override;
         self.event_sender = Some(event_sender);
         self.codex_responses_headers = codex_responses_headers;
         self.api_key_cyber_access_programs = api_key_cyber_access_programs;
         self
     }
 
-    fn prompt_cache_key(&self, responses_metadata: &CodexResponsesMetadata) -> String {
-        if let Some(prompt_cache_key) = &self.prompt_cache_key_override {
-            return prompt_cache_key.clone();
+    pub(crate) fn prompt_cache_key_policy(&self) -> PromptCacheKey {
+        self.prompt_cache_key_policy.clone()
+    }
+
+    /// The caller's policy controls the request body independently of the session-id header.
+    fn prompt_cache_key(&self, metadata: &CodexResponsesMetadata) -> Option<String> {
+        match &self.prompt_cache_key_policy {
+            PromptCacheKey::SessionDerived => Some(self.session_derived_cache_key(metadata)),
+            PromptCacheKey::Custom(key) => Some(key.clone()),
+            PromptCacheKey::Omit => None,
+        }
+    }
+
+    fn session_derived_cache_key(&self, metadata: &CodexResponsesMetadata) -> String {
+        if let Some(session_id) = &self.session_id_override {
+            return session_id.clone();
         }
 
         if let SessionSource::Internal(source) = &self.state.session_source
-            && let Some(parent_thread_id) = responses_metadata.parent_thread_id
+            && let Some(parent_thread_id) = metadata.parent_thread_id
         {
             return format!("{source}:{parent_thread_id}");
         }
 
-        responses_metadata.session_id.clone()
+        metadata.session_id.clone()
     }
 
     // ChatGPT derives cache affinity from the Responses session-id header. Keep the
@@ -759,7 +797,7 @@ impl ModelClient {
         if self.state.session_source.is_non_root_agent() {
             metadata.session_id.clone()
         } else {
-            self.prompt_cache_key(metadata)
+            self.session_derived_cache_key(metadata)
         }
     }
 
@@ -837,7 +875,8 @@ impl ModelClient {
                 last_inference_tools: StdMutex::new(None),
             }),
             agent_identity_policy: self.agent_identity_policy,
-            prompt_cache_key_override: self.prompt_cache_key_override.clone(),
+            prompt_cache_key_policy: self.prompt_cache_key_policy.clone(),
+            session_id_override: self.session_id_override.clone(),
             codex_responses_headers: self.codex_responses_headers.clone(),
             restored_history: self.restored_history,
             api_key_cyber_access_programs: self.api_key_cyber_access_programs,
@@ -921,9 +960,10 @@ impl ModelClient {
             extra_headers.insert(X_OAI_ATTESTATION_HEADER, header_value);
         }
         let mut sideband_headers = extra_headers.clone();
-        sideband_headers.extend(sideband_websocket_auth_headers(
-            client_setup.api_auth.as_ref(),
-        ));
+        sideband_headers.extend(
+            sideband_websocket_auth_headers(client_setup.api_auth.as_ref())
+                .map_err(|error| self.state.provider.map_api_error(error))?,
+        );
         let api_provider = api_provider_override.unwrap_or(client_setup.api_provider);
         let transport = self.build_api_transport(
             &api_provider,
@@ -951,9 +991,10 @@ impl ModelClient {
         if let Some(header_value) = self.generate_attestation_header_for().await {
             extra_headers.insert(X_OAI_ATTESTATION_HEADER, header_value);
         }
-        extra_headers.extend(sideband_websocket_auth_headers(
-            client_setup.api_auth.as_ref(),
-        ));
+        extra_headers.extend(
+            sideband_websocket_auth_headers(client_setup.api_auth.as_ref())
+                .map_err(|error| self.state.provider.map_api_error(error))?,
+        );
         Ok(extra_headers)
     }
 
@@ -989,7 +1030,8 @@ impl ModelClient {
                 client_setup.api_auth.as_ref(),
                 client_setup.agent_identity_telemetry.clone(),
                 PendingUnauthorizedRetry::default(),
-            ),
+            )
+            .map_err(|error| self.state.provider.map_api_error(error))?,
             RequestRouteTelemetry::for_endpoint(MEMORIES_SUMMARIZE_ENDPOINT),
             self.state.auth_env_telemetry.clone(),
         );
@@ -1069,7 +1111,10 @@ impl ModelClient {
     }
 
     async fn generate_attestation_header_for(&self) -> Option<HeaderValue> {
-        if !self.state.include_attestation {
+        // 本分支在代码层面禁用自动证明，配置及宿主能力声明均不能重新开启。
+        // 在所有 HTTP、WebSocket 和实时请求共用的入口阻止调用宿主。
+        const ATTESTATION_ENABLED: bool = false;
+        if !ATTESTATION_ENABLED || !self.state.include_attestation {
             return None;
         }
 
@@ -1136,6 +1181,18 @@ impl ModelClient {
             // Unsupported models and disabled overrides must also accept saved history.
             // Filter only the request copy; persisted history remains unchanged.
             input.retain(|item| !matches!(item, ResponseItem::ConfigurationUpdate { .. }));
+        } else {
+            input.dedup_by(|next, previous| {
+                if matches!(next, ResponseItem::ConfigurationUpdate { .. })
+                    && matches!(previous, ResponseItem::ConfigurationUpdate { .. })
+                {
+                    // Keep the latest update; dedup_by removes `next`.
+                    std::mem::swap(previous, next);
+                    true
+                } else {
+                    false
+                }
+            });
         }
         let is_openai = self.state.provider.info().is_openai();
         strip_reasoning_content_for_responses_input(
@@ -1162,7 +1219,7 @@ impl ModelClient {
                         Uuid::new_v5(&prefix_namespace, &serde_json::to_vec(&tools)?),
                     )),
                     role: "developer".to_string(),
-                    tools,
+                    tools: Arc::from(tools),
                 });
             }
             None
@@ -1180,6 +1237,12 @@ impl ModelClient {
             prefix.push(instructions);
         }
         input.splice(0..0, prefix);
+        if !model_info.use_responses_lite {
+            // Only RLite accepts per-content attribution until the Responses API schema expands.
+            for item in &mut input {
+                item.clear_content_item_metadata();
+            }
+        }
         if !is_openai {
             for item in &mut input {
                 item.clear_internal_chat_message_metadata_passthrough();
@@ -1227,7 +1290,6 @@ impl ModelClient {
             &prompt.output_schema,
             prompt.output_schema_strict,
         );
-        let prompt_cache_key = Some(self.prompt_cache_key(responses_metadata));
         let service_tier = model_info
             .service_tier_for_request(service_tier)
             .filter(|tier| {
@@ -1246,12 +1308,16 @@ impl ModelClient {
         }
         let client_metadata = responses_metadata.client_metadata(include_internal);
         let provider = self.state.provider.info();
-        let tool_tokens = tools
-            .as_ref()
-            .map(crate::context_manager::estimate_serialized_tokens)
-            .unwrap_or(0);
-        let estimated_input = crate::context_manager::estimate_request_input_tokens("", &input)
-            .saturating_add(tool_tokens);
+        let max_output_tokens = output_token_budget::clamp_with_lazy_input(model_info, || {
+            // 这里只延迟输出预算使用的估算；前面的真实工具序列化、ID 生成和输入规范化
+            // 仍无条件完成，因此不会掩盖原有请求构建错误或改变持久化历史。
+            let tool_tokens = tools
+                .as_ref()
+                .map(crate::context_manager::estimate_serialized_tokens)
+                .unwrap_or(0);
+            crate::context_manager::estimate_request_input_tokens("", &input)
+                .saturating_add(tool_tokens)
+        });
         let request = ResponsesApiRequest {
             model: model_info.slug.clone(),
             input,
@@ -1259,7 +1325,7 @@ impl ModelClient {
             tool_choice: "auto".to_string(),
             parallel_tool_calls: prompt.parallel_tool_calls && !model_info.use_responses_lite,
             reasoning: Some(reasoning),
-            max_output_tokens: model_info.clamped_max_output_tokens(Some(estimated_input)),
+            max_output_tokens,
             store: codex_api::is_azure_responses_provider(
                 &provider.name,
                 provider.base_url.as_deref(),
@@ -1268,7 +1334,7 @@ impl ModelClient {
             stream_options,
             include,
             service_tier,
-            prompt_cache_key,
+            prompt_cache_key: self.prompt_cache_key(responses_metadata),
             text,
             client_metadata: Some(client_metadata),
             access_programs: None,
@@ -1717,32 +1783,33 @@ impl ModelClientSession {
         // To compare the inputs, we concatenate the previous request items with the response items,
         // then compare that against the equivalent slice of request items, ignoring metadata. If
         // they match, we can consider the remaining items the incremental request.
-        let mut previous_items = previous_request.input.clone();
-        previous_items.extend_from_slice(&last_response.items_added);
+        let previous_items = previous_request
+            .input
+            .iter()
+            .chain(&last_response.items_added);
+        let previous_len = previous_request.input.len() + last_response.items_added.len();
         let is_openai = self.client.state.provider.info().is_openai();
         let reasoning_replay = responses_reasoning_replay(&request.model, is_openai);
-        strip_reasoning_content_for_responses_input(&mut previous_items, reasoning_replay);
-
-        let mut current_items_normalized = request.input.clone();
-        strip_reasoning_content_for_responses_input(
-            &mut current_items_normalized,
-            reasoning_replay,
-        );
-        let mut current_items = current_items_normalized.iter();
-        for previous in &previous_items {
+        let mut current_items = request.input.iter();
+        for previous in previous_items {
             let Some(current) = current_items.next() else {
                 return Err(NonIncrementalReason::InputShortened {
                     previous: previous.item_type(),
                 });
             };
-            if !response_items_equal_ignoring_internal_metadata(previous, current) {
+            if previous == current {
+                continue;
+            }
+            let previous = normalized_incremental_item(previous, reasoning_replay);
+            let current = normalized_incremental_item(current, reasoning_replay);
+            if !response_items_equal_ignoring_internal_metadata(&previous, &current) {
                 return Err(NonIncrementalReason::InputMismatch {
                     previous: previous.item_type(),
                     current: current.item_type(),
                 });
             }
         }
-        Ok(request.input[previous_items.len()..].to_vec())
+        Ok(request.input[previous_len..].to_vec())
     }
 
     fn get_last_response(&mut self) -> Option<LastResponse> {
@@ -1810,7 +1877,8 @@ impl ModelClientSession {
                 client_setup.api_auth.as_ref(),
                 client_setup.agent_identity_telemetry.clone(),
                 pending_retry,
-            );
+            )
+            .map_err(|error| provider.map_api_error(error))?;
             let responses_headers = self
                 .client
                 .responses_headers(client_setup.auth.as_ref(), &model_info.slug);
@@ -2029,7 +2097,8 @@ impl ResponsesHttpExecutor<'_> {
                 client_setup.api_auth.as_ref(),
                 client_setup.agent_identity_telemetry.clone(),
                 pending_retry,
-            );
+            )
+            .map_err(|error| self.client.state.provider.map_api_error(error))?;
             let (request_telemetry, sse_telemetry) = ModelClientSession::build_streaming_telemetry(
                 session_telemetry,
                 request_auth_context,
@@ -2084,9 +2153,6 @@ impl ResponsesHttpExecutor<'_> {
                 request.store,
                 &request.model,
             )?;
-            if crate::guardian::is_basic_session_source(&self.client.state.session_source) {
-                crate::guardian::observe_guardian_request(session_telemetry, &request);
-            }
             let request_session_telemetry =
                 session_telemetry_for_request(session_telemetry, &request);
             options.extra_headers.extend(responses_headers);
@@ -2226,7 +2292,8 @@ impl ModelClientSession {
                 client_setup.api_auth.as_ref(),
                 client_setup.agent_identity_telemetry.clone(),
                 pending_retry,
-            );
+            )
+            .map_err(|error| self.client.state.provider.map_api_error(error))?;
             let mut request = self.client.build_responses_request(
                 prompt,
                 model_info,
@@ -2297,12 +2364,6 @@ impl ModelClientSession {
                 Err(err) => return Err(provider.map_api_error(err)),
             }
 
-            // Measure the complete logical request, not only the websocket delta.
-            if !warmup
-                && crate::guardian::is_basic_session_source(&self.client.state.session_source)
-            {
-                crate::guardian::observe_guardian_request(session_telemetry, &request);
-            }
             let mut client_metadata = self.client.build_ws_client_metadata(
                 responses_metadata,
                 include_internal,
@@ -2942,9 +3003,9 @@ impl AuthRequestTelemetryContext {
         api_auth: &dyn AuthProvider,
         agent_identity_telemetry: Option<AgentIdentityTelemetry>,
         retry: PendingUnauthorizedRetry,
-    ) -> Self {
-        let auth_telemetry = auth_header_telemetry(api_auth);
-        Self {
+    ) -> std::result::Result<Self, ApiError> {
+        let auth_telemetry = auth_header_telemetry(api_auth)?;
+        Ok(Self {
             auth_mode: auth_mode.map(|mode| match mode {
                 AuthMode::ApiKey | AuthMode::BedrockApiKey | AuthMode::BedrockAccessKeys => {
                     "ApiKey"
@@ -2961,7 +3022,7 @@ impl AuthRequestTelemetryContext {
             retry_after_unauthorized: retry.retry_after_unauthorized,
             recovery_mode: retry.recovery_mode,
             recovery_phase: retry.recovery_phase,
-        }
+        })
     }
 
     fn agent_identity_telemetry(&self) -> Option<&AgentIdentityTelemetry> {
@@ -3325,3 +3386,7 @@ impl WebsocketTelemetry for ApiTelemetry {
 #[cfg(test)]
 #[path = "client_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "client_incremental_performance_tests.rs"]
+mod incremental_performance_tests;

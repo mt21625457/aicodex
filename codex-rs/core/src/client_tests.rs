@@ -393,7 +393,7 @@ async fn client_setup_accepts_command_credential_refresh() {
 
         let setup = client.current_client_setup(routing).await.unwrap();
         let mut headers = http::HeaderMap::new();
-        setup.api_auth.add_auth_headers(&mut headers);
+        setup.api_auth.add_auth_headers(&mut headers).unwrap();
         assert_eq!(
             headers.get(http::header::AUTHORIZATION).unwrap(),
             "Bearer refreshed-token"
@@ -456,7 +456,7 @@ async fn client_setup_rebuilds_chatgpt_refresh_but_rejects_account_switches() {
         if expected_calls == 2 {
             let setup = result.unwrap();
             let mut headers = http::HeaderMap::new();
-            setup.api_auth.add_auth_headers(&mut headers);
+            setup.api_auth.add_auth_headers(&mut headers).unwrap();
             assert_eq!(
                 headers.get(http::header::AUTHORIZATION).unwrap(),
                 &format!("Bearer {refreshed_token}")
@@ -2012,7 +2012,7 @@ fn internal_session_prompt_cache_key_is_scoped_to_parent_thread() {
 
     assert_eq!(
         client.prompt_cache_key(&metadata),
-        format!("guardian:{parent_thread_id}")
+        Some(format!("guardian:{parent_thread_id}"))
     );
 }
 
@@ -2123,6 +2123,58 @@ fn new_session_for_provider_uses_turn_provider_without_mutating_default_client()
         default_session.provider_info().base_url.as_deref(),
         Some("https://example.com/v1")
     );
+}
+
+#[test]
+fn provider_scoped_client_preserves_cache_key_policy_and_session_identity() {
+    for session_id_override in [None, Some("inherited-session")] {
+        for policy in [
+            crate::PromptCacheKey::SessionDerived,
+            crate::PromptCacheKey::Custom("custom-cache-key".to_string()),
+            crate::PromptCacheKey::Omit,
+        ] {
+            let mut client = test_model_client(SessionSource::Cli);
+            client.prompt_cache_key_policy = policy.clone();
+            client.session_id_override = session_id_override.map(str::to_string);
+            let metadata = test_responses_metadata_for_client(
+                &client,
+                None,
+                format!("{}:0", client.state.thread_id),
+                None,
+                TestCodexResponsesRequestKind::Turn,
+            );
+            let expected_session_id = session_id_override.unwrap_or(&metadata.session_id);
+            let expected_cache_key = match policy {
+                crate::PromptCacheKey::SessionDerived => Some(expected_session_id),
+                crate::PromptCacheKey::Custom(_) => Some("custom-cache-key"),
+                crate::PromptCacheKey::Omit => None,
+            };
+            let provider = create_oss_provider_with_base_url(
+                "https://alternate.example.com/v1",
+                WireApi::Responses,
+            );
+            let session = client.new_session_for_provider(create_model_provider(provider, None));
+            let request = session
+                .client
+                .build_responses_request(
+                    &Prompt::default(),
+                    &test_model_info(),
+                    None,
+                    codex_protocol::config_types::ReasoningSummary::None,
+                    None,
+                    &metadata,
+                    true,
+                )
+                .expect("build provider-scoped request");
+            assert_eq!(request.prompt_cache_key.as_deref(), expected_cache_key);
+            assert_eq!(
+                session.client.responses_session_id(&metadata),
+                expected_session_id
+            );
+            assert_eq!(client.prompt_cache_key_policy, policy);
+            assert_eq!(client.session_id_override.as_deref(), session_id_override);
+        }
+    }
 }
 
 #[test]
@@ -2548,7 +2600,8 @@ fn auth_request_telemetry_context_tracks_attached_auth_and_retry_phase() {
             mode: "managed",
             phase: "refresh_token",
         }),
-    );
+    )
+    .unwrap();
 
     assert_eq!(auth_context.auth_mode, Some("Chatgpt"));
     assert!(auth_context.auth_header_attached);
@@ -2568,7 +2621,8 @@ fn auth_request_telemetry_context_tracks_agent_identity_ids() {
             task_id: "task-run-context".to_string(),
         }),
         PendingUnauthorizedRetry::default(),
-    );
+    )
+    .unwrap();
 
     assert_eq!(
         auth_context.agent_identity_telemetry(),
@@ -2680,11 +2734,11 @@ fn thread_responses_headers_are_scoped_to_model_and_backend_auth() {
     );
 }
 
-#[test_case::test_case(/*cache_key*/ None; "own_cache")]
-#[test_case::test_case(Some("parent-session"); "inherited_cache")]
+#[test_case::test_case(/*session_id_override*/ None; "own_session_id")]
+#[test_case::test_case(Some("parent-session"); "inherited_session_id")]
 #[tokio::test]
-async fn websocket_handshake_includes_attestation_for_chatgpt_codex_responses(
-    cache_key: Option<&str>,
+async fn websocket_handshake_omits_attestation_for_chatgpt_codex_responses(
+    session_id_override: Option<&str>,
 ) {
     let (mut model_client, attestation_calls) =
         model_client_with_counting_attestation(/*include_attestation*/ true);
@@ -2696,7 +2750,7 @@ async fn websocket_handshake_includes_attestation_for_chatgpt_codex_responses(
         TestCodexResponsesRequestKind::WebsocketConnection,
     );
 
-    model_client.prompt_cache_key_override = cache_key.map(str::to_string);
+    model_client.session_id_override = session_id_override.map(str::to_string);
     let headers = model_client
         .build_websocket_headers(&responses_metadata)
         .await;
@@ -2705,18 +2759,18 @@ async fn websocket_handshake_includes_attestation_for_chatgpt_codex_responses(
         headers
             .get(crate::attestation::X_OAI_ATTESTATION_HEADER)
             .and_then(|value| value.to_str().ok()),
-        Some("v1.header-1"),
+        None,
     );
-    assert_eq!(attestation_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(attestation_calls.load(Ordering::Relaxed), 0);
     assert_eq!(
         headers["session-id"],
-        cache_key.unwrap_or(&responses_metadata.session_id)
+        session_id_override.unwrap_or(&responses_metadata.session_id)
     );
     assert_eq!(headers["thread-id"], responses_metadata.thread_id);
 }
 
 #[tokio::test]
-async fn existing_call_sideband_headers_include_attestation() {
+async fn existing_call_sideband_headers_omit_attestation() {
     let (model_client, attestation_calls) =
         model_client_with_counting_attestation(/*include_attestation*/ true);
 
@@ -2729,9 +2783,9 @@ async fn existing_call_sideband_headers_include_attestation() {
         headers
             .get(crate::attestation::X_OAI_ATTESTATION_HEADER)
             .and_then(|value| value.to_str().ok()),
-        Some("v1.header-1"),
+        None,
     );
-    assert_eq!(attestation_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(attestation_calls.load(Ordering::Relaxed), 0);
 }
 
 #[tokio::test]
@@ -2890,3 +2944,33 @@ async fn inference_tools_changes_follow_full_specs_across_turns() {
 // Flash 的请求边界回归独立维护，避免继续向本测试文件堆入场景。
 #[path = "client_flash_responses_tests.rs"]
 mod flash_responses_tests;
+
+#[path = "client_lazy_token_tests.rs"]
+mod lazy_token_tests;
+
+// 即使提供方和宿主均支持证明，也不得调用宿主生成证明。
+#[tokio::test]
+async fn attestation_stays_disabled_across_provider_switch() {
+    let (client, calls) = model_client_with_counting_attestation(true);
+    assert!(client.generate_attestation_header_for().await.is_none());
+    let headers = client
+        .realtime_sideband_headers(http::HeaderMap::new())
+        .await
+        .unwrap();
+    assert!(!headers.contains_key(crate::attestation::X_OAI_ATTESTATION_HEADER));
+    let provider = create_model_provider(
+        ModelProviderInfo::create_openai_provider(Some("https://example.com/v1".to_string())),
+        Some(AuthManager::from_auth_for_testing(
+            CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        )),
+    );
+    let scoped = client.new_session_for_provider(provider);
+    assert!(
+        scoped
+            .client
+            .generate_attestation_header_for()
+            .await
+            .is_none()
+    );
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
+}

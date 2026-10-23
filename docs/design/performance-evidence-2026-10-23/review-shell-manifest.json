@@ -1,0 +1,87 @@
+{
+  "baseline": "daf61e7a3d08c004cce53df531094a69795da819",
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "root": "/Users/mt/code/mt-ai/aicodex/aicodex",
+  "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "sources": {
+    "before:codex-rs/core/src/client_common.rs": "ab2c94bf3fa86afb1fa8b972863b0a1a25c23984cca6549a182a11e15b29c944",
+    "after:codex-rs/core/src/client_common.rs": "7633fd3a1079dc28e47e8544d4bf59e2a1ef70820ade1a3c156a7e5a3d63b214"
+  },
+  "libraries": {
+    "codex_protocol": {
+      "path": "/Users/mt/code/mt-ai/aicodex/aicodex/codex-rs/target/debug/deps/libcodex_protocol-afb5fec3d07ecf21.rlib",
+      "sha256": "98c2c41a4a88204fbb5ed1cb3ba271437ff312a203023b3aae1b9a6b9a62759e"
+    },
+    "serde_json": {
+      "path": "/Users/mt/code/mt-ai/aicodex/aicodex/codex-rs/target/debug/deps/libserde_json-3025a82708a329a0.rlib",
+      "sha256": "58b0424aa65361bb7038c4ebf90c194809ae6058a7ae2d1d648fb56b30201e5a"
+    },
+    "serde": {
+      "path": "/Users/mt/code/mt-ai/aicodex/aicodex/codex-rs/target/debug/deps/libserde-a33ccde596cf21f4.rlib",
+      "sha256": "5afff2201ffc59a5ae976d0cc39361a913eb83c10324005af7713879479d6ac8"
+    },
+    "codex_utils_cache": {
+      "path": "/Users/mt/code/mt-ai/aicodex/aicodex/codex-rs/target/debug/deps/libcodex_utils_cache-4ef4fbcff01d164a.rlib",
+      "sha256": "4a4690b0ab346bb2cd9add8d96c656b7527124276b1d9c81a583a283713baa97"
+    },
+    "tokio": {
+      "path": "/Users/mt/code/mt-ai/aicodex/aicodex/codex-rs/target/debug/deps/libtokio-bb4330492c223f3a.rlib",
+      "sha256": "1a9399fbd4c6b42fd960203e9c5a1edea23a5d24a3d51f7740b0634d3ca4a2c2"
+    },
+    "libc": {
+      "path": "/Users/mt/code/mt-ai/aicodex/aicodex/codex-rs/target/debug/deps/liblibc-36a5a2eae67c4a52.rlib",
+      "sha256": "f8563fe5092e2a55bd132179712fda5d471e569ef338c68e41ee02353d236958"
+    }
+  },
+  "binaries": {
+    "before": {
+      "path": "/private/tmp/aicodex-shell-review/shell-before",
+      "sha256": "7094a8b143b159d5355dbfaaa0102c7baa5861be758abd55bdabf2678ea784af",
+      "probe_sha256": "4da09a5eadcb7c43885deea0864f2852d665d9ce912710c097723ae787ec41ad"
+    },
+    "direct": {
+      "path": "/private/tmp/aicodex-shell-review/shell-direct",
+      "sha256": "0e1dc17ea9dd6cc58ff794881c26b2f9e33ba4f14f017269ffcfd0c89af6435d",
+      "probe_sha256": "0245f0fcdc3d10601803f7c4f7e4486c2b311690abe3f5788e44960ffdf6c0f8"
+    },
+    "bypass_large": {
+      "path": "/private/tmp/aicodex-shell-review/shell-bypass_large",
+      "sha256": "2d6c93e546c35745eafc9e9dbeb2640cf60075fc00b34824f872113d6dc0e123",
+      "probe_sha256": "25522cc2afe8a404154465512957e9428b714b0131b6e7f6c59a20e37aba0439"
+    },
+    "read_only_large": {
+      "path": "/private/tmp/aicodex-shell-review/shell-read_only_large",
+      "sha256": "7107c930e36a272a08f32ba34dce59370a66db6448305ae116fece1d8aa7d989",
+      "probe_sha256": "ddf43dc9e92a32442a4b3d9cbc38016a857f4c10fb7316f30ac3dc877f1ce29c"
+    },
+    "after": {
+      "path": "/private/tmp/aicodex-shell-review/shell-after",
+      "sha256": "0c2c32fce6f3bc8a5636e3713e80f1cbdf86b3c8cac06e8a67b6cd78ec331fb0",
+      "probe_sha256": "225f76c2e11ba54cd54b57177e93197a197ddf30e38e98ac9b8a334f1641c9d5"
+    }
+  },
+  "variants": [
+    "before",
+    "direct",
+    "bypass_large",
+    "read_only_large",
+    "after"
+  ],
+  "scenarios": [
+    "warm16",
+    "warm17",
+    "warm32",
+    "warm128",
+    "cold32",
+    "duplicate32",
+    "invalid32",
+    "small1000",
+    "mixed16"
+  ],
+  "fixtures": {
+    "metrics.rs": "61e9a2cf8d444d7b517b9dc97cce4af20b3e3174b87544d46cfec4439723414e",
+    "shell_cache.rs": "0b0a1caa2e770a16ac776cd7855c83e99a7959383fd350ec833d8ac53bf6fd72"
+  },
+  "runner_sha256": "418b9dda60af866d0fdb520edcf75a8b52fe0df1fef6adff52dcfcc94ea546bb",
+  "components_runner_sha256": "7ed169fda2ebd644889ea231bdc82e12114624e02ed55700ea27145e0acc1ce7"
+}

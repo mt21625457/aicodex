@@ -29,6 +29,7 @@ use tokio_tungstenite::tungstenite::Message;
 use super::*;
 use crate::client_api::DEFAULT_REMOTE_EXEC_SERVER_CONNECT_TIMEOUT;
 use crate::client_api::ExecServerTransportParams;
+use crate::protocol::FS_CONDITIONAL_WRITE_FILE_METHOD;
 use crate::protocol::FS_COPY_METHOD;
 use crate::protocol::FS_CREATE_DIRECTORY_METHOD;
 use crate::protocol::FS_GET_METADATA_METHOD;
@@ -402,7 +403,7 @@ async fn concurrent_remote_metadata_requests_share_only_in_flight_results() {
     };
     assert_eq!(first.expect("first metadata request"), expected);
     assert_eq!(second.expect("second metadata request"), expected);
-    assert!(file_system.metadata_requests.lock().await.is_empty());
+    assert!(file_system.lock_metadata_requests().is_empty());
 
     let initializing_file_system = std::sync::Arc::clone(&file_system);
     let initializing_path = path.clone();
@@ -424,9 +425,7 @@ async fn concurrent_remote_metadata_requests_share_only_in_flight_results() {
     assert!(futures::poll!(follower.as_mut()).is_pending());
     assert_eq!(
         file_system
-            .metadata_requests
-            .lock()
-            .await
+            .lock_metadata_requests()
             .get(&path)
             .map(std::sync::Arc::strong_count),
         Some(3)
@@ -448,7 +447,7 @@ async fn concurrent_remote_metadata_requests_share_only_in_flight_results() {
             .expect("waiting metadata request should retry the abandoned initializer"),
         refreshed
     );
-    assert!(file_system.metadata_requests.lock().await.is_empty());
+    assert!(file_system.lock_metadata_requests().is_empty());
     assert_eq!(
         captured_params.await.expect("captured metadata requests"),
         vec![
@@ -643,6 +642,169 @@ async fn remote_metadata_starts_fresh_after_intervening_filesystem_mutation() {
         );
         server.await.expect("metadata server should succeed");
     }
+}
+
+#[tokio::test]
+async fn conditional_write_invalidates_in_flight_metadata_on_success() {
+    assert_conditional_write_invalidates_metadata(ConditionalWriteOutcome::Success).await;
+}
+
+#[tokio::test]
+async fn conditional_write_invalidates_in_flight_metadata_on_error() {
+    assert_conditional_write_invalidates_metadata(ConditionalWriteOutcome::Error).await;
+}
+
+#[tokio::test]
+async fn conditional_write_invalidates_in_flight_metadata_on_cancellation() {
+    assert_conditional_write_invalidates_metadata(ConditionalWriteOutcome::Cancelled).await;
+}
+
+#[derive(Clone, Copy)]
+enum ConditionalWriteOutcome {
+    Success,
+    Error,
+    Cancelled,
+}
+
+async fn assert_conditional_write_invalidates_metadata(outcome: ConditionalWriteOutcome) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener should bind");
+    let websocket_url = format!("ws://{}", listener.local_addr().expect("listener address"));
+    let (metadata_received_tx, metadata_received_rx) = oneshot::channel();
+    let (write_received_tx, write_received_rx) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("listener should accept");
+        let mut websocket = accept_async(stream)
+            .await
+            .expect("websocket handshake should succeed");
+        complete_websocket_initialize(&mut websocket).await;
+        let stale = match read_jsonrpc_websocket(&mut websocket).await {
+            JSONRPCMessage::Request(request) if request.method == FS_GET_METADATA_METHOD => request,
+            other => panic!("expected pre-write metadata request, got {other:?}"),
+        };
+        metadata_received_tx.send(()).expect("metadata observer");
+        let write = match read_jsonrpc_websocket(&mut websocket).await {
+            JSONRPCMessage::Request(request)
+                if request.method == FS_CONDITIONAL_WRITE_FILE_METHOD =>
+            {
+                request
+            }
+            other => panic!("expected conditional write request, got {other:?}"),
+        };
+        write_received_tx.send(()).expect("write observer");
+        let response = match outcome {
+            ConditionalWriteOutcome::Success => Some(JSONRPCMessage::Response(JSONRPCResponse {
+                id: write.id,
+                result: serde_json::json!({}),
+            })),
+            ConditionalWriteOutcome::Error => Some(JSONRPCMessage::Error(JSONRPCError {
+                id: write.id,
+                error: JSONRPCErrorError {
+                    code: FILE_CONFLICT_ERROR_CODE,
+                    data: None,
+                    message: "conditional write conflict".to_string(),
+                },
+            })),
+            ConditionalWriteOutcome::Cancelled => None,
+        };
+        if let Some(response) = response {
+            write_jsonrpc_websocket(&mut websocket, response).await;
+        }
+
+        // Keep the original response pending until a distinct post-write RPC arrives.
+        // This ensures that joining the stale request cannot accidentally pass the test.
+        let refreshed = match read_jsonrpc_websocket(&mut websocket).await {
+            JSONRPCMessage::Request(request) if request.method == FS_GET_METADATA_METHOD => request,
+            other => panic!("expected post-write metadata request, got {other:?}"),
+        };
+        assert_ne!(stale.id, refreshed.id);
+        assert_eq!(stale.params, refreshed.params);
+        for (id, size) in [(stale.id, 42), (refreshed.id, 43)] {
+            write_jsonrpc_websocket(
+                &mut websocket,
+                JSONRPCMessage::Response(JSONRPCResponse {
+                    id,
+                    result: serde_json::to_value(metadata_response(size))
+                        .expect("metadata response should serialize"),
+                }),
+            )
+            .await;
+        }
+    });
+    let file_system = Arc::new(RemoteFileSystem::new(LazyRemoteExecServerClient::new(
+        ExecServerTransportParams::websocket_url(
+            websocket_url,
+            DEFAULT_REMOTE_EXEC_SERVER_CONNECT_TIMEOUT,
+        ),
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+    )));
+    let path = PathUri::parse("file:///workspace/project/AGENTS.md").expect("valid path URI");
+    let stale_file_system = Arc::clone(&file_system);
+    let stale_path = path.clone();
+    let stale = tokio::spawn(async move {
+        stale_file_system
+            .get_metadata(&stale_path, Default::default(), None)
+            .await
+    });
+    metadata_received_rx
+        .await
+        .expect("pre-write metadata received");
+    let writing_file_system = Arc::clone(&file_system);
+    let writing_path = path.clone();
+    let write = tokio::spawn(async move {
+        writing_file_system
+            .write_file_conditional(
+                &writing_path,
+                b"updated".to_vec(),
+                ConditionalWritePrecondition::MatchSha256([0xaa; 32]),
+                None,
+            )
+            .await
+    });
+    write_received_rx.await.expect("conditional write received");
+    match outcome {
+        ConditionalWriteOutcome::Success => {
+            write.await.expect("write task").expect("write success")
+        }
+        ConditionalWriteOutcome::Error => assert_eq!(
+            write
+                .await
+                .expect("write task")
+                .expect_err("write conflict")
+                .kind(),
+            std::io::ErrorKind::InvalidData
+        ),
+        ConditionalWriteOutcome::Cancelled => {
+            write.abort();
+            assert!(
+                write
+                    .await
+                    .expect_err("cancelled write task")
+                    .is_cancelled()
+            );
+        }
+    }
+    assert!(!stale.is_finished());
+    assert!(file_system.lock_metadata_requests().is_empty());
+    assert_eq!(
+        file_system
+            .get_metadata(&path, Default::default(), None)
+            .await
+            .expect("fresh metadata")
+            .size,
+        43
+    );
+    assert_eq!(
+        stale
+            .await
+            .expect("metadata task")
+            .expect("stale metadata")
+            .size,
+        42
+    );
+    assert!(file_system.lock_metadata_requests().is_empty());
+    server.await.expect("metadata server should succeed");
 }
 
 #[tokio::test]

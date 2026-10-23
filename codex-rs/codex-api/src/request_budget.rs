@@ -138,6 +138,7 @@ fn prepare_sync(mut body: Value, budget: RequestBudget) -> Result<EncodedJsonBod
     // Spend work on the largest representations first, retaining order in the request.
     slots.sort_by_key(|slot| std::cmp::Reverse(slot.source.len()));
     let mut request_bytes = prepared_bytes;
+    let mut image_preparation = codex_utils_image::TransportImagePreparationCache::default();
     for encoding in [
         TransportImageEncoding::Lossless,
         TransportImageEncoding::Jpeg85,
@@ -148,9 +149,9 @@ fn prepare_sync(mut body: Value, budget: RequestBudget) -> Result<EncodedJsonBod
             if slot.original && encoding != TransportImageEncoding::Lossless {
                 continue;
             }
-            let candidate =
-                codex_utils_image::optimize_data_url_for_transport(&slot.source, encoding)
-                    .map_err(|reason| invalid(format!("Image preparation failed: {reason}")))?;
+            let candidate = image_preparation
+                .optimize(&slot.source, encoding)
+                .map_err(|reason| invalid(format!("Image preparation failed: {reason}")))?;
             let current = &mut body["input"][slot.item][slot.field][slot.content]["image_url"];
             // Compare actual JSON string sizes, including escaping and base64 expansion.
             let current_bytes = serde_json::to_vec(&*current)

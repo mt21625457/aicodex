@@ -1,14 +1,17 @@
 ---
 source: core/tests/suite/scenarios.rs
-assertion_line: 373
+assertion_line: 295
 expression: "context_snapshot::format_request_history_snapshot(\"A replacement fences an older pending connection and stale stops; only the selected call starts a Codex handoff.\",\n&requests, &ContextSnapshotOptions::default().rewrite_known_segments(),)"
 ---
 Scenario: A replacement fences an older pending connection and stale stops; only the selected call starts a Codex handoff.
 
 ## Window 1
 -- request 1 (turn) --
-00:message/developer[2]:
-    [01] <realtime_conversation>
+00:message/developer[3]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <realtime_conversation>
         Realtime conversation started.
 
         You are operating as a backend executor behind an intermediary. The user does not talk to you directly. ...ediary and may be summarized before the user sees it. [hash=5114d16b52865327]
@@ -19,7 +22,7 @@ Scenario: A replacement fences an older pending connection and stale stops; only
 
         - Keep responses concise and action-oriented. Your updates should help the intermediary respond to the user.
         </realtime_conversation>
-    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <PERMISSIONS_INSTRUCTIONS>
 01:message/user:
     <ENVIRONMENT_CONTEXT>
 02:message/user:

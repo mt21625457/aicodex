@@ -27,6 +27,7 @@ use codex_protocol::models::LocalShellExecAction;
 use codex_protocol::models::LocalShellStatus;
 use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ReasoningItemReasoningSummary;
+use codex_protocol::models::input_text;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::default_input_modalities;
@@ -38,6 +39,7 @@ use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::PLUGINS_INSTRUCTIONS_OPEN_TAG;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::TurnContextItem;
+use codex_protocol_test_support::ContentItemTestExt;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::truncate_text;
@@ -47,6 +49,8 @@ use image::Luma;
 use image::Rgba;
 use pretty_assertions::assert_eq;
 use regex_lite::Regex;
+use serde_json::from_value;
+use serde_json::json;
 use test_case::test_case;
 
 const EXEC_FORMAT_MAX_BYTES: usize = 10_000;
@@ -600,7 +604,7 @@ fn world_state_transitions_persist_changed_state_and_skip_unchanged_state() {
                 return (None, None);
             }
             (Some(snapshot), Some(RenderedWorldStateFragment::new(
-                "developer", ("<test>", "</test>"), value,
+                "developer", ("<test>", "</test>"), input_text(value.to_string()),
             )))
         }));
         state
@@ -614,7 +618,7 @@ fn world_state_transitions_persist_changed_state_and_skip_unchanged_state() {
     let WorldStateUpdateContent::Fragment(fragment) = &fragments[0].content else {
         panic!("expected a text fragment");
     };
-    assert_eq!(fragment.body(), "after");
+    assert_eq!(fragment.body().expect_text(), "after");
     let patch = patch.expect("changed snapshot must be persisted");
     assert!(!patch.full);
     let mut replayed = WorldStateSnapshot::from(&full.state);
@@ -645,7 +649,7 @@ fn world_state_reconciles_matching_legacy_history_once() {
         fragments
             .into_iter()
             .map(|update| match update.content {
-                WorldStateUpdateContent::Fragment(fragment) => fragment.body(),
+                WorldStateUpdateContent::Fragment(fragment) => fragment.body().expect_text(),
                 WorldStateUpdateContent::Item(item) =>
                     panic!("expected a text fragment, got {item:?}"),
             })
@@ -1326,6 +1330,10 @@ fn for_prompt_strips_media_when_model_does_not_support_it() {
                         ContentItemKind("audio.unsupported".to_string()),
                         ContentItemKind("user.text".to_string()),
                     ]),
+                    content_item_metadata: from_value(json!([
+                        {}, {"harness_injected": true}, {"harness_injected": true}, {}
+                    ]))
+                    .unwrap(),
                     ..Default::default()
                 },
             ),
@@ -1966,7 +1974,9 @@ fn drop_last_n_user_turns_trims_context_updates_above_rolled_back_turn() {
 #[test]
 fn drop_last_n_user_turns_preserves_annotations_for_surviving_developer_fragments() {
     let turn_id = "rolled-back-turn";
-    let model_switch = ModelSwitchInstructions::new("switched model instructions").render();
+    let model_switch = ModelSwitchInstructions::new("switched model instructions")
+        .render()
+        .expect_text();
     let developer_message = ResponseItem::Message {
         status: None,
         encrypted_content: None,

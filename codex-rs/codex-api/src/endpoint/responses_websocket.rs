@@ -485,7 +485,7 @@ impl ResponsesWebsocketClient {
 
         let mut headers =
             merge_request_headers(&self.provider.headers, extra_headers, default_headers);
-        self.auth.add_auth_headers(&mut headers);
+        self.auth.add_auth_headers(&mut headers)?;
         crate::aicodex_app_proof::apply_to_headers(&mut headers, "GET", ws_url.as_str());
 
         let connector = WebSocketConnector::new(http_client_factory)

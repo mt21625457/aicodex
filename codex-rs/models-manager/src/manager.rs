@@ -10,11 +10,13 @@ use codex_http_client::HttpClientFactory;
 use codex_login::AuthManager;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::config_types::CollaborationModeMask;
+use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result as CoreResult;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelVisibility;
 use codex_protocol::openai_models::ModelsResponse;
+use std::borrow::Cow;
 use std::fmt;
 use std::future::Future;
 use std::path::PathBuf;
@@ -51,7 +53,8 @@ enum CatalogUpdateSource {
 pub trait ModelsEndpointClient: fmt::Debug + Send + Sync {
     /// Opaque identity of the current provider and credentials, without resolving auth.
     ///
-    /// Must change when account, email, plan, provider, or API credentials change.
+    /// Must distinguish provider routing and authenticated principals within the
+    /// manager and cache's caller-established scope.
     /// Return `None` when identity is unavailable; cached catalog reuse is then disabled.
     fn identity(&self) -> Option<String>;
 
@@ -453,53 +456,53 @@ impl ModelsManager for OpenAiModelsManager {
     fn get_remote_models(&self) -> ModelsManagerFuture<'_, Vec<ModelInfo>> {
         Box::pin(async move {
             let entry = self.remote_models.read().await;
-            if !self.api_key_discovery_disabled()
-                && entry.identity.is_some()
-                && entry.identity == self.endpoint_client.identity()
-            {
-                entry.models.clone()
-            } else {
-                self.catalog_source.fallback_models().unwrap_or_default()
-            }
+            self.models_for_entry(&entry).into_owned()
         })
     }
 
     fn try_get_remote_models(&self) -> Result<Vec<ModelInfo>, TryLockError> {
         let entry = self.remote_models.try_read()?;
-        Ok(
-            if !self.api_key_discovery_disabled()
-                && entry.identity.is_some()
-                && entry.identity == self.endpoint_client.identity()
-            {
-                entry.models.clone()
-            } else {
-                self.catalog_source.fallback_models().unwrap_or_default()
-            },
-        )
+        Ok(self.models_for_entry(&entry).into_owned())
     }
 
     fn auth_manager(&self) -> Option<&AuthManager> {
         self.auth_manager.as_deref()
     }
 
-    #[tracing::instrument(skip_all, fields(model))]
+    #[tracing::instrument(skip_all, fields(model = model))]
     fn get_model_info<'a>(
         &'a self,
         model: &'a str,
         config: &'a ModelsManagerConfig,
     ) -> ModelsManagerFuture<'a, ModelInfo> {
         Box::pin(async move {
-            let models = self.get_remote_models().await;
-            match &self.catalog_source {
-                CatalogSource::Default => {
-                    construct_model_info_from_candidates(model, &models, config)
+            let selected = {
+                let entry = self.remote_models.read().await;
+                // 与整目录读取使用相同的身份和发现开关门控，不能借用到另一账户的目录。
+                // 只在锁内选择并复制最终模型；后续配置覆盖不持有目录锁。
+                let candidates = if !self.api_key_discovery_disabled()
+                    && entry.identity.is_some()
+                    && entry.identity == self.endpoint_client.identity()
+                {
+                    entry.models.as_slice()
+                } else {
+                    match &self.catalog_source {
+                        CatalogSource::Default => crate::bundled_models_response_ref()
+                            .map(|catalog| catalog.models.as_slice())
+                            .unwrap_or_default(),
+                        CatalogSource::ExplicitProvider(_) => &[],
+                    }
+                };
+                match &self.catalog_source {
+                    CatalogSource::Default => find_model_candidate(model, candidates),
+                    // 显式 provider 仍只允许精确匹配，不回退到内置目录或前缀匹配。
+                    CatalogSource::ExplicitProvider(_) => {
+                        candidates.iter().find(|candidate| candidate.slug == model)
+                    }
                 }
-                CatalogSource::ExplicitProvider(_) => construct_model_info(
-                    model,
-                    models.into_iter().find(|candidate| candidate.slug == model),
-                    config,
-                ),
-            }
+                .cloned()
+            };
+            construct_model_info(model, selected, config)
         })
     }
 
@@ -521,6 +524,18 @@ impl ModelsManager for OpenAiModelsManager {
 }
 
 impl OpenAiModelsManager {
+    /// Selects the catalog available under the current provider and auth identity.
+    fn models_for_entry<'a>(&self, entry: &'a ModelsCacheEntry) -> Cow<'a, [ModelInfo]> {
+        if !self.api_key_discovery_disabled()
+            && entry.identity.is_some()
+            && entry.identity == self.endpoint_client.identity()
+        {
+            Cow::Borrowed(&entry.models)
+        } else {
+            Cow::Owned(self.catalog_source.fallback_models().unwrap_or_default())
+        }
+    }
+
     async fn raw_model_catalog(
         &self,
         refresh_strategy: RefreshStrategy,
@@ -619,7 +634,19 @@ impl OpenAiModelsManager {
         {
             Ok(response) => response,
             Err(error) => {
-                if matches!(&self.catalog_source, CatalogSource::ExplicitProvider(_)) {
+                // A failed fetch is not an authoritative empty catalog. Keep the last
+                // successful snapshot (and its original freshness) unless access was
+                // explicitly rejected. Provider/auth identity checks still govern reuse.
+                let is_provider_catalog =
+                    matches!(&self.catalog_source, CatalogSource::ExplicitProvider(_));
+                let access_denied = matches!(error.http_status_code_value(), Some(401 | 403));
+                let credentials_rejected = matches!(
+                    error.details(),
+                    CodexErrorDetails::RefreshTokenFailed(_)
+                        | CodexErrorDetails::GatewayLoginRequired(_)
+                );
+
+                if is_provider_catalog && (access_denied || credentials_rejected) {
                     {
                         let mut current = self.remote_models.write().await;
                         if request_identity != self.endpoint_client.identity() {
@@ -741,7 +768,7 @@ impl OpenAiModelsManager {
         };
         {
             let current = self.remote_models.read().await;
-            // A failed fetch must not be replaced by stale cache data even if invalidation failed.
+            // An access rejection must not be replaced by stale cache data if invalidation failed.
             if current.fetched_at == DateTime::<Utc>::MIN_UTC
                 && current.identity.as_ref() == Some(&identity)
             {
@@ -782,6 +809,20 @@ impl OpenAiModelsManager {
 }
 
 impl ModelsManager for StaticModelsManager {
+    fn get_model_info<'a>(
+        &'a self,
+        model: &'a str,
+        config: &'a ModelsManagerConfig,
+    ) -> ModelsManagerFuture<'a, ModelInfo> {
+        Box::pin(
+            async move {
+                // 静态目录由 manager 持有，单模型查询不必先克隆整份目录。
+                construct_model_info_from_candidates(model, &self.remote_models, config)
+            }
+            .instrument(tracing::info_span!("get_model_info", model = model)),
+        )
+    }
+
     fn get_default_model<'a>(
         &'a self,
         model: &'a Option<String>,
@@ -879,8 +920,11 @@ fn requested_model_is_available(
     })
 }
 
-fn find_model_by_longest_prefix(model: &str, candidates: &[ModelInfo]) -> Option<ModelInfo> {
-    let mut best: Option<ModelInfo> = None;
+fn find_model_by_longest_prefix<'a>(
+    model: &str,
+    candidates: &'a [ModelInfo],
+) -> Option<&'a ModelInfo> {
+    let mut best: Option<&ModelInfo> = None;
     for candidate in candidates {
         if !model.starts_with(&candidate.slug) {
             continue;
@@ -891,13 +935,17 @@ fn find_model_by_longest_prefix(model: &str, candidates: &[ModelInfo]) -> Option
             true
         };
         if is_better_match {
-            best = Some(candidate.clone());
+            // 严格更长时才替换，保留重复 slug/同长度候选的 first-wins 语义。
+            best = Some(candidate);
         }
     }
     best
 }
 
-fn find_model_by_namespaced_suffix(model: &str, candidates: &[ModelInfo]) -> Option<ModelInfo> {
+fn find_model_by_namespaced_suffix<'a>(
+    model: &str,
+    candidates: &'a [ModelInfo],
+) -> Option<&'a ModelInfo> {
     // Retry metadata lookup for a single namespaced slug like `namespace/model-name`.
     //
     // This only strips one leading namespace segment and only when the namespace looks
@@ -921,11 +969,18 @@ pub(crate) fn construct_model_info_from_candidates(
     candidates: &[ModelInfo],
     config: &ModelsManagerConfig,
 ) -> ModelInfo {
+    construct_model_info(
+        model,
+        find_model_candidate(model, candidates).cloned(),
+        config,
+    )
+}
+
+fn find_model_candidate<'a>(model: &str, candidates: &'a [ModelInfo]) -> Option<&'a ModelInfo> {
     // First use the normal longest-prefix match. If that misses, allow a narrowly scoped
     // retry for namespaced slugs like `custom/gpt-5.3-codex`.
-    let remote = find_model_by_longest_prefix(model, candidates)
-        .or_else(|| find_model_by_namespaced_suffix(model, candidates));
-    construct_model_info(model, remote, config)
+    find_model_by_longest_prefix(model, candidates)
+        .or_else(|| find_model_by_namespaced_suffix(model, candidates))
 }
 
 fn construct_model_info(

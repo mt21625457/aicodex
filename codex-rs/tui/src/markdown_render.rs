@@ -38,6 +38,8 @@
 //! body rows, or even 3-char-wide columns cannot fit, body rows render as
 //! key/value records.
 //!
+//! Markdown prose uses foregrounds from the active syntax theme's markup scopes,
+//! retaining its usual modifiers and falling back when a scope has no foreground.
 //! Inline code and local file paths share the active syntax theme's raw-markup foreground.
 
 use crate::markdown_text_merge::DecodedTextMerge;
@@ -82,6 +84,8 @@ pub(crate) mod preferences;
 mod source_tables;
 mod streaming;
 pub(crate) use streaming::render_with_copy_sources;
+#[cfg(test)]
+pub(crate) use streaming::take_render_work;
 mod table_key_value;
 mod task_lists;
 mod web_links;
@@ -133,13 +137,25 @@ impl Default for MarkdownStyles {
 
 impl MarkdownStyles {
     fn for_theme(theme: &syntect::highlighting::Theme) -> Self {
+        let foreground = |scopes: &[&str]| {
+            let mut style =
+                foreground_style_for_scopes_with_theme(theme, scopes).unwrap_or_default();
+            style.fg = style.fg.map(|foreground| {
+                crate::style::readable_color_on(foreground, /*background*/ None)
+            });
+            style
+        };
         Self {
-            h1: Style::new().bold().underlined(),
-            h2: Style::new().bold(),
-            h3: Style::new().bold().italic(),
-            h4: Style::new().italic(),
-            h5: Style::new().italic(),
-            h6: Style::new().italic(),
+            h1: foreground(&["markup.heading.1.markdown", "markup.heading.markdown"])
+                .bold()
+                .underlined(),
+            h2: foreground(&["markup.heading.2.markdown", "markup.heading.markdown"]).bold(),
+            h3: foreground(&["markup.heading.3.markdown", "markup.heading.markdown"])
+                .bold()
+                .italic(),
+            h4: foreground(&["markup.heading.4.markdown", "markup.heading.markdown"]).italic(),
+            h5: foreground(&["markup.heading.5.markdown", "markup.heading.markdown"]).italic(),
+            h6: foreground(&["markup.heading.6.markdown", "markup.heading.markdown"]).italic(),
             code: foreground_style_for_scopes_with_theme(
                 theme,
                 &[
@@ -148,13 +164,23 @@ impl MarkdownStyles {
                 ],
             )
             .unwrap_or_else(|| Style::new().fg(accent_color())),
-            emphasis: Style::new().italic(),
-            strong: Style::new().bold(),
+            emphasis: foreground(&["markup.italic.markdown"]).italic(),
+            strong: foreground(&["markup.bold.markdown"]).bold(),
             strikethrough: Style::new().crossed_out(),
-            ordered_list_marker: Style::new().light_blue(),
-            unordered_list_marker: Style::new(),
-            link: Style::new().fg(accent_color()).underlined(),
-            blockquote: Style::new().green(),
+            ordered_list_marker: Style::new()
+                .light_blue()
+                .patch(foreground(&["markup.list.numbered.markdown"])),
+            unordered_list_marker: foreground(&[
+                "markup.list.unnumbered.markdown",
+                "markup.list.bullet.markdown",
+            ]),
+            link: Style::new()
+                .fg(accent_color())
+                .patch(foreground(&["markup.underline.link.markdown"]))
+                .underlined(),
+            blockquote: Style::new()
+                .green()
+                .patch(foreground(&["markup.quote.markdown"])),
         }
     }
 }
@@ -430,6 +456,30 @@ struct LinkState {
 
 fn should_render_link_destination(dest_url: &str) -> bool {
     !is_local_path_like_link(dest_url)
+}
+
+/// 稳定块边界只保存最后一行布局状态，不复制已完成的输出。
+struct RenderedLineBoundary {
+    completed: usize,
+    pending: Option<Line<'static>>,
+    width: Option<usize>,
+    initial_indent: Vec<Span<'static>>,
+    subsequent_indent: Vec<Span<'static>>,
+}
+
+impl RenderedLineBoundary {
+    fn line_count(self) -> usize {
+        let Some(line) = self.pending else {
+            return self.completed;
+        };
+        let Some(width) = self.width else {
+            return self.completed + 1;
+        };
+        let opts = RtOptions::new(width)
+            .initial_indent(self.initial_indent.into())
+            .subsequent_indent(self.subsequent_indent.into());
+        self.completed + crate::wrapping::adaptive_wrap_line_with_source(&line, opts).len()
+    }
 }
 
 /// Stateful pulldown-cmark event consumer that builds styled `ratatui` output.
@@ -2309,6 +2359,32 @@ impl<'a, 'policy> Writer<'a, 'policy> {
         }
     }
 
+    /// 保存边界处尚未提交的一行，最终只对最后一个边界计算换行，避免每个块额外布局。
+    fn line_boundary(&self) -> RenderedLineBoundary {
+        let width = if self.current_line_in_code_block {
+            None
+        } else {
+            self.wrap_width
+        };
+        let Some((line, width)) = self.current_line_content.as_ref().zip(width) else {
+            return RenderedLineBoundary {
+                completed: self.text.len() + usize::from(self.current_line_content.is_some()),
+                pending: None,
+                width: None,
+                initial_indent: Vec::new(),
+                subsequent_indent: Vec::new(),
+            };
+        };
+        // 超链接和复制源映射对每一行一对一处理，不影响行数，边界快照只保存排版输入。
+        RenderedLineBoundary {
+            completed: self.text.len(),
+            pending: Some(line.line.clone()),
+            width: Some(width),
+            initial_indent: self.current_initial_indent.clone(),
+            subsequent_indent: self.current_subsequent_indent.clone(),
+        }
+    }
+
     fn flush_current_line(&mut self) {
         if let Some(mut line) = self.current_line_content.take() {
             let style = self.current_line_style;
@@ -2575,7 +2651,6 @@ mod markdown_render_tests {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
-    use ratatui::style::Stylize;
     use ratatui::text::Text;
 
     fn lines_to_strings(text: &Text<'_>) -> Vec<String> {
@@ -2657,12 +2732,13 @@ mod tests {
         let rendered =
             render_markdown_lines_with_width_and_cwd(markdown, Some(22), /*cwd*/ None);
         let source = rendered[0].source.as_ref().expect("blockquote source");
+        let styles = MarkdownStyles::default();
         assert_eq!(
             source.styled_range(0..source.text.len()),
             Line::from(vec![
-                "block quote with ".green(),
-                "content".green().bold(),
-                " that should wrap nicely".green(),
+                Span::styled("block quote with ", styles.blockquote),
+                Span::styled("content", styles.blockquote.patch(styles.strong)),
+                Span::styled(" that should wrap nicely", styles.blockquote),
             ])
         );
         let lines: Vec<_> = rendered.iter().map(|line| line.line.to_string()).collect();

@@ -1,0 +1,1843 @@
+{
+  "unique_passed": 321,
+  "counting": "deduplicated by crate and full test name; serial client run is authoritative; TUI groups overlap by 5",
+  "runs": [
+    {
+      "crate": "models-manager",
+      "source_log": "/tmp/aicodex-perf-implementation/models-manager-tests.log",
+      "outcomes": [
+        {
+          "name": "collaboration_mode_presets::tests::preset_names_use_mode_display_names",
+          "outcome": "ok"
+        },
+        {
+          "name": "collaboration_mode_presets::tests::default_mode_instructions_follow_user_input_tool_availability",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::context_window_policy_tests::explicit_sol_budget_keeps_precedence_and_provider_cap",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::context_window_policy_tests::other_models_and_similar_slugs_keep_catalog_defaults",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::context_window_policy_tests::sol_catalog_defaults_preserve_provider_caps_and_other_metadata",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::context_window_policy_tests::sol_missing_catalog_uses_500k_and_preserves_fallback_diagnostic",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::context_window_policy_tests::sol_provider_catalog_applies_default_without_mutating_source",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::build_available_models_picks_default_after_hiding_hidden_models",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::borrowed_model_selection_preserves_first_match_and_owned_overrides",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::cache_identity_tests::matching_etag_cannot_renew_a_different_identity_or_catalog",
+          "outcome": "ok"
+        },
+        {
+          "name": "bundled_catalog_tests::borrowed_catalog_is_shared_but_selected_models_remain_independent",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::authoritative_catalog_preserves_hidden_models_and_matches_exact_ids",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::authoritative_catalog_failure_invalidates_cache_until_refresh_succeeds",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::api_key_discovery_tests::api_key_discovery_disabled_preserves_command_auth_discovery_and_merging",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::get_model_info_matches_hyphenated_provider_namespace_suffix",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::get_model_info_matches_namespaced_suffix",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::file_cache_implements_models_cache_contract",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::borrowed_openai_lookup_matches_owned_catalog_authority",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::get_model_info_uses_custom_catalog",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::file_cache_refresh_ttl_renews_expired_entry_without_serving_it_stale",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::api_key_discovery_tests::api_key_discovery_flag_controls_fetches_and_cached_catalogs",
+          "outcome": "ok"
+        },
+        {
+          "name": "bundled_catalog_tests::cached_catalog_matches_source_and_returns_independent_values",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::injected_cache_ttl_refresh_preserves_cached_payload",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::bundled_models_json_roundtrips",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::injected_cache_read_error_falls_back_and_persists_remote_models",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::manager_without_cache_fetches_on_every_refresh",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::injected_cache_write_error_does_not_fail_remote_refresh",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::injected_cache_hit_avoids_remote_fetch",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::dynamic_manager_preserves_requested_model_when_fallback_is_allowed",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::display_cache_tests::older_cache_update_preserves_newer_network_catalog",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::display_cache_tests::display_cache_does_not_treat_bundled_defaults_as_a_fetched_catalog",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::cache_identity_tests::mismatched_and_legacy_cache_entries_fetch_the_current_catalog",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::get_model_info_applies_long_context_override_to_bundled_gpt_5_6_models",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::get_model_info_rejects_multi_segment_namespace_suffix_matching",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::get_model_info_tracks_fallback_usage",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::display_cache_tests::display_cache_rejects_other_identities_and_versions",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::context_window_policy_tests::sol_bundled_catalog_uses_475k_without_leaking_budget_to_other_models",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::display_cache_tests::display_cache_respects_discovery_disable_and_auth_changes",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::get_model_info_uses_fallback_for_bundled_models_when_chatgpt_remote_is_authoritative",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::display_cache_tests::expired_display_cache_survives_restart_without_fetching",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::display_cache_tests::display_cache_does_not_satisfy_etag_revalidation",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::model_info_overrides_tests::offline_model_info_with_tool_output_override",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::model_info_overrides_tests::offline_model_info_without_tool_output_override",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::refresh_available_models_skips_network_without_auth",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::static_manager_falls_back_from_unsupported_requested_model_when_allowed",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::static_manager_preserves_supported_requested_model_when_fallback_is_allowed",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::static_manager_preserves_unsupported_requested_model_when_fallback_is_disabled",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::static_manager_uses_empty_default_when_fallback_is_allowed_and_catalog_is_empty",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::display_cache_tests::explicit_provider_display_cache_does_not_add_bundled_models",
+          "outcome": "ok"
+        },
+        {
+          "name": "model_info::tests::baked_personality_section_is_preserved_without_explicit_none",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::static_manager_reads_latest_auth_mode",
+          "outcome": "ok"
+        },
+        {
+          "name": "model_info::tests::deepseek_model_slug_recognizes_plain_and_prefixed_slugs",
+          "outcome": "ok"
+        },
+        {
+          "name": "model_info::tests::base_instruction_override_is_literal_and_preserves_catalog_messages",
+          "outcome": "ok"
+        },
+        {
+          "name": "model_info::tests::explicit_empty_base_instructions_stay_empty_with_personality_none",
+          "outcome": "ok"
+        },
+        {
+          "name": "model_info::tests::grok_models_use_multi_agent_v2_metadata",
+          "outcome": "ok"
+        },
+        {
+          "name": "model_info::tests::grok_remote_metadata_without_multi_agent_version_is_upgraded",
+          "outcome": "ok"
+        },
+        {
+          "name": "model_info::tests::minimax_model_slug_recognizes_plain_and_prefixed_slugs",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::refresh_available_models_sorts_by_priority",
+          "outcome": "ok"
+        },
+        {
+          "name": "model_info::tests::model_context_window_override_clamps_to_max_context_window",
+          "outcome": "ok"
+        },
+        {
+          "name": "model_info::tests::model_context_window_uses_model_value_without_override",
+          "outcome": "ok"
+        },
+        {
+          "name": "model_info::tests::openai_gpt_model_slug_recognizes_official_gpt_families",
+          "outcome": "ok"
+        },
+        {
+          "name": "model_info::tests::unknown_deepseek_models_use_large_fallback_context_window",
+          "outcome": "ok"
+        },
+        {
+          "name": "model_info::tests::unknown_k3_models_advertise_low_high_max_reasoning_levels",
+          "outcome": "ok"
+        },
+        {
+          "name": "model_info::tests::personality_none_strips_catalog_instruction_sources_through_the_next_h1",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::refresh_available_models_uses_cached_chatgpt_when_external_api_key_is_unresolved",
+          "outcome": "ok"
+        },
+        {
+          "name": "model_info::tests::unknown_model_uses_builtin_instruction_template",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::refresh_available_models_merges_hidden_only_chatgpt_remote_with_bundled_catalog",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::refresh_available_models_keeps_merging_for_custom_api_auth",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::refresh_available_models_fetches_when_external_api_key_overrides_chatgpt_auth",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::refresh_available_models_uses_remote_only_catalog_for_chatgpt_auth",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::refresh_available_models_uses_cache_when_fresh",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::refresh_available_models_drops_removed_remote_models",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::refresh_available_models_preserves_bundled_catalog_for_empty_chatgpt_remote",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::refresh_available_models_fetches_with_chatgpt_auth_tokens",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::refresh_available_models_uses_cached_remote_only_catalog_for_chatgpt_auth",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::refresh_available_models_refetches_when_version_mismatch",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::refresh_available_models_refetches_when_cache_stale",
+          "outcome": "ok"
+        },
+        {
+          "name": "manager::tests::online_refresh_updates_access_programs_with_unchanged_etag",
+          "outcome": "ok"
+        }
+      ],
+      "summary": [
+        "test result: ok. 78 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s"
+      ]
+    },
+    {
+      "crate": "model-provider",
+      "source_log": "/tmp/aicodex-perf-implementation/catalog-tests.log",
+      "outcomes": [
+        {
+          "name": "amazon_bedrock::auth::tests::bedrock_bearer_auth_uses_aws_default_region_env",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::auth::tests::bedrock_bearer_auth_uses_aws_region_env",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::auth::tests::bedrock_bearer_auth_rejects_missing_configured_region",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::auth::tests::bedrock_bearer_auth_prefers_configured_region_and_uses_header",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::error_tests::expired_signature_preserves_the_retry_deadline",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::auth::tests::bedrock_mantle_sigv4_strips_headers_not_preserved_by_mantle",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::error_tests::expired_signature_has_actionable_guidance",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::error_tests::classifies_only_refreshable_bedrock_auth_failures",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::mantle::tests::aws_auth_config_uses_configured_region",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::mantle::tests::aws_auth_config_uses_profile_and_mantle_service",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::error_tests::signature_errors_with_other_statuses_remain_generic",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::error_tests::other_unauthorized_errors_remain_generic",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::mantle::tests::base_url_rejects_unsupported_region",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::auth::tests::bedrock_auth_source_distinguishes_static_environment_credentials",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::mantle::tests::base_url_uses_region_endpoint",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::runtime::tests::aws_auth_config_uses_bedrock_service",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::runtime::tests::base_url_uses_regional_runtime_endpoint",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::tests::capabilities_enable_web_search_but_disable_image_generation",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::tests::preferred_background_models_match_bedrock_endpoint",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::tests::api_provider_for_bedrock_bearer_token_uses_configured_region_endpoint",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::error_tests::credential_export_errors_distinguish_configuration_failures_from_retryable_auth",
+          "outcome": "FAILED"
+        },
+        {
+          "name": "amazon_bedrock::catalog::tests::gpt_5_bedrock_models_are_visible",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::catalog::tests::gpt_5_bedrock_models_use_bedrock_context_window",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::credential_export::tests::credential_output_formats_expiration_and_sanitized_errors",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::catalog::tests::bedrock_models_preserve_source_metadata_with_supported_capabilities",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::tests::openai_auth_is_not_exposed_to_bedrock",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::runtime_catalog::tests::runtime_catalog_includes_supported_cross_region_models_in_priority_order",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::catalog::tests::gpt_5_bedrock_models_do_not_include_availability_nux_or_upgrade",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::catalog::tests::configured_bedrock_catalogs_normalize_unsupported_model_capabilities",
+          "outcome": "ok"
+        },
+        {
+          "name": "auth::tests::custom_provider_does_not_inherit_ambient_auth_headers",
+          "outcome": "ok"
+        },
+        {
+          "name": "auth::tests::custom_provider_does_not_inherit_ambient_bedrock_auth",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::runtime_catalog::tests::runtime_catalog_disables_web_search_without_overriding_review_models",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::catalog::tests::bedrock_models_do_not_enable_priority_or_explicit_default_tiers",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::tests::runtime_capabilities_disable_web_search_and_support_v2_remote_compaction",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::tests::runtime_managed_auth_resolves_runtime_endpoint",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::catalog::tests::catalog_uses_mantle_model_ids_in_priority_order",
+          "outcome": "ok"
+        },
+        {
+          "name": "auth::tests::custom_provider_uses_command_resolved_auth",
+          "outcome": "ok"
+        },
+        {
+          "name": "auth::tests::header_auth_adds_predefined_headers",
+          "outcome": "ok"
+        },
+        {
+          "name": "auth::tests::agent_identity_auth_provider_preserves_account_routing_headers",
+          "outcome": "ok"
+        },
+        {
+          "name": "auth::tests::first_party_run_scope_uses_agent_assertion_and_exposes_telemetry",
+          "outcome": "ok"
+        },
+        {
+          "name": "auth::tests::openai_provider_preserves_ambient_auth_headers",
+          "outcome": "ok"
+        },
+        {
+          "name": "auth::tests::openai_provider_rejects_bedrock_api_key_auth",
+          "outcome": "ok"
+        },
+        {
+          "name": "bearer_auth_provider::tests::bearer_auth_provider_adds_fedramp_routing_header_for_fedramp_accounts",
+          "outcome": "ok"
+        },
+        {
+          "name": "bearer_auth_provider::tests::bearer_auth_provider_reports_when_auth_header_will_attach",
+          "outcome": "ok"
+        },
+        {
+          "name": "capabilities::tests::capability_overrides_preserve_unspecified_provider_defaults",
+          "outcome": "ok"
+        },
+        {
+          "name": "auth::tests::custom_provider_uses_explicit_bearer_instead_of_ambient_auth",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::tests::configured_profile_takes_precedence_over_managed_auth",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::tests::command_auth_resolves_configured_and_regional_base_urls",
+          "outcome": "ok"
+        },
+        {
+          "name": "auth::tests::unauthenticated_auth_provider_adds_no_headers",
+          "outcome": "ok"
+        },
+        {
+          "name": "bearer_auth_provider::tests::bearer_auth_provider_adds_auth_headers",
+          "outcome": "ok"
+        },
+        {
+          "name": "models_endpoint::tests::command_auth_provider_reports_command_auth_without_cached_auth",
+          "outcome": "ok"
+        },
+        {
+          "name": "models_endpoint::tests::api_key_discovery_respects_provider_routing",
+          "outcome": "ok"
+        },
+        {
+          "name": "models_endpoint::tests::provider_without_command_auth_reports_no_command_auth",
+          "outcome": "ok"
+        },
+        {
+          "name": "models_identity::tests::cache_identity_tracks_catalog_url",
+          "outcome": "ok"
+        },
+        {
+          "name": "models_identity::tests::cache_identity_tracks_provider_routing_and_effective_api_credentials",
+          "outcome": "ok"
+        },
+        {
+          "name": "provider::tests::amazon_bedrock_provider_creates_static_models_manager",
+          "outcome": "ok"
+        },
+        {
+          "name": "provider::tests::amazon_bedrock_provider_returns_bedrock_account_state",
+          "outcome": "ok"
+        },
+        {
+          "name": "provider::tests::configured_bedrock_catalog_preserves_service_tiers",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::credential_export::tests::credential_export_reuses_cache_and_coalesces_refreshes",
+          "outcome": "ok"
+        },
+        {
+          "name": "provider::tests::configured_provider_remote_compaction_matches_provider_support",
+          "outcome": "ok"
+        },
+        {
+          "name": "provider::tests::configured_provider_runtime_base_url_uses_configured_base_url",
+          "outcome": "ok"
+        },
+        {
+          "name": "models_endpoint::tests::provider_api_key_without_endpoint_overrides_uses_codex_backend",
+          "outcome": "ok"
+        },
+        {
+          "name": "provider::tests::configured_provider_uses_default_approval_review_model_with_chatgpt_auth",
+          "outcome": "ok"
+        },
+        {
+          "name": "models_identity::tests::cache_identity_distinguishes_auth_requirements_and_unknown_plans",
+          "outcome": "ok"
+        },
+        {
+          "name": "provider::tests::configured_provider_uses_default_approval_review_preferred_model",
+          "outcome": "ok"
+        },
+        {
+          "name": "provider::tests::configured_provider_uses_luna_for_approval_review_with_api_key_auth",
+          "outcome": "ok"
+        },
+        {
+          "name": "provider::tests::create_model_provider_uses_managed_auth_for_amazon_bedrock_provider",
+          "outcome": "ok"
+        },
+        {
+          "name": "provider::tests::create_model_provider_builds_command_auth_manager_without_base_manager",
+          "outcome": "ok"
+        },
+        {
+          "name": "provider::tests::create_model_provider_does_not_use_openai_auth_manager_for_amazon_bedrock_provider",
+          "outcome": "ok"
+        },
+        {
+          "name": "provider::tests::openai_provider_enables_remote_compaction",
+          "outcome": "ok"
+        },
+        {
+          "name": "provider::tests::custom_non_openai_provider_returns_no_account_state",
+          "outcome": "ok"
+        },
+        {
+          "name": "provider::tests::openai_provider_rejects_bedrock_api_key_account_state",
+          "outcome": "ok"
+        },
+        {
+          "name": "models_endpoint::tests::model_discovery_enforces_managed_residency_over_provider_headers",
+          "outcome": "ok"
+        },
+        {
+          "name": "models_endpoint::tests::model_request_uses_request_time_proxy_policy_and_exact_url",
+          "outcome": "ok"
+        },
+        {
+          "name": "provider::tests::openai_provider_returns_unauthenticated_openai_account_state",
+          "outcome": "ok"
+        },
+        {
+          "name": "provider::tests::openai_provider_returns_api_key_account_state",
+          "outcome": "ok"
+        },
+        {
+          "name": "models_endpoint::tests::explicit_catalog_rejects_oversized_response",
+          "outcome": "ok"
+        },
+        {
+          "name": "auth::tests::auth_manager_provider_follows_refreshes_but_not_account_switches",
+          "outcome": "ok"
+        },
+        {
+          "name": "provider::tests::scoped_auth_ignores_scope_for_non_openai_provider",
+          "outcome": "ok"
+        },
+        {
+          "name": "provider::tests::openai_provider_returns_chatgpt_account_state_without_email",
+          "outcome": "ok"
+        },
+        {
+          "name": "models_endpoint::tests::explicit_catalog_rejects_redirects_without_forwarding_provider_credentials",
+          "outcome": "ok"
+        },
+        {
+          "name": "shared_state::tests::gateway_setup_errors_are_reported_when_authentication_is_requested",
+          "outcome": "ok"
+        },
+        {
+          "name": "auth::tests::chatgpt_sessions_share_bootstrap_failure_cooldown",
+          "outcome": "ok"
+        },
+        {
+          "name": "auth::tests::chatgpt_bootstrap_unavailable_uses_session_bearer_fallback",
+          "outcome": "ok"
+        },
+        {
+          "name": "workspace_routing_tests::concurrent_discovery_cannot_forget_established_routing",
+          "outcome": "ok"
+        },
+        {
+          "name": "workspace_routing_tests::missing_routing_owner_and_wrong_workspace_fail_closed",
+          "outcome": "ok"
+        },
+        {
+          "name": "models_identity::tests::cache_identity_tracks_account_email_user_plan_and_auth_mode_but_not_token_refresh",
+          "outcome": "ok"
+        },
+        {
+          "name": "models_endpoint::timeout_tests::catalog_deadline_returns_request_timeout",
+          "outcome": "ok"
+        },
+        {
+          "name": "workspace_routing_tests::workspace_routing_preserves_paths_and_excludes_other_providers",
+          "outcome": "ok"
+        },
+        {
+          "name": "shared_state::tests::gateway_login_states_stop_request_retries",
+          "outcome": "ok"
+        },
+        {
+          "name": "models_endpoint::tests::explicit_catalog_requires_unique_nonempty_slugs",
+          "outcome": "ok"
+        },
+        {
+          "name": "provider::tests::configured_provider_models_manager_uses_provider_bearer_token",
+          "outcome": "ok"
+        },
+        {
+          "name": "models_endpoint::tests::command_auth_refresh_fetches_a_catalog_for_the_current_credentials",
+          "outcome": "ok"
+        },
+        {
+          "name": "auth::tests::chatgpt_session_fallback_skips_later_agent_identity_bootstrap",
+          "outcome": "ok"
+        },
+        {
+          "name": "models_endpoint::tests::explicit_catalog_reuses_auth_headers_and_query_parameters",
+          "outcome": "ok"
+        },
+        {
+          "name": "amazon_bedrock::credential_export::tests::credential_export_process_errors_are_bounded_and_sanitized",
+          "outcome": "ok"
+        },
+        {
+          "name": "provider::tests::shared_bedrock_auth_refresh_is_reused_only_for_matching_configuration",
+          "outcome": "ok"
+        },
+        {
+          "name": "shared_state::tests::models_observe_gateway_rotation_from_the_same_provider_instance",
+          "outcome": "ok"
+        },
+        {
+          "name": "shared_state::tests::models_observe_gateway_rotation_from_a_separate_provider_instance",
+          "outcome": "ok"
+        },
+        {
+          "name": "shared_state::tests::gateway_credentials_accompany_primary_auth_in_models_and_responses",
+          "outcome": "ok"
+        },
+        {
+          "name": "shared_state::tests::models_cache_is_reused_only_for_matching_gateway_configuration",
+          "outcome": "ok"
+        },
+        {
+          "name": "shared_state::tests::gateway_refresh_preserves_primary_auth_and_hides_issuer_errors",
+          "outcome": "ok"
+        }
+      ],
+      "summary": [
+        "test result: FAILED. 101 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.93s"
+      ]
+    },
+    {
+      "crate": "message-history",
+      "source_log": "/tmp/aicodex-perf-implementation/history-tests.log",
+      "outcomes": [
+        {
+          "name": "tests::history_metadata_counts_newlines_across_read_boundaries",
+          "outcome": "ok"
+        },
+        {
+          "name": "lookup_index::adaptive_tests::rewritten_invalid_utf8_prefix_cannot_be_skipped_by_cached_tail",
+          "outcome": "ok"
+        },
+        {
+          "name": "lookup_index::tests::sparse_index_bounds_scan_and_rejects_changed_files_and_capped_history",
+          "outcome": "ok"
+        },
+        {
+          "name": "tests::lookup_uses_stable_log_id_after_appends",
+          "outcome": "ok"
+        },
+        {
+          "name": "tests::lookup_reads_history_entries",
+          "outcome": "ok"
+        },
+        {
+          "name": "tests::append_entry_trims_history_when_beyond_max_bytes",
+          "outcome": "ok"
+        },
+        {
+          "name": "batch_tests::search_batch_stitches_chunks_and_keeps_malformed_offsets",
+          "outcome": "ok"
+        },
+        {
+          "name": "tests::append_entry_trims_history_to_soft_cap",
+          "outcome": "ok"
+        },
+        {
+          "name": "tests::indexed_lookup_matches_linear_lookup_with_crlf_invalid_json_and_missing_newline",
+          "outcome": "ok"
+        },
+        {
+          "name": "batch_tests::search_batch_preserves_identity_append_trim_and_short_file_semantics",
+          "outcome": "ok"
+        },
+        {
+          "name": "batch_tests::search_batch_defers_oversized_row_during_backward_scan",
+          "outcome": "ok"
+        },
+        {
+          "name": "batch_tests::search_batch_enforces_byte_cap_and_oversized_row_progress",
+          "outcome": "ok"
+        },
+        {
+          "name": "lookup_index::adaptive_tests::adaptive_anchors_cover_prefix_and_tail_with_bounded_storage",
+          "outcome": "ok"
+        },
+        {
+          "name": "batch_tests::search_batch_returns_bounded_newest_first_absolute_offsets",
+          "outcome": "ok"
+        },
+        {
+          "name": "batch_tests::search_batch_rescans_capped_history_after_same_size_rewrite",
+          "outcome": "ok"
+        },
+        {
+          "name": "batch_tests::search_batch_invalidates_byte_cursor_after_in_place_rewrite",
+          "outcome": "ok"
+        },
+        {
+          "name": "lookup_index::adaptive_tests::real_file_random_and_reverse_lookups_keep_content_and_bound_scans",
+          "outcome": "ok"
+        }
+      ],
+      "summary": [
+        "test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s"
+      ]
+    },
+    {
+      "crate": "core",
+      "source_log": "/tmp/aicodex-perf-implementation/core-common-tests.log",
+      "outcomes": [
+        {
+          "name": "client_common::tests::serializes_text_schema_with_non_strict_format",
+          "outcome": "ok"
+        },
+        {
+          "name": "client_common::tests::serializes_text_verbosity_when_set",
+          "outcome": "ok"
+        },
+        {
+          "name": "client_common::tests::omits_text_when_not_set",
+          "outcome": "ok"
+        },
+        {
+          "name": "client_common::tests::serializes_text_schema_with_strict_format",
+          "outcome": "ok"
+        },
+        {
+          "name": "client_common::tests::serializes_flex_service_tier_when_set",
+          "outcome": "ok"
+        },
+        {
+          "name": "client_common::tests::request_copies_project_image_details_for_receiving_model::unspecified",
+          "outcome": "ok"
+        },
+        {
+          "name": "client_common::tests::request_copies_project_image_details_for_receiving_model::auto",
+          "outcome": "ok"
+        },
+        {
+          "name": "client_common::tests::request_copies_project_image_details_for_receiving_model::low",
+          "outcome": "ok"
+        },
+        {
+          "name": "client_common::tests::request_copies_project_image_details_for_receiving_model::high",
+          "outcome": "ok"
+        },
+        {
+          "name": "client_common::tests::request_copies_project_image_details_for_receiving_model::original",
+          "outcome": "ok"
+        },
+        {
+          "name": "client_common::tests::structured_shell_output_preserves_json_validation_and_header_semantics",
+          "outcome": "ok"
+        },
+        {
+          "name": "client_common::tests::shell_cache_tests::admission_precheck_keeps_size_boundaries_and_disabled_runtime",
+          "outcome": "ok"
+        },
+        {
+          "name": "client_common::tests::shell_cache_tests::current_thread_runtime_uses_uncached_formatting",
+          "outcome": "ok"
+        },
+        {
+          "name": "client_common::tests::structured_shell_output_matches_previous_format_for_boundary_and_large_outputs",
+          "outcome": "ok"
+        },
+        {
+          "name": "client_common::tests::shell_cache_tests::large_repeated_outputs_keep_positive_and_negative_cache_hits",
+          "outcome": "ok"
+        },
+        {
+          "name": "client_common::tests::shell_cache_tests::admission_policy_preserves_order_pairing_and_content_invalidation",
+          "outcome": "ok"
+        },
+        {
+          "name": "client_common::tests::shell_format_cache_reuses_pure_result_and_invalidates_changed_content",
+          "outcome": "ok"
+        },
+        {
+          "name": "client_common::tests::shell_cache_tests::admission_budget_prevents_large_history_scan_eviction",
+          "outcome": "ok"
+        },
+        {
+          "name": "client_common::tests::shell_cache_reports_repeat_work_benchmark_and_bypasses_small_outputs",
+          "outcome": "ok"
+        }
+      ],
+      "summary": [
+        "test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 2839 filtered out; finished in 0.61s"
+      ]
+    },
+    {
+      "crate": "core",
+      "source_log": "/tmp/aicodex-perf-implementation/core-client-serial-tests.log",
+      "outcomes": [
+        {
+          "name": "client::tests::auth_request_telemetry_context_tracks_agent_identity_ids",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::auth_request_telemetry_context_tracks_attached_auth_and_retry_phase",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::bedrock_unauthorized_error_uses_provider_mapping",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::build_subagent_headers_sets_internal_memory_consolidation_label",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::build_subagent_headers_sets_other_subagent_label",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::build_ws_client_metadata_includes_window_lineage_and_turn_metadata",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::client_setup_accepts_command_credential_refresh",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::client_setup_rebuilds_chatgpt_refresh_but_rejects_account_switches",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::dropped_backpressured_response_stream_traces_cancelled_partial_output",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::dropped_response_stream_traces_cancelled_partial_output",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::existing_call_sideband_headers_include_attestation",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::flash_responses_tests::responses_request_preserves_flash_reasoning_and_explicit_effort_without_changing_pro",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::incremental_request_preserves_reasoning_normalization_and_output_limit_guard",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::inference_tools_changes_follow_full_specs_across_turns",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::intercepted_output_reaches_trace_and_websocket_bookkeeping",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::internal_session_prompt_cache_key_is_scoped_to_parent_thread",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::lazy_token_tests::lazy_output_budget_preserves_eager_clamping_at_boundaries",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::lazy_token_tests::lazy_output_budget_preserves_request_payload_and_original_prompt",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::new_session_for_provider_uses_turn_provider_without_mutating_default_client",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::non_chatgpt_codex_endpoints_omit_attestation_generation",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::official_gpt_request_omits_overlong_message_id_without_changing_history",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::official_request_rejects_opaque_overlong_id_before_transport",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::only_openai_gpt_models_enable_responses_websocket_when_provider_supports_it",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::prefix_ids_track_thread_and_payload::responses_lite",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::prefix_ids_track_thread_and_payload::standard",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::preserves_openai_encrypted_reasoning_state_with_raw_content_for_responses_serialization",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::preserves_openai_encrypted_reasoning_state_without_raw_content_for_responses_serialization",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::provider_owned_auth_recovery_is_bounded_and_preserves_unauthorized_failures",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::provider_scoped_client_preserves_output_replay_without_exposing_it_to_compatible_providers",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::reasoning_effort_for_requests_falls_back_for_missing_or_invalid_override",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::reasoning_effort_for_requests_preserves_non_ultra_and_persistent_behavior",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::reasoning_effort_for_requests_uses_multi_agent_override_for_ultra",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::response_stream_records_last_model_feedback_ids",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::responses_http_preserves_raw_tool_metadata_for_openai_custom_endpoint",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::responses_request_includes_internal_metadata_for_provider_grant_or_first_party_destination",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::responses_request_preserves_result_metadata_above_previous_aggregate_budget",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::store_false_drops_id_only_official_reasoning_shells",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::store_false_keeps_ids_for_official_gpt_and_reviewer_slugs",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::store_false_strips_all_item_ids_for_third_party_reasoning_models",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::store_false_strips_item_ids_for_compatible_openai_named_models",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::store_true_keeps_type_valid_ids_and_strips_invalid_ids",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::strips_provider_specific_reasoning_state_before_responses_serialization",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::strips_raw_reasoning_encrypted_content_for_non_openai_responses_providers",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::strips_unknown_raw_reasoning_state_before_responses_serialization",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::summarize_memories_returns_empty_for_empty_input",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::third_party_stored_ids_do_not_inherit_official_length_limit",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::thread_responses_headers_are_scoped_to_model_and_backend_auth",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::websocket_continuation_rejects_unstored_compatible_provider",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::websocket_continuation_reports_unavailable_response_state",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::websocket_continuation_reset_reason_survives_failed_reconnect_and_turn_boundary",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::websocket_handshake_includes_attestation_for_chatgpt_codex_responses::inherited_cache",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::websocket_handshake_includes_attestation_for_chatgpt_codex_responses::own_cache",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::websocket_incremental_reuse_tracks_raw_result_metadata",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::workspace_routed_http_rejects_redirects_without_a_routing_header",
+          "outcome": "ok"
+        }
+      ],
+      "summary": [
+        "test result: ok. 54 passed; 0 failed; 0 ignored; 0 measured; 2804 filtered out; finished in 0.17s"
+      ]
+    },
+    {
+      "crate": "tui",
+      "source_log": "/tmp/aicodex-perf-implementation/tui-visualization-tests.log",
+      "outcomes": [
+        {
+          "name": "inline_visualization::tests::hides_incomplete_streaming_directive",
+          "outcome": "ok"
+        },
+        {
+          "name": "inline_visualization::tests::hides_incomplete_streaming_content_reference",
+          "outcome": "ok"
+        },
+        {
+          "name": "inline_visualization::viewer::tests::runtime_has_one_fragment_placeholder",
+          "outcome": "ok"
+        },
+        {
+          "name": "inline_visualization::tests::unavailable_artifact_has_explicit_fallback",
+          "outcome": "ok"
+        },
+        {
+          "name": "inline_visualization::tests::rejects_parent_path_and_non_html_file",
+          "outcome": "ok"
+        },
+        {
+          "name": "inline_visualization::viewer::tests::same_length_change_rebuilds_from_current_fragment",
+          "outcome": "ok"
+        },
+        {
+          "name": "inline_visualization::viewer::tests::failed_persist_does_not_publish_new_source",
+          "outcome": "ok"
+        },
+        {
+          "name": "inline_visualization::viewer::tests::concurrent_same_and_distinct_paths_keep_complete_documents",
+          "outcome": "ok"
+        },
+        {
+          "name": "inline_visualization::tests::unavailable_or_invalid_content_reference_has_explicit_fallback",
+          "outcome": "ok"
+        },
+        {
+          "name": "inline_visualization::tests::rejects_oversized_fragment",
+          "outcome": "ok"
+        },
+        {
+          "name": "inline_visualization::viewer::tests::warm_cache_preserves_source_errors_before_rendering",
+          "outcome": "ok"
+        },
+        {
+          "name": "inline_visualization::tests::granted_visualization_root_overrides_thread_id_derived_root",
+          "outcome": "ok"
+        },
+        {
+          "name": "inline_visualization::tests::visualization_link_uses_the_artifact_name",
+          "outcome": "ok"
+        },
+        {
+          "name": "inline_visualization::tests::user_markdown_keeps_directive_literal",
+          "outcome": "ok"
+        },
+        {
+          "name": "inline_visualization::tests::rewrites_complete_directive_to_trusted_static_file_placeholder",
+          "outcome": "ok"
+        },
+        {
+          "name": "inline_visualization::viewer::tests::warm_hit_skips_render_and_preserves_document",
+          "outcome": "ok"
+        },
+        {
+          "name": "inline_visualization::viewer::tests::warm_hit_still_rejects_symlinked_viewer_directory",
+          "outcome": "ok"
+        },
+        {
+          "name": "inline_visualization::tests::viewer_reuses_path_and_refreshes_static_document",
+          "outcome": "ok"
+        },
+        {
+          "name": "inline_visualization::tests::viewer_materializes_sandboxed_static_document",
+          "outcome": "ok"
+        },
+        {
+          "name": "inline_visualization::tests::streaming_hides_partial_directive_and_renders_completed_link",
+          "outcome": "ok"
+        },
+        {
+          "name": "inline_visualization::tests::finalized_agent_cell_replays_visualization_link",
+          "outcome": "ok"
+        },
+        {
+          "name": "inline_visualization::tests::unterminated_visualization_preview_uses_the_stream_context",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::inline_visualizations_use_canonical_full_render",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::inline_visualization_context_without_directives_keeps_stable_prefix",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::inline_visualization_content_references_use_canonical_full_render",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::inline_visualization_directive_survives_raw_to_rich_render_mode_switch",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::inline_visualizations_without_context_use_canonical_full_render",
+          "outcome": "ok"
+        },
+        {
+          "name": "inline_visualization::tests::transcript_overlay_remeasures_visualization_when_artifact_becomes_available",
+          "outcome": "ok"
+        },
+        {
+          "name": "inline_visualization::tests::agent_code_blocks_preserve_visualization_directive_literals",
+          "outcome": "ok"
+        }
+      ],
+      "summary": [
+        "test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 5755 filtered out; finished in 0.05s"
+      ]
+    },
+    {
+      "crate": "tui",
+      "source_log": "/tmp/aicodex-perf-implementation/tui-stream-tests.log",
+      "outcomes": [
+        {
+          "name": "streaming::render::tests::incremental_raw_render_preserves_blank_lines",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::inline_visualization_directive_survives_raw_to_rich_render_mode_switch",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::inline_visualization_content_references_use_canonical_full_render",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::inline_visualization_context_without_directives_keeps_stable_prefix",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::inline_visualizations_use_canonical_full_render",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::inline_visualizations_without_context_use_canonical_full_render",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::incremental_render_does_not_add_blank_line_before_html_block",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::incremental_file_citations_preserve_metadata_unicode_and_markdown",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::growing_single_top_level_blocks_render_and_scan_in_one_pass",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::compact_list_spacing_keeps_incremental_and_full_renders_aligned",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::reference_definitions_reuse_plain_tail_and_fall_back_for_new_reference_syntax",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::reference_link_definition_survives_raw_to_rich_render_mode_switch",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::reference_definition_incomplete_title_keeps_full_render_fallback",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::stable_prefix_reuse_parses_only_the_mutable_source_once",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::reference_prefix_blank_line_gate_matches_markdown_ascii_whitespace",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::shell_pid_preserves_following_equations",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::code_fence_tests::recomputing_after_resize_or_mode_change_drops_fence_state",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::code_fence_tests::crossing_a_highlight_limit_removes_previously_highlighted_colors",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::recompute_with_unused_visualization_context_matches_full_renderer",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::paragraphs_after_unwrapped_table_fence_advance_stable_source",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::incremental_render_keeps_final_block_mutable_and_matches_full_render",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::incremental_render_preserves_heading_and_normalized_html_seams",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::reference_link_definition_recomputes_earlier_and_later_blocks",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::code_fence_tests::growing_code_fences_preserve_styles_unicode_links_and_blank_lines",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::code_fence_tests::ambiguous_and_normalized_fences_use_canonical_semantics",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::code_fence_tests::long_open_fence_retains_its_rendered_prefix",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::renderer_stable_line_boundaries_match_independent_prefix_rendering",
+          "outcome": "ok"
+        },
+        {
+          "name": "streaming::render::tests::rejected_math_openers_allow_bounded_incremental_rendering",
+          "outcome": "ok"
+        }
+      ],
+      "summary": [
+        "test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 5756 filtered out; finished in 1.75s"
+      ]
+    }
+  ],
+  "baseline_comparisons": [
+    {
+      "source_log": "/tmp/aicodex-perf-implementation/baseline-provider-test.log",
+      "summary": [
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 101 filtered out; finished in 0.00s"
+      ],
+      "outcomes": [
+        {
+          "name": "amazon_bedrock::error_tests::credential_export_errors_distinguish_configuration_failures_from_retryable_auth",
+          "outcome": "FAILED"
+        }
+      ]
+    },
+    {
+      "source_log": "/tmp/aicodex-perf-implementation/baseline-core-client-0.log",
+      "summary": [
+        "test result: FAILED. 51 passed; 1 failed; 0 ignored; 0 measured; 2799 filtered out; finished in 0.12s"
+      ],
+      "outcomes": [
+        {
+          "name": "client::tests::auth_request_telemetry_context_tracks_agent_identity_ids",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::auth_request_telemetry_context_tracks_attached_auth_and_retry_phase",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::build_subagent_headers_sets_other_subagent_label",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::internal_session_prompt_cache_key_is_scoped_to_parent_thread",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::build_subagent_headers_sets_internal_memory_consolidation_label",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::non_chatgpt_codex_endpoints_omit_attestation_generation",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::new_session_for_provider_uses_turn_provider_without_mutating_default_client",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::only_openai_gpt_models_enable_responses_websocket_when_provider_supports_it",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::official_gpt_request_omits_overlong_message_id_without_changing_history",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::official_request_rejects_opaque_overlong_id_before_transport",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::bedrock_unauthorized_error_uses_provider_mapping",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::preserves_openai_encrypted_reasoning_state_with_raw_content_for_responses_serialization",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::preserves_openai_encrypted_reasoning_state_without_raw_content_for_responses_serialization",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::build_ws_client_metadata_includes_window_lineage_and_turn_metadata",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::inference_tools_changes_follow_full_specs_across_turns",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::prefix_ids_track_thread_and_payload::standard",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::reasoning_effort_for_requests_preserves_non_ultra_and_persistent_behavior",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::reasoning_effort_for_requests_uses_multi_agent_override_for_ultra",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::provider_scoped_client_preserves_output_replay_without_exposing_it_to_compatible_providers",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::prefix_ids_track_thread_and_payload::responses_lite",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::store_false_strips_item_ids_for_compatible_openai_named_models",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::store_false_strips_all_item_ids_for_third_party_reasoning_models",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::store_false_keeps_ids_for_official_gpt_and_reviewer_slugs",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::strips_raw_reasoning_encrypted_content_for_non_openai_responses_providers",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::strips_unknown_raw_reasoning_state_before_responses_serialization",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::store_true_keeps_type_valid_ids_and_strips_invalid_ids",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::store_false_drops_id_only_official_reasoning_shells",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::reasoning_effort_for_requests_falls_back_for_missing_or_invalid_override",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::third_party_stored_ids_do_not_inherit_official_length_limit",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::summarize_memories_returns_empty_for_empty_input",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::strips_provider_specific_reasoning_state_before_responses_serialization",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::incremental_request_preserves_reasoning_normalization_and_output_limit_guard",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::websocket_continuation_rejects_unstored_compatible_provider",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::websocket_continuation_reports_unavailable_response_state",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::websocket_continuation_reset_reason_survives_failed_reconnect_and_turn_boundary",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::provider_owned_auth_recovery_is_bounded_and_preserves_unauthorized_failures",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::flash_responses_tests::responses_request_preserves_flash_reasoning_and_explicit_effort_without_changing_pro",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::websocket_incremental_reuse_tracks_raw_result_metadata",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::intercepted_output_reaches_trace_and_websocket_bookkeeping",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::responses_request_preserves_result_metadata_above_previous_aggregate_budget",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::client_setup_accepts_command_credential_refresh",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::dropped_backpressured_response_stream_traces_cancelled_partial_output",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::dropped_response_stream_traces_cancelled_partial_output",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::response_stream_records_last_model_feedback_ids",
+          "outcome": "FAILED"
+        },
+        {
+          "name": "client::tests::websocket_handshake_includes_attestation_for_chatgpt_codex_responses::inherited_cache",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::existing_call_sideband_headers_include_attestation",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::websocket_handshake_includes_attestation_for_chatgpt_codex_responses::own_cache",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::thread_responses_headers_are_scoped_to_model_and_backend_auth",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::client_setup_rebuilds_chatgpt_refresh_but_rejects_account_switches",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::responses_http_preserves_raw_tool_metadata_for_openai_custom_endpoint",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::workspace_routed_http_rejects_redirects_without_a_routing_header",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::responses_request_includes_internal_metadata_for_provider_grant_or_first_party_destination",
+          "outcome": "ok"
+        }
+      ]
+    },
+    {
+      "source_log": "/tmp/aicodex-perf-implementation/core-client-tests.log",
+      "summary": [
+        "test result: FAILED. 53 passed; 1 failed; 0 ignored; 0 measured; 2804 filtered out; finished in 0.11s"
+      ],
+      "outcomes": [
+        {
+          "name": "client::tests::auth_request_telemetry_context_tracks_agent_identity_ids",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::auth_request_telemetry_context_tracks_attached_auth_and_retry_phase",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::build_subagent_headers_sets_internal_memory_consolidation_label",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::internal_session_prompt_cache_key_is_scoped_to_parent_thread",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::build_subagent_headers_sets_other_subagent_label",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::non_chatgpt_codex_endpoints_omit_attestation_generation",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::new_session_for_provider_uses_turn_provider_without_mutating_default_client",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::only_openai_gpt_models_enable_responses_websocket_when_provider_supports_it",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::official_gpt_request_omits_overlong_message_id_without_changing_history",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::bedrock_unauthorized_error_uses_provider_mapping",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::official_request_rejects_opaque_overlong_id_before_transport",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::lazy_token_tests::lazy_output_budget_preserves_eager_clamping_at_boundaries",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::prefix_ids_track_thread_and_payload::standard",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::preserves_openai_encrypted_reasoning_state_with_raw_content_for_responses_serialization",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::preserves_openai_encrypted_reasoning_state_without_raw_content_for_responses_serialization",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::build_ws_client_metadata_includes_window_lineage_and_turn_metadata",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::prefix_ids_track_thread_and_payload::responses_lite",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::incremental_request_preserves_reasoning_normalization_and_output_limit_guard",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::provider_scoped_client_preserves_output_replay_without_exposing_it_to_compatible_providers",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::reasoning_effort_for_requests_uses_multi_agent_override_for_ultra",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::reasoning_effort_for_requests_preserves_non_ultra_and_persistent_behavior",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::store_false_drops_id_only_official_reasoning_shells",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::inference_tools_changes_follow_full_specs_across_turns",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::store_false_strips_item_ids_for_compatible_openai_named_models",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::store_false_strips_all_item_ids_for_third_party_reasoning_models",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::store_true_keeps_type_valid_ids_and_strips_invalid_ids",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::store_false_keeps_ids_for_official_gpt_and_reviewer_slugs",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::strips_provider_specific_reasoning_state_before_responses_serialization",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::strips_raw_reasoning_encrypted_content_for_non_openai_responses_providers",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::strips_unknown_raw_reasoning_state_before_responses_serialization",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::third_party_stored_ids_do_not_inherit_official_length_limit",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::reasoning_effort_for_requests_falls_back_for_missing_or_invalid_override",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::flash_responses_tests::responses_request_preserves_flash_reasoning_and_explicit_effort_without_changing_pro",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::websocket_continuation_reports_unavailable_response_state",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::summarize_memories_returns_empty_for_empty_input",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::websocket_continuation_rejects_unstored_compatible_provider",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::websocket_continuation_reset_reason_survives_failed_reconnect_and_turn_boundary",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::lazy_token_tests::lazy_output_budget_preserves_request_payload_and_original_prompt",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::provider_owned_auth_recovery_is_bounded_and_preserves_unauthorized_failures",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::websocket_incremental_reuse_tracks_raw_result_metadata",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::responses_request_preserves_result_metadata_above_previous_aggregate_budget",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::intercepted_output_reaches_trace_and_websocket_bookkeeping",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::client_setup_accepts_command_credential_refresh",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::dropped_response_stream_traces_cancelled_partial_output",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::dropped_backpressured_response_stream_traces_cancelled_partial_output",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::websocket_handshake_includes_attestation_for_chatgpt_codex_responses::own_cache",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::websocket_handshake_includes_attestation_for_chatgpt_codex_responses::inherited_cache",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::existing_call_sideband_headers_include_attestation",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::thread_responses_headers_are_scoped_to_model_and_backend_auth",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::client_setup_rebuilds_chatgpt_refresh_but_rejects_account_switches",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::responses_http_preserves_raw_tool_metadata_for_openai_custom_endpoint",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::workspace_routed_http_rejects_redirects_without_a_routing_header",
+          "outcome": "ok"
+        },
+        {
+          "name": "client::tests::response_stream_records_last_model_feedback_ids",
+          "outcome": "FAILED"
+        },
+        {
+          "name": "client::tests::responses_request_includes_internal_metadata_for_provider_grant_or_first_party_destination",
+          "outcome": "ok"
+        }
+      ]
+    },
+    {
+      "source_log": "/tmp/aicodex-perf-implementation/core-feedback-single.log",
+      "summary": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2857 filtered out; finished in 0.00s"
+      ],
+      "outcomes": [
+        {
+          "name": "client::tests::response_stream_records_last_model_feedback_ids",
+          "outcome": "ok"
+        }
+      ]
+    }
+  ]
+}

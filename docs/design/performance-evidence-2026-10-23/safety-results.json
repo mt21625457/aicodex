@@ -1,0 +1,29 @@
+{
+  "sqlite": {
+    "sqlite_version": "3.50.4",
+    "nonnegative_small_domain_cases": 60918,
+    "negative_counterexample": {
+      "oracle": [
+        -4
+      ],
+      "unsafe_boundary": [
+        6,
+        -4
+      ]
+    },
+    "overflow_counterexample": {
+      "oracle_error": "integer overflow",
+      "unsafe_boundary": [
+        9223372036854775807
+      ]
+    },
+    "non_integer_storage_allowed": true,
+    "scope": "真实 SQL 及触发器；不代表 SQLx 错误解码、并发事务或性能验收"
+  },
+  "history": {
+    "unterminated_tail_eof_anchor_counterexample": true,
+    "promotion_gate_cases": 12,
+    "scope": "真实临时文件 EOF 反例及设计门控模型；未实现生产跨追加复用，未验证文件锁或 Windows"
+  },
+  "markdown_parser": "6 parser dependency checks passed; no incremental TUI equivalence claim"
+}

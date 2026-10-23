@@ -2483,8 +2483,8 @@ async fn responses_websocket_v2_creates_with_previous_response_id_on_prefix() {
 }
 
 #[test_case::test_case(None, Some(json!({"type": "object", "properties": {}})), "text_changed"; "output schema")]
-#[test_case::test_case(Some("changed-model"), None, "model_changed"; "model")]
-#[test_case::test_case(Some("changed-model"), Some(json!({"type": "object"})), "model_changed"; "first changed property")]
+#[test_case::test_case(Some("gpt-5.5"), None, "model_changed"; "model")]
+#[test_case::test_case(Some("gpt-5.5"), Some(json!({"type": "object"})), "model_changed"; "first changed property")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn responses_websocket_v2_creates_without_previous_response_id_when_non_input_fields_change(
     model: Option<&str>,

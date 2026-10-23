@@ -348,6 +348,33 @@ WHERE id IN (
         &self,
         thread_ids: &[&str],
     ) -> anyhow::Result<Vec<u8>> {
+        Self::query_feedback_logs_from_pool(self.logs_pool.as_ref(), thread_ids).await
+    }
+
+    /// Read logs from the previous directory without creating or migrating its database.
+    pub async fn query_legacy_feedback_logs_for_threads(
+        &self,
+        thread_ids: &[&str],
+    ) -> anyhow::Result<Vec<u8>> {
+        let Some(path) = self.sqlite.legacy_logs_db_path() else {
+            return Ok(Vec::new());
+        };
+        if thread_ids.is_empty() || !tokio::fs::try_exists(&path).await? {
+            return Ok(Vec::new());
+        }
+        let pool = self
+            .sqlite
+            .open_read_only_pool(&path, /*busy_timeout*/ None)
+            .await?;
+        let result = Self::query_feedback_logs_from_pool(&pool, thread_ids).await;
+        pool.close().await;
+        result
+    }
+
+    async fn query_feedback_logs_from_pool(
+        pool: &SqlitePool,
+        thread_ids: &[&str],
+    ) -> anyhow::Result<Vec<u8>> {
         if thread_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -419,7 +446,7 @@ WHERE cumulative_estimated_bytes <=
         builder.push(" ORDER BY ts DESC, ts_nanos DESC, id DESC");
         let rows = builder
             .build_query_as::<FeedbackLogRow>()
-            .fetch_all(self.logs_pool.as_ref())
+            .fetch_all(pool)
             .await?;
 
         let mut lines = Vec::new();
@@ -464,7 +491,7 @@ async fn prune_global_logs(
     row_limit: i64,
 ) -> anyhow::Result<()> {
     let usage =
-        sqlx::query("SELECT SUM(estimated_bytes) AS total_bytes, COUNT(*) AS row_count FROM logs")
+        sqlx::query("SELECT total_bytes, row_count FROM logs_usage_totals WHERE singleton = 1")
             .fetch_one(&mut *tx)
             .await?;
     let total_bytes: Option<i64> = usage.try_get("total_bytes")?;
@@ -688,6 +715,7 @@ mod tests {
 
     #[tokio::test]
     async fn insert_logs_truncates_direct_feedback_log_body_before_persisting() {
+        let now = Utc::now().timestamp();
         let codex_home = unique_temp_dir();
         let runtime = StateRuntime::init(
             crate::SqliteConfig::new_for_testing(codex_home.as_path().abs()),
@@ -702,7 +730,7 @@ mod tests {
 
         runtime
             .insert_logs(&[LogEntry {
-                ts: 1,
+                ts: now,
                 ts_nanos: 0,
                 level: "INFO".to_string(),
                 target: "cli".to_string(),
@@ -795,6 +823,7 @@ mod tests {
             .expect("query migrated logs");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].message.as_deref(), Some("legacy-body"));
+        assert_log_totals(&runtime.logs_pool).await;
 
         let migrated_pool = open_db_pool(logs_path.as_path()).await;
         let columns = sqlx::query_scalar::<_, String>("SELECT name FROM pragma_table_info('logs')")
@@ -1917,6 +1946,74 @@ mod tests {
 
         assert_eq!(bytes, Vec::<u8>::new());
 
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+    async fn assert_log_totals(pool: &SqlitePool) {
+        let actual: (i64, i64) = sqlx::query_as(
+            "SELECT total_bytes, row_count FROM logs_usage_totals WHERE singleton = 1",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        let expected: (i64, i64) =
+            sqlx::query_as("SELECT COALESCE(SUM(estimated_bytes), 0), COUNT(*) FROM logs")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[tokio::test]
+    async fn log_totals_follow_other_connections_updates_rollback_and_pruning() {
+        let codex_home = unique_temp_dir();
+        let config = crate::SqliteConfig::new_for_testing(codex_home.as_path().abs());
+        let runtime = StateRuntime::init(config.clone(), "test-provider".to_string())
+            .await
+            .unwrap();
+        let other = open_db_pool(config.logs_db_path().as_path()).await;
+        // Use recent rows so the runtime's immediate age-based sweep cannot race this
+        // test of capacity pruning. Relative timestamps preserve the ordering assertions.
+        let now = chrono::Utc::now().timestamp();
+        // 第二连接模拟旧进程：无需修改 INSERT 调用方也必须维护汇总。
+        sqlx::query("INSERT INTO logs(ts, ts_nanos, level, target, estimated_bytes) VALUES(?,0,'INFO','test',10),(?,0,'INFO','test',20),(?,0,'INFO','test',30)")
+            .bind(now + 1).bind(now + 2).bind(now + 3)
+            .execute(&other).await.unwrap();
+        assert_log_totals(&runtime.logs_pool).await;
+        sqlx::query("UPDATE logs SET estimated_bytes = estimated_bytes + 5")
+            .execute(&other)
+            .await
+            .unwrap();
+        assert_log_totals(&runtime.logs_pool).await;
+        let mut tx = other.begin().await.unwrap();
+        sqlx::query("DELETE FROM logs")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.rollback().await.unwrap();
+        assert_log_totals(&runtime.logs_pool).await;
+        let mut tx = other.begin().await.unwrap();
+        prune_global_logs(&mut tx, 60, 2).await.unwrap();
+        tx.commit().await.unwrap();
+        assert_log_totals(&runtime.logs_pool).await;
+        let timestamps: Vec<i64> = sqlx::query_scalar("SELECT ts - ? FROM logs ORDER BY ts DESC")
+            .bind(now)
+            .fetch_all(&other)
+            .await
+            .unwrap();
+        assert_eq!(timestamps, vec![3, 2]);
+        sqlx::query("DELETE FROM logs")
+            .execute(&other)
+            .await
+            .unwrap();
+        assert_log_totals(&runtime.logs_pool).await;
+        // 查询计划证明正常容量检查只查单行主键，不扫描日志正文表。
+        let plan = sqlx::query("EXPLAIN QUERY PLAN SELECT total_bytes,row_count FROM logs_usage_totals WHERE singleton=1").fetch_all(&other).await.unwrap();
+        assert!(
+            plan.iter()
+                .all(|row| !row.get::<String, _>("detail").contains("SCAN"))
+        );
+        other.close().await;
+        runtime.logs_pool.close().await;
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
 }

@@ -31,6 +31,34 @@ pub enum PatchableTextEncoding {
 }
 
 impl PatchableTextEncoding {
+    /// 预览只验证字符可表示性，复用固定输出缓冲，不生成随后被丢弃的全文字节。
+    pub(crate) fn validate(self, contents: &str) -> io::Result<()> {
+        let Self::Legacy(encoding) = self else {
+            return Ok(());
+        };
+        let mut encoder = encoding.new_encoder();
+        let mut remaining = contents;
+        let mut buffer = [0; 4096];
+        loop {
+            let (result, read, _) =
+                encoder.encode_from_utf8_without_replacement(remaining, &mut buffer, true);
+            remaining = &remaining[read..];
+            match result {
+                encoding_rs::EncoderResult::InputEmpty => return Ok(()),
+                encoding_rs::EncoderResult::OutputFull => {}
+                encoding_rs::EncoderResult::Unmappable(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "updated contents contain characters that cannot be represented as {}",
+                            encoding.name()
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
     /// Encodes updated contents using the original file encoding.
     pub fn encode(self, contents: &str) -> io::Result<Vec<u8>> {
         match self {
@@ -204,6 +232,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn validation_matches_encoding_across_buffer_boundaries() {
+        // 大于固定缓冲区的内容既覆盖状态推进，也覆盖末尾不可表示字符的错误一致性。
+        for encoding in [
+            PatchableTextEncoding::Utf8,
+            PatchableTextEncoding::Legacy(encoding_rs::GBK),
+            PatchableTextEncoding::Legacy(encoding_rs::GB18030),
+            PatchableTextEncoding::Legacy(encoding_rs::WINDOWS_1252),
+            PatchableTextEncoding::Legacy(encoding_rs::ISO_2022_JP),
+        ] {
+            for text in [
+                String::new(),
+                "plain".repeat(4097),
+                "你好".repeat(4097),
+                format!("{}🙂", "a".repeat(8192)),
+            ] {
+                let expected = encoding.encode(&text).map(|_| ());
+                let actual = encoding.validate(&text);
+                assert_eq!(
+                    actual.as_ref().err().map(|e| (e.kind(), e.to_string())),
+                    expected.as_ref().err().map(|e| (e.kind(), e.to_string()))
+                );
+                assert_eq!(actual.is_ok(), expected.is_ok());
+            }
+        }
+    }
+
+    #[test]
     fn utf8_text_round_trips_after_ascii_edit() {
         let file = decode_patchable_text("// 你好 🙂\nint value = 1;\n".as_bytes().to_vec())
             .expect("UTF-8 text should decode");
@@ -359,8 +414,9 @@ impl SourceFile {
         }
     }
 
-    pub(super) fn line_texts(&self) -> Vec<String> {
-        self.lines.iter().map(|line| line.text.clone()).collect()
+    pub(super) fn line_texts(&self) -> Vec<&str> {
+        // 匹配期间借用已有行，避免再复制一份完整文件的逐行字符串。
+        self.lines.iter().map(|line| line.text.as_str()).collect()
     }
 
     /// Rebuilds the file from source-ordered, non-overlapping replacements.

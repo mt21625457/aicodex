@@ -333,6 +333,13 @@ async fn analytics_matches_app_account_routes_and_parameters() {
             vec![("group_by", "day")],
         ),
         (
+            "sci_plus",
+            Report::Usage,
+            Grouping::Model,
+            "usage/daily-workspace-user-token-usage-breakdown",
+            vec![("group_by", "day")],
+        ),
+        (
             "team",
             Report::Credits,
             Grouping::Speed,
@@ -765,19 +772,52 @@ async fn invalid_cached_breakdowns_are_evicted_before_retry() {
     server.verify().await;
 }
 
+pub(in crate::analytics) struct ConnectedViewFixture {
+    _home: tempfile::TempDir,
+    _bootstrap_server: MockServer,
+}
+
 pub(in crate::analytics) async fn connected_view(
     server: &MockServer,
     plan: &str,
 ) -> (
-    tempfile::TempDir,
+    ConnectedViewFixture,
     crate::AppServerSession,
     crate::analytics::AnalyticsView,
 ) {
     let (home, live) = live(server, plan).await;
+    // Embedded startup reloads policy/auth configuration from disk. Keep its bootstrap
+    // traffic local as well as the dashboard traffic, with a separate fixture so the
+    // dashboard's exact endpoint/count assertions still measure only report requests.
+    let bootstrap_server = MockServer::start().await;
+    std::fs::write(
+        home.path().join("config.toml"),
+        format!(
+            "chatgpt_base_url = '{}/backend-api/'\ncli_auth_credentials_store = 'file'\n",
+            bootstrap_server.uri()
+        ),
+    )
+    .unwrap();
+    Mock::given(method("GET"))
+        .and(path("/backend-api/wham/config/bundle"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&bootstrap_server)
+        .await;
     let config = Arc::clone(&live.config);
     let app_server = crate::start_embedded_app_server_for_picker(&config)
         .await
         .unwrap();
+    if plan == "enterprise" {
+        assert!(
+            bootstrap_server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .any(|request| request.url.path() == "/backend-api/wham/config/bundle"),
+            "enterprise startup must fetch policy from the local bootstrap fixture"
+        );
+    }
     let mut view =
         crate::analytics::AnalyticsView::new(crate::keymap::RuntimeKeymap::defaults().list);
     view.open(
@@ -786,7 +826,14 @@ pub(in crate::analytics) async fn connected_view(
         Vec::new(),
         config,
     );
-    (home, app_server, view)
+    (
+        ConnectedViewFixture {
+            _home: home,
+            _bootstrap_server: bootstrap_server,
+        },
+        app_server,
+        view,
+    )
 }
 
 #[tokio::test]

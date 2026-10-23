@@ -7,10 +7,13 @@ use super::tool_by_name;
 use super::tool_call;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::PromptFragment;
+use codex_extension_api::PromptSlot;
 use codex_extension_api::TurnContextContributionInput;
 use codex_goal_extension::GoalExtensionConfig;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ModeKind;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ContentItemMetadata;
 use codex_protocol::protocol::TokenUsage;
 use codex_state::ThreadGoalStatus;
 use pretty_assertions::assert_eq;
@@ -89,20 +92,22 @@ async fn budget_context_follows_persisted_status_without_changing_goal() -> anyh
                 (json!("budgetLimited"), json!(budget))
             );
             assert_eq!(fragments.len(), 1);
-            assert!(
-                fragments[0]
-                    .text()
-                    .contains("not a budget for this new turn")
+            let fragment = &fragments[0];
+            assert_eq!(fragment.slot(), PromptSlot::DeveloperPolicy);
+            assert_eq!(fragment.content_kind().as_str(), "goal.internal_context");
+            assert_eq!(
+                fragment.clone().into_content().into_parts().2,
+                ContentItemMetadata::harness(),
             );
-            assert!(fragments[0].text().len() < 1_000);
-            assert!(fragments[0].text().contains(
+            let ContentItem::InputText { text } = fragment.content() else {
+                panic!("goal policy must remain text");
+            };
+            assert!(text.contains("not a budget for this new turn"));
+            assert!(text.len() < 1_000);
+            assert!(text.contains(
                 "Its token budget and remainingTokens value describe the stopped goal run"
             ));
-            assert!(
-                fragments[0]
-                    .text()
-                    .contains("Follow the current collaboration mode")
-            );
+            assert!(text.contains("Follow the current collaboration mode"));
         } else {
             assert_eq!(fragments, Vec::new());
         }
@@ -185,11 +190,10 @@ async fn budget_context_survives_resume_but_does_not_release_the_exhausting_turn
         .await;
     let fragments = context_for_turn(&resumed, "user-turn").await;
     assert_eq!(fragments.len(), 1);
-    assert!(
-        fragments[0]
-            .text()
-            .contains("not a budget for this new turn")
-    );
+    let ContentItem::InputText { text } = fragments[0].content() else {
+        panic!("goal policy must remain text");
+    };
+    assert!(text.contains("not a budget for this new turn"));
     resumed
         .record_token_usage("user-turn", &input_token_usage(/*input_tokens*/ 1_450_010))
         .await;

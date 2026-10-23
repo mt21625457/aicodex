@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios.rs
+assertion_line: 1096
 expression: "context_snapshot::format_context_snapshot(description, &entries,\n&ContextSnapshotOptions::default().include_request_settings(),)"
 ---
 Scenario: Astra applies refreshed plugin policy to the next step while preserving earlier authorized skill context and tool output.
@@ -49,8 +50,11 @@ Settings:
     - Relevance: Determine what a plugin can help with from explicit user mention or from the plugin-associa..., MCP tools, and apps exposed elsewhere in this turn. [hash=620459a4e7b590f0]
     - Missing/blocked: If the user requests a plugin that does not have relevant callable capabilities for t..., say so briefly and continue with the best fallback. [hash=746b0469a8f6cb3e]
 
-02:message/developer[3]:
-    [01] <permissions instructions>
+02:message/developer[4]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <permissions instructions>
         Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The san... permits reading files. Network access is restricted. [hash=be7da4425f89053c]
         # Escalation Requests
 
@@ -67,7 +71,7 @@ Settings:
         - ["gh", "pr", "check"]
         - ["cargo", "test"]
         </permissions instructions>
-    [02] <collaboration_mode># Collaboration Mode: Default
+    [03] <collaboration_mode># Collaboration Mode: Default
 
         You are now in Default mode. Any previous instructions for other modes (e.g. Plan mode) are no longer active.
 
@@ -83,7 +87,7 @@ Settings:
 
         Never use the `request_user_input` tool for permission requests or permission-related escalations.
         </collaboration_mode>
-    [03] <skills_instructions>
+    [04] <skills_instructions>
         ## Skills
         A skill is a set of instructions provided through a `SKILL.md` source. Below is the list of skills that ...locators can be expanded using the skill roots table. [hash=f00d6a4d3e192f06]
         ### Skill roots
@@ -132,8 +136,8 @@ Settings:
     ## Skills
     A skill is a set of instructions provided through a `SKILL.md` source. Below is the list of skills that ...locators can be expanded using the skill roots table. [hash=f00d6a4d3e192f06]
     ### Skill roots
-    - `e0` = `skill://other-skills/<SKILLS_ROOT>/other-skills`
+    - `e2` = `skill://other-skills/<SKILLS_ROOT>/other-skills`
     Read a skill package directly with `skills.read({"package":"<package>"})` to read its `SKILL.md`; root a...ackage is not provided, use `skills.list` to find it. [hash=25bf84ea2123d647]
     ### Available skills
-    - next-helper: Use the next workflow (executor package: e0/next-helper)
+    - next-helper: Use the next workflow (executor package: e2/next-helper)
     </skills_instructions>

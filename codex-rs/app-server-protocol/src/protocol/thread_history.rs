@@ -30,6 +30,9 @@ use crate::protocol::v2::UserInput;
 use crate::protocol::v2::WebSearchAction;
 use crate::protocol::v2::WebSearchItem;
 use crate::protocol::v2::web_search_action_from_core;
+use codex_extension_items::image_generation::GeneratedImageRef;
+#[cfg(test)]
+use codex_extension_items::image_generation::ImageGenerationInputImage;
 use codex_extension_items::image_generation::ImageGenerationItem;
 use codex_protocol::items::parse_hook_prompt_message;
 use codex_protocol::protocol::AgentMessageEvent;
@@ -325,6 +328,51 @@ impl ThreadHistoryBuilder {
                     .find(|turn| turn.id == turn_id)
                     .map(Turn::from)
             })
+    }
+
+    /// 只借用指定 item 的元数据；不构造包含正文、图片和工具输出的 Turn 副本。
+    pub fn item_transcript_metadata(
+        &self,
+        turn_id: &str,
+        item_id: &str,
+    ) -> Option<&TranscriptMetadata> {
+        let turn = self
+            .current_turn
+            .as_ref()
+            .filter(|turn| turn.id == turn_id)
+            .or_else(|| self.turns.iter().find(|turn| turn.id == turn_id))?;
+        let item = match &turn.item_index.positions {
+            Some(positions) => turn.items.get(*positions.get(item_id)?),
+            None => turn.items.iter().find(|item| item.id() == item_id),
+        }?;
+        item.transcript_metadata()
+    }
+
+    /// 缓存重放沿用旧的从前向后覆盖规则：重复 ID 的最后一项胜出。
+    /// 实时 attach 仍使用上面的第一项查询，二者有意保留不同的历史语义。
+    pub fn last_item_transcript_metadata(
+        &self,
+        turn_id: &str,
+        item_id: &str,
+    ) -> Option<&TranscriptMetadata> {
+        let turn = self
+            .current_turn
+            .as_ref()
+            .filter(|turn| turn.id == turn_id)
+            .or_else(|| self.turns.iter().find(|turn| turn.id == turn_id))?;
+        if let Some(positions) = &turn.item_index.last_positions {
+            let item = turn.items.get(*positions.get(item_id)?)?;
+            if let Some(metadata) = item.transcript_metadata() {
+                return Some(metadata);
+            }
+            // Sleep 等扩展项没有 metadata。若它与早前项重名，旧缓存会跳过 None，
+            // 而非删除较早的有效值；仅此罕见情况退回反向查找。
+        }
+        turn.items
+            .iter()
+            .rev()
+            .filter(|item| item.id() == item_id)
+            .find_map(ThreadItem::transcript_metadata)
     }
 
     /// Returns the index of the active turn snapshot within the finished turn list.
@@ -1056,10 +1104,13 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             status: String::new(),
             revised_prompt: None,
-            result: String::new(),
+            image: GeneratedImageRef::Inline {
+                result: String::new(),
+            },
             transparent_background: None,
             failure: None,
             saved_path: None,
+            input_images: Vec::new(),
             imagegen_request_id: None,
             generation_id: None,
         });
@@ -1071,10 +1122,11 @@ impl ThreadHistoryBuilder {
             id: payload.call_id.clone(),
             status: payload.status.clone(),
             revised_prompt: payload.revised_prompt.clone(),
-            result: payload.result.clone(),
+            image: payload.image.clone(),
             transparent_background: payload.transparent_background,
             failure: payload.failure.clone(),
             saved_path: payload.saved_path.clone(),
+            input_images: payload.input_images.clone(),
             imagegen_request_id: None,
             generation_id: None,
         });
@@ -1989,6 +2041,8 @@ const TURN_ITEM_INDEX_THRESHOLD: usize = 32;
 #[derive(Default)]
 struct TurnItemIndex {
     positions: Option<HashMap<String, usize>>,
+    // 与 first-position 索引同时懒构建，缓存 metadata 时保留重复 ID 的 last-wins。
+    last_positions: Option<HashMap<String, usize>>,
 }
 
 impl TurnItemIndex {
@@ -1998,16 +2052,22 @@ impl TurnItemIndex {
                 .entry(item.id().to_string())
                 .or_insert(items.len());
         }
+        if let Some(positions) = &mut self.last_positions {
+            positions.insert(item.id().to_string(), items.len());
+        }
         items.push(item);
     }
 
     fn upsert<'a>(&mut self, items: &'a mut Vec<ThreadItem>, item: ThreadItem) -> &'a ThreadItem {
         if self.positions.is_none() && items.len() >= TURN_ITEM_INDEX_THRESHOLD {
             let mut positions = HashMap::with_capacity(items.len());
+            let mut last_positions = HashMap::with_capacity(items.len());
             for (index, existing) in items.iter().enumerate() {
                 positions.entry(existing.id().to_string()).or_insert(index);
+                last_positions.insert(existing.id().to_string(), index);
             }
             self.positions = Some(positions);
+            self.last_positions = Some(last_positions);
         }
 
         let existing_index = match &self.positions {
@@ -3042,6 +3102,50 @@ mod tests {
     }
 
     #[test]
+    fn last_metadata_skips_metadata_less_duplicate_before_and_after_indexing() {
+        let mut builder = ThreadHistoryBuilder::new();
+        builder.ensure_turn().id = "turn-1".into();
+        builder.handle_event(&EventMsg::AgentMessage(AgentMessageEvent {
+            message: "original".into(),
+            questions: None,
+            phase: None,
+            memory_citation: None,
+            delivery: None,
+        }));
+        let expected = builder
+            .item_transcript_metadata("turn-1", "item-1")
+            .cloned()
+            .unwrap();
+        // Sleep 本身不携带 metadata，真实可达，不能假定所有历史项都能写入元数据。
+        builder.push_item_in_current_turn(indexed_sleep_item("item-1", 1));
+        assert_eq!(
+            builder.last_item_transcript_metadata("turn-1", "item-1"),
+            Some(&expected)
+        );
+        for index in 0..64 {
+            builder.upsert_item_in_current_turn(indexed_sleep_item(&format!("sleep-{index}"), 1));
+        }
+        assert!(
+            builder
+                .current_turn
+                .as_ref()
+                .unwrap()
+                .item_index
+                .last_positions
+                .is_some()
+        );
+        assert_eq!(
+            builder.last_item_transcript_metadata("turn-1", "item-1"),
+            Some(&expected)
+        );
+        builder.finish_current_turn();
+        assert_eq!(
+            builder.last_item_transcript_metadata("turn-1", "item-1"),
+            Some(&expected)
+        );
+    }
+
+    #[test]
     fn indexed_items_stay_with_their_turn_after_rollback() {
         let mut builder = ThreadHistoryBuilder::new();
         let mut expected: Vec<_> = (0..64)
@@ -3067,6 +3171,10 @@ mod tests {
         let turn_id = "turn-1";
         let thread_id = ThreadId::new();
         let saved_path = test_path_buf("/tmp/image-1.png").abs();
+        let input_images = vec![ImageGenerationInputImage {
+            path: test_path_buf("/tmp/reference.png").abs(),
+            sha256: "ab".repeat(32),
+        }];
         let events = vec![
             EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
@@ -3085,10 +3193,13 @@ mod tests {
                         id: "image-1".to_string(),
                         status: "completed".to_string(),
                         revised_prompt: Some("A blue square".to_string()),
-                        result: "cG5n".to_string(),
+                        image: GeneratedImageRef::Inline {
+                            result: "cG5n".to_string(),
+                        },
                         transparent_background: Some(true),
                         failure: None,
                         saved_path: Some(saved_path.clone()),
+                        input_images: input_images.clone(),
                         imagegen_request_id: None,
                         generation_id: None,
                     },
@@ -3110,6 +3221,10 @@ mod tests {
         let items = events
             .into_iter()
             .map(RolloutItem::EventMsg)
+            .map(|item| {
+                serde_json::from_value(serde_json::to_value(item).expect("serialize rollout"))
+                    .expect("deserialize rollout")
+            })
             .collect::<Vec<_>>();
 
         let turns = build_turns_from_rollout_items(&items);
@@ -3120,10 +3235,13 @@ mod tests {
                 id: "image-1".to_string(),
                 status: "completed".to_string(),
                 revised_prompt: Some("A blue square".to_string()),
-                result: "cG5n".to_string(),
+                image: GeneratedImageRef::Inline {
+                    result: "cG5n".to_string(),
+                },
                 transparent_background: Some(true),
                 failure: None,
                 saved_path: Some(saved_path),
+                input_images,
                 imagegen_request_id: None,
                 generation_id: None,
             })]
@@ -3389,7 +3507,7 @@ mod tests {
     }
 
     #[test]
-    fn replays_image_generation_end_events_into_turn_history() {
+    fn replays_file_backed_image_generation_end_events_into_turn_history() {
         let items = vec![
             RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
                 turn_attribution: None,
@@ -3412,7 +3530,9 @@ mod tests {
                 call_id: "ig_123".into(),
                 status: "completed".into(),
                 revised_prompt: Some("final prompt".into()),
-                result: "Zm9v".into(),
+                image: GeneratedImageRef::File {
+                    file_id: "file_123".into(),
+                },
                 transparent_background: Some(true),
                 failure: Some(
                     codex_extension_items::image_generation::ImageGenerationFailure::UsageLimitExceeded {
@@ -3421,6 +3541,10 @@ mod tests {
                     },
                 ),
                 saved_path: Some(test_path_buf("/tmp/ig_123.png").abs()),
+                input_images: vec![ImageGenerationInputImage {
+                    path: test_path_buf("/tmp/reference.png").abs(),
+                    sha256: "ab".repeat(32),
+                }],
             })),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 root_turn_id: None,
@@ -3461,7 +3585,9 @@ mod tests {
                         id: "ig_123".into(),
                         status: "completed".into(),
                         revised_prompt: Some("final prompt".into()),
-                        result: "Zm9v".into(),
+                        image: GeneratedImageRef::File {
+                            file_id: "file_123".into(),
+                        },
                         transparent_background: Some(true),
                         failure: Some(
                             codex_extension_items::image_generation::ImageGenerationFailure::UsageLimitExceeded {
@@ -3470,6 +3596,10 @@ mod tests {
                             },
                         ),
                         saved_path: Some(test_path_buf("/tmp/ig_123.png").abs()),
+                        input_images: vec![ImageGenerationInputImage {
+                    path: test_path_buf("/tmp/reference.png").abs(),
+                    sha256: "ab".repeat(32),
+                }],
                         imagegen_request_id: None,
                         generation_id: None,
                     }),
@@ -5333,7 +5463,7 @@ mod tests {
                 model_context_window: None,
                 collaboration_mode_kind: Default::default(),
             })),
-            RolloutItem::Compacted(CompactedItem {
+            RolloutItem::Compacted(Box::new(CompactedItem {
                 message: String::new(),
                 replacement_history: None,
                 retained_context: None,
@@ -5346,7 +5476,7 @@ mod tests {
                 compaction_response_id: None,
                 latest_token_usage_record: None,
                 resume_metadata: None,
-            }),
+            })),
             RolloutItem::EventMsg(EventMsg::TurnComplete(TurnCompleteEvent {
                 root_turn_id: None,
                 turn_id: "turn-compact".into(),

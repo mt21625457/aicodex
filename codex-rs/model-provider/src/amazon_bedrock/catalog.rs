@@ -6,7 +6,7 @@ use codex_model_provider_info::AMAZON_BEDROCK_GPT_6_1_SOL_MODEL_ID;
 use codex_model_provider_info::AMAZON_BEDROCK_GPT_6_ASTRA_MODEL_ID;
 use codex_model_provider_info::AMAZON_BEDROCK_GPT_6_LUNA_MODEL_ID;
 use codex_model_provider_info::AMAZON_BEDROCK_GPT_6_SOL_MODEL_ID;
-use codex_models_manager::bundled_models_response;
+use codex_models_manager::bundled_models_response_ref;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelServiceTier;
 use codex_protocol::openai_models::ModelVisibility;
@@ -170,11 +170,12 @@ fn bedrock_model(
 }
 
 fn bundled_openai_model(slug: &str) -> ModelInfo {
-    bundled_models_response()
+    bundled_models_response_ref()
         .unwrap_or_else(|err| panic!("bundled models.json should parse: {err}"))
         .models
-        .into_iter()
+        .iter()
         .find(|model| model.slug == slug)
+        .cloned()
         .unwrap_or_else(|| panic!("bundled models.json should include {slug}"))
 }
 

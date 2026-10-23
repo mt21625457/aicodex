@@ -156,6 +156,10 @@ pub(crate) fn render_streaming_markdown_agent_with_links_and_cwd(
             .last_top_level_block_start
             .and_then(|boundary| markdown_source.strip_suffix(&normalized[boundary..]))
             .map(str::len);
+        if rendered.last_top_level_block_start.is_none() {
+            // 源偏移无法映射时，配对的行边界也必须一并失效。
+            rendered.last_top_level_rendered_len = None;
+        }
         rendered.mutable_fence_start = rendered.mutable_fence_start.map(|boundary| {
             markdown_source
                 .strip_suffix(&normalized[boundary..])

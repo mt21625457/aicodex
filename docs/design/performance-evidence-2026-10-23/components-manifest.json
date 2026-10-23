@@ -1,0 +1,56 @@
+{
+  "baseline": "daf61e7a3d08c004cce53df531094a69795da819",
+  "root": "/Users/mt/code/mt-ai/aicodex/aicodex",
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "libraries": {
+    "libc": "/Users/mt/code/mt-ai/aicodex/aicodex/codex-rs/target/debug/deps/liblibc-36a5a2eae67c4a52.rlib",
+    "tempfile": "/Users/mt/code/mt-ai/aicodex/aicodex/codex-rs/target/debug/deps/libtempfile-6c1ce6f4da237fcb.rlib",
+    "codex_protocol": "/Users/mt/code/mt-ai/aicodex/aicodex/codex-rs/target/debug/deps/libcodex_protocol-afb5fec3d07ecf21.rlib",
+    "serde_json": "/Users/mt/code/mt-ai/aicodex/aicodex/codex-rs/target/debug/deps/libserde_json-3025a82708a329a0.rlib"
+  },
+  "sources": {
+    "before:codex-rs/models-manager/src/lib.rs": "7cc6d778a76f7b8b07513d9b1bdbe2611bffa84c91bf7dccc80322a94b75639c",
+    "before:codex-rs/models-manager/models.json": "84207bbe031148dabdd0f9652594f459b3bed03e7b6aca301a946145a0cd7b7f",
+    "after:codex-rs/models-manager/src/lib.rs": "58a775808edf39c1dddded6ae7329effe432812d55ddae1e643398a5023ddab4",
+    "after:codex-rs/models-manager/models.json": "84207bbe031148dabdd0f9652594f459b3bed03e7b6aca301a946145a0cd7b7f",
+    "before:codex-rs/tui/src/inline_visualization/viewer.rs": "20403f83d77e372291e9cd56c85e2a020ea81fdc95c5a164a2904ae438911824",
+    "before:codex-rs/tui/assets/inline_visualization/visualize.css": "4b1d492f1e67394f80dc83fe7e9d3a508648dbeffe7a5152b27a567da972c50f",
+    "before:codex-rs/tui/assets/inline_visualization/visualize.html": "05ce45625169e649442c08f60198b3e0925eae81636644dc0810eb5b100dec1f",
+    "before:codex-rs/message-history/src/lookup_index.rs": "7aed32213d1debca5c54ccfbf047592433582e5814041f31888dc717ac992307",
+    "after:codex-rs/tui/src/inline_visualization/viewer.rs": "205265dbb94ddc115eed2e0a7b13db7805e5be146ea5dbde22457591aff12a0a",
+    "after:codex-rs/tui/assets/inline_visualization/visualize.css": "4b1d492f1e67394f80dc83fe7e9d3a508648dbeffe7a5152b27a567da972c50f",
+    "after:codex-rs/tui/assets/inline_visualization/visualize.html": "05ce45625169e649442c08f60198b3e0925eae81636644dc0810eb5b100dec1f",
+    "after:codex-rs/message-history/src/lookup_index.rs": "298d00537c9497cbec23808cbce5a77211919fc5d352e13d6d72b9a80305de34"
+  },
+  "binaries": {
+    "catalog": {
+      "path": "/private/tmp/aicodex-reproducible-components/catalog",
+      "sha256": "8e77c607d27fc81fb1500c63f00f890d5148a97ed342a1d4b779d28561c52a13"
+    },
+    "viewer-before": {
+      "path": "/private/tmp/aicodex-reproducible-components/viewer-before",
+      "sha256": "1ee604e3be024d34c2733ab047a32a3e2fc0864e911b547736c9671554fe6444"
+    },
+    "history-before": {
+      "path": "/private/tmp/aicodex-reproducible-components/history-before",
+      "sha256": "f45fc6fa79e0957f61d5a6a0eec97db56b751a4067ed308a6b8b86d95460599e"
+    },
+    "viewer-after": {
+      "path": "/private/tmp/aicodex-reproducible-components/viewer-after",
+      "sha256": "4de061dcf561ef85ec24ed0811792bacc4dafd0b9c931b8bca1f7213447d01a3"
+    },
+    "history-after": {
+      "path": "/private/tmp/aicodex-reproducible-components/history-after",
+      "sha256": "3800d79295c12fef490993308cd720d968088bf78536e6945ad4f0d0496d595a"
+    }
+  },
+  "fixtures": {
+    "shell_cache.rs": "646617e25dde9e2a7da4c07f63e7712fb25c7bb13b18fcb2cab7055413bc3f37",
+    "viewer.rs": "db27959fb3cb19360827a067166d1c12382b067dee4382345a1e1b9500ebefa4",
+    "catalog.rs": "587b23ff656e88beb07a89adb91f3c228ff9dda8665b91289ef045f616a2f4d6",
+    "metrics.rs": "61e9a2cf8d444d7b517b9dc97cce4af20b3e3174b87544d46cfec4439723414e",
+    "history.rs": "d699191fdb4382fb6cf83d2472a8967c789513336598ec902011c8c46be77e03",
+    "lazy_tokens.rs": "3ba22c73ff6068c3d503b5198cad31631832369791078e24dbb36713dd2dc078"
+  }
+}

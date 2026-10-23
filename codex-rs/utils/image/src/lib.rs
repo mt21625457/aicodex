@@ -34,6 +34,7 @@ const MAX_IMAGE_CACHE_BYTES: usize = 64 * 1024 * 1024;
 pub mod error;
 mod transport;
 pub use transport::TransportImageEncoding;
+pub use transport::TransportImagePreparationCache;
 pub use transport::optimize_data_url_for_transport;
 
 pub use crate::error::ImageProcessingError;

@@ -611,6 +611,7 @@ mod tests {
                 .await
                 .expect("managed Bedrock auth should resolve")
                 .to_auth_headers()
+                .unwrap()
                 .get(http::header::AUTHORIZATION),
             Some(&HeaderValue::from_static("Bearer managed-bedrock-api-key"))
         );
@@ -657,6 +658,7 @@ mod tests {
                     .await
                     .expect("configured AWS profile auth should resolve")
                     .to_auth_headers()
+                    .unwrap()
                     .get(http::header::AUTHORIZATION)
                     .is_none()
             );

@@ -18,6 +18,7 @@ use codex_app_server_protocol::ImageReference;
 use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::InitializeParams;
 use codex_app_server_protocol::JSONRPCError;
+use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
@@ -388,10 +389,28 @@ async fn thread_read_with_turns_replays_persisted_token_usage() -> Result<()> {
             items_view: None,
         })
         .await?;
-    let read_resp: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(read_id)),
-    )
+    // 按原始到达顺序读取，不能使用会缓存不匹配通知的 response helper，
+    // 否则提前发送的 usage 通知也会被误判为满足 response-before-notification。
+    let read_resp: JSONRPCResponse = timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            match mcp.read_next_message().await? {
+                JSONRPCMessage::Response(response)
+                    if response.id == RequestId::Integer(read_id) =>
+                {
+                    return Ok::<_, anyhow::Error>(response);
+                }
+                JSONRPCMessage::Notification(notification)
+                    if notification.method == "thread/tokenUsage/updated" =>
+                {
+                    anyhow::bail!("usage notification arrived before thread/read response");
+                }
+                JSONRPCMessage::Error(error) if error.id == RequestId::Integer(read_id) => {
+                    anyhow::bail!("thread/read failed: {error:?}");
+                }
+                _ => {}
+            }
+        }
+    })
     .await??;
     let ThreadReadResponse { thread, .. } = to_response::<ThreadReadResponse>(read_resp)?;
 

@@ -276,3 +276,32 @@ g
 "#
     );
 }
+
+#[tokio::test]
+async fn preview_preserves_legacy_encoding_validation_without_output_bytes() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("legacy.txt");
+    fs::write(&path, b"// \xc4\xe3\xba\xc3\nvalue = 1;\n").unwrap();
+    let path_uri = PathUri::from_host_native_path(&path).unwrap();
+    for replacement in ["value = 2;", "value = 🙂;"] {
+        let chunks = vec![UpdateFileChunk {
+            change_context: None,
+            old_lines: vec!["value = 1;".into()],
+            new_lines: vec![replacement.into()],
+            is_end_of_file: false,
+            context_line_indices: Vec::new(),
+        }];
+        let write = derive_patch(&path_uri, &chunks, LOCAL_FS.as_ref(), true, None, true).await;
+        let preview = derive_patch(&path_uri, &chunks, LOCAL_FS.as_ref(), true, None, false).await;
+        match (write, preview) {
+            (Ok(write), Ok(preview)) => {
+                assert_eq!(write.original_contents, preview.original_contents);
+                assert_eq!(write.new_contents, preview.new_contents);
+                assert!(!write.new_bytes.is_empty());
+                assert!(preview.new_bytes.is_empty());
+            }
+            (Err(write), Err(preview)) => assert_eq!(write.to_string(), preview.to_string()),
+            _ => panic!("preview and write must reject the same encoding errors"),
+        }
+    }
+}

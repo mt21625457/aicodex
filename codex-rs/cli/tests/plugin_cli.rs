@@ -676,7 +676,7 @@ async fn assert_plugin_list_succeeds_when_stdout_closes_early(args: &[&str]) -> 
         .success();
     assert!(complete.get_output().stdout.len() > 1024 * 1024);
 
-    let mut child = Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
+    let mut child = Command::new(codex_utils_cargo_bin::cargo_bin("aicodex")?)
         .env("CODEX_HOME", codex_home.path())
         .env("HOME", codex_home.path())
         .current_dir(codex_home.path())

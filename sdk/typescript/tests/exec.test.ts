@@ -46,6 +46,50 @@ function createEarlyExitChild(exitCode = 2): FakeChildProcess {
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 describe("CodexExec", () => {
+  it.each([1, 2, 3, 4096])("preserves complete stderr with UTF-8 chunk size %i", async (size) => {
+    const { CodexExec } = await import("../src/exec");
+    const child = new FakeChildProcess();
+    spawnMock.mockReturnValue(child as unknown as child_process.ChildProcess);
+    // 覆盖跨块多字节字符、非法字节及最后一个不完整字符，和原整块解码逐字比较。
+    const bytes = Buffer.concat([
+      Buffer.from("错误🙂é".repeat(4097)),
+      Buffer.from([0xff, 0xe4, 0xb8]),
+    ]);
+    setImmediate(() => {
+      for (let offset = 0; offset < bytes.length; offset += size) {
+        child.stderr.write(bytes.subarray(offset, offset + size));
+      }
+      child.stderr.end();
+      child.emit("exit", 2, null);
+      child.stdout.end();
+    });
+    const run = async () => {
+      for await (const _ of new CodexExec("codex").run({ input: "hi" })) {
+        /* consume */
+      }
+    };
+    await expect(run()).rejects.toThrow(`Codex Exec exited with code 2: ${bytes.toString("utf8")}`);
+    expect(child.killed).toBe(true);
+  });
+
+  it("cleans up when the consumer cancels after stderr and a stdout line", async () => {
+    const { CodexExec } = await import("../src/exec");
+    const child = new FakeChildProcess();
+    spawnMock.mockReturnValue(child as unknown as child_process.ChildProcess);
+    setImmediate(() => {
+      child.stderr.write(Buffer.from([0xe4, 0xb8]));
+      child.stdout.write("one line\n");
+    });
+    const run = new CodexExec("codex").run({ input: "hi" });
+    expect(await run.next()).toEqual({ done: false, value: "one line" });
+    await run.return(undefined);
+    expect(child.killed).toBe(true);
+    expect(child.listenerCount("exit")).toBe(0);
+    expect(child.listenerCount("error")).toBe(0);
+    child.stdout.end();
+    child.stderr.end();
+  });
+
   it("rejects when exit happens before stdout closes", async () => {
     const { CodexExec } = await import("../src/exec");
     const child = createEarlyExitChild();

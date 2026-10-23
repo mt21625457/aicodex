@@ -2,6 +2,7 @@ use super::*;
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::ResponseItemId;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ReasoningItemReasoningSummary;
 use codex_protocol::models::ResponseItem;
@@ -285,6 +286,56 @@ fn encrypted_handoff_preserves_large_ciphertext_without_token_truncation() {
             );
             let wire = serde_json::to_value(&input[0]).unwrap();
             assert_eq!(wire["encrypted_content"], ciphertext);
+        }
+    }
+}
+
+#[test]
+fn last_turn_reasoning_ignores_large_tool_outputs_without_changing_selection() {
+    // 与完整项压缩的 64K 目标对齐，覆盖目标边界及超限完整保留。
+    let compaction_target_tokens = 64_000;
+    let large_tool_output = ResponseItemEnvelope::new(ResponseItem::FunctionCallOutput {
+        id: None,
+        call_id: Some("large-tool-output".to_string()),
+        name: None,
+        namespace: None,
+        output: FunctionCallOutputPayload::from_text("工具输出🦀".repeat(128 * 1024)),
+        internal_chat_message_metadata_passthrough: None,
+    });
+    for newest_text in [
+        String::new(),
+        "new thought".to_string(),
+        "n".repeat(compaction_target_tokens * 4),
+        "n".repeat((compaction_target_tokens + 100) * 4),
+    ] {
+        let reasoning_history = vec![
+            user_message("first"),
+            reasoning_item("previous-turn", "must not leak into current turn"),
+            user_message("latest real user"),
+            reasoning_item("older", "older thought"),
+            user_message(&format!("{SUMMARY_PREFIX}\nsummary is not a new user turn")),
+            reasoning_item("newest", &newest_text),
+        ];
+        // 在各类 item 前后插入大工具结果。它们不应占用 reasoning 预算、改变最后用户
+        // 边界或影响 provider 选择；其正文也不应被优化路径提前复制。
+        let mut mixed_history = vec![large_tool_output.clone()];
+        for item in &reasoning_history {
+            mixed_history.push(item.clone());
+            mixed_history.push(large_tool_output.clone());
+        }
+        for (slug, is_openai_provider) in [
+            ("deepseek-v4-pro", false),
+            ("MiniMax-M3", false),
+            ("deepseek-flash:free", false),
+            ("gpt-5.4", true),
+            ("grok-4.5", false),
+        ] {
+            assert_eq!(
+                last_turn_reasoning_for_raw_replay(&mixed_history, slug, is_openai_provider),
+                last_turn_reasoning_for_raw_replay(&reasoning_history, slug, is_openai_provider),
+                "selection differs for {slug}, newest bytes={}",
+                newest_text.len()
+            );
         }
     }
 }

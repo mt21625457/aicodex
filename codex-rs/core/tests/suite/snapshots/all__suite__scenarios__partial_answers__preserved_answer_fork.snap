@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_partial_answers.rs
+assertion_line: 322
 expression: "context_snapshot::format_request_history_snapshot(\"A worker inherits the parent prefix unchanged and receives its own instructions. Requests are grouped by parent, then child.\",\n&requests, &ContextSnapshotOptions::default().rewrite_known_segments())"
 ---
 Scenario: A worker inherits the parent prefix unchanged and receives its own instructions. Requests are grouped by parent, then child.
@@ -20,9 +21,12 @@ Scenario: A worker inherits the parent prefix unchanged and receives its own ins
           - function/wait_agent
 01:message/developer:
     <MODEL_INSTRUCTIONS>
-02:message/developer[2]:
+02:message/developer[3]:
     [01] Coordinate the investigation.
-    [02] <PERMISSIONS_INSTRUCTIONS>
+    [02] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [03] <PERMISSIONS_INSTRUCTIONS>
 03:message/developer:
     You are /root. Coordinate the investigation.
 04:message/developer:
@@ -60,9 +64,12 @@ Scenario: A worker inherits the parent prefix unchanged and receives its own ins
           - function/wait_agent
 01:message/developer:
     <MODEL_INSTRUCTIONS>
-02:message/developer[2]:
+02:message/developer[3]:
     [01] Coordinate the investigation.
-    [02] <PERMISSIONS_INSTRUCTIONS>
+    [02] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [03] <PERMISSIONS_INSTRUCTIONS>
 03:message/developer:
     You are /root. Coordinate the investigation.
 04:message/developer:

@@ -81,3 +81,33 @@ async fn matching_write_replaces_read_only_file_when_parent_is_writable() -> io:
     assert_eq!(std::fs::read(&path)?, b"updated");
     Ok(())
 }
+
+#[cfg(any(unix, windows))]
+#[tokio::test]
+async fn chunked_digest_preserves_conditional_write_at_buffer_boundaries() -> io::Result<()> {
+    let temp_dir = tempfile::TempDir::new()?;
+    let target = temp_dir.path().join("target.txt");
+    // 空文件、完整块、尾块和多块文件必须使用相同的 SHA-256 条件语义。
+    for len in [0, 65535, 65536, 65537, 2 * 1024 * 1024 + 17] {
+        let original: Vec<u8> = (0..len).map(|index| (index % 251) as u8).collect();
+        std::fs::write(&target, &original)?;
+        let digest = Sha256::digest(&original).into();
+        write_file_conditional(
+            &target,
+            b"updated",
+            ConditionalWritePrecondition::MatchSha256(digest),
+        )
+        .await?;
+        assert_eq!(std::fs::read(&target)?, b"updated");
+        write_file_conditional(
+            &target,
+            b"must not write",
+            ConditionalWritePrecondition::MatchSha256(digest),
+        )
+        .await
+        .expect_err("stale digest must be rejected");
+        assert_eq!(std::fs::read(&target)?, b"updated");
+        assert_eq!(std::fs::read_dir(temp_dir.path())?.count(), 1);
+    }
+    Ok(())
+}

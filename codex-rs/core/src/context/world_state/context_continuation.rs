@@ -3,7 +3,9 @@ use super::SectionTransition;
 use super::WorldStateSection;
 use super::WorldStateUpdate;
 use crate::context::ContextualUserFragment;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
+use codex_protocol::models::input_text;
 
 const INSTRUCTIONS: &str = "The runtime manages context compaction or rollover. \
 Context-window capacity is not a task deadline or the goal's token budget. \
@@ -36,8 +38,8 @@ impl ContextualUserFragment for ContextContinuationState {
         ("<context_continuation>", "</context_continuation>")
     }
 
-    fn body(&self) -> String {
-        format!("\n{INSTRUCTIONS}\n")
+    fn body(&self) -> ContentItem {
+        input_text(format!("\n{INSTRUCTIONS}\n"))
     }
 }
 
