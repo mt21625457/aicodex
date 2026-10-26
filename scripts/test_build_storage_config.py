@@ -23,7 +23,7 @@ class BuildStorageConfigTest(unittest.TestCase):
         root = read_toml(ROOT / "rust-toolchain.toml")
         nested = read_toml(ROOT / "codex-rs/rust-toolchain.toml")
         self.assertEqual(root, nested)
-        self.assertEqual(root["toolchain"]["channel"], "1.96.0")
+        self.assertEqual(root["toolchain"]["channel"], "1.99.1")
         self.assertEqual(
             set(root["toolchain"]["components"]), {"clippy", "rustfmt", "rust-src"}
         )
