@@ -6433,3 +6433,539 @@ mod program_tests;
 
 #[path = "compact_terminal_error_tests.rs"]
 mod terminal_error_tests;
+
+#[test_case::test_case("deepseek-flash", true; "flash")]
+#[test_case::test_case("deepseek-v4-pro", true; "pro")]
+#[test_case::test_case("gpt-5.2", false; "gpt unchanged")]
+#[test_case::test_case("MiniMax-M2.5", false; "minimax unchanged")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deepseek_compaction_prefix_lifecycle(model: &str, reuse_tools: bool) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let requests = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_assistant_message("first", "Initial reply"),
+                ev_completed("r1"),
+            ]),
+            sse(vec![
+                ev_assistant_message("summary", "Preserve the pending verification."),
+                ev_completed("r2"),
+            ]),
+            sse(vec![
+                ev_assistant_message("next", "Continuing verification."),
+                ev_completed("r3"),
+            ]),
+        ],
+    )
+    .await;
+    let provider = non_openai_model_provider(&server);
+    let model = model.to_owned();
+    let test = test_codex()
+        .with_config(move |config| {
+            config.model = Some(model.clone());
+            config.model_provider = provider;
+            config.base_instructions = Some("Never discard the user's constraints.".into());
+            config.model_auto_compact_token_limit = Some(200_000);
+            set_test_compact_prompt(config);
+        })
+        .build(&server)
+        .await?;
+    test.submit_text_turn(&format!(
+        "Keep the project constraints and prepare verification. {}",
+        "context ".repeat(80_000)
+    ))
+    .await?;
+    test.codex.submit(Op::Compact).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    test.submit_text_turn("Continue the pending verification.")
+        .await?;
+    let requests = requests.requests();
+    assert_eq!(requests.len(), 3);
+    let ordinary = requests[0].body_json();
+    let compact = requests[1].body_json();
+    // 验证真实采样捕获和压缩消费的接线，不能仅调用快照 helper 自证。
+    assert!(
+        !ordinary["tools"]
+            .as_array()
+            .expect("ordinary tools")
+            .is_empty()
+    );
+    assert_eq!(
+        requests[0].instructions_text(),
+        requests[1].instructions_text()
+    );
+    assert_eq!(
+        requests[0].instructions_text(),
+        "Never discard the user's constraints."
+    );
+    if reuse_tools {
+        assert_eq!(ordinary["tools"], compact["tools"]);
+        assert_eq!(
+            ordinary["parallel_tool_calls"],
+            compact["parallel_tool_calls"]
+        );
+    } else {
+        assert_eq!(compact["tools"], json!([]));
+        assert_eq!(compact["parallel_tool_calls"], json!(false));
+    }
+    assert!(body_contains_text(
+        &compact.to_string(),
+        SUMMARIZATION_PROMPT
+    ));
+    assert!(
+        requests[2]
+            .body_json()
+            .to_string()
+            .contains("Preserve the pending verification.")
+    );
+    Ok(())
+}
+
+#[test_case::test_case("deepseek-flash", false; "flash")]
+#[test_case::test_case("deepseek-v4-pro", false; "pro")]
+#[test_case::test_case("deepseek-flash", true; "overflow retry")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deepseek_auto_compaction_preserves_prefix(model: &str, overflow: bool) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let mut sequence = vec![
+        sse(vec![
+            ev_assistant_message("m1", "First reply"),
+            ev_completed_with_tokens("r1", 70_000),
+        ]),
+        sse(vec![
+            ev_assistant_message("m2", "Second reply"),
+            ev_completed_with_tokens("r2", 330_000),
+        ]),
+    ];
+    if overflow {
+        sequence.push(sse_failed(
+            "overflow",
+            "context_length_exceeded",
+            "Context too long",
+        ));
+    }
+    sequence.extend([
+        sse(vec![
+            ev_assistant_message("summary", "Auto checkpoint preserved constraints."),
+            ev_completed_with_tokens("r3", 200),
+        ]),
+        sse(vec![
+            ev_assistant_message("final", "Continued."),
+            ev_completed_with_tokens("r4", 120),
+        ]),
+    ]);
+    let log = mount_sse_sequence(&server, sequence).await;
+    let provider = non_openai_model_provider(&server);
+    let model = model.to_owned();
+    let test = test_codex()
+        .with_config(move |config| {
+            config.model = Some(model);
+            config.model_provider = provider;
+            config.base_instructions = Some("Preserve all user constraints.".into());
+            config.model_auto_compact_token_limit = Some(200_000);
+            set_test_compact_prompt(config);
+        })
+        .build(&server)
+        .await?;
+    // 通过服务端 usage 触发真实自动压缩；不发送手动 Compact 操作。
+    test.submit_text_turn(&format!(
+        "First user request. {}",
+        "context ".repeat(80_000)
+    ))
+    .await?;
+    test.submit_text_turn("Second user request.").await?;
+    test.submit_text_turn("Continue after the automatic checkpoint.")
+        .await?;
+    let requests = log.requests();
+    assert_eq!(requests.len(), if overflow { 5 } else { 4 });
+    let original = requests[1].body_json();
+    assert!(!original["tools"].as_array().expect("tools").is_empty());
+    let summaries = requests
+        .iter()
+        .filter(|request| {
+            body_contains_text(&request.body_json().to_string(), SUMMARIZATION_PROMPT)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(summaries.len(), if overflow { 2 } else { 1 });
+    if overflow {
+        assert_eq!(
+            summaries[0].body_json()["input"],
+            summaries[1].body_json()["input"]
+        );
+    }
+    for (index, summary) in summaries.into_iter().enumerate() {
+        if overflow && index > 0 {
+            // 加回工具导致溢出时，先去掉额外声明重试，保留原历史。
+            assert_eq!(summary.body_json()["tools"], json!([]));
+        } else {
+            assert_eq!(summary.body_json()["tools"], original["tools"]);
+            assert_eq!(
+                summary.body_json()["parallel_tool_calls"],
+                original["parallel_tool_calls"]
+            );
+        }
+        assert_eq!(
+            summary.instructions_text(),
+            "Preserve all user constraints."
+        );
+    }
+    assert!(
+        requests
+            .last()
+            .unwrap()
+            .body_json()
+            .to_string()
+            .contains("Auto checkpoint preserved constraints.")
+    );
+    Ok(())
+}
+
+#[test_case::test_case(false; "tool call rejected")]
+#[test_case::test_case(true; "empty summary rejected")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deepseek_failed_compaction_preserves_original_history(empty: bool) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let invalid = if empty {
+        sse(vec![ev_completed("invalid")])
+    } else {
+        sse(vec![
+            ev_function_call("must-not-execute", "shell", "{\"command\":\"false\"}"),
+            ev_completed("invalid"),
+        ])
+    };
+    let log = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_assistant_message("first", "Original assistant canary."),
+                ev_completed("r1"),
+            ]),
+            invalid.clone(),
+            invalid,
+            sse(vec![
+                ev_assistant_message("next", "Continuing original task."),
+                ev_completed("r3"),
+            ]),
+        ],
+    )
+    .await;
+    let mut provider = non_openai_model_provider(&server);
+    provider.stream_max_retries = Some(2);
+    let test = test_codex()
+        .with_config(move |config| {
+            config.model = Some("deepseek-flash".into());
+            config.model_provider = provider;
+            config.model_auto_compact_token_limit = Some(200_000);
+            set_test_compact_prompt(config);
+        })
+        .build(&server)
+        .await?;
+    test.submit_text_turn(&format!(
+        "Original user canary. {}",
+        "context ".repeat(80_000)
+    ))
+    .await?;
+    test.codex.submit(Op::Compact).await?;
+    wait_for_event(&test.codex, |event| matches!(event, EventMsg::Error(_))).await;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    test.submit_text_turn("Continue after rejected compaction.")
+        .await?;
+    let requests = log.requests();
+    assert_eq!(requests.len(), 4);
+    assert!(
+        !requests[0].body_json()["tools"]
+            .as_array()
+            .expect("ordinary tools")
+            .is_empty()
+    );
+    assert_eq!(
+        requests[0].body_json()["tools"],
+        requests[1].body_json()["tools"]
+    );
+    assert_eq!(requests[2].body_json()["tools"], json!([]));
+    assert_eq!(
+        requests[1].body_json()["input"],
+        requests[2].body_json()["input"]
+    );
+    let continued = requests[3].body_json().to_string();
+    assert!(continued.contains("Original assistant canary."));
+    assert!(continued.contains("Original user canary."));
+    assert!(!continued.contains("must-not-execute"));
+    assert!(!body_contains_text(&continued, SUMMARY_PREFIX));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deepseek_cancelled_compaction_preserves_original_history() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let log = mount_response_sequence(
+        &server,
+        vec![
+            sse_response(sse(vec![
+                ev_assistant_message("first", "Original cancellation canary."),
+                ev_completed("r1"),
+            ])),
+            sse_response(sse(vec![
+                ev_assistant_message("late", "Must not become the summary."),
+                ev_completed("r2"),
+            ]))
+            .set_delay(std::time::Duration::from_secs(30)),
+            sse_response(sse(vec![
+                ev_assistant_message("next", "Continue safely."),
+                ev_completed("r3"),
+            ])),
+        ],
+    )
+    .await;
+    let provider = non_openai_model_provider(&server);
+    let test = test_codex()
+        .with_config(move |config| {
+            config.model = Some("deepseek-flash".into());
+            config.model_provider = provider;
+            config.model_auto_compact_token_limit = Some(200_000);
+            set_test_compact_prompt(config);
+        })
+        .build(&server)
+        .await?;
+    test.submit_text_turn(&format!(
+        "Original user canary. {}",
+        "context ".repeat(80_000)
+    ))
+    .await?;
+    test.codex.submit(Op::Compact).await?;
+    // 等待摘要请求真正进入服务端，再取消，避免只测试任务尚未启动的竞态。
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while log.requests().len() < 2 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    test.codex.submit(Op::Interrupt).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnAborted(_))
+    })
+    .await;
+    test.submit_text_turn("Continue after cancellation.")
+        .await?;
+    let requests = log.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(
+        !requests[0].body_json()["tools"]
+            .as_array()
+            .expect("ordinary tools")
+            .is_empty()
+    );
+    assert_eq!(
+        requests[0].body_json()["tools"],
+        requests[1].body_json()["tools"]
+    );
+    let continued = requests[2].body_json().to_string();
+    assert!(continued.contains("Original cancellation canary."));
+    assert!(!continued.contains("Must not become the summary."));
+    assert!(!body_contains_text(&continued, SUMMARY_PREFIX));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deepseek_compaction_rejects_snapshot_after_history_replacement() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let log = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_assistant_message("original", "Original task state."),
+                ev_completed("r1"),
+            ]),
+            sse(vec![
+                ev_assistant_message("summary1", "First checkpoint keeps pending work."),
+                ev_completed("r2"),
+            ]),
+            sse(vec![
+                ev_assistant_message("summary2", "Second checkpoint keeps pending work."),
+                ev_completed("r3"),
+            ]),
+        ],
+    )
+    .await;
+    let provider = non_openai_model_provider(&server);
+    let test = test_codex()
+        .with_config(move |config| {
+            config.model = Some("deepseek-flash".into());
+            config.model_provider = provider;
+            config.model_auto_compact_token_limit = Some(200_000);
+            set_test_compact_prompt(config);
+        })
+        .build(&server)
+        .await?;
+    test.submit_text_turn(&format!(
+        "Preserve this task. {}",
+        "context ".repeat(80_000)
+    ))
+    .await?;
+    for _ in 0..2 {
+        test.codex.submit(Op::Compact).await?;
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+    }
+    let requests = log.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(
+        !requests[0].body_json()["tools"]
+            .as_array()
+            .expect("tools")
+            .is_empty()
+    );
+    assert_eq!(
+        requests[0].body_json()["tools"],
+        requests[1].body_json()["tools"]
+    );
+    // 第一次成功压缩替换了历史；没有新普通采样时，旧快照必须失效。
+    assert_eq!(requests[2].body_json()["tools"], json!([]));
+    assert!(
+        requests[2]
+            .body_json()
+            .to_string()
+            .contains("First checkpoint keeps pending work.")
+    );
+    assert!(
+        !requests[2]
+            .body_json()
+            .to_string()
+            .contains("Original task state.")
+    );
+    Ok(())
+}
+
+#[test_case::test_case(false; "tool output fallback")]
+#[test_case::test_case(true; "empty output fallback")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deepseek_invalid_summary_retries_same_evidence_without_tools(empty: bool) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let invalid = if empty {
+        sse(vec![ev_completed("invalid")])
+    } else {
+        sse(vec![
+            ev_function_call("never-execute", "update_plan", "{}"),
+            ev_completed("invalid"),
+        ])
+    };
+    let log = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_function_call(
+                    "preserved-plan",
+                    "update_plan",
+                    &json!({"plan": [{"step": "Preserve port 9127", "status": "in_progress"}]})
+                        .to_string(),
+                ),
+                ev_completed("plan-response"),
+            ]),
+            sse(vec![
+                ev_reasoning_item(
+                    "reasoning",
+                    &[],
+                    &["Before. Critical evidence in the middle: preserve port 9127. After."],
+                ),
+                ev_assistant_message("original", "Original task state."),
+                ev_completed("r1"),
+            ]),
+            invalid,
+            sse(vec![
+                ev_assistant_message(
+                    "summary",
+                    "Preserve port 9127 and continue the original task.",
+                ),
+                ev_completed("r3"),
+            ]),
+            sse(vec![
+                ev_assistant_message("final", "Continuing."),
+                ev_completed("r4"),
+            ]),
+        ],
+    )
+    .await;
+    let mut provider = non_openai_model_provider(&server);
+    // 即便 transport retry 关闭，协议上明确无效的摘要仍可以撤销工具优化一次。
+    provider.stream_max_retries = Some(0);
+    let test = test_codex()
+        .with_config(move |config| {
+            config.model = Some("deepseek-flash".into());
+            config.model_provider = provider;
+            config.model_auto_compact_token_limit = Some(200_000);
+            set_test_compact_prompt(config);
+        })
+        .build(&server)
+        .await?;
+    test.submit_text_turn(&format!(
+        "{} Critical middle requirement: preserve port 9127. {}",
+        "context ".repeat(40_000),
+        "context ".repeat(40_000)
+    ))
+    .await?;
+    test.codex.submit(Op::Compact).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    test.submit_text_turn("Continue.").await?;
+    let requests = log.requests();
+    assert_eq!(requests.len(), 5);
+    assert!(
+        !requests[2].body_json()["tools"]
+            .as_array()
+            .expect("tools")
+            .is_empty()
+    );
+    assert_eq!(requests[3].body_json()["tools"], json!([]));
+    assert_eq!(
+        requests[2].body_json()["input"],
+        requests[3].body_json()["input"]
+    );
+    assert!(
+        requests[3]
+            .body_json()
+            .to_string()
+            .contains("Critical evidence in the middle: preserve port 9127.")
+    );
+    assert!(
+        !requests[3]
+            .body_json()
+            .to_string()
+            .contains("never-execute")
+    );
+    assert!(
+        requests[4]
+            .body_json()
+            .to_string()
+            .contains("Preserve port 9127 and continue the original task.")
+    );
+    let baseline_input = requests[3].body_json()["input"].as_array().unwrap().clone();
+    assert!(
+        baseline_input
+            .iter()
+            .any(|item| item["type"] == "function_call" && item["call_id"] == "preserved-plan")
+    );
+    assert!(
+        baseline_input
+            .iter()
+            .any(|item| item["type"] == "function_call_output"
+                && item["call_id"] == "preserved-plan")
+    );
+    Ok(())
+}

@@ -1,0 +1,391 @@
+{
+  "date": "2026-10-23",
+  "timezone": "Asia/Shanghai",
+  "protocol_experiment": {
+    "evidence_layer": "synthetic Python Responses protocol experiment; NOT compiled Rust integration",
+    "endpoint": "https://api.deepseek.com/responses",
+    "models": [
+      "deepseek-flash",
+      "deepseek-v4-pro"
+    ],
+    "max_requests": 10,
+    "max_output_tokens_each": 1024,
+    "results": [
+      {
+        "model": "deepseek-flash",
+        "variant": "warm",
+        "http_status": 200,
+        "response_status": "completed",
+        "returned_model": "deepseek-flash",
+        "seconds": 3.437,
+        "usage": {
+          "input_tokens": 5692,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 469,
+          "output_tokens_details": {
+            "reasoning_tokens": 362
+          },
+          "total_tokens": 6161
+        },
+        "tool_calls": [],
+        "facts_present": true,
+        "incomplete_details": null
+      },
+      {
+        "model": "deepseek-flash",
+        "variant": "warm_repeat",
+        "http_status": 200,
+        "response_status": "completed",
+        "returned_model": "deepseek-flash",
+        "seconds": 4.238,
+        "usage": {
+          "input_tokens": 5692,
+          "input_tokens_details": {
+            "cached_tokens": 5504
+          },
+          "output_tokens": 632,
+          "output_tokens_details": {
+            "reasoning_tokens": 478
+          },
+          "total_tokens": 6324
+        },
+        "tool_calls": [],
+        "facts_present": true,
+        "incomplete_details": null
+      },
+      {
+        "model": "deepseek-flash",
+        "variant": "baseline_empty_tools",
+        "http_status": 200,
+        "response_status": "completed",
+        "returned_model": "deepseek-flash",
+        "seconds": 0.877,
+        "usage": {
+          "input_tokens": 1234,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 65,
+          "output_tokens_details": {
+            "reasoning_tokens": 35
+          },
+          "total_tokens": 1299
+        },
+        "tool_calls": [],
+        "facts_present": true,
+        "incomplete_details": null
+      },
+      {
+        "model": "deepseek-flash",
+        "variant": "retained_tools_auto",
+        "http_status": 200,
+        "response_status": "completed",
+        "returned_model": "deepseek-flash",
+        "seconds": 1.106,
+        "usage": {
+          "input_tokens": 5718,
+          "input_tokens_details": {
+            "cached_tokens": 5504
+          },
+          "output_tokens": 56,
+          "output_tokens_details": {
+            "reasoning_tokens": 25
+          },
+          "total_tokens": 5774
+        },
+        "tool_calls": [],
+        "facts_present": true,
+        "incomplete_details": null
+      },
+      {
+        "model": "deepseek-flash",
+        "variant": "retained_tools_none",
+        "http_status": 200,
+        "response_status": "completed",
+        "returned_model": "deepseek-flash",
+        "seconds": 1.229,
+        "usage": {
+          "input_tokens": 1234,
+          "input_tokens_details": {
+            "cached_tokens": 1024
+          },
+          "output_tokens": 96,
+          "output_tokens_details": {
+            "reasoning_tokens": 66
+          },
+          "total_tokens": 1330
+        },
+        "tool_calls": [],
+        "facts_present": true,
+        "incomplete_details": null
+      },
+      {
+        "model": "deepseek-v4-pro",
+        "variant": "warm",
+        "http_status": 200,
+        "response_status": "completed",
+        "returned_model": "deepseek-v4-pro",
+        "seconds": 5.178,
+        "usage": {
+          "input_tokens": 5681,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 457,
+          "output_tokens_details": {
+            "reasoning_tokens": 454
+          },
+          "total_tokens": 6138
+        },
+        "tool_calls": [],
+        "facts_present": false,
+        "incomplete_details": null
+      },
+      {
+        "model": "deepseek-v4-pro",
+        "variant": "warm_repeat",
+        "http_status": 200,
+        "response_status": "completed",
+        "returned_model": "deepseek-v4-pro",
+        "seconds": 6.57,
+        "usage": {
+          "input_tokens": 5681,
+          "input_tokens_details": {
+            "cached_tokens": 5632
+          },
+          "output_tokens": 628,
+          "output_tokens_details": {
+            "reasoning_tokens": 562
+          },
+          "total_tokens": 6309
+        },
+        "tool_calls": [],
+        "facts_present": true,
+        "incomplete_details": null
+      },
+      {
+        "model": "deepseek-v4-pro",
+        "variant": "baseline_empty_tools",
+        "http_status": 200,
+        "response_status": "completed",
+        "returned_model": "deepseek-v4-pro",
+        "seconds": 1.771,
+        "usage": {
+          "input_tokens": 1213,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 107,
+          "output_tokens_details": {
+            "reasoning_tokens": 78
+          },
+          "total_tokens": 1320
+        },
+        "tool_calls": [],
+        "facts_present": true,
+        "incomplete_details": null
+      },
+      {
+        "model": "deepseek-v4-pro",
+        "variant": "retained_tools_auto",
+        "http_status": 200,
+        "response_status": "completed",
+        "returned_model": "deepseek-v4-pro",
+        "seconds": 1.505,
+        "usage": {
+          "input_tokens": 5707,
+          "input_tokens_details": {
+            "cached_tokens": 5632
+          },
+          "output_tokens": 70,
+          "output_tokens_details": {
+            "reasoning_tokens": 42
+          },
+          "total_tokens": 5777
+        },
+        "tool_calls": [],
+        "facts_present": true,
+        "incomplete_details": null
+      },
+      {
+        "model": "deepseek-v4-pro",
+        "variant": "retained_tools_none",
+        "http_status": 200,
+        "response_status": "completed",
+        "returned_model": "deepseek-v4-pro",
+        "seconds": 1.812,
+        "usage": {
+          "input_tokens": 1213,
+          "input_tokens_details": {
+            "cached_tokens": 1152
+          },
+          "output_tokens": 81,
+          "output_tokens_details": {
+            "reasoning_tokens": 53
+          },
+          "total_tokens": 1294
+        },
+        "tool_calls": [],
+        "facts_present": true,
+        "incomplete_details": null
+      }
+    ]
+  },
+  "rust_builder_replay": {
+    "evidence_layer": "live replay of compiled Rust request-builder exports; not full CLI E2E",
+    "endpoint": "https://api.deepseek.com/responses",
+    "results": [
+      {
+        "model": "deepseek-flash",
+        "variant": "warm",
+        "fixture_sha256": "88c4df9fffe5841c51322b8dcec2c1503b21900571fa6e08607d6793da155c36",
+        "http_status": 200,
+        "response_status": "completed",
+        "returned_model": "deepseek-flash",
+        "seconds": 1.212,
+        "usage": {
+          "input_tokens": 2866,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 51,
+          "output_tokens_details": {
+            "reasoning_tokens": 49
+          },
+          "total_tokens": 2917
+        },
+        "tool_calls": [],
+        "facts_present": null,
+        "incomplete_details": null,
+        "error": null
+      },
+      {
+        "model": "deepseek-flash",
+        "variant": "baseline",
+        "fixture_sha256": "ea0c1591b4a0b4ce65dd3c4de888bf3d40f7ee5cd188ea8ee8a4adcb1155519a",
+        "http_status": 200,
+        "response_status": "completed",
+        "returned_model": "deepseek-flash",
+        "seconds": 2.193,
+        "usage": {
+          "input_tokens": 111,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 234,
+          "output_tokens_details": {
+            "reasoning_tokens": 200
+          },
+          "total_tokens": 345
+        },
+        "tool_calls": [],
+        "facts_present": true,
+        "incomplete_details": null,
+        "error": null
+      },
+      {
+        "model": "deepseek-flash",
+        "variant": "optimized",
+        "fixture_sha256": "b0863e95ae5313f66a8967ebd3883115ca5bd098f0f1c052f3ce25ac045ca6c4",
+        "http_status": 200,
+        "response_status": "completed",
+        "returned_model": "deepseek-flash",
+        "seconds": 1.235,
+        "usage": {
+          "input_tokens": 2899,
+          "input_tokens_details": {
+            "cached_tokens": 2688
+          },
+          "output_tokens": 130,
+          "output_tokens_details": {
+            "reasoning_tokens": 85
+          },
+          "total_tokens": 3029
+        },
+        "tool_calls": [],
+        "facts_present": true,
+        "incomplete_details": null,
+        "error": null
+      },
+      {
+        "model": "deepseek-v4-pro",
+        "variant": "warm",
+        "fixture_sha256": "aa0374fd1b59025d2ac783d7d3261537957c0c53e1bcfe2f572d1d2456a4ba28",
+        "http_status": 200,
+        "response_status": "completed",
+        "returned_model": "deepseek-v4-pro",
+        "seconds": 1.478,
+        "usage": {
+          "input_tokens": 2929,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 76,
+          "output_tokens_details": {
+            "reasoning_tokens": 74
+          },
+          "total_tokens": 3005
+        },
+        "tool_calls": [],
+        "facts_present": null,
+        "incomplete_details": null,
+        "error": null
+      },
+      {
+        "model": "deepseek-v4-pro",
+        "variant": "baseline",
+        "fixture_sha256": "a70733aeb458d8d96a1fdd213a175ca52881ef8c8e9e26a329280a729447980d",
+        "http_status": 200,
+        "response_status": "completed",
+        "returned_model": "deepseek-v4-pro",
+        "seconds": 3.032,
+        "usage": {
+          "input_tokens": 164,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 244,
+          "output_tokens_details": {
+            "reasoning_tokens": 210
+          },
+          "total_tokens": 408
+        },
+        "tool_calls": [],
+        "facts_present": true,
+        "incomplete_details": null,
+        "error": null
+      },
+      {
+        "model": "deepseek-v4-pro",
+        "variant": "optimized",
+        "fixture_sha256": "3392d312c82a814308cb4560236112fb02f75fada69af8c5564745b5dfa5eca6",
+        "http_status": 200,
+        "response_status": "completed",
+        "returned_model": "deepseek-v4-pro",
+        "seconds": 1.817,
+        "usage": {
+          "input_tokens": 2962,
+          "input_tokens_details": {
+            "cached_tokens": 2816
+          },
+          "output_tokens": 105,
+          "output_tokens_details": {
+            "reasoning_tokens": 71
+          },
+          "total_tokens": 3067
+        },
+        "tool_calls": [],
+        "facts_present": true,
+        "incomplete_details": null,
+        "error": null
+      }
+    ]
+  },
+  "rejected_fixture_requests": {
+    "count": 4,
+    "http_status": 400,
+    "reason": "Synthetic read_document fixture had empty schema {}; corrected in Rust fixture and re-exported."
+  }
+}

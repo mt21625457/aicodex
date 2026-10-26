@@ -3127,6 +3127,8 @@ async fn try_run_sampling_request(
             return Err(error);
         }
     };
+    client_session
+        .record_deepseek_compaction_prefix(prompt, &step_context.settings.model_info.slug);
     if cancellation_token.is_cancelled() {
         return Err(CodexErr::TurnAborted);
     }

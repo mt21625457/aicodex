@@ -315,6 +315,87 @@ struct ModelClientState {
     cached_websocket_session: StdMutex<WebsocketSession>,
     /// Last full tool list used for sampling, retained across turns and connection resets.
     last_inference_tools: StdMutex<Option<Arc<[ToolSpec]>>>,
+    deepseek_compaction_prefix: StdMutex<DeepSeekCompactionState>,
+}
+
+/// schema 缓存只持有最近一份不可变 Arc，体积有界；与历史快照分离，让不满足
+/// 开销条件的请求也能复用估算，但绝不能复用此前符合条件的历史指纹。
+#[derive(Debug, Default)]
+struct DeepSeekCompactionState {
+    prefix: Option<DeepSeekCompactionPrefix>,
+    tool_estimate: Option<(Arc<[ToolSpec]>, i64)>,
+}
+
+/// 只保存请求头部，不复制完整历史；快照随 provider 的 client state 隔离。
+#[derive(Debug, Clone)]
+struct DeepSeekCompactionPrefix {
+    model: String,
+    auth_owner: Option<u64>,
+    tools: Arc<[ToolSpec]>,
+    base_instructions: codex_protocol::models::BaseInstructions,
+    parallel_tool_calls: bool,
+    input_len: usize,
+    input_digest: Option<[u8; 32]>,
+    reusable_tokens: i64,
+    tool_tokens: i64,
+}
+
+// 这是额外输入的保守上限，不是假设缓存命中、价格或保证获利的阈值。
+const DEEPSEEK_COMPACTION_MAX_TOOL_OVERHEAD_PERCENT: i64 = 10;
+
+/// 此优化局部兼容裸模型的 :free 等后缀，避免扩大其他模型策略的作用域。
+pub(crate) fn is_deepseek_compaction_model(model: &str) -> bool {
+    codex_models_manager::model_info::is_deepseek_model_slug(model)
+        || model
+            .trim()
+            .split(':')
+            .next()
+            .unwrap_or(model)
+            .to_ascii_lowercase()
+            .starts_with("deepseek-")
+}
+
+fn deepseek_compaction_overhead_allowed(tool_tokens: i64, reusable_tokens: i64) -> bool {
+    tool_tokens >= 0
+        && reusable_tokens > 0
+        && tool_tokens
+            <= reusable_tokens.saturating_mul(DEEPSEEK_COMPACTION_MAX_TOOL_OVERHEAD_PERCENT) / 100
+}
+
+fn deepseek_compaction_tool_tokens(tools: &Arc<[ToolSpec]>) -> i64 {
+    #[cfg(test)]
+    DEEPSEEK_TOOL_ESTIMATE_COUNT.with(|count| count.set(count.get() + 1));
+    create_tools_raw_json_for_responses_api(tools)
+        .map(|tools| crate::context_manager::estimate_serialized_tokens(&tools))
+        .unwrap_or(i64::MAX)
+}
+
+#[cfg(test)]
+thread_local! {
+    static DEEPSEEK_TOOL_ESTIMATE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static DEEPSEEK_INPUT_DIGEST_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// 对源 Prompt 序列化做流式摘要，不保留或复制历史内容。源前缀完全一致是
+/// 保守条件：元数据等非模型内容变化也可能拒绝优化，不会将变化的历史误认
+/// 为可复用前缀。它不证明服务端仍持有缓存，最终命中以服务端 usage 为准。
+fn deepseek_compaction_input_digest(input: &[ResponseItem]) -> Option<[u8; 32]> {
+    #[cfg(test)]
+    DEEPSEEK_INPUT_DIGEST_COUNT.with(|count| count.set(count.get() + 1));
+    use sha2::Digest;
+    struct DigestWriter(sha2::Sha256);
+    impl std::io::Write for DigestWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.update(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = DigestWriter(sha2::Sha256::new());
+    serde_json::to_writer(&mut writer, input).ok()?;
+    Some(writer.0.finalize().into())
 }
 
 enum ClientRouting {
@@ -717,6 +798,7 @@ impl ModelClient {
                 agent_identity_session_fallback: AgentIdentitySessionFallback::default(),
                 cached_websocket_session: StdMutex::new(WebsocketSession::default()),
                 last_inference_tools: StdMutex::new(None),
+                deepseek_compaction_prefix: StdMutex::new(DeepSeekCompactionState::default()),
             }),
             agent_identity_policy,
             prompt_cache_key_policy: PromptCacheKey::default(),
@@ -873,6 +955,7 @@ impl ModelClient {
                 agent_identity_session_fallback: self.state.agent_identity_session_fallback.clone(),
                 cached_websocket_session: StdMutex::new(WebsocketSession::default()),
                 last_inference_tools: StdMutex::new(None),
+                deepseek_compaction_prefix: StdMutex::new(DeepSeekCompactionState::default()),
             }),
             agent_identity_policy: self.agent_identity_policy,
             prompt_cache_key_policy: self.prompt_cache_key_policy.clone(),
@@ -1692,6 +1775,104 @@ impl Drop for ModelClientSession {
 impl ModelClientSession {
     pub(crate) fn provider_info(&self) -> &ModelProviderInfo {
         self.client.state.provider.info()
+    }
+
+    /// 由普通采样在流建立后记录，摘要请求不会覆盖快照。保留实际发送的工具
+    /// 顺序与 schema，避免压缩时动态插件重新发现导致前缀改变。
+    pub(crate) fn record_deepseek_compaction_prefix(&self, prompt: &Prompt, model: &str) {
+        if !is_deepseek_compaction_model(model) {
+            *self
+                .client
+                .state
+                .deepseek_compaction_prefix
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                DeepSeekCompactionState::default();
+            return;
+        }
+        let reusable_tokens = crate::context_manager::estimate_request_input_tokens(
+            &prompt.base_instructions.text,
+            &prompt.input,
+        );
+        let tool_tokens = {
+            let mut state = self
+                .client
+                .state
+                .deepseek_compaction_prefix
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Arc 不可变且缓存持有强引用：make_mut 会另分配，因此指针相等时
+            // 内容必然相等；不做昂贵的完整 schema 比较，也不跨 provider 缓存。
+            if let Some((tools, tokens)) = &state.tool_estimate
+                && Arc::ptr_eq(tools, &prompt.tools)
+            {
+                *tokens
+            } else {
+                let tokens = deepseek_compaction_tool_tokens(&prompt.tools);
+                state.tool_estimate = Some((Arc::clone(&prompt.tools), tokens));
+                tokens
+            }
+        };
+        // 先判断预算，拒绝的请求不再为指纹序列化/哈希整段历史，也不克隆基础指令。
+        let snapshot =
+            deepseek_compaction_overhead_allowed(tool_tokens, reusable_tokens).then(|| {
+                DeepSeekCompactionPrefix {
+                    model: model.to_owned(),
+                    auth_owner: self.client.auth_owner_generation(),
+                    tools: Arc::clone(&prompt.tools),
+                    base_instructions: prompt.base_instructions.clone(),
+                    parallel_tool_calls: prompt.parallel_tool_calls,
+                    input_len: prompt.input.len(),
+                    input_digest: deepseek_compaction_input_digest(&prompt.input),
+                    reusable_tokens,
+                    tool_tokens,
+                }
+            });
+        // 即使新请求不符合预算也覆盖为 None，避免错误复用旧请求快照。
+        self.client
+            .state
+            .deepseek_compaction_prefix
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .prefix = snapshot;
+    }
+
+    /// 没有本进程采样快照、模型切换或认证主体变化时沿用原压缩请求。
+    /// 不恢复 output_schema，因为普通任务的结构化输出约束不适用于摘要。
+    pub(crate) fn reuse_deepseek_compaction_prefix(
+        &self,
+        prompt: &mut Prompt,
+        model: &str,
+    ) -> bool {
+        if !is_deepseek_compaction_model(model) {
+            return false;
+        }
+        let snapshot = self
+            .client
+            .state
+            .deepseek_compaction_prefix
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(snapshot) = snapshot.prefix.as_ref()
+            && snapshot.model == model
+            && snapshot.auth_owner == self.client.auth_owner_generation()
+            && snapshot.base_instructions.text == prompt.base_instructions.text
+            && deepseek_compaction_overhead_allowed(snapshot.tool_tokens, snapshot.reusable_tokens)
+            && snapshot.input_len <= prompt.input.len()
+            && snapshot.input_digest.is_some()
+            && snapshot.input_digest
+                == deepseek_compaction_input_digest(&prompt.input[..snapshot.input_len])
+        {
+            prompt.tools = Arc::clone(&snapshot.tools);
+            // 增量历史的基础指令可能在溢出重试中被裁掉；此时保留压缩路径
+            // 恢复的 fallback，不能用快照中代表“已在历史”的空字符串覆盖。
+            if !snapshot.base_instructions.text.is_empty() {
+                prompt.base_instructions = snapshot.base_instructions.clone();
+            }
+            prompt.parallel_tool_calls = snapshot.parallel_tool_calls;
+            return !snapshot.tools.is_empty();
+        }
+        false
     }
 
     pub(crate) fn inference_tools_changed(&self, tools: &Arc<[ToolSpec]>) -> bool {

@@ -1,0 +1,23 @@
+{
+  "http_status": 200,
+  "response_status": "completed",
+  "returned_model": "deepseek-v4-pro",
+  "seconds": 5.098,
+  "usage": {
+    "input_tokens": 13087,
+    "input_tokens_details": {
+      "cached_tokens": 256
+    },
+    "output_tokens": 365,
+    "output_tokens_details": {
+      "reasoning_tokens": 331
+    },
+    "total_tokens": 13452
+  },
+  "text": "Project ORCHID uses Rust. Release date: 2026-11-02. Budget: 73 units. Pending work: validate search pagination.",
+  "tool_calls": [],
+  "facts_present": true,
+  "incomplete_details": null,
+  "error": null,
+  "evidence_layer": "single diagnostic cold Pro expanded fixture, not reproduction of identical nonce"
+}

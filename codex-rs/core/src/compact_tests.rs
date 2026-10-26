@@ -24,6 +24,55 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 use test_case::test_case;
 
+#[test]
+fn deepseek_compaction_directive_preserves_custom_prompt_and_other_models() {
+    let original: ResponseItem = serde_json::from_value(json!({
+        "type": "message", "role": "user",
+        "content": [{"type": "input_text", "text": "请用中文保留这三个标题及数值 42。"}]
+    }))
+    .unwrap();
+    for model in ["gpt-5.2", "minimax-m2", "grok-4"] {
+        let mut input = original.clone();
+        append_deepseek_compaction_directive(&mut input, model);
+        assert_eq!(input, original);
+    }
+    for model in [
+        "deepseek-flash",
+        "deepseek-v4-pro",
+        "deepseek/deepseek-flash:free",
+    ] {
+        let mut input = original.clone();
+        append_deepseek_compaction_directive(&mut input, model);
+        let ResponseItem::Message { content, .. } = &input else {
+            panic!("expected message");
+        };
+        let ResponseItem::Message {
+            content: original_content,
+            ..
+        } = &original
+        else {
+            panic!("expected message");
+        };
+        assert_eq!(
+            &content[..original_content.len()],
+            original_content.as_slice()
+        );
+        assert_eq!(content.len(), original_content.len() + 1);
+        let ContentItem::InputText { text } = content.last().unwrap() else {
+            panic!("expected directive");
+        };
+        assert!(text.contains("Do not execute tools or take actions during this summary."));
+        assert!(
+            text.contains("distinguish prior observed tool calls and results from planned work")
+        );
+        assert!(
+            text.contains("do not claim actions or tests completed without supporting results")
+        );
+        assert!(text.contains("numeric values"));
+        assert!(text.contains("stale facts"));
+    }
+}
+
 #[test_case(true; "metadata enabled")]
 #[test_case(false; "metadata disabled after capture")]
 #[tokio::test]
@@ -866,4 +915,44 @@ fn assemble_compaction_history_keeps_compaction_last() {
         },
     ];
     assert_eq!(refreshed, expected);
+}
+
+#[test]
+fn deepseek_compaction_rejects_empty_or_tool_bearing_outputs() {
+    // 即使工具调用附带有效文字，也必须拒绝整次摘要，避免未执行的调用污染历史。
+    let tool: ResponseItem = serde_json::from_value(json!({
+        "type": "function_call", "name": "shell", "call_id": "summary-call",
+        "arguments": "{}"
+    }))
+    .unwrap();
+    let text: ResponseItem = serde_json::from_value(json!({
+        "type": "message", "role": "assistant",
+        "content": [{"type": "output_text", "text": "Keep the pending task."}]
+    }))
+    .unwrap();
+    let blank: ResponseItem = serde_json::from_value(json!({
+        "type": "message", "role": "assistant",
+        "content": [{"type": "output_text", "text": "  "}]
+    }))
+    .unwrap();
+    for output in [vec![], vec![blank], vec![tool.clone()], vec![tool, text]] {
+        assert!(validate_deepseek_compaction_output(&output).is_err());
+    }
+}
+
+#[test]
+fn deepseek_compaction_accepts_reasoning_with_fresh_summary() {
+    // reasoning 可以完整保留，但不能代替供后续对话使用的实际摘要正文。
+    let reasoning: ResponseItem = serde_json::from_value(json!({
+        "type": "reasoning", "summary": [],
+        "content": [{"type": "reasoning_text", "text": "Preserve user constraints."}]
+    }))
+    .unwrap();
+    let summary: ResponseItem = serde_json::from_value(json!({
+        "type": "message", "role": "assistant",
+        "content": [{"type": "output_text", "text": "Pending: verify DeepSeek prefix reuse."}]
+    }))
+    .unwrap();
+    assert!(validate_deepseek_compaction_output(std::slice::from_ref(&reasoning)).is_err());
+    assert!(validate_deepseek_compaction_output(&[reasoning, summary]).is_ok());
 }

@@ -1,0 +1,156 @@
+{
+  "evidence_layer": "live replay of compiled Rust request-builder exports; not full CLI E2E",
+  "endpoint": "https://api.deepseek.com/responses",
+  "results": [
+    {
+      "model": "deepseek-flash",
+      "variant": "warm",
+      "fixture_sha256": "6435c4d02aedb244a81fd30607ec4165f94ac2768d9fece6a100a32e6ea0ed84",
+      "http_status": 200,
+      "response_status": "completed",
+      "returned_model": "deepseek-flash",
+      "seconds": 1.174,
+      "usage": {
+        "input_tokens": 7858,
+        "input_tokens_details": {
+          "cached_tokens": 384
+        },
+        "output_tokens": 139,
+        "output_tokens_details": {
+          "reasoning_tokens": 77
+        },
+        "total_tokens": 7997
+      },
+      "text": "Acknowledged. Project ORCHID facts on record:\n\n- **Language:** Rust\n- **Release date:** 2026-11-02\n- **Budget:** 73 units\n- **Pending work:** validate search pagination\n\nNo tools called. Ready for next steps whenever you are.",
+      "tool_calls": [],
+      "facts_present": null,
+      "incomplete_details": null,
+      "error": null
+    },
+    {
+      "model": "deepseek-flash",
+      "variant": "baseline",
+      "fixture_sha256": "89b9c21e81f0fb60a1ae11447f795b38dcfd8282da88aaffdf12275b4c63be76",
+      "http_status": 200,
+      "response_status": "completed",
+      "returned_model": "deepseek-flash",
+      "seconds": 2.101,
+      "usage": {
+        "input_tokens": 7313,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 191,
+        "output_tokens_details": {
+          "reasoning_tokens": 152
+        },
+        "total_tokens": 7504
+      },
+      "text": "Project ORCHID uses Rust; release date 2026-11-02; budget 73 units; pending work: validate search pagination. Preserve project requirements and verification evidence.",
+      "tool_calls": [],
+      "facts_present": true,
+      "incomplete_details": null,
+      "error": null
+    },
+    {
+      "model": "deepseek-flash",
+      "variant": "optimized",
+      "fixture_sha256": "b3d99b0eaa07f670328c9a884d0581ccfd436598023d110248965bfc890298aa",
+      "http_status": 200,
+      "response_status": "completed",
+      "returned_model": "deepseek-flash",
+      "seconds": 1.038,
+      "usage": {
+        "input_tokens": 7891,
+        "input_tokens_details": {
+          "cached_tokens": 7680
+        },
+        "output_tokens": 114,
+        "output_tokens_details": {
+          "reasoning_tokens": 83
+        },
+        "total_tokens": 8005
+      },
+      "text": "Project ORCHID \u2014 Rust; release date 2026-11-02; budget 73 units; pending work: validate search pagination.",
+      "tool_calls": [],
+      "facts_present": true,
+      "incomplete_details": null,
+      "error": null
+    },
+    {
+      "model": "deepseek-v4-pro",
+      "variant": "warm",
+      "fixture_sha256": "1290ccbdacf418a6fcc9b9515354a00b1856cd976a8252deebfd1fad2f798070",
+      "http_status": 200,
+      "response_status": "completed",
+      "returned_model": "deepseek-v4-pro",
+      "seconds": 3.813,
+      "usage": {
+        "input_tokens": 7921,
+        "input_tokens_details": {
+          "cached_tokens": 256
+        },
+        "output_tokens": 164,
+        "output_tokens_details": {
+          "reasoning_tokens": 127
+        },
+        "total_tokens": 8085
+      },
+      "text": "Acknowledged. Project ORCHID: Rust-based, release date 2026-11-02, budget 73 units, pending work is to validate search pagination.",
+      "tool_calls": [],
+      "facts_present": null,
+      "incomplete_details": null,
+      "error": null
+    },
+    {
+      "model": "deepseek-v4-pro",
+      "variant": "baseline",
+      "fixture_sha256": "6c445ae6674c0321e404e82db35a566775be23a6e6ada22097b34917e75fd644",
+      "http_status": 200,
+      "response_status": "completed",
+      "returned_model": "deepseek-v4-pro",
+      "seconds": 2.658,
+      "usage": {
+        "input_tokens": 7366,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 170,
+        "output_tokens_details": {
+          "reasoning_tokens": 136
+        },
+        "total_tokens": 7536
+      },
+      "text": "Project ORCHID uses Rust. Release date is 2026-11-02. Budget is 73 units. Pending work: validate search pagination.",
+      "tool_calls": [],
+      "facts_present": true,
+      "incomplete_details": null,
+      "error": null
+    },
+    {
+      "model": "deepseek-v4-pro",
+      "variant": "optimized",
+      "fixture_sha256": "2b5de2971331193bd7c8a555affd68653b78d271f78abc09802cd60d3886c975",
+      "http_status": 200,
+      "response_status": "completed",
+      "returned_model": "deepseek-v4-pro",
+      "seconds": 1.259,
+      "usage": {
+        "input_tokens": 7954,
+        "input_tokens_details": {
+          "cached_tokens": 7808
+        },
+        "output_tokens": 28,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 7982
+      },
+      "text": "ORCHID \u2014 Rust \u2014 release 2026-11-02 \u2014 budget 73 units \u2014 pending: validate search pagination.",
+      "tool_calls": [],
+      "facts_present": true,
+      "incomplete_details": null,
+      "error": null
+    }
+  ]
+}

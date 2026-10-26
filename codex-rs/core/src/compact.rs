@@ -278,6 +278,11 @@ async fn run_compact_task_inner_impl(
     sess.emit_turn_item_started(&turn_context, &compaction_item)
         .await;
     let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input);
+    let mut initial_input_for_turn: ResponseItem = initial_input_for_turn.into();
+    append_deepseek_compaction_directive(
+        &mut initial_input_for_turn,
+        &turn_context.model_info().slug,
+    );
 
     let mut history = sess.clone_history().await;
     let retained_reasoning = last_turn_reasoning_for_raw_replay(
@@ -287,7 +292,7 @@ async fn run_compact_task_inner_impl(
     );
     let input_goal_ids = UserGoalUpdate::message_ids(history.raw_items());
     history.record_items(
-        &[initial_input_for_turn.into()],
+        &[initial_input_for_turn],
         turn_context.model_info().truncation_policy.into(),
     );
     let mut fallback_instructions = sess.get_prompt_base_instructions().await;
@@ -313,6 +318,7 @@ async fn run_compact_task_inner_impl(
         };
     // Reuse one client session so turn-scoped state (sticky routing and websocket incremental
     // request tracking) survives retries within this compact turn.
+    let mut allow_deepseek_prefix_reuse = true;
     let compaction_response = loop {
         // Clone is required because of the loop
         let mut turn_input = history
@@ -333,12 +339,15 @@ async fn run_compact_task_inner_impl(
         } else {
             fallback_instructions.clone()
         };
-        let prompt = Prompt {
+        let mut prompt = Prompt {
             input: turn_input,
             base_instructions,
             cyber_access_program: turn_context.cyber_access_program,
             ..Default::default()
         };
+        let reused_deepseek_tools = allow_deepseek_prefix_reuse
+            && client_session
+                .reuse_deepseek_compaction_prefix(&mut prompt, &turn_context.model_info().slug);
         let responses_metadata = sess
             .compaction_responses_metadata(turn_context.as_ref(), compaction_metadata)
             .await;
@@ -353,8 +362,19 @@ async fn run_compact_task_inner_impl(
         .await;
 
         match attempt_result {
-            Ok(response) => {
+            Ok(CompactionAttemptOutcome::Completed(response)) => {
                 break response;
+            }
+            Ok(CompactionAttemptOutcome::InvalidDeepSeekSummary(invalid)) => {
+                // 无效摘要是本地语义校验结果，不是可重试的传输错误。
+                // 携带工具声明时仅撤销一次前缀优化，完整历史保持不变；
+                // 基线请求仍无摘要则立即失败，避免反复计费且不能改善结果。
+                if reused_deepseek_tools {
+                    allow_deepseek_prefix_reuse = false;
+                    retries = 0;
+                    continue;
+                }
+                return Err(invalid.into_error());
             }
             Err(err)
                 if matches!(
@@ -374,6 +394,13 @@ async fn run_compact_task_inner_impl(
                 return Err(e);
             }
             Err(e) if matches!(e.details(), CodexErrorDetails::ContextWindowExceeded) => {
+                // 新增的 schema 可能挤占摘要空间；先撤销优化重试同一份历史，
+                // 确认基线也放不下后才按原策略移除历史。每次压缩最多撤销一次。
+                if reused_deepseek_tools {
+                    allow_deepseek_prefix_reuse = false;
+                    retries = 0;
+                    continue;
+                }
                 if turn_input_len > 1 {
                     // Trim from the beginning to preserve cache (prefix-based) and keep recent messages intact.
                     error!(
@@ -838,9 +865,56 @@ fn build_compacted_history_with_limit(
     history
 }
 
+/// 参考 deepseek-harness compaction-basic/src/summarizer.ts 的末尾指令策略。
+/// 仅补充本次摘要消息，保留自定义压缩提示和原会话前缀；不强制语言或标题格式。
+pub(crate) fn append_deepseek_compaction_directive(input: &mut ResponseItem, model: &str) {
+    if !crate::client::is_deepseek_compaction_model(model) {
+        return;
+    }
+    if let ResponseItem::Message { role, content, .. } = input
+        && role == "user"
+    {
+        content.push(ContentItem::InputText {
+            text: "For this compaction request, output only the checkpoint text. Do not execute tools or take actions during this summary. Accurately distinguish prior observed tool calls and results from planned work; do not claim actions or tests completed without supporting results. Preserve essential exact file paths, commands, error strings, identifiers, numeric values, and the user's current constraints and corrections. Treat prior checkpoints as background: retain still-valid facts, resolve stale facts using newer evidence, and do not invent missing details. Follow the requested checkpoint format and language.".to_string(),
+        });
+    }
+}
+
 struct CompactionResponse {
     response_id: String,
     output: Vec<ResponseItem>,
+}
+
+/// 将已完成但语义无效的 DeepSeek 摘要与网络/服务端失败分开处理。
+enum CompactionAttemptOutcome {
+    Completed(CompactionResponse),
+    InvalidDeepSeekSummary(InvalidDeepSeekSummary),
+}
+
+#[derive(Debug)]
+struct InvalidDeepSeekSummary;
+
+impl InvalidDeepSeekSummary {
+    fn into_error(self) -> CodexErr {
+        CodexErr::Stream("DeepSeek compaction returned tools or no assistant summary".to_string())
+    }
+}
+
+/// 携带声明仅用于复用前缀。摘要路径没有工具调度器；在写入历史前拒绝
+/// 工具调用或空摘要，防止使用上一轮 assistant 文本误覆盖历史。
+fn validate_deepseek_compaction_output(
+    output: &[ResponseItem],
+) -> Result<(), InvalidDeepSeekSummary> {
+    if output.iter().any(|item| {
+        !matches!(item,
+            ResponseItem::Message { role, .. } if role == "assistant"
+        ) && !matches!(item, ResponseItem::Reasoning { .. })
+    }) || get_last_assistant_message_from_turn(output.iter())
+        .is_none_or(|summary| summary.trim().is_empty())
+    {
+        return Err(InvalidDeepSeekSummary);
+    }
+    Ok(())
 }
 
 async fn drain_to_completed(
@@ -850,7 +924,7 @@ async fn drain_to_completed(
     responses_metadata: &CodexResponsesMetadata,
     prompt: &Prompt,
     phase: CompactionPhase,
-) -> CodexResult<CompactionResponse> {
+) -> CodexResult<CompactionAttemptOutcome> {
     sess.set_server_reasoning_included(turn_context.model_info().use_responses_lite)
         .await;
     let mut stream = client_session
@@ -894,6 +968,22 @@ async fn drain_to_completed(
                 usage_metadata,
                 ..
             }) => {
+                let is_deepseek =
+                    crate::client::is_deepseek_compaction_model(&turn_context.model_info().slug);
+                if is_deepseek {
+                    sess.record_observed_response_completed(
+                        turn_context,
+                        &response_id,
+                        token_usage.as_ref(),
+                        usage_metadata.as_ref(),
+                    )
+                    .await;
+                    sess.update_token_usage_info(turn_context, token_usage.as_ref())
+                        .await?;
+                    if let Err(invalid) = validate_deepseek_compaction_output(&output) {
+                        return Ok(CompactionAttemptOutcome::InvalidDeepSeekSummary(invalid));
+                    }
+                }
                 if !matches!(phase, CompactionPhase::PostTurn) {
                     for item in std::mem::take(&mut output) {
                         sess.record_annotated_conversation_items(
@@ -910,19 +1000,21 @@ async fn drain_to_completed(
                         .await;
                     }
                 }
-                sess.record_observed_response_completed(
-                    turn_context,
-                    &response_id,
-                    token_usage.as_ref(),
-                    usage_metadata.as_ref(),
-                )
-                .await;
-                sess.update_token_usage_info(turn_context, token_usage.as_ref())
-                    .await?;
-                return Ok(CompactionResponse {
+                if !is_deepseek {
+                    sess.record_observed_response_completed(
+                        turn_context,
+                        &response_id,
+                        token_usage.as_ref(),
+                        usage_metadata.as_ref(),
+                    )
+                    .await;
+                    sess.update_token_usage_info(turn_context, token_usage.as_ref())
+                        .await?;
+                }
+                return Ok(CompactionAttemptOutcome::Completed(CompactionResponse {
                     response_id,
                     output,
-                });
+                }));
             }
             Ok(_) => continue,
             Err(e) => {
