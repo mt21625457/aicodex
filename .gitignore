@@ -102,3 +102,5 @@ CHANGELOG.ignore.md
 __pycache__/
 *.pyc
 codex-code-mode-host
+.codegraph/
+bin/
