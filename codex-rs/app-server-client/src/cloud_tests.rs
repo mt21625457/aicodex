@@ -52,7 +52,8 @@ async fn retained_request_and_reply_stay_with_their_cloud_backend() {
                 request_id: RequestId::Integer(1),
                 params: ThreadReadParams {
                     thread_id: "thread-1".into(),
-                    include_turns: false
+                    include_turns: false,
+                    items_view: None,
                 },
             })
             .await
@@ -76,7 +77,8 @@ async fn retained_request_and_reply_stay_with_their_cloud_backend() {
                 request_id: RequestId::Integer(2),
                 params: ThreadReadParams {
                     thread_id: "thread-1".into(),
-                    include_turns: false
+                    include_turns: false,
+                    items_view: None,
                 },
             })
             .await

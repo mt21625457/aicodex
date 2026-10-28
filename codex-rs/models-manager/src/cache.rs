@@ -1,3 +1,4 @@
+use crate::ModelCatalogOriginator;
 use chrono::DateTime;
 use chrono::Utc;
 use codex_protocol::openai_models::ModelInfo;
@@ -9,6 +10,7 @@ use std::io;
 use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::fs;
 use tracing::info;
@@ -32,6 +34,12 @@ pub trait ModelsCache: fmt::Debug + Send + Sync {
         client_version: &'a str,
     ) -> ModelsCacheFuture<'a, Result<Option<ModelsCacheEntry>, ModelsCacheError>> {
         self.load(client_version)
+    }
+
+    /// Return a separate cache partition, or `None` to disable storage for this originator.
+    /// Implementations must isolate loads, writes, and TTL renewal from the default catalog.
+    fn for_originator(&self, _originator: ModelCatalogOriginator) -> Option<Arc<dyn ModelsCache>> {
+        None
     }
 
     /// Loads a fresh entry for `client_version`.
@@ -162,6 +170,14 @@ impl ModelsCache for FileModelsCache {
                 .map_err(cache_error)?
                 .filter(|entry| entry.client_version.as_deref() == Some(client_version)))
         })
+    }
+
+    fn for_originator(&self, originator: ModelCatalogOriginator) -> Option<Arc<dyn ModelsCache>> {
+        Some(Arc::new(Self::new(
+            self.cache_path
+                .with_extension(format!("{}.json", originator.as_str())),
+            self.cache_ttl,
+        )))
     }
 
     fn load<'a>(

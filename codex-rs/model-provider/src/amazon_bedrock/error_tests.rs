@@ -204,17 +204,17 @@ fn credential_export_errors_distinguish_configuration_failures_from_retryable_au
         (
             http_error(StatusCode::UNAUTHORIZED, "ExpiredTokenException"),
             true,
-            true,
+            false,
         ),
         (
             http_error(StatusCode::FORBIDDEN, "ExpiredTokenException"),
             true,
-            true,
+            false,
         ),
         (
             http_error(StatusCode::FORBIDDEN, "AccessDeniedException"),
             false,
-            true,
+            false,
         ),
         (
             ApiError::Transport(TransportError::Network("offline".to_string())),
@@ -225,6 +225,8 @@ fn credential_export_errors_distinguish_configuration_failures_from_retryable_au
         let ApiError::Transport(transport) = &error else {
             unreachable!("all test cases are transport errors");
         };
+        // Refresh eligibility is handled before error mapping. Once recovery is exhausted,
+        // permanent HTTP rejections must not restart the ordinary stream retry loop.
         assert_eq!(provider.is_recoverable_auth_error(transport), recoverable);
         assert_eq!(
             provider

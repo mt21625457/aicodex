@@ -255,6 +255,7 @@ async fn kimi_handler_calls_moonshot_and_returns_bounded_external_context() {
             call_id: "call-moonshot".to_string(),
             tool_name: codex_tools::ToolName::plain("web_search"),
             source: ToolCallSource::Direct,
+            environments: Default::default(),
             payload: ToolPayload::Function {
                 arguments: r#"{"query":"latest rust release"}"#.to_string(),
             },
@@ -359,6 +360,7 @@ async fn invocation_for_arguments(arguments: &str) -> ToolInvocation {
         call_id: "call-web-search".to_string(),
         tool_name: codex_tools::ToolName::plain("web_search"),
         source: ToolCallSource::Direct,
+        environments: Default::default(),
         payload: ToolPayload::Function {
             arguments: arguments.to_string(),
         },

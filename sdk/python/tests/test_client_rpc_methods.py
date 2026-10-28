@@ -126,10 +126,14 @@ def test_new_options_accept_supported_runtime_metadata(
 
 
 @pytest.mark.parametrize("supports_options", [True, False])
+@pytest.mark.parametrize("binary_name", [None, "aicodex", "aicodex.exe"])
 def test_unversioned_checkout_probes_and_caches_its_own_schema(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, supports_options: bool
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, supports_options: bool, binary_name: str | None
 ) -> None:
-    client, requests = _initialized_client(monkeypatch, {"userAgent": "codex-cli/0.0.0"})
+    version = "0.1.11" if binary_name else "0.0.0"
+    client, requests = _initialized_client(monkeypatch, {"userAgent": f"codex-cli/{version}"})
+    if binary_name:
+        client.config.codex_bin = str(tmp_path / binary_name)
     command = ("checkout-codex", "--config", "key=value", "app-server")
     client._checkout_capabilities = CheckoutCapabilities(
         command, str(tmp_path), {"CUSTOM": "value"}
@@ -176,6 +180,51 @@ def test_unversioned_checkout_probes_and_caches_its_own_schema(
     ]
     client.close()
     assert client._checkout_capabilities is None
+
+
+@pytest.mark.parametrize("version", ["0.1.11", "unknown"])
+@pytest.mark.parametrize("binary_name", ["codex", "other-aicodex"])
+def test_explicit_other_runtime_does_not_bypass_version_check(
+    monkeypatch: pytest.MonkeyPatch, version: str, binary_name: str
+) -> None:
+    client, requests = _initialized_client(monkeypatch, {"userAgent": f"codex-cli/{version}"})
+    client.config.codex_bin = binary_name
+    with pytest.raises(CodexError, match=r"Codex CLI 0\.151\.0 or newer"):
+        client.request(
+            "turn/start", {"turnTrigger": "automation"}, response_model=InitializeResponse
+        )
+    assert requests == []
+
+
+def test_explicit_aicodex_schema_failure_rejects_new_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, requests = _initialized_client(monkeypatch, {"userAgent": "codex-cli/0.1.11"})
+    client.config.codex_bin = "aicodex"
+    client._checkout_capabilities = CheckoutCapabilities(("aicodex", "app-server"), None, {})
+
+    def failed_probe(*_args, **_kwargs):
+        raise OSError("cannot execute schema probe")
+
+    monkeypatch.setattr("openai_codex._runtime_requirements.subprocess.run", failed_probe)
+    with pytest.raises(CodexError, match="Could not inspect"):
+        client.request(
+            "turn/start", {"turnTrigger": "automation"}, response_model=InitializeResponse
+        )
+    assert requests == []
+
+
+def test_aicodex_custom_launch_does_not_bypass_version_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, requests = _initialized_client(monkeypatch, {"userAgent": "codex-cli/0.1.11"})
+    client.config.codex_bin = "aicodex"
+    client.config.launch_args_override = ("other-runtime",)
+    with pytest.raises(CodexError, match=r"Codex CLI 0\.151\.0 or newer"):
+        client.request(
+            "turn/start", {"turnTrigger": "automation"}, response_model=InitializeResponse
+        )
+    assert requests == []
 
 
 def test_unversioned_custom_launch_requires_verifiable_capabilities(

@@ -280,6 +280,7 @@ impl ModelProvider for AmazonBedrockModelProvider {
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
             namespace_tools: true,
+            reasoning_summaries: true,
             image_generation: false,
             web_search: self.endpoint == BedrockEndpoint::Mantle,
             default_apply_patch_tool_type: None,
@@ -699,6 +700,7 @@ mod tests {
             provider.capabilities(),
             ProviderCapabilities {
                 namespace_tools: true,
+                reasoning_summaries: true,
                 image_generation: false,
                 web_search: true,
                 default_apply_patch_tool_type: None,
@@ -719,6 +721,7 @@ mod tests {
             provider.capabilities(),
             ProviderCapabilities {
                 namespace_tools: true,
+                reasoning_summaries: true,
                 image_generation: false,
                 web_search: false,
                 default_apply_patch_tool_type: None,

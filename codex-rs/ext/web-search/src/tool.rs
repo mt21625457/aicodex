@@ -565,6 +565,8 @@ mod tests {
             truncation_policy: TruncationPolicy::Bytes(32_000),
             conversation_history: ConversationHistory::default(),
             turn_item_emitter: emitter,
+            attachment_store: codex_core::passthrough_image_store(),
+            ephemeral: false,
             environments: Vec::new(),
             payload: ToolPayload::Function {
                 arguments: arguments.to_string(),

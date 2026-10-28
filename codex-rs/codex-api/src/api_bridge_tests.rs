@@ -313,31 +313,51 @@ fn map_api_error_maps_server_overloaded_from_503_body() {
 }
 
 #[test]
-fn map_api_error_distinguishes_capacity_from_slow_down() {
-    for (code, expected, retryable) in [
+fn map_http_error_classifies_provider_codes() {
+    use CodexErrorInfo::ModelNotFound;
+
+    for (status, code, expected, retryable) in [
         (
+            503,
             "server_is_overloaded",
             CodexErrorInfo::ServerOverloaded,
             false,
         ),
-        ("slow_down", CodexErrorInfo::RateLimitExceeded, true),
+        (503, "slow_down", CodexErrorInfo::RateLimitExceeded, true),
         (
+            503,
             "unknown_error",
             CodexErrorInfo::HttpConnectionFailed {
                 http_status_code: Some(503),
             },
             true,
         ),
+        (400, "model_not_found", ModelNotFound, false),
+        (403, "model_not_found", ModelNotFound, false),
+        (404, "model_not_found", ModelNotFound, false),
+        (
+            404,
+            "resource_not_found",
+            CodexErrorInfo::HttpConnectionFailed {
+                http_status_code: Some(404),
+            },
+            // A missing resource keeps its HTTP category, but dev treats permanent 4xx
+            // failures as terminal even without the new model_not_found provider code.
+            false,
+        ),
     ] {
         let err = map_api_error(ApiError::Transport(TransportError::Http {
             retry_after: None,
-            status: http::StatusCode::SERVICE_UNAVAILABLE,
+            status: http::StatusCode::from_u16(status).unwrap(),
             url: None,
             headers: None,
             body: Some(
                 serde_json::json!({"error": {"code": code, "message": "retry later"}}).to_string(),
             ),
         }));
+        if expected == ModelNotFound {
+            assert_eq!(err.http_status_code_value(), Some(status));
+        }
         assert_eq!(
             (
                 err.to_codex_protocol_error(),
@@ -1127,4 +1147,23 @@ fn forbidden_without_quota_code_remains_a_permission_error() {
             }
         );
     }
+}
+
+#[test]
+fn structured_model_error_takes_precedence_over_media_message() {
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        retry_after: None,
+        status: http::StatusCode::BAD_REQUEST,
+        url: None,
+        headers: None,
+        body: Some(
+            serde_json::json!({"error": {
+                "code": "model_not_found",
+                "message": "Could not process image: the requested model does not exist"
+            }})
+            .to_string(),
+        ),
+    }));
+    assert_eq!(err.to_codex_protocol_error(), CodexErrorInfo::ModelNotFound);
+    assert!(err.retry_delay(/*retry_count*/ 1).is_none());
 }

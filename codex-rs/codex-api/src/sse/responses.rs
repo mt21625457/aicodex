@@ -6,7 +6,7 @@ use crate::common::SafetyBufferingTreatment;
 use crate::error::ApiError;
 use crate::error::ProviderMediaErrorKind;
 use crate::error::ProviderStreamErrorKind;
-use crate::error::parse_flex_unavailable;
+use crate::error::parse_terminal_provider_error;
 use crate::rate_limits::parse_all_rate_limits;
 use crate::safety_buffering::treatment_from_headers;
 use crate::sse::progress::ProgressDeadline;
@@ -369,7 +369,9 @@ pub fn process_responses_event(
 ) -> std::result::Result<Option<ResponseEvent>, ResponsesEventError> {
     match event.kind.as_str() {
         "error" => {
-            if let Some(error) = event.error.as_ref().and_then(parse_flex_unavailable) {
+            if let Some(error) =
+                parse_terminal_provider_error(event.error.as_ref(), /*status*/ None)
+            {
                 return Err(ResponsesEventError::Api(error));
             }
         }
@@ -767,7 +769,7 @@ fn provider_stream_error_from_data(data: &str) -> Option<ApiError> {
         return None;
     }
 
-    if let Some(error) = value.get("error").and_then(parse_flex_unavailable) {
+    if let Some(error) = parse_terminal_provider_error(value.get("error"), /*status*/ None) {
         return Some(error);
     }
 
@@ -2483,6 +2485,24 @@ mod tests {
             serde_json::from_value(event).expect("expected event to deserialize");
 
         assert_eq!(event.model_verifications(), None);
+    }
+
+    #[test]
+    fn compatible_stream_preserves_terminal_model_errors() {
+        for event_type in [None, Some("error"), Some("response.error")] {
+            let mut event = json!({"error": {
+                "code": "model_not_found",
+                "message": "Could not process image: the requested model does not exist"
+            }});
+            if let Some(event_type) = event_type {
+                event["type"] = json!(event_type);
+            }
+            let error = parse_responses_stream_event(&event.to_string()).unwrap_err();
+            assert!(matches!(
+                error,
+                ApiError::ModelNotFound { status: None, .. }
+            ));
+        }
     }
 
     const CYBER_RESTRICTED_MODEL_FOR_TESTS: &str = "gpt-5.3-codex";

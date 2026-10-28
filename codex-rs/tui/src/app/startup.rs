@@ -232,7 +232,7 @@ impl App {
     #[allow(clippy::too_many_arguments)]
     pub fn run(
         tui: &mut tui::Tui,
-        app_server: AppServerSession,
+        initial_backends: super::backend_sessions::InitialBackendSessions,
         config: Config,
         launch_cwd: PathBuf,
         cli_kv_overrides: Vec<(String, TomlValue)>,
@@ -259,7 +259,7 @@ impl App {
     ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<AppExitInfo>> + '_>> {
         Box::pin(Self::run_inner(
             tui,
-            app_server,
+            initial_backends,
             config,
             launch_cwd,
             cli_kv_overrides,
@@ -289,7 +289,7 @@ impl App {
     #[allow(clippy::too_many_arguments)]
     async fn run_inner(
         tui: &mut tui::Tui,
-        mut app_server: AppServerSession,
+        initial_backends: super::backend_sessions::InitialBackendSessions,
         mut config: Config,
         launch_cwd: PathBuf,
         cli_kv_overrides: Vec<(String, TomlValue)>,
@@ -316,24 +316,58 @@ impl App {
     ) -> Result<AppExitInfo> {
         use tokio_stream::StreamExt;
 
-        async fn shutdown_on_startup_error(
-            app_server: AppServerSession,
-            error: impl Into<color_eyre::eyre::Report>,
-        ) -> Result<AppExitInfo> {
-            if let Err(shutdown_error) = app_server.shutdown().await {
+        async fn shutdown_startup_sessions(sessions: impl IntoIterator<Item = AppServerSession>) {
+            let shutdowns = sessions.into_iter().map(AppServerSession::shutdown);
+            let shutdown_result: std::io::Result<Vec<()>> = futures::future::join_all(shutdowns)
+                .await
+                .into_iter()
+                .collect();
+            if let Err(shutdown_error) = shutdown_result {
                 tracing::warn!("app-server shutdown failed: {shutdown_error}");
             }
+        }
+
+        async fn shutdown_on_startup_error(
+            app_server: AppServerSession,
+            other_backends: &mut Vec<AppServerSession>,
+            error: impl Into<color_eyre::eyre::Report>,
+        ) -> Result<AppExitInfo> {
+            shutdown_startup_sessions(std::iter::once(app_server).chain(other_backends.drain(..)))
+                .await;
             Err(error.into())
         }
 
+        async fn cancel_startup_sessions(
+            app_server: AppServerSession,
+            other_backends: &mut Vec<AppServerSession>,
+        ) -> AppExitInfo {
+            let exit_info = cancel_session_start(app_server).await;
+            shutdown_startup_sessions(other_backends.drain(..)).await;
+            exit_info
+        }
+
+        let (mut app_server, mut other_backends) = initial_backends.into_parts();
+        // Preserve singleton error propagation while releasing all sessions on multi-backend exits.
+        macro_rules! startup_try {
+            ($result:expr) => {
+                match $result {
+                    Ok(value) => value,
+                    Err(error) if other_backends.is_empty() => return Err(error.into()),
+                    Err(error) => {
+                        return shutdown_on_startup_error(app_server, &mut other_backends, error)
+                            .await;
+                    }
+                }
+            };
+        }
         // Adopt actual launch ownership before constructing session-local preferences.
-        tui.prepare_owned_screen(config.tui_fullscreen_transcript)?;
+        startup_try!(tui.prepare_owned_screen(config.tui_fullscreen_transcript));
         let mut local_settings = crate::local_settings::LocalSettings::for_tui(&config, tui);
         let startup_started_at = Instant::now();
         if let SessionSelection::Resume(target) | SessionSelection::Fork(target) =
             &session_selection
         {
-            target.ensure_backend(app_server.backend_id())?;
+            startup_try!(target.ensure_backend(app_server.backend_id()));
         }
         let (app_event_tx, mut app_event_rx) = unbounded_channel();
         let app_event_tx = AppEventSender::new(app_event_tx);
@@ -348,8 +382,10 @@ impl App {
             local_settings.tui.notification_settings.condition,
         );
 
-        let harness_overrides =
-            normalize_harness_overrides_for_cwd(harness_overrides, &config.cwd)?;
+        let harness_overrides = startup_try!(normalize_harness_overrides_for_cwd(
+            harness_overrides,
+            &config.cwd
+        ));
         app_server.model_provider_override = harness_overrides.model_provider.clone();
         let fresh_start = matches!(
             &session_selection,
@@ -367,8 +403,11 @@ impl App {
                     .run_until(tui, app_server.bootstrap(&config))
                     .await
                 {
-                    Ok(bootstrap) => bootstrap?,
-                    Err(err) => return shutdown_on_startup_error(app_server, err).await,
+                    Ok(bootstrap) => startup_try!(bootstrap),
+                    Err(err) => {
+                        return shutdown_on_startup_error(app_server, &mut other_backends, err)
+                            .await;
+                    }
                 },
             );
         }
@@ -402,8 +441,12 @@ impl App {
                 .await
             {
                 Ok(Ok(defaults)) => defaults,
-                Ok(Err(err)) => return shutdown_on_startup_error(app_server, err).await,
-                Err(err) => return shutdown_on_startup_error(app_server, err).await,
+                Ok(Err(err)) => {
+                    return shutdown_on_startup_error(app_server, &mut other_backends, err).await;
+                }
+                Err(err) => {
+                    return shutdown_on_startup_error(app_server, &mut other_backends, err).await;
+                }
             }
         } else {
             FreshStartupDefaults::default()
@@ -429,8 +472,10 @@ impl App {
                 )
                 .await
             {
-                Ok(bootstrap) => bootstrap?,
-                Err(err) => return shutdown_on_startup_error(app_server, err).await,
+                Ok(bootstrap) => startup_try!(bootstrap),
+                Err(err) => {
+                    return shutdown_on_startup_error(app_server, &mut other_backends, err).await;
+                }
             },
         };
         tracing::debug!(
@@ -473,13 +518,13 @@ impl App {
                 None
             };
         if let Err(err) = startup_draft.flush_pending_events(tui).await {
-            return shutdown_on_startup_error(app_server, err).await;
+            return shutdown_on_startup_error(app_server, &mut other_backends, err).await;
         }
         let exit_info =
             if matches!(&session_selection, SessionSelection::Fork(_)) && config.model.is_none() {
                 None
             } else {
-                handle_model_migration_prompt_if_needed(
+                let result = handle_model_migration_prompt_if_needed(
                     tui,
                     &mut config,
                     &local_settings,
@@ -488,16 +533,11 @@ impl App {
                     &app_event_tx,
                     &available_models,
                 )
-                .await?
+                .await;
+                startup_try!(result)
             };
         if let Some(exit_info) = exit_info {
-            app_server
-                .shutdown()
-                .await
-                .inspect_err(|err| {
-                    tracing::warn!("app-server shutdown failed: {err}");
-                })
-                .ok();
+            shutdown_startup_sessions(std::iter::once(app_server).chain(other_backends)).await;
             return Ok(exit_info);
         }
         if let Some(updated_model) = config.model.clone() {
@@ -616,7 +656,10 @@ impl App {
                         .await
                     {
                         Ok(tooltip_override) => tooltip_override,
-                        Err(err) => return shutdown_on_startup_error(app_server, err).await,
+                        Err(err) => {
+                            return shutdown_on_startup_error(app_server, &mut other_backends, err)
+                                .await;
+                        }
                     }
                 };
                 let init = crate::chatwidget::ChatWidgetInit {
@@ -663,6 +706,7 @@ impl App {
                 {
                     return shutdown_on_startup_error(
                         app_server,
+                        &mut other_backends,
                         color_eyre::eyre::eyre!(
                             "Permission overrides are not supported when resuming a remote task."
                         ),
@@ -710,16 +754,29 @@ impl App {
                                 history_notice = notice;
                                 thread
                             }),
-                            Err(err) => return shutdown_on_startup_error(app_server, err).await,
+                            Err(err) => {
+                                return shutdown_on_startup_error(
+                                    app_server,
+                                    &mut other_backends,
+                                    err,
+                                )
+                                .await;
+                            }
                         }
                     }
                     Ok(resumed) => resumed,
-                    Err(err) => return shutdown_on_startup_error(app_server, err).await,
+                    Err(err) => {
+                        return shutdown_on_startup_error(app_server, &mut other_backends, err)
+                            .await;
+                    }
                 };
                 let resumed = if read_only_thread {
                     match resumed {
                         Ok(resumed) => Some(resumed),
-                        Err(err) => return shutdown_on_startup_error(app_server, err).await,
+                        Err(err) => {
+                            return shutdown_on_startup_error(app_server, &mut other_backends, err)
+                                .await;
+                        }
                     }
                 } else {
                     let action = SessionStartAction::Resume(
@@ -744,12 +801,14 @@ impl App {
                             run_unarchive_prompt(tui, target_session.thread_id, action).await
                         },
                     )
-                    .await?;
-                    match resumed {
+                    .await;
+                    match startup_try!(resumed) {
                         SessionStartOutcome::Started(started) => Some(*started),
                         SessionStartOutcome::CommandCenter => None,
                         SessionStartOutcome::Exit => {
-                            return Ok(cancel_session_start(app_server).await);
+                            return Ok(
+                                cancel_startup_sessions(app_server, &mut other_backends).await
+                            );
                         }
                     }
                 };
@@ -796,6 +855,7 @@ impl App {
                 {
                     return shutdown_on_startup_error(
                         app_server,
+                        &mut other_backends,
                         color_eyre::eyre::eyre!(
                             "Permission overrides are not supported when forking a remote task."
                         ),
@@ -825,7 +885,10 @@ impl App {
                     .await
                 {
                     Ok(forked) => forked,
-                    Err(err) => return shutdown_on_startup_error(app_server, err).await,
+                    Err(err) => {
+                        return shutdown_on_startup_error(app_server, &mut other_backends, err)
+                            .await;
+                    }
                 };
                 let action = SessionStartAction::Fork(permission_mode);
                 let forked = complete_session_start(
@@ -843,19 +906,20 @@ impl App {
                         run_unarchive_prompt(tui, target_session.thread_id, action).await
                     },
                 )
-                .await?;
-                let forked = match forked {
+                .await;
+                let forked = match startup_try!(forked) {
                     SessionStartOutcome::Started(started) => Some(*started),
                     SessionStartOutcome::CommandCenter => None,
                     SessionStartOutcome::Exit => {
-                        return Ok(cancel_session_start(app_server).await);
+                        return Ok(cancel_startup_sessions(app_server, &mut other_backends).await);
                     }
                 };
                 if let Some(forked) = &forked {
                     if let Some(worktree) = managed_worktree.as_ref()
                         && let Err(err) = worktree.bind(forked.session.thread_id)
                     {
-                        return shutdown_on_startup_error(app_server, err).await;
+                        return shutdown_on_startup_error(app_server, &mut other_backends, err)
+                            .await;
                     }
                     if config.model_reasoning_effort.is_none() {
                         config.model_reasoning_effort = forked.session.reasoning_effort.clone();
@@ -942,7 +1006,8 @@ impl App {
 Fix the config and retry.\n\
 See the Codex keymap documentation for supported actions and examples."
                 )
-            })?;
+            });
+        let runtime_keymap = startup_try!(runtime_keymap);
         #[cfg(not(debug_assertions))]
         let upgrade_version = crate::updates::get_upgrade_version(&config);
 
@@ -1117,8 +1182,10 @@ See the Codex keymap documentation for supported actions and examples."
                 )
                 .await
             {
-                Ok(result) => result?,
-                Err(err) => return shutdown_on_startup_error(app_server, err).await,
+                Ok(result) => startup_try!(result),
+                Err(err) => {
+                    return shutdown_on_startup_error(app_server, &mut other_backends, err).await;
+                }
             }
             if read_only_thread {
                 app.ensure_thread_channel(thread_id).mark_external_writer();
@@ -1140,7 +1207,7 @@ See the Codex keymap documentation for supported actions and examples."
                     )
                     .await
             {
-                return shutdown_on_startup_error(app_server, err).await;
+                return shutdown_on_startup_error(app_server, &mut other_backends, err).await;
             }
         }
         if !start_in_agents_overview
@@ -1154,14 +1221,14 @@ See the Codex keymap documentation for supported actions and examples."
         let initial_session_ms = initial_session_started_at.elapsed().as_millis();
 
         if let Err(err) = startup_draft.flush_pending_events(tui).await {
-            return shutdown_on_startup_error(app_server, err).await;
+            return shutdown_on_startup_error(app_server, &mut other_backends, err).await;
         }
         if Self::should_handle_active_thread_events(
             wait_for_initial_session_configured,
             app.active_thread_rx.is_some(),
         ) && let Err(err) = app.drain_active_thread_events(tui).await
         {
-            return shutdown_on_startup_error(app_server, err).await;
+            return shutdown_on_startup_error(app_server, &mut other_backends, err).await;
         }
         if app_event_rx.is_empty()
             && !app.has_queued_startup_protected_request()
@@ -1170,7 +1237,7 @@ See the Codex keymap documentation for supported actions and examples."
             && !app.chat_widget.has_pending_protected_request()
             && let Err(err) = startup_draft.flush_pending_paste_newline(tui).await
         {
-            return shutdown_on_startup_error(app_server, err).await;
+            return shutdown_on_startup_error(app_server, &mut other_backends, err).await;
         }
         // Keep cancelled resume/fork text editable, but never carry confirmation to another session.
         let mut pending_startup_submission =
@@ -1194,7 +1261,7 @@ See the Codex keymap documentation for supported actions and examples."
         let event_stream_started_at = Instant::now();
         tui.schedule_screen_size_recheck(Duration::ZERO);
         if let Err(err) = app.render_startup_frame(tui, &app_event_rx) {
-            return shutdown_on_startup_error(app_server, err).await;
+            return shutdown_on_startup_error(app_server, &mut other_backends, err).await;
         }
         let tui_events = tui.event_stream();
         tokio::pin!(tui_events);
@@ -1243,8 +1310,8 @@ See the Codex keymap documentation for supported actions and examples."
                     crate::update_action::get_update_action(),
                 ))),
             ))
-            .await?;
-            match control {
+            .await;
+            match startup_try!(control) {
                 AppRunControl::Continue => None,
                 AppRunControl::Exit(exit_reason) => Some(exit_reason),
             }
@@ -1255,7 +1322,8 @@ See the Codex keymap documentation for supported actions and examples."
         let pre_loop_exit_reason: Option<ExitReason> = None;
 
         let initial_owner = app_server.backend_id();
-        let mut backends = super::backend_sessions::BackendSessions::new(app_server);
+        let mut backends =
+            super::backend_sessions::BackendSessions::from_initial(app_server, other_backends);
 
         let exit_reason_result = if let Some(exit_reason) = pre_loop_exit_reason {
             Ok(exit_reason)

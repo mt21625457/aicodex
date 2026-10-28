@@ -263,3 +263,6 @@ fn indexed_lookup_matches_linear_lookup_with_crlf_invalid_json_and_missing_newli
     std::fs::write(&path, [0xff, b'\n', b'{', b'}']).unwrap();
     assert!(lookup_history_entry(&path, 0, 1).is_none());
 }
+
+#[path = "batch_tests.rs"]
+mod batch_tests;

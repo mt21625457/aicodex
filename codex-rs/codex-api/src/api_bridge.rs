@@ -2,7 +2,7 @@ use crate::TransportError;
 use crate::error::ApiError;
 use crate::error::ProviderMediaErrorKind;
 use crate::error::ProviderStreamErrorKind;
-use crate::error::parse_flex_unavailable;
+use crate::error::parse_terminal_provider_error;
 use crate::rate_limits::parse_promo_message;
 use crate::rate_limits::parse_rate_limit_for_limit;
 use crate::rate_limits::parse_rate_limit_reached_type;
@@ -42,6 +42,7 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
         | ApiError::FlexUnavailable
         | ApiError::RateLimit(_)
         | ApiError::InvalidRequest { .. }
+        | ApiError::ModelNotFound { .. }
         | ApiError::InvalidPrompt { .. }
         | ApiError::CyberPolicy { .. }
         | ApiError::BioPolicy { .. }
@@ -136,6 +137,9 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
             })
         }
         ApiError::InvalidRequest { message } => CodexErr::InvalidRequest(message),
+        ApiError::ModelNotFound { message, status } => {
+            CodexErr::new(CodexErrorDetails::ModelNotFound { message, status })
+        }
         ApiError::InvalidPrompt { message } => {
             CodexErr::new(CodexErrorDetails::InvalidPrompt { message })
         }
@@ -164,13 +168,18 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                     return error;
                 }
 
+                let parsed_body = serde_json::from_str::<Value>(&body_text).ok();
+                let provider_error = parsed_body.as_ref().and_then(|body| body.get("error"));
+                if let Some(error) = parse_terminal_provider_error(provider_error, Some(status)) {
+                    return map_api_error_details(error);
+                }
+
                 if let Some(kind) = ProviderMediaErrorKind::classify(Some(status), &body_text) {
                     return map_provider_media_error(kind, body_text);
                 }
 
                 if status == http::StatusCode::SERVICE_UNAVAILABLE
-                    && let Ok(value) = serde_json::from_str::<serde_json::Value>(&body_text)
-                    && let Some(error) = value.get("error")
+                    && let Some(error) = provider_error
                 {
                     match error.get("code").and_then(Value::as_str) {
                         Some("server_is_overloaded") => return CodexErr::ServerOverloaded,
@@ -189,8 +198,7 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
 
                 if (status == http::StatusCode::BAD_REQUEST
                     || status == http::StatusCode::FORBIDDEN)
-                    && let Ok(parsed) = serde_json::from_str::<Value>(&body_text)
-                    && let Some(error) = parsed.get("error")
+                    && let Some(error) = provider_error
                     && error.get("code").and_then(Value::as_str)
                         == Some(MISALIGNMENT_POLICY_VIOLATION_ERROR_CODE)
                 {
@@ -213,8 +221,7 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                 let error = if status == http::StatusCode::BAD_REQUEST {
                     if is_context_window_http_error(status, &body_text) {
                         CodexErr::ContextWindowExceeded
-                    } else if let Ok(parsed) = serde_json::from_str::<Value>(&body_text)
-                        && let Some(error) = parsed.get("error")
+                    } else if let Some(error) = provider_error
                         && let Some(
                             code @ (CYBER_POLICY_ERROR_CODE
                             | BIO_POLICY_ERROR_CODE
@@ -251,11 +258,6 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                 } else if status == http::StatusCode::INTERNAL_SERVER_ERROR {
                     CodexErr::InternalServerError
                 } else if status == http::StatusCode::TOO_MANY_REQUESTS {
-                    if let Ok(body) = serde_json::from_str::<Value>(&body_text)
-                        && let Some(error) = body.get("error").and_then(parse_flex_unavailable)
-                    {
-                        return map_api_error(error);
-                    }
                     if let Ok(err) = serde_json::from_str::<UsageErrorResponse>(&body_text)
                         && err.error.error_type.as_deref() == Some("usage_limit_reached")
                     {

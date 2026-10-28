@@ -17,7 +17,7 @@ allowBuilds:
   "@modelcontextprotocol/conformance@https://codeload.github.com/modelcontextprotocol/conformance/tar.gz/49103de6ed70804e940637bf3e9e29e4a3f54e64": true
 
 overrides:
-  "@modelcontextprotocol/sdk": 1.26.0
+  "@modelcontextprotocol/sdk": 1.32.0
   braces: ^3.0.3
   esbuild: 0.28.1
   fast-uri: 3.1.1

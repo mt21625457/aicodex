@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::path::Path;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
@@ -29,13 +30,15 @@ pub(crate) async fn warm_http_client(
     Ok(())
 }
 
-/// Serializes tests that mutate process-wide CODEX_HOME.
+/// Serializes tests that mutate process-wide AICODEX_HOME and CODEX_HOME.
 ///
 /// Keep OAuth tests on this one guard instead of defining per-module helpers; otherwise
 /// concurrently running test modules can point File/Secrets storage at different homes.
 pub(crate) struct TempCodexHome {
     _guard: MutexGuard<'static, ()>,
     _dir: tempfile::TempDir,
+    previous_aicodex_home: Option<OsString>,
+    previous_codex_home: Option<OsString>,
 }
 
 impl TempCodexHome {
@@ -46,12 +49,17 @@ impl TempCodexHome {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let dir = tempdir().expect("create CODEX_HOME temp dir");
+        let previous_aicodex_home = std::env::var_os("AICODEX_HOME");
+        let previous_codex_home = std::env::var_os("CODEX_HOME");
         unsafe {
+            std::env::set_var("AICODEX_HOME", dir.path());
             std::env::set_var("CODEX_HOME", dir.path());
         }
         Self {
             _guard: guard,
             _dir: dir,
+            previous_aicodex_home,
+            previous_codex_home,
         }
     }
 
@@ -63,7 +71,33 @@ impl TempCodexHome {
 impl Drop for TempCodexHome {
     fn drop(&mut self) {
         unsafe {
-            std::env::remove_var("CODEX_HOME");
+            for (name, previous) in [
+                ("AICODEX_HOME", self.previous_aicodex_home.as_ref()),
+                ("CODEX_HOME", self.previous_codex_home.as_ref()),
+            ] {
+                match previous {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
         }
     }
+}
+
+#[test]
+fn temporary_home_isolates_both_home_environment_variables() -> anyhow::Result<()> {
+    let home = TempCodexHome::new();
+    assert_eq!(
+        std::env::var_os("AICODEX_HOME"),
+        Some(home.path().as_os_str().to_os_string())
+    );
+    assert_eq!(
+        std::env::var_os("CODEX_HOME"),
+        Some(home.path().as_os_str().to_os_string())
+    );
+    assert_eq!(
+        codex_utils_home_dir::find_codex_home()?.as_path(),
+        home.path().canonicalize()?.as_path()
+    );
+    Ok(())
 }

@@ -13,6 +13,8 @@ use codex_protocol::openai_models::ApplyPatchToolType;
 pub struct ProviderCapabilities {
     pub namespace_tools: bool,
     pub default_apply_patch_tool_type: Option<ApplyPatchToolType>,
+    /// Whether requests may include the Responses API `reasoning.summary` parameter.
+    pub reasoning_summaries: bool,
     pub image_generation: bool,
     pub web_search: bool,
     pub external_web_access: bool,
@@ -24,6 +26,7 @@ impl Default for ProviderCapabilities {
         Self {
             namespace_tools: true,
             default_apply_patch_tool_type: None,
+            reasoning_summaries: true,
             image_generation: true,
             web_search: true,
             external_web_access: true,

@@ -94,6 +94,7 @@ fn create_thread_params(thread_id: ThreadId) -> CreateThreadParams {
         forked_from_id: None,
         parent_thread_id: None,
         source: SessionSource::Cli,
+        attached_thread: false,
         thread_source: None,
         originator: "test-originator".to_string(),
         base_instructions: BaseInstructions::default(),

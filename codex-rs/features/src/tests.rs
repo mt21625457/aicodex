@@ -235,6 +235,43 @@ fn guardian_v2_feature_config_preserves_boolean_toggle() {
 }
 
 #[test]
+fn guardian_v3_feature_config_resolves_base_and_profile_toggles() {
+    for (base, profile, enabled) in [
+        ("guardianv3 = true", "", true),
+        ("guardianv3 = false", "", false),
+        ("[guardianv3]", "", false),
+        ("[guardianv3]\nenabled = true", "", true),
+        ("[guardianv3]\nenabled = false", "", false),
+        (
+            "[guardianv3]\nenabled = true",
+            "[guardianv3]\nenabled = false",
+            false,
+        ),
+        (
+            "[guardianv3]\nenabled = false",
+            "[guardianv3]\nenabled = true",
+            true,
+        ),
+        ("[guardianv3]\nenabled = true", "[guardianv3]", true),
+    ] {
+        let base = toml::from_str::<FeaturesToml>(base).expect("base features");
+        let profile = toml::from_str::<FeaturesToml>(profile).expect("profile features");
+        let features = Features::from_sources(
+            FeatureConfigSource {
+                features: Some(&base),
+                ..Default::default()
+            },
+            FeatureConfigSource {
+                features: Some(&profile),
+                ..Default::default()
+            },
+            FeatureOverrides::default(),
+        );
+        assert_eq!(features.enabled(Feature::GuardianV3), enabled);
+    }
+}
+
+#[test]
 fn guardian_thread_context_is_ignored_with_a_migration_notice() {
     let enabled_context = "[guardianv2]\nthread_context = true";
     let disabled_context = "[guardianv2]\nthread_context = false";
@@ -1081,6 +1118,63 @@ fn runtime_auth_materializes_absent_and_boolean_configs() {
                 config.entries().get("runtime_agent_instances"),
                 Some(&enabled)
             );
+        }
+    }
+}
+
+#[test]
+fn guardian_v3_materialization_round_trips_resolved_overrides() {
+    for input in [
+        "",
+        "guardianv3 = false",
+        "[guardianv3]",
+        "[guardianv3]\nenabled = true",
+    ] {
+        let mut config: FeaturesToml = toml::from_str(input).expect("parse Guardian V3 config");
+        let structured = matches!(config.guardianv3, Some(FeatureToml::Config(_)));
+        let mut features = Features::with_defaults();
+        for enabled in [true, false] {
+            // Stale flattened values must not override or duplicate the resolved typed field.
+            config.entries.insert("guardianv3".to_string(), !enabled);
+            features.set_enabled(Feature::GuardianV3, enabled);
+            config.materialize_resolved_enabled(&features);
+            assert_eq!(
+                config.guardianv3,
+                Some(if structured {
+                    FeatureToml::Config(crate::GuardianV3ConfigToml {
+                        enabled: Some(enabled),
+                    })
+                } else {
+                    FeatureToml::Enabled(enabled)
+                })
+            );
+            assert!(!config.entries.contains_key("guardianv3"));
+            let serialized = toml::to_string(&config).expect("serialize resolved features");
+            let restored: FeaturesToml = toml::from_str(&serialized).expect("round trip features");
+            let mut restored_features = Features::with_defaults();
+            restored_features.apply_toml(&restored);
+            assert_eq!(restored_features.enabled(Feature::GuardianV3), enabled);
+        }
+    }
+}
+
+#[test]
+fn new_boolean_features_materialize_resolved_overrides() {
+    for feature in [
+        Feature::TuiMultiBackend,
+        Feature::PredictionPreserveParentTools,
+        Feature::GuardianRecordedItems,
+    ] {
+        let mut config = FeaturesToml::default();
+        let mut features = Features::with_defaults();
+        for enabled in [true, false] {
+            features.set_enabled(feature, enabled);
+            config.materialize_resolved_enabled(&features);
+            let serialized = toml::to_string(&config).expect("serialize resolved features");
+            let restored: FeaturesToml = toml::from_str(&serialized).expect("round trip features");
+            let mut restored_features = Features::with_defaults();
+            restored_features.apply_toml(&restored);
+            assert_eq!(restored_features.enabled(feature), enabled);
         }
     }
 }

@@ -343,7 +343,14 @@ class CodexClient:
         ]
         if supplied_fields:
             try:
-                if self._runtime_version == "0.0.0":
+                # AICodex uses an independent release version. An explicitly
+                # selected fork must prove support through its own schema.
+                explicit_aicodex = (
+                    self.config.launch_args_override is None
+                    and self.config.codex_bin is not None
+                    and Path(self.config.codex_bin).name in {"aicodex", "aicodex.exe"}
+                )
+                if self._runtime_version == "0.0.0" or explicit_aicodex:
                     if self._checkout_capabilities is None:
                         raise ValueError(
                             "Cannot verify an unversioned CLI with a custom launch command"

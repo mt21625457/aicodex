@@ -252,6 +252,7 @@ async fn thread_start_provider_model_fallback_uses_bedrock_static_catalog() -> R
     .await?;
     for model in [
         "openai.gpt-6.1-sol",
+        "openai.gpt-6.1-terra",
         "openai.gpt-6-sol",
         "openai.gpt-6-luna",
         "openai.gpt-5.6-sol",
@@ -301,6 +302,8 @@ async fn thread_start_bedrock_runtime_prefers_global_cross_region_models() -> Re
     for model in [
         "global.openai.gpt-6.1-sol",
         "us.openai.gpt-6.1-sol",
+        "global.openai.gpt-6.1-terra",
+        "us.openai.gpt-6.1-terra",
         "global.openai.gpt-6-sol",
         "us.openai.gpt-6-sol",
         "global.openai.gpt-6-luna",
@@ -698,6 +701,7 @@ stream_max_retries = 0
             search_term: None,
             parent_thread_id: None,
             ancestor_thread_id: None,
+            attached_to_thread_id: None,
             project_id: None,
         })
         .await?;

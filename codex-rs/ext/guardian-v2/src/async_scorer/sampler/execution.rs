@@ -193,6 +193,7 @@ impl SamplingExecution {
                 | ApiError::MalformedResponse { .. }
                 | ApiError::ProviderMedia { .. }
                 | ApiError::InvalidRequest { .. }
+                | ApiError::ModelNotFound { .. }
                 | ApiError::InvalidPrompt { .. }
                 | ApiError::MisalignmentPolicyViolation { .. }
                 | ApiError::CyberPolicy { .. }
