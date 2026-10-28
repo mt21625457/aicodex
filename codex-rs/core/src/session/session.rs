@@ -1803,6 +1803,7 @@ impl Session {
                 .with_legacy_custom_ca_fallback(),
                 session_telemetry,
                 models_manager: Arc::clone(&models_manager),
+                models_refresh_background: Default::default(),
                 git_root_discovery,
                 tool_approvals: Mutex::new(ApprovalStore::default()),
                 granted_permissions_by_environment_id: Arc::default(),

@@ -6494,6 +6494,17 @@ class ToolExposureSurface(Enum):
     direct = "direct"
 
 
+class ToolInputProgressNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    finished: bool
+    input_bytes: Annotated[int, Field(alias="inputBytes", ge=0)]
+    item_id: Annotated[str, Field(alias="itemId")]
+    thread_id: Annotated[str, Field(alias="threadId")]
+    turn_id: Annotated[str, Field(alias="turnId")]
+
+
 class TranscriptMetadata(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -9633,6 +9644,23 @@ class AutoApprovalReviewStrictReviewRequiredServerNotification(BaseModel):
         Field(title="AutoApprovalReview/strictReviewRequiredNotificationMethod"),
     ]
     params: StrictReviewRequiredNotification
+
+
+class ItemToolInputProgressServerNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    emitted_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="emittedAtMs",
+            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
+        ),
+    ] = None
+    method: Annotated[
+        Literal["item/tool/inputProgress"], Field(title="Item/tool/inputProgressNotificationMethod")
+    ]
+    params: ToolInputProgressNotification
 
 
 class ItemAgentMessageDeltaServerNotification(BaseModel):
@@ -13468,6 +13496,7 @@ class ServerNotification(
         | ItemAutoApprovalReviewCompletedServerNotification
         | AutoApprovalReviewStrictReviewRequiredServerNotification
         | ItemCompletedServerNotification
+        | ItemToolInputProgressServerNotification
         | ItemAgentMessageDeltaServerNotification
         | ItemPlanDeltaServerNotification
         | CommandExecOutputDeltaServerNotification
@@ -13559,6 +13588,7 @@ class ServerNotification(
         | ItemAutoApprovalReviewCompletedServerNotification
         | AutoApprovalReviewStrictReviewRequiredServerNotification
         | ItemCompletedServerNotification
+        | ItemToolInputProgressServerNotification
         | ItemAgentMessageDeltaServerNotification
         | ItemPlanDeltaServerNotification
         | CommandExecOutputDeltaServerNotification

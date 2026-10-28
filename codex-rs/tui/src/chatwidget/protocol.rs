@@ -236,6 +236,8 @@ impl ChatWidget {
                 self.refresh_skills_for_current_cwd(/*force_reload*/ true);
             }
             ServerNotification::ModelRerouted(_) => {}
+            // 桌面端的参数生成提示不创建终端历史行；TUI 继续使用现有工作状态。
+            ServerNotification::ToolInputProgress(_) => {}
             ServerNotification::ModelVerification(notification) => {
                 self.on_app_server_model_verification(&notification.verifications)
             }

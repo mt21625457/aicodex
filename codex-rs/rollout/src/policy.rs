@@ -229,6 +229,7 @@ fn persisted_event_msg(
         | EventMsg::RealtimeConversationRealtime(_)
         | EventMsg::RealtimeConversationClosed(_)
         | EventMsg::SafetyBuffering(_)
+        | EventMsg::ToolInputProgress(_)
         | EventMsg::ModelReroute(_)
         | EventMsg::ModelVerification(_)
         | EventMsg::TurnModerationMetadata(_)

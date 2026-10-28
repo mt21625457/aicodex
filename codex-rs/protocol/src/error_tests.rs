@@ -791,3 +791,21 @@ fn permanent_http_rejections_do_not_retry_but_transient_statuses_do() {
         assert_eq!(error.retry_delay(3).is_some(), retryable, "HTTP {status}");
     }
 }
+
+#[test]
+fn compaction_timeout_is_terminal_and_has_a_structured_stream_error() {
+    let error = super::CodexErr::CompactionTimeout;
+    assert!(error.retry_delay(1).is_none());
+    assert_eq!(
+        error.to_codex_protocol_error(),
+        crate::protocol::CodexErrorInfo::ResponseStreamConnectionFailed {
+            http_status_code: None
+        }
+    );
+    assert!(
+        error
+            .to_error_event(None)
+            .message
+            .contains("original conversation history is preserved")
+    );
+}

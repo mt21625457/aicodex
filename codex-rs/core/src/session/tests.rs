@@ -7195,6 +7195,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         .with_legacy_custom_ca_fallback(),
         session_telemetry: session_telemetry.clone(),
         models_manager: Arc::clone(&models_manager),
+        models_refresh_background: Default::default(),
         git_root_discovery: Arc::default(),
         tool_approvals: Mutex::new(ApprovalStore::default()),
         granted_permissions_by_environment_id: Arc::default(),
@@ -8932,6 +8933,41 @@ async fn spawn_task_turn_span_inherits_dispatch_trace_context() {
     );
 }
 
+#[tokio::test]
+async fn shutdown_runtime_releases_model_refresh_while_session_is_retained() {
+    let (session, _turn_context) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let (started, running) = tokio::sync::oneshot::channel();
+    let (send, mut receive) = tokio::sync::oneshot::channel::<()>();
+    session
+        .services
+        .models_refresh_background
+        .schedule(async move {
+            let _sender = send;
+            let _ = started.send(());
+            std::future::pending::<()>().await;
+        });
+    running.await.unwrap();
+
+    handlers::shutdown_session_runtime(&session).await;
+
+    assert_eq!(
+        receive.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+    );
+    let (send, mut receive) = tokio::sync::oneshot::channel::<()>();
+    session
+        .services
+        .models_refresh_background
+        .schedule(async move {
+            let _ = send.send(());
+        });
+    assert_eq!(
+        receive.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+    );
+}
+
 #[cfg(debug_assertions)]
 #[tokio::test]
 async fn shutdown_complete_does_not_append_to_thread_store_after_shutdown() {
@@ -9471,6 +9507,7 @@ where
         .with_legacy_custom_ca_fallback(),
         session_telemetry: session_telemetry.clone(),
         models_manager: Arc::clone(&models_manager),
+        models_refresh_background: Default::default(),
         git_root_discovery: Arc::default(),
         tool_approvals: Mutex::new(ApprovalStore::default()),
         granted_permissions_by_environment_id: Arc::default(),

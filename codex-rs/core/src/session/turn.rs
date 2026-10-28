@@ -2649,6 +2649,7 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<RealtimeEventTex
         | EventMsg::ExitedReviewMode(_)
         | EventMsg::RawResponseItem(_)
         | EventMsg::RawResponseCompleted(_)
+        | EventMsg::ToolInputProgress(_)
         | EventMsg::ItemStarted(_)
         | EventMsg::HookStarted(_)
         | EventMsg::HookCompleted(_)
@@ -3137,10 +3138,12 @@ async fn try_run_sampling_request(
     let mut completed_tool_call_started = false;
     let mut recovered_stream_error = None;
     let mut streamed_tool_input_started = false;
+    let mut tool_input_progress = crate::tool_input_progress::ToolInputProgress::default();
     let mut last_agent_message: Option<String> = None;
     let mut follow_up_text: Option<String> = None;
     let mut active_item: Option<TurnItem> = None;
     let mut active_tool_argument_diff_consumer: Option<(
+        String,
         String,
         Box<dyn ToolArgumentDiffConsumer>,
     )> = None;
@@ -3289,6 +3292,15 @@ async fn try_run_sampling_request(
             .session_telemetry
             .record_responses(&handle_responses, &event);
         record_turn_ttft_metric(&turn_context, &event).await;
+        if let Some(progress) = tool_input_progress.observe(&event) {
+            tracing::debug!(
+                input_bytes = progress.input_bytes,
+                finished = progress.finished,
+                "tool input generation progress"
+            );
+            sess.send_event(&turn_context, EventMsg::ToolInputProgress(progress))
+                .await;
+        }
 
         match event {
             ResponseEvent::Created { response_id } => {
@@ -3318,7 +3330,7 @@ async fn try_run_sampling_request(
                         analytics_tool_call_ids.push(call_id.to_string());
                     }
                 }
-                if let Some((_, mut consumer)) = active_tool_argument_diff_consumer.take()
+                if let Some((_, _, mut consumer)) = active_tool_argument_diff_consumer.take()
                     && let Ok(Some(event)) = consumer.finish()
                 {
                     sess.send_event(&turn_context, event).await;
@@ -3460,6 +3472,7 @@ async fn try_run_sampling_request(
                     .await;
                 if !*draining_for_mailbox
                     && let ResponseItem::CustomToolCall {
+                        id,
                         call_id,
                         name,
                         namespace,
@@ -3469,7 +3482,14 @@ async fn try_run_sampling_request(
                     let tool_name = ToolName::new(namespace.clone(), name.as_str());
                     active_tool_argument_diff_consumer = tool_runtime
                         .create_diff_consumer(&tool_name)
-                        .map(|consumer| (call_id.clone(), consumer));
+                        .map(|consumer| {
+                            (
+                                id.as_ref()
+                                    .map_or_else(|| call_id.clone(), ToString::to_string),
+                                call_id.clone(),
+                                consumer,
+                            )
+                        });
                 } else if matches!(&item, ResponseItem::FunctionCall { .. }) {
                     active_tool_argument_diff_consumer = None;
                 }
@@ -3587,11 +3607,17 @@ async fn try_run_sampling_request(
                 should_emit_token_count = true;
             }
             ResponseEvent::ModelsEtag(etag) => {
-                // Update internal state with latest models etag
+                // 目录刷新不占用流读取；任务随线程释放，跨轮去重并限制失败重试频率。
+                let manager = Arc::clone(&sess.services.models_manager);
+                let factory = turn_context.config.http_client_factory();
+                let originator = codex_otel::auth_storage::AuthStorageOriginator::from_client_name(
+                    &turn_context.originator,
+                );
                 sess.services
-                    .models_manager
-                    .refresh_if_new_etag(etag, turn_context.config.http_client_factory())
-                    .await;
+                    .models_refresh_background
+                    .schedule(originator.scope(async move {
+                        manager.refresh_if_new_etag(etag, factory).await;
+                    }));
             }
             ResponseEvent::Completed {
                 response_id,
@@ -3683,18 +3709,22 @@ async fn try_run_sampling_request(
                 }
             }
             ResponseEvent::ToolCallInputDelta {
-                item_id: _,
+                item_id,
                 call_id,
                 delta,
             } => {
-                let Some((active_call_id, consumer)) = active_tool_argument_diff_consumer.as_mut()
+                let Some((active_item_id, active_call_id, consumer)) =
+                    active_tool_argument_diff_consumer.as_mut()
                 else {
                     continue;
                 };
                 let call_id = match call_id {
                     Some(call_id) if call_id.as_str() != active_call_id.as_str() => continue,
                     Some(call_id) => call_id,
-                    None => active_call_id.clone(),
+                    None if item_id == *active_item_id || item_id == *active_call_id => {
+                        active_call_id.clone()
+                    }
+                    None => continue,
                 };
                 if let Some(event) = consumer.consume_diff(turn_context.as_ref(), call_id, &delta) {
                     streamed_tool_input_started = true;
@@ -3800,6 +3830,10 @@ async fn try_run_sampling_request(
             }
         }
     };
+    if let Some(progress) = tool_input_progress.finish() {
+        sess.send_event(&turn_context, EventMsg::ToolInputProgress(progress))
+            .await;
+    }
     drop(sampling_span);
     drop(sampling_timing_guard);
     if let Some(finish_post_request) = finish_post_request {

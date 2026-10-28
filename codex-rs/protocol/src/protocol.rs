@@ -1590,6 +1590,9 @@ pub enum EventMsg {
     /// Backend indicates that response output is waiting on a safety review.
     SafetyBuffering(SafetyBufferingEvent),
 
+    /// 临时工具参数生成进度；独立于工具执行与持久化历史。
+    ToolInputProgress(crate::tool_input_progress::ToolInputProgressEvent),
+
     /// Conversation history was compacted (either automatically or manually).
     ContextCompacted(ContextCompactedEvent),
 

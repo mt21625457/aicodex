@@ -319,6 +319,7 @@ async fn run_compact_task_inner_impl(
     // Reuse one client session so turn-scoped state (sticky routing and websocket incremental
     // request tracking) survives retries within this compact turn.
     let mut allow_deepseek_prefix_reuse = true;
+    let mut watchdog = crate::compaction_watchdog::CompactionWatchdog::new();
     let compaction_response = loop {
         // Clone is required because of the loop
         let mut turn_input = history
@@ -358,6 +359,7 @@ async fn run_compact_task_inner_impl(
             &responses_metadata,
             &prompt,
             compaction_metadata.phase(),
+            &mut watchdog,
         )
         .await;
 
@@ -388,6 +390,7 @@ async fn run_compact_task_inner_impl(
                 if matches!(
                     e.details(),
                     CodexErrorDetails::SessionBudgetExceeded
+                        | CodexErrorDetails::CompactionTimeout
                         | CodexErrorDetails::ResponseIncomplete(_)
                 ) =>
             {
@@ -426,7 +429,9 @@ async fn run_compact_task_inner_impl(
                         e,
                     )
                     .await;
-                    tokio::time::sleep(delay).await;
+                    watchdog
+                        .wait("retry_backoff", tokio::time::sleep(delay))
+                        .await?;
                     continue;
                 } else {
                     return Err(e);
@@ -924,35 +929,39 @@ async fn drain_to_completed(
     responses_metadata: &CodexResponsesMetadata,
     prompt: &Prompt,
     phase: CompactionPhase,
+    watchdog: &mut crate::compaction_watchdog::CompactionWatchdog,
 ) -> CodexResult<CompactionAttemptOutcome> {
     sess.set_server_reasoning_included(turn_context.model_info().use_responses_lite)
         .await;
-    let mut stream = client_session
-        .stream(
-            prompt,
-            turn_context.model_info(),
-            &turn_context.session_telemetry,
-            sess.reasoning_effort_for_request(
-                &turn_context.initial_settings,
-                RequestEffortUsage::Compaction,
-            )
-            .await,
-            turn_context.reasoning_summary(),
-            turn_context.config.service_tier.clone(),
-            responses_metadata,
-            // Rollout tracing currently models remote compaction only; local compaction streams
-            // are left untraced until the reducer has a first-class local compaction lifecycle.
-            &InferenceTraceContext::disabled(),
+    let trace_context = InferenceTraceContext::disabled();
+    let stream_request = client_session.stream(
+        prompt,
+        turn_context.model_info(),
+        &turn_context.session_telemetry,
+        sess.reasoning_effort_for_request(
+            &turn_context.initial_settings,
+            RequestEffortUsage::Compaction,
         )
-        .await?;
+        .await,
+        turn_context.reasoning_summary(),
+        turn_context.config.service_tier.clone(),
+        responses_metadata,
+        // Rollout tracing currently models remote compaction only; local compaction streams
+        // are left untraced until the reducer has a first-class local compaction lifecycle.
+        &trace_context,
+    );
+    let mut stream = watchdog.wait("connecting", stream_request).await??;
     let mut output = Vec::new();
     loop {
-        let maybe_event = stream.next().await;
+        let maybe_event = watchdog.wait("awaiting_summary", stream.next()).await?;
         let Some(event) = maybe_event else {
             return Err(CodexErr::Stream(
                 "stream closed before response.completed".into(),
             ));
         };
+        if let Ok(event) = &event {
+            watchdog.observe(event);
+        }
         match event {
             // Keep each attempt isolated until the response completes successfully.
             Ok(ResponseEvent::OutputItemDone(item)) => output.push(item),
@@ -1036,3 +1045,7 @@ async fn drain_to_completed(
 #[cfg(test)]
 #[path = "compact_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "compact_timeout_tests.rs"]
+mod timeout_tests;

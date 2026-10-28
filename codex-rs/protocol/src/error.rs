@@ -138,6 +138,11 @@ pub enum CodexErrorDetails {
     Timeout,
     #[error("request timed out")]
     RequestTimeout,
+    /// 压缩总预算耗尽后必须结束本轮，不能被普通网络重试重新启动。
+    #[error(
+        "Context compaction timed out. The original conversation history is preserved; retry to continue."
+    )]
+    CompactionTimeout,
     /// Returned by run_command_stream when the child could not be spawned (its stdout/stderr pipes
     /// could not be captured). Analogous to the previous `CodexError::Spawn` variant.
     #[error("spawn failed: child stdout/stderr not captured")]
@@ -361,6 +366,7 @@ impl CodexErr {
         SessionConfiguredNotFirstEvent,
         Timeout,
         RequestTimeout,
+        CompactionTimeout,
         Spawn,
         Interrupted,
         ServerOverloaded,
@@ -424,6 +430,7 @@ impl CodexErr {
         match self.details() {
             CodexErrorDetails::TurnAborted
             | CodexErrorDetails::SessionBudgetExceeded
+            | CodexErrorDetails::CompactionTimeout
             | CodexErrorDetails::Interrupted
             | CodexErrorDetails::EnvVar(_)
             | CodexErrorDetails::Fatal(_)
@@ -537,7 +544,7 @@ impl CodexErr {
                     http_status_code: self.http_status_code_value(),
                 }
             }
-            CodexErrorDetails::ResponseStreamFailed(_) => {
+            CodexErrorDetails::CompactionTimeout | CodexErrorDetails::ResponseStreamFailed(_) => {
                 CodexErrorInfo::ResponseStreamConnectionFailed {
                     http_status_code: self.http_status_code_value(),
                 }

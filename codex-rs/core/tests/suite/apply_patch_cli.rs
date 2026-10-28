@@ -1670,6 +1670,15 @@ async fn apply_patch_cli_can_use_exec_command_output_as_patch_input() -> Result<
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn apply_patch_custom_tool_streaming_emits_updated_changes() -> Result<()> {
+    check_apply_patch_streaming(false).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_patch_streaming_ignores_parallel_function_arguments() -> Result<()> {
+    check_apply_patch_streaming(true).await
+}
+
+async fn check_apply_patch_streaming(interleave_function: bool) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let harness = apply_patch_harness_with(|builder| {
@@ -1685,38 +1694,66 @@ async fn apply_patch_custom_tool_streaming_emits_updated_changes() -> Result<()>
     let codex = test.codex.clone();
     let call_id = "apply-patch-streaming";
     let patch = "*** Begin Patch\n*** Add File: streamed.txt\n+hello\n+world\n*** End Patch";
+    let mut events = vec![
+        ev_response_created("resp-1"),
+        json!({
+            "type": "response.output_item.added",
+            "item": {
+                "type": "custom_tool_call",
+                "call_id": call_id,
+                "name": "apply_patch",
+                "input": "",
+            }
+        }),
+        json!({
+            "type": "response.custom_tool_call_input.delta",
+            "call_id": call_id,
+            "delta": "*** Begin Patch\n",
+        }),
+        json!({
+            "type": "response.custom_tool_call_input.delta",
+            "call_id": call_id,
+            "delta": "*** Add File: streamed.txt\n+hello",
+        }),
+        json!({
+            "type": "response.custom_tool_call_input.delta",
+            "call_id": call_id,
+            "delta": "\n+world\n*** End Patch",
+        }),
+        ev_apply_patch_custom_tool_call(call_id, patch),
+        ev_completed("resp-1"),
+    ];
+    if interleave_function {
+        events[1]["item"]["id"] = json!("patch-b");
+        for event in &mut events {
+            if event["type"] == "response.custom_tool_call_input.delta" {
+                event["item_id"] = json!("patch-b");
+                event.as_object_mut().unwrap().remove("call_id");
+            }
+        }
+        events.insert(
+            1,
+            json!({
+                "type": "response.output_item.added",
+                "item": {
+                    "type": "function_call", "id": "function-a",
+                    "call_id": "call-function-a", "name": "exec_command", "arguments": ""
+                }
+            }),
+        );
+        // A parallel function delta must never enter the active patch parser.
+        events.insert(
+            3,
+            json!({
+                "type": "response.function_call_arguments.delta",
+                "item_id": "function-a", "delta": "{\"cmd\":\"echo unrelated\"}"
+            }),
+        );
+    }
     mount_sse_sequence(
         harness.server(),
         vec![
-            sse(vec![
-                ev_response_created("resp-1"),
-                json!({
-                    "type": "response.output_item.added",
-                    "item": {
-                        "type": "custom_tool_call",
-                        "call_id": call_id,
-                        "name": "apply_patch",
-                        "input": "",
-                    }
-                }),
-                json!({
-                    "type": "response.custom_tool_call_input.delta",
-                    "call_id": call_id,
-                    "delta": "*** Begin Patch\n",
-                }),
-                json!({
-                    "type": "response.custom_tool_call_input.delta",
-                    "call_id": call_id,
-                    "delta": "*** Add File: streamed.txt\n+hello",
-                }),
-                json!({
-                    "type": "response.custom_tool_call_input.delta",
-                    "call_id": call_id,
-                    "delta": "\n+world\n*** End Patch",
-                }),
-                ev_apply_patch_custom_tool_call(call_id, patch),
-                ev_completed("resp-1"),
-            ]),
+            sse(events),
             sse(vec![
                 ev_assistant_message("msg-1", "done"),
                 ev_completed("resp-2"),

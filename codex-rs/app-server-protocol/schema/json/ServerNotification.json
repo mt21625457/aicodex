@@ -6609,6 +6609,35 @@
       ],
       "type": "object"
     },
+    "ToolInputProgressNotification": {
+      "properties": {
+        "finished": {
+          "type": "boolean"
+        },
+        "inputBytes": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "itemId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "finished",
+        "inputBytes",
+        "itemId",
+        "threadId",
+        "turnId"
+      ],
+      "type": "object"
+    },
     "TranscriptMetadata": {
       "properties": {
         "backendItemId": {
@@ -7945,6 +7974,26 @@
         "params"
       ],
       "title": "Item/completedNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "enum": [
+            "item/tool/inputProgress"
+          ],
+          "title": "Item/tool/inputProgressNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ToolInputProgressNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Item/tool/inputProgressNotification",
       "type": "object"
     },
     {

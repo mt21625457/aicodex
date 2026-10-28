@@ -437,6 +437,18 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .send_server_notification(ServerNotification::TurnModerationMetadata(notification))
                 .await;
         }
+        EventMsg::ToolInputProgress(event) => {
+            let notification = codex_app_server_protocol::ToolInputProgressNotification {
+                thread_id: conversation_id.to_string(),
+                turn_id: event_turn_id,
+                item_id: event.item_id,
+                input_bytes: event.input_bytes,
+                finished: event.finished,
+            };
+            outgoing
+                .send_server_notification(ServerNotification::ToolInputProgress(notification))
+                .await;
+        }
         EventMsg::SafetyBuffering(event) => {
             let notification = ModelSafetyBufferingUpdatedNotification {
                 thread_id: conversation_id.to_string(),

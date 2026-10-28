@@ -1,0 +1,31 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "properties": {
+    "finished": {
+      "type": "boolean"
+    },
+    "inputBytes": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "itemId": {
+      "type": "string"
+    },
+    "threadId": {
+      "type": "string"
+    },
+    "turnId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "finished",
+    "inputBytes",
+    "itemId",
+    "threadId",
+    "turnId"
+  ],
+  "title": "ToolInputProgressNotification",
+  "type": "object"
+}
