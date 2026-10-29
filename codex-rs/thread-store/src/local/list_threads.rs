@@ -91,7 +91,11 @@ pub(super) async fn list_threads(
     let names =
         resolve_thread_names(store, &thread_history_modes, params.use_state_db_only).await?;
     for thread in &mut items {
-        hydrate_stored_thread_runtime_metadata_from_rollout(thread).await;
+        // 数据库模式用于轻量目录/归档核对，不能逐条加载正文覆盖数据库元数据。
+        // 普通查询仍保留历史模型配置补充，兼容未完整索引的旧会话。
+        if !params.use_state_db_only {
+            hydrate_stored_thread_runtime_metadata_from_rollout(thread).await;
+        }
         if let Some(name) = names.get(&thread.thread_id).cloned() {
             set_thread_name(thread, name);
         }
@@ -808,3 +812,7 @@ mod tests {
         assert!(matches!(err, ThreadStoreError::InvalidRequest { .. }));
     }
 }
+
+#[cfg(test)]
+#[path = "list_threads_db_only_tests.rs"]
+mod db_only_tests;
