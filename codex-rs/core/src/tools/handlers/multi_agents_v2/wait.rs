@@ -141,6 +141,7 @@ impl CoreToolRuntime for Handler {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WaitArgs {
+    #[serde(default, deserialize_with = "crate::tools::handlers::wait_timeout::deserialize")]
     timeout_ms: Option<i64>,
 }
 
@@ -218,3 +219,7 @@ async fn wait_for_activity(
         Ok(Err(_)) | Err(_) => WaitOutcome::TimedOut,
     }
 }
+
+#[cfg(test)]
+#[path = "../wait_timeout_tests.rs"]
+mod timeout_argument_tests;

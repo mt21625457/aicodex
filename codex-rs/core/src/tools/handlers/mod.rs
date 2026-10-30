@@ -35,6 +35,7 @@ pub(crate) mod unified_exec;
 mod view_image;
 pub(crate) mod view_image_spec;
 mod wait_for_environment;
+mod wait_timeout;
 mod web_search;
 
 use crate::tools::context::ToolEnvironments;

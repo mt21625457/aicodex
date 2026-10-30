@@ -292,6 +292,7 @@ impl CoreToolRuntime for Handler {
 struct WaitArgs {
     #[serde(default)]
     targets: Vec<String>,
+    #[serde(default, deserialize_with = "crate::tools::handlers::wait_timeout::deserialize")]
     timeout_ms: Option<i64>,
 }
 
@@ -339,3 +340,7 @@ async fn wait_for_final_status(
         .await;
     Ok(is_final(&latest).then_some((thread_id, latest)))
 }
+
+#[cfg(test)]
+#[path = "../wait_timeout_tests.rs"]
+mod timeout_argument_tests;

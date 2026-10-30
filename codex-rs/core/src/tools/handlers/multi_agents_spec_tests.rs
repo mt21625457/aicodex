@@ -486,3 +486,22 @@ fn grok_without_catalog_version_is_available_as_v2_model_override() {
 
     assert!(description.contains("`xai/grok-4.5`"));
 }
+
+#[test]
+fn wait_timeout_schema_is_integer_for_both_tool_versions() {
+    let options = WaitAgentTimeoutOptions {
+        default_timeout_ms: 30_000,
+        min_timeout_ms: 10_000,
+        max_timeout_ms: 3_600_000,
+    };
+    // v1 的命名空间包装不改变参数契约；直接检查两代公开工具所用的 schema。
+    for parameters in [
+        wait_agent_tool_parameters_v1(options),
+        wait_agent_tool_parameters_v2(options),
+    ] {
+        assert_eq!(
+            parameters.properties.as_ref().unwrap()["timeout_ms"].schema_type,
+            Some(JsonSchemaType::Single(JsonSchemaPrimitiveType::Integer))
+        );
+    }
+}
