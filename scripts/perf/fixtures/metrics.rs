@@ -1,6 +1,9 @@
 // 组件探针使用同一分配器，统计请求字节而非 allocator 实际保留的页。
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::alloc::GlobalAlloc;
+use std::alloc::Layout;
+use std::alloc::System;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 static COUNT: AtomicUsize = AtomicUsize::new(0);
 static BYTES: AtomicUsize = AtomicUsize::new(0);
 static LIVE: AtomicUsize = AtomicUsize::new(0);

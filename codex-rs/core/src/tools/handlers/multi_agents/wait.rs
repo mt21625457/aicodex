@@ -292,7 +292,10 @@ impl CoreToolRuntime for Handler {
 struct WaitArgs {
     #[serde(default)]
     targets: Vec<String>,
-    #[serde(default, deserialize_with = "crate::tools::handlers::wait_timeout::deserialize")]
+    #[serde(
+        default,
+        deserialize_with = "crate::tools::handlers::wait_timeout::deserialize"
+    )]
     timeout_ms: Option<i64>,
 }
 
@@ -341,6 +344,9 @@ async fn wait_for_final_status(
     Ok(is_final(&latest).then_some((thread_id, latest)))
 }
 
+// Instantiate the shared cases against each handler's distinct super::WaitArgs so
+// both serde integrations are tested; importing the other module would test only one.
 #[cfg(test)]
+#[allow(clippy::duplicate_mod)]
 #[path = "../wait_timeout_tests.rs"]
 mod timeout_argument_tests;

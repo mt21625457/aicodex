@@ -264,10 +264,6 @@ async fn failed_refresh_preserves_catalog_and_backs_off() {
 
 /// Reloads must neither replace a same-route refresh guard nor inherit an old route's backoff.
 #[tokio::test]
-#[expect(
-    clippy::await_holding_invalid_type,
-    reason = "Hold the previous route's refresh lock while checking reload and replacement isolation."
-)]
 async fn reload_scopes_refresh_state_to_the_current_model_manager() {
     let home = tempfile::tempdir().unwrap();
     let endpoint = Arc::new(SlowEndpoint::default());

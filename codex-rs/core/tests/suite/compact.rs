@@ -5607,8 +5607,18 @@ async fn auto_compact_body_after_prefix_still_caps_at_context_window() {
     );
 }
 
+#[derive(Clone, Copy)]
+enum ContinueThread {
+    Live,
+    Fork,
+    Restart,
+}
+
+#[test_case::test_case(ContinueThread::Live; "live")]
+#[test_case::test_case(ContinueThread::Fork; "fork")]
+#[test_case::test_case(ContinueThread::Restart; "cold resume")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn auto_compact_accounts_for_encrypted_reasoning() {
+async fn auto_compact_accounts_for_encrypted_reasoning(continuation: ContinueThread) {
     skip_if_no_network!();
 
     let server = start_mock_server().await;
@@ -5646,26 +5656,53 @@ async fn auto_compact_accounts_for_encrypted_reasoning() {
     )
     .await;
 
-    let test = test_codex()
-        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
-        .with_model_info_override("gpt-5.5", |model| {
-            model.use_responses_lite = true;
-        })
-        .with_config(|config| {
-            config.model = Some("gpt-5.5".to_string());
-            set_test_compact_prompt(config);
-            config.model_auto_compact_token_limit = Some(81);
-        })
+    let builder = || {
+        test_codex()
+            .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+            .with_model_info_override("gpt-5.5", |model| {
+                model.use_responses_lite = true;
+            })
+            .with_config(|config| {
+                config.model = Some("gpt-5.5".to_string());
+                set_test_compact_prompt(config);
+                config.model_auto_compact_token_limit = Some(81);
+            })
+    };
+    let mut test = builder()
         .build_with_auto_env(&server)
         .await
         .expect("build codex");
 
-    for user in [
-        "FIRST_REASONING",
-        "SECOND_REASONING",
-        "BELOW_COMPACT_LIMIT",
-        "AT_COMPACT_LIMIT",
-    ] {
+    for user in ["FIRST_REASONING", "SECOND_REASONING"] {
+        test.submit_text_turn(user).await.expect("submit user turn");
+    }
+
+    match continuation {
+        ContinueThread::Live => {}
+        ContinueThread::Restart => {
+            test = builder()
+                .restart_with_auto_env(&server, &test)
+                .await
+                .expect("restart");
+        }
+        ContinueThread::Fork => {
+            let path = test
+                .session_configured
+                .rollout_path
+                .clone()
+                .expect("rollout path");
+            let options = test.start_thread_options().await;
+            test.codex.shutdown_and_wait().await.expect("flush rollout");
+            test.codex = test
+                .thread_manager
+                .fork_legacy_thread(usize::MAX, options, path)
+                .await
+                .expect("fork")
+                .thread;
+        }
+    }
+
+    for user in ["BELOW_COMPACT_LIMIT", "AT_COMPACT_LIMIT"] {
         test.submit_text_turn(user).await.expect("submit user turn");
     }
 
@@ -6618,7 +6655,7 @@ async fn deepseek_auto_compaction_preserves_prefix(model: &str, overflow: bool) 
     assert!(
         requests
             .last()
-            .unwrap()
+            .expect("compaction must issue a follow-up request")
             .body_json()
             .to_string()
             .contains("Auto checkpoint preserved constraints.")
@@ -6955,7 +6992,10 @@ async fn deepseek_invalid_summary_retries_same_evidence_without_tools(empty: boo
             .to_string()
             .contains("Preserve port 9127 and continue the original task.")
     );
-    let baseline_input = requests[3].body_json()["input"].as_array().unwrap().clone();
+    let baseline_input = requests[3].body_json()["input"]
+        .as_array()
+        .expect("compaction baseline request input must be an array")
+        .clone();
     assert!(
         baseline_input
             .iter()

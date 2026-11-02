@@ -1,8 +1,7 @@
 use super::*;
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
 #[tokio::test(start_paused = true)]
 async fn stalled_refresh_does_not_block_stream_and_duplicates_are_coalesced() {
@@ -86,6 +85,39 @@ async fn shutdown_waits_for_refresh_release_and_rejects_later_scheduling() {
         let _ = send.send(());
     });
     tokio::task::yield_now().await;
+    assert_eq!(
+        receive.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelled_shutdown_keeps_refresh_release_joinable() {
+    let refresh = ModelsRefreshBackground::default();
+    let (started, running) = tokio::sync::oneshot::channel();
+    let (send, mut receive) = tokio::sync::oneshot::channel::<()>();
+    refresh.schedule(async move {
+        let _sender = send;
+        let _ = started.send(());
+        std::future::pending::<()>().await;
+    });
+    running.await.unwrap();
+
+    // Poll without yielding to the aborted task so its resources are still live.
+    let mut first = Box::pin(refresh.shutdown());
+    assert!(futures::poll!(first.as_mut()).is_pending());
+    assert!(refresh.state.try_lock().is_ok());
+    drop(first);
+    assert_eq!(
+        receive.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    );
+
+    // A cancelled caller must not consume the only join handle and let this caller
+    // report completion before the refresh future releases its resources.
+    let mut second = Box::pin(refresh.shutdown());
+    assert!(futures::poll!(second.as_mut()).is_pending());
+    second.await;
     assert_eq!(
         receive.try_recv(),
         Err(tokio::sync::oneshot::error::TryRecvError::Closed)

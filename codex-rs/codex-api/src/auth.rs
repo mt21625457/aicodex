@@ -36,7 +36,7 @@ pub trait AuthProvider: Send + Sync {
     ///
     /// Implementations should be cheap and non-blocking. This method is also
     /// used by telemetry and non-HTTP request paths. Providers that require async
-    /// work must return an error here and override `resolve_auth_headers`.
+    /// work must return an error here and override `apply_auth_headers`.
     /// Callers must not send the request if this returns an error.
     fn add_auth_headers(&self, headers: &mut HeaderMap) -> Result<(), AuthError>;
 
@@ -47,13 +47,18 @@ pub trait AuthProvider: Send + Sync {
         Ok(headers)
     }
 
-    /// Resolves auth headers for an outbound request.
-    ///
-    /// Unlike [`Self::to_auth_headers`], implementations may perform asynchronous work to refresh
-    /// credentials before returning. Header-only providers with static credentials can rely on the
-    /// default implementation.
-    fn resolve_auth_headers(&self) -> AuthHeadersFuture<'_> {
-        Box::pin(async { self.to_auth_headers() })
+    /// Describes headers expected on a successful request without refreshing or registering auth.
+    /// Async providers should override this rather than resolving credentials for telemetry.
+    fn auth_header_telemetry(&self) -> Result<AuthHeaderTelemetry, AuthError> {
+        let headers = self.to_auth_headers()?;
+        let name = headers
+            .contains_key(http::header::AUTHORIZATION)
+            .then_some("authorization")
+            .or_else(|| headers.contains_key("x-api-key").then_some("x-api-key"));
+        Ok(AuthHeaderTelemetry {
+            attached: name.is_some(),
+            name,
+        })
     }
 
     /// Refreshes credentials after an explicit HTTP 401. Returns whether the caller
@@ -61,6 +66,18 @@ pub trait AuthProvider: Send + Sync {
     /// of the rejected request so concurrent failures can reuse an earlier refresh.
     fn refresh_after_unauthorized(&self, _rejected_headers: HeaderMap) -> AuthRefreshFuture<'_> {
         Box::pin(async { false })
+    }
+
+    /// Authenticates a header-only request, including removing credentials it supersedes.
+    ///
+    /// Implementations may refresh credentials asynchronously. Providers with static credentials
+    /// can rely on the default implementation.
+    /// Callers must use the returned map rather than overlaying resolved headers.
+    fn apply_auth_headers(&self, mut headers: HeaderMap) -> AuthHeadersFuture<'_> {
+        Box::pin(async move {
+            headers.extend(self.to_auth_headers()?);
+            Ok(headers)
+        })
     }
 
     /// Applies auth to a complete outbound request and returns the request to send.
@@ -77,7 +94,7 @@ pub trait AuthProvider: Send + Sync {
     fn apply_auth(&self, request: Request) -> AuthProviderFuture<'_> {
         Box::pin(async move {
             let mut request = request;
-            request.headers.extend(self.resolve_auth_headers().await?);
+            request.headers = self.apply_auth_headers(request.headers).await?;
             Ok(request)
         })
     }
@@ -107,14 +124,64 @@ pub struct AuthHeaderTelemetry {
 }
 
 pub fn auth_header_telemetry(auth: &dyn AuthProvider) -> Result<AuthHeaderTelemetry, AuthError> {
-    let mut headers = HeaderMap::new();
-    auth.add_auth_headers(&mut headers)?;
-    let name = headers
-        .contains_key(http::header::AUTHORIZATION)
-        .then_some("authorization")
-        .or_else(|| headers.contains_key("x-api-key").then_some("x-api-key"));
-    Ok(AuthHeaderTelemetry {
-        attached: name.is_some(),
-        name,
-    })
+    auth.auth_header_telemetry()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http::HeaderValue;
+
+    struct StaticAuth(HeaderMap);
+
+    impl AuthProvider for StaticAuth {
+        fn add_auth_headers(&self, headers: &mut HeaderMap) -> Result<(), AuthError> {
+            headers.extend(self.0.clone());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn telemetry_recognizes_api_key_and_prefers_authorization() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-api-key", HeaderValue::from_static("synthetic-key"));
+        assert_eq!(
+            auth_header_telemetry(&StaticAuth(headers.clone())).unwrap(),
+            AuthHeaderTelemetry {
+                attached: true,
+                name: Some("x-api-key")
+            }
+        );
+        headers.insert(
+            http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer synthetic"),
+        );
+        assert_eq!(
+            auth_header_telemetry(&StaticAuth(headers)).unwrap(),
+            AuthHeaderTelemetry {
+                attached: true,
+                name: Some("authorization")
+            }
+        );
+    }
+
+    struct AsyncOnlyTelemetry;
+
+    impl AuthProvider for AsyncOnlyTelemetry {
+        fn add_auth_headers(&self, _headers: &mut HeaderMap) -> Result<(), AuthError> {
+            panic!("telemetry must not resolve async credentials")
+        }
+
+        fn auth_header_telemetry(&self) -> Result<AuthHeaderTelemetry, AuthError> {
+            Ok(AuthHeaderTelemetry {
+                attached: true,
+                name: Some("authorization"),
+            })
+        }
+    }
+
+    #[test]
+    fn telemetry_delegates_without_resolving_async_credentials() {
+        assert!(auth_header_telemetry(&AsyncOnlyTelemetry).unwrap().attached);
+    }
 }

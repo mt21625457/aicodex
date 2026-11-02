@@ -22,10 +22,10 @@ impl OpenAiModelsManager {
         {
             let current = self.remote_models.read().await;
             if self.remote_models_loaded.load(Ordering::Acquire)
-                && current.identity.as_ref() == Some(&identity)
+                && current.entry.identity.as_ref() == Some(&identity)
                 && self.endpoint_client.identity().as_ref() == Some(&identity)
             {
-                return Some(self.build_available_models(current.models.clone()));
+                return Some(self.build_available_models(current.entry.models.clone()));
             }
         }
         if let Some(entry) = display.as_ref()
@@ -54,9 +54,9 @@ impl OpenAiModelsManager {
         // Prefer a response that arrived during disk I/O, without publishing stale
         // display metadata into the catalog used for inference and ETag validation.
         if self.remote_models_loaded.load(Ordering::Acquire)
-            && current.identity.as_ref() == Some(&identity)
+            && current.entry.identity.as_ref() == Some(&identity)
         {
-            return Some(self.build_available_models(current.models.clone()));
+            return Some(self.build_available_models(current.entry.models.clone()));
         }
         entry.models = self.merge_remote_models(entry.models);
         let models = self.build_available_models(entry.models.clone());

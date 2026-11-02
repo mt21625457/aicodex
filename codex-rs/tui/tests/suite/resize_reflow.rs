@@ -27,7 +27,7 @@ async fn tmux_split_preserves_fresh_session_composer_row_after_resize_reflow() -
     }
 
     let repo_root = codex_utils_cargo_bin::repo_root()?;
-    let codex = codex_binary(&repo_root)?;
+    let codex = codex_binary()?;
     let codex_home = tempdir()?;
     let server = MockServer::start().await;
     let _response_mock = mount_resize_response(&server).await;
@@ -191,7 +191,7 @@ async fn tmux_width_resize_restore_keeps_visible_content_anchored() -> Result<()
     }
 
     let repo_root = codex_utils_cargo_bin::repo_root()?;
-    let codex = codex_binary(&repo_root)?;
+    let codex = codex_binary()?;
     let codex_home = tempdir()?;
     let server = MockServer::start().await;
     let _response_mock = mount_resize_response(&server).await;
@@ -319,7 +319,7 @@ async fn tmux_scrolled_composer_resize_preserves_visible_draft_text() -> Result<
     }
 
     let repo_root = codex_utils_cargo_bin::repo_root()?;
-    let codex = codex_binary(&repo_root)?;
+    let codex = codex_binary()?;
     let codex_home = tempdir()?;
     let server = MockServer::start().await;
     write_config(codex_home.path(), &repo_root, &server.uri())?;
@@ -442,7 +442,7 @@ async fn tmux_scrolled_composer_resize_preserves_visible_draft_text() -> Result<
 
 async fn run_repeated_resize_smoke() -> Result<()> {
     let repo_root = codex_utils_cargo_bin::repo_root()?;
-    let codex = codex_binary(&repo_root)?;
+    let codex = codex_binary()?;
     let codex_home = tempdir()?;
     let server = MockServer::start().await;
     let _response_mock = mount_resize_response(&server).await;
@@ -574,17 +574,13 @@ impl Drop for TmuxSession {
     }
 }
 
-fn codex_binary(repo_root: &Path) -> Result<PathBuf> {
-    if let Ok(path) = codex_utils_cargo_bin::cargo_bin("aicodex") {
-        return Ok(path);
-    }
-
-    let fallback = repo_root.join("codex-rs/target/debug/codex");
-    anyhow::ensure!(
-        fallback.is_file(),
-        "codex binary is unavailable; run `cargo build -p codex-cli` first"
-    );
-    Ok(fallback)
+fn codex_binary() -> Result<PathBuf> {
+    // cargo_bin resolves the binary beside the current test executable, including
+    // release/custom profiles and CARGO_TARGET_DIR, or through Bazel runfiles.
+    // A fixed debug fallback could accidentally test a stale binary instead.
+    codex_utils_cargo_bin::cargo_bin("aicodex").context(
+        "aicodex binary is unavailable; build codex-cli with the same profile as this test",
+    )
 }
 
 fn write_config(codex_home: &Path, repo_root: &Path, server_url: &str) -> Result<()> {

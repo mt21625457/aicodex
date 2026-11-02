@@ -54,6 +54,9 @@ message ModelProvider {
   // Keep the released request budget wire ID; catalog URLs use a distinct field.
   optional uint64 request_body_max_bytes = 20;
   optional string model_catalog_url = 21;
+  optional string project_id = 22;
+  optional string location = 23;
+  optional string credential_file = 24;
 }
 
 message StringMap {

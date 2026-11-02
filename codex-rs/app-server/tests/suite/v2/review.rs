@@ -19,6 +19,7 @@ use codex_app_server_protocol::ReviewTarget;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::ThreadHistoryMode;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::ThreadStartedNotification;
@@ -148,15 +149,15 @@ async fn review_start_runs_review_turn_and_emits_code_review_item(
     assert_eq!(turn.items_view, TurnItemsView::NotLoaded);
     assert_eq!(
         turn.items,
-        vec![ThreadItem::UserMessage {
+        [ThreadItem::untimed(ThreadItemPayload::UserMessage {
+            transcript_metadata: None,
             id: turn_id.clone(),
             client_id: None,
             content: vec![V2UserInput::Text {
                 text: "commit 1234567: Tidy UI colors".to_string(),
                 text_elements: Vec::new(),
             }],
-            transcript_metadata: None,
-        }]
+        })]
     );
 
     // Confirm we see the EnteredReviewMode marker on the main thread.
@@ -164,8 +165,8 @@ async fn review_start_runs_review_turn_and_emits_code_review_item(
     for _ in 0..10 {
         let started: ItemStartedNotification =
             timeout(DEFAULT_READ_TIMEOUT, mcp.read_notification("item/started")).await??;
-        match started.item {
-            ThreadItem::EnteredReviewMode { review, .. } => {
+        match started.item.payload {
+            ThreadItemPayload::EnteredReviewMode { review, .. } => {
                 assert_eq!(started.turn_id, turn_id);
                 assert_eq!(review, "commit 1234567: Tidy UI colors");
                 saw_entered_review_mode = true;
@@ -188,8 +189,8 @@ async fn review_start_runs_review_turn_and_emits_code_review_item(
             mcp.read_notification("item/completed"),
         )
         .await??;
-        match completed.item {
-            ThreadItem::ExitedReviewMode { review, .. } => {
+        match completed.item.payload {
+            ThreadItemPayload::ExitedReviewMode { review, .. } => {
                 assert_eq!(completed.turn_id, turn_id);
                 review_body = Some(review);
                 break;
@@ -258,15 +259,15 @@ async fn review_start_exec_approval_item_id_matches_command_execution_item() -> 
     assert_eq!(turn.items_view, TurnItemsView::NotLoaded);
     assert_eq!(
         turn.items,
-        vec![ThreadItem::UserMessage {
+        [ThreadItem::untimed(ThreadItemPayload::UserMessage {
+            transcript_metadata: None,
             id: turn_id.clone(),
             client_id: None,
             content: vec![V2UserInput::Text {
                 text: "commit 1234567: Check review approvals".to_string(),
                 text_elements: Vec::new(),
             }],
-            transcript_metadata: None,
-        }]
+        })]
     );
 
     let server_req = timeout(
@@ -284,7 +285,7 @@ async fn review_start_exec_approval_item_id_matches_command_execution_item() -> 
     for _ in 0..10 {
         let started: ItemStartedNotification =
             timeout(DEFAULT_READ_TIMEOUT, mcp.read_notification("item/started")).await??;
-        if let ThreadItem::CommandExecution { id, .. } = started.item {
+        if let ThreadItemPayload::CommandExecution { id, .. } = started.item.payload {
             command_item_id = Some(id);
             break;
         }
@@ -439,7 +440,7 @@ async fn review_start_with_detached_delivery_returns_new_thread_id() -> Result<(
     assert_eq!(turn.items_view, TurnItemsView::NotLoaded);
     assert_eq!(
         turn.items,
-        vec![ThreadItem::UserMessage {
+        vec![ThreadItem::untimed(ThreadItemPayload::UserMessage {
             id: turn.id.clone(),
             client_id: None,
             content: vec![V2UserInput::Text {
@@ -447,7 +448,7 @@ async fn review_start_with_detached_delivery_returns_new_thread_id() -> Result<(
                 text_elements: Vec::new(),
             }],
             transcript_metadata: None,
-        }]
+        })]
     );
     assert_ne!(
         review_thread_id, thread_id,

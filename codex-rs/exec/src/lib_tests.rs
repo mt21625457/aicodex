@@ -1,5 +1,7 @@
 use super::*;
 use codex_app_server_protocol::AuthRecoveryNotification;
+use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload as AppServerThreadItemPayload;
 use codex_otel::set_parent_from_w3c_trace_context;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::models::ActivePermissionProfile;
@@ -346,6 +348,99 @@ async fn resume_lookup_model_providers_filters_only_last_lookup() {
         Some(vec!["test-provider".to_string()])
     );
     assert_eq!(resume_lookup_model_providers(&config, &named_args), None);
+}
+
+#[test]
+fn turn_items_for_thread_returns_matching_turn_items() {
+    let thread = AppServerThread {
+        environments: None,
+        id: "thread-1".to_string(),
+        extra: None,
+        session_id: "thread-1".to_string(),
+        forked_from_id: None,
+        parent_thread_id: None,
+        preview: String::new(),
+        ephemeral: false,
+        section: None,
+        section_entered_at: None,
+        project_id: None,
+        daybreak_enabled: None,
+        history_mode: Default::default(),
+        model_provider: "openai".to_string(),
+        model_id: None,
+        wire_api: None,
+        effort: None,
+        model: None,
+        reasoning_effort: None,
+        created_at: 0,
+        updated_at: 0,
+        recency_at: Some(0),
+        status: codex_app_server_protocol::ThreadStatus::Idle,
+        path: None,
+        cwd: test_path_buf("/tmp/project").abs(),
+        cli_version: "0.0.0-test".to_string(),
+        originator: None,
+        source: codex_app_server_protocol::SessionSource::Exec,
+        can_accept_direct_input: None,
+        thread_source: None,
+        agent_nickname: None,
+        agent_role: None,
+        git_info: None,
+        name: None,
+        turns: vec![
+            codex_app_server_protocol::Turn {
+                id: "turn-1".to_string(),
+                root_turn_id: None,
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
+                items: vec![ThreadItem::untimed(
+                    AppServerThreadItemPayload::AgentMessage {
+                        transcript_metadata: None,
+                        id: "msg-1".to_string(),
+                        text: "hello".to_string(),
+                        phase: None,
+                        memory_citation: None,
+                        delivery: None,
+                        questions: None,
+                    },
+                )],
+                status: codex_app_server_protocol::TurnStatus::Completed,
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+            },
+            codex_app_server_protocol::Turn {
+                id: "turn-2".to_string(),
+                root_turn_id: None,
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
+                items: vec![ThreadItem::untimed(AppServerThreadItemPayload::Plan {
+                    id: "plan-1".to_string(),
+                    text: "ship it".to_string(),
+                })],
+                status: codex_app_server_protocol::TurnStatus::Completed,
+                error: None,
+                started_at: None,
+                completed_at: None,
+                duration_ms: None,
+            },
+        ],
+    };
+
+    assert_eq!(
+        turn_items_for_thread(&thread, "turn-1"),
+        Some(vec![ThreadItem::untimed(
+            AppServerThreadItemPayload::AgentMessage {
+                transcript_metadata: None,
+                id: "msg-1".to_string(),
+                text: "hello".to_string(),
+                phase: None,
+                memory_citation: None,
+                delivery: None,
+                questions: None,
+            }
+        )])
+    );
+    assert_eq!(turn_items_for_thread(&thread, "missing-turn"), None);
 }
 
 #[test]

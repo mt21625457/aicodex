@@ -85,6 +85,7 @@ pub(crate) struct WebSearchTool {
     pub(crate) moonshot_search: MoonshotSearchConfig,
     pub(crate) moonshot_feature_enabled: bool,
     pub(crate) settings: SearchSettings,
+    pub(crate) supports_literature_search: bool,
     pub(crate) originator: Option<String>,
 }
 
@@ -95,7 +96,8 @@ impl<'call> ToolExecutor<ToolCall<'call>> for WebSearchTool {
 
     fn spec(&self) -> ToolSpec {
         // parse schema without compaction that removes field metadata/descriptions to match hosted tool definition
-        let parameters = match parse_tool_input_schema_without_compaction(&commands_schema()) {
+        let schema = commands_schema(self.supports_literature_search);
+        let parameters = match parse_tool_input_schema_without_compaction(&schema) {
             Ok(parameters) => parameters,
             Err(err) => panic!("search command schema should parse: {err}"),
         };
@@ -143,19 +145,15 @@ impl WebSearchTool {
         {
             return self.handle_moonshot_call(call).await;
         }
-        let commands = parse_commands(&call)?;
+        let commands = parse_commands(call.function_arguments()?, self.supports_literature_search)?;
         let command_action = command_action(&commands);
         let search_provider = if self.primary_provider.info().supports_standalone_web_search {
             &self.primary_provider
         } else {
             &self.openai_provider
         };
-        let provider = search_provider
-            .api_provider()
-            .await
-            .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
-        let auth = search_provider
-            .api_auth()
+        let (provider, auth) = search_provider
+            .api_provider_and_auth()
             .await
             .map_err(|err| FunctionCallError::Fatal(err.to_string()))?;
         let transport = create_transport_for_routes_async(
@@ -314,12 +312,15 @@ impl WebSearchTool {
         })?;
         let provider_bearer = match self.primary_provider.api_auth().await.ok() {
             Some(auth) => {
-                let headers = auth.resolve_auth_headers().await.map_err(|_| {
-                    FunctionCallError::RespondToModel(
+                let headers = auth
+                    .apply_auth_headers(HeaderMap::new())
+                    .await
+                    .map_err(|_| {
+                        FunctionCallError::RespondToModel(
                         "Moonshot web search could not resolve the primary provider authentication"
                             .to_string(),
                     )
-                })?;
+                    })?;
                 codex_web_search::provider_token_from_auth_headers(&headers)
             }
             None => None,
@@ -392,14 +393,22 @@ fn search_request_headers(originator: Option<&str>, turn_metadata: Option<&str>)
     headers
 }
 
-fn parse_commands(call: &ToolCall<'_>) -> Result<SearchCommands, FunctionCallError> {
-    let arguments = call.function_arguments()?;
+fn parse_commands(
+    arguments: &str,
+    supports_literature_search: bool,
+) -> Result<SearchCommands, FunctionCallError> {
     if arguments.trim().is_empty() {
         return Ok(SearchCommands::default());
     }
 
-    serde_json::from_str(arguments)
-        .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))
+    let commands: SearchCommands = serde_json::from_str(arguments)
+        .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
+    if !supports_literature_search && commands.literature_search_query.is_some() {
+        return Err(FunctionCallError::RespondToModel(
+            "literature_search_query is unavailable for this model".to_string(),
+        ));
+    }
+    Ok(commands)
 }
 
 fn command_action(commands: &SearchCommands) -> WebSearchAction {
@@ -407,6 +416,12 @@ fn command_action(commands: &SearchCommands) -> WebSearchAction {
         .search_query
         .as_deref()
         .and_then(query_action)
+        .or_else(|| {
+            commands
+                .literature_search_query
+                .as_deref()
+                .and_then(query_action)
+        })
         .or_else(|| commands.image_query.as_deref().and_then(query_action))
         .or_else(|| {
             commands
@@ -487,8 +502,10 @@ mod tests {
     use super::OPENAI_SEARCH_FALLBACK_MODEL;
     use super::WebSearchTool;
     use super::command_action;
+    use super::parse_commands;
     use super::search_request_headers;
     use codex_core::X_CODEX_TURN_METADATA_HEADER;
+    use codex_extension_api::FunctionCallError;
 
     #[test]
     fn search_request_headers_forward_thread_originator_and_turn_metadata() {
@@ -546,6 +563,7 @@ mod tests {
                 ..Default::default()
             },
             moonshot_feature_enabled: true,
+            supports_literature_search: false,
             settings: Default::default(),
             originator: None,
         }
@@ -572,6 +590,17 @@ mod tests {
                 arguments: arguments.to_string(),
             },
         }
+    }
+
+    #[test]
+    fn rejects_literature_search_without_the_model_capability() {
+        let arguments =
+            r#"{"search_query":[{"q":"regular"}],"literature_search_query":[{"q":"papers"}]}"#;
+        assert!(matches!(
+            parse_commands(arguments, /*supports_literature_search*/ false),
+            Err(FunctionCallError::RespondToModel(message))
+                if message == "literature_search_query is unavailable for this model"
+        ));
     }
 
     #[test]

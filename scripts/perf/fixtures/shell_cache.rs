@@ -1,16 +1,27 @@
 use codex_protocol::models::ResponseItem;
 
-fn shell_history(count: usize, unique: usize, payload_bytes: usize, invalid: bool) -> Vec<ResponseItem> {
-    (0..count).flat_map(|index| {
-        let raw = if invalid {
-            format!("invalid-json {} {}", index % unique, "x".repeat(payload_bytes))
-        } else {
-            serde_json::json!({
-                "output": format!("output {}: {}", index % unique, "x".repeat(payload_bytes)),
-                "metadata": {"exit_code": 0, "duration_seconds": 0.5},
-            }).to_string()
-        };
-        [
+fn shell_history(
+    count: usize,
+    unique: usize,
+    payload_bytes: usize,
+    invalid: bool,
+) -> Vec<ResponseItem> {
+    (0..count)
+        .flat_map(|index| {
+            let raw = if invalid {
+                format!(
+                    "invalid-json {} {}",
+                    index % unique,
+                    "x".repeat(payload_bytes)
+                )
+            } else {
+                serde_json::json!({
+                    "output": format!("output {}: {}", index % unique, "x".repeat(payload_bytes)),
+                    "metadata": {"exit_code": 0, "duration_seconds": 0.5},
+                })
+                .to_string()
+            };
+            [
             serde_json::from_value(serde_json::json!({
                 "type": "function_call", "name": "shell", "call_id": format!("call-{index}"),
                 "arguments": "{}",
@@ -19,7 +30,8 @@ fn shell_history(count: usize, unique: usize, payload_bytes: usize, invalid: boo
                 "type": "function_call_output", "call_id": format!("call-{index}"), "output": raw,
             })).unwrap(),
         ]
-    }).collect()
+        })
+        .collect()
 }
 
 fn main() {
@@ -39,7 +51,11 @@ fn main() {
         "mixed16" => (16, 16, 8192, false, false),
         _ => panic!("unknown scenario: {scenario}"),
     };
-    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
     runtime.block_on(async {
         let mut history = shell_history(outputs, unique, payload_bytes, invalid);
         if scenario == "mixed16" {

@@ -34,9 +34,14 @@ if name == "codesign":
         target = Path(args[-1]).name
         if target == "CodexCLI.app":
             source = Path(os.environ["CODEX_REPO_ROOT"]) / "signing-verification/codex-provisioned-entitlements.plist"
-        elif target in ("codex", "codex-code-mode-host"):
-            source = Path(os.environ["MOCK_SIGNING_SCRIPTS"]) / (target + ".entitlements.plist")
+        elif target in ("aicodex", "codex-code-mode-host", "codex-exec-server"):
+            source = Path(os.environ["MOCK_SIGNING_SCRIPTS"]) / (("codex" if target == "aicodex" else target) + ".entitlements.plist")
         else:
+            sys.exit(0)
+        if target == "codex-exec-server" and os.environ.get("MOCK_EXECUTOR_ENTITLEMENTS"):
+            sys.stdout.buffer.write(plistlib.dumps({"unexpected": True}))
+            sys.exit(0)
+        if not plistlib.loads(source.read_bytes()) and os.environ.get("MOCK_OMIT_EMPTY_ENTITLEMENTS"):
             sys.exit(0)
         if os.environ.get("MOCK_WRONG_ENTITLEMENTS"):
             sys.stdout.buffer.write(plistlib.dumps({"unexpected": True}))
@@ -88,7 +93,7 @@ class MacosSigningTests(ProvisioningTestCase):
         certificate.write_text(ssl.DER_cert_to_PEM_cert(certificate_der))
         (root / "certificate.der").write_bytes(certificate_der)
         package = root / "package with spaces"
-        for relative in ("bin/codex", *bundle.HELPERS):
+        for relative in ("bin/aicodex", *bundle.HELPERS):
             path = package / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("#!/bin/sh\nexit 0\n")
@@ -99,7 +104,7 @@ class MacosSigningTests(ProvisioningTestCase):
                     "variant": "codex",
                     "layoutVersion": 1,
                     "target": target,
-                    "entrypoint": "bin/codex",
+                    "entrypoint": "bin/aicodex",
                 }
             )
         )
@@ -145,15 +150,21 @@ class MacosSigningTests(ProvisioningTestCase):
         )
 
     def test_standard_and_provisioned_signing_and_verification(self):
-        for provisioned, target in itertools.product(
-            (False, True), ("aarch64-apple-darwin", "x86_64-apple-darwin")
+        for provisioned, target, omit_empty in itertools.product(
+            (False, True),
+            ("aarch64-apple-darwin", "x86_64-apple-darwin"),
+            (False, True),
         ):
             with (
-                self.subTest(provisioned=provisioned, target=target),
+                self.subTest(
+                    provisioned=provisioned, target=target, omit_empty=omit_empty
+                ),
                 tempfile.TemporaryDirectory() as directory,
             ):
                 root = Path(directory).resolve()
                 package, driver, env = self.fixture(root, provisioned, target)
+                if omit_empty:
+                    env["MOCK_OMIT_EMPTY_ENTITLEMENTS"] = "1"
                 result = self.run_driver(driver, "sign", package, env)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 result = self.run_driver(driver, "verify", package, env)
@@ -168,7 +179,7 @@ class MacosSigningTests(ProvisioningTestCase):
                     [
                         str(package / relative)
                         for relative in (
-                            bundle.APP if provisioned else "bin/codex",
+                            bundle.APP if provisioned else "bin/aicodex",
                             *bundle.HELPERS,
                         )
                     ],
@@ -189,13 +200,13 @@ class MacosSigningTests(ProvisioningTestCase):
                 )
                 self.assertEqual(
                     ["--entitlements" in call for call in signing],
-                    [True, True, False],
+                    [True, True, True, False],
                 )
                 self.assertEqual(
                     [call[0] for call in calls if call[0].startswith("notarize")],
                     ["notarize_with_akv.py"]
                     if provisioned
-                    else ["notarize_macos_binary_with_akv.sh"] * 3,
+                    else ["notarize_macos_binary_with_akv.sh"] * 4,
                 )
                 self.assertEqual(
                     [call[1:] for call in calls if call[0] == "lipo"],
@@ -206,7 +217,7 @@ class MacosSigningTests(ProvisioningTestCase):
                             "arm64" if target.startswith("aarch64") else "x86_64",
                         ]
                         for relative in (
-                            bundle.EXECUTABLE if provisioned else "bin/codex",
+                            bundle.EXECUTABLE if provisioned else "bin/aicodex",
                             *bundle.HELPERS,
                         )
                     ],
@@ -262,7 +273,7 @@ class MacosSigningTests(ProvisioningTestCase):
                             self.configuration.profile.read_bytes(),
                         )
                         self.assertEqual(
-                            archive.read("bin/codex").decode(), bundle.LAUNCHER
+                            archive.read("bin/aicodex").decode(), bundle.LAUNCHER
                         )
                         self.assertTrue(
                             all(
@@ -318,7 +329,12 @@ class MacosSigningTests(ProvisioningTestCase):
 
     def test_verification_rejects_wrong_signing_identity_and_entitlements(self):
         for provisioned, failure in itertools.product(
-            (False, True), ("MOCK_WRONG_SIGNING_IDENTITY", "MOCK_WRONG_ENTITLEMENTS")
+            (False, True),
+            (
+                "MOCK_WRONG_SIGNING_IDENTITY",
+                "MOCK_WRONG_ENTITLEMENTS",
+                "MOCK_EXECUTOR_ENTITLEMENTS",
+            ),
         ):
             with (
                 self.subTest(provisioned=provisioned, failure=failure),

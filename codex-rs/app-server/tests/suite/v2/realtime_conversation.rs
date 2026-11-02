@@ -14,7 +14,7 @@ use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadForkParams;
 use codex_app_server_protocol::ThreadForkResponse;
 use codex_app_server_protocol::ThreadHistoryMode;
-use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::ThreadItemsListParams;
 use codex_app_server_protocol::ThreadItemsListResponse;
 use codex_app_server_protocol::ThreadReadParams;
@@ -56,6 +56,7 @@ use codex_app_server_protocol::ThreadTimelineListParams;
 use codex_app_server_protocol::ThreadTimelineListResponse;
 use codex_app_server_protocol::ThreadTurnsListParams;
 use codex_app_server_protocol::ThreadTurnsListResponse;
+use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::TurnCompletedNotification;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
@@ -1280,8 +1281,8 @@ async fn realtime_timeline_splits_accepted_steering_and_persists_promoted_artifa
         .read_notification::<ItemCompletedNotification>("item/completed")
         .await?;
     assert!(matches!(
-        initial_message.item,
-        ThreadItem::UserMessage { .. }
+        initial_message.item.payload,
+        ThreadItemPayload::UserMessage { .. }
     ));
 
     harness
@@ -1392,8 +1393,8 @@ async fn realtime_timeline_splits_accepted_steering_and_persists_promoted_artifa
                     item,
                     ..
                 } if matches!(
-                    item.as_ref(),
-                    ThreadItem::UserMessage { client_id, .. }
+                    &item.payload,
+                    ThreadItemPayload::UserMessage { client_id, .. }
                         if client_id.as_deref() == Some("accepted-steer")
                 )
             )
@@ -1406,7 +1407,7 @@ async fn realtime_timeline_splits_accepted_steering_and_persists_promoted_artifa
             .iter()
             .filter_map(|entry| match entry {
                 ThreadTimelineEntry::Item { item, .. }
-                    if matches!(item.as_ref(), ThreadItem::AgentMessage { id, .. } if id == "promoted-message") => Some("artifact"),
+                    if matches!(&item.payload, ThreadItemPayload::AgentMessage { id, .. } if id == "promoted-message") => Some("artifact"),
                 ThreadTimelineEntry::Realtime {
                     item: ThreadRealtimeItem {
                         content: ThreadRealtimeItemContent::BemItemPromoted { item_id, .. },
@@ -1878,7 +1879,7 @@ async fn realtime_conversation_stop_emits_closed_notification(
         let items: ThreadItemsListResponse =
             timeout(DEFAULT_TIMEOUT, mcp.read_response(request)).await??;
         let tails = items.data.iter().filter(|entry| matches!(
-            &entry.item, ThreadItem::UserMessage { content, .. }
+            &entry.item.payload, ThreadItemPayload::UserMessage { content, .. }
             if content.iter().any(|part| matches!(part, V2UserInput::Text { text, .. }
                 if text.contains("<source>transcript_tail_flush</source>") && text.contains("user: final words")))
         )).collect::<Vec<_>>();
@@ -1909,8 +1910,8 @@ async fn realtime_conversation_stop_emits_closed_notification(
             .await?;
         let history: ThreadReadResponse =
             timeout(DEFAULT_TIMEOUT, mcp.read_response(request)).await??;
-        assert_eq!(history.thread.turns.iter().flat_map(|turn| &turn.items).filter(|item| matches!(
-            item, ThreadItem::UserMessage { content, .. }
+        assert_eq!(history.thread.turns.iter().flat_map(Turn::item_payloads).filter(|item| matches!(
+            item, ThreadItemPayload::UserMessage { content, .. }
             if content.iter().any(|part| matches!(part, V2UserInput::Text { text, .. }
                 if text.contains("<source>transcript_tail_flush</source>") && text.contains("user: final words")))
         )).count(), 1);
@@ -3933,7 +3934,8 @@ async fn websocket_v2_tool_call_delegated_turn_can_execute_shell_tool() -> Resul
 
     // Phase 2: observe the delegated background agent turn executing the requested shell command.
     let started_command = wait_for_started_command_execution(&mut harness.mcp).await?;
-    let ThreadItem::CommandExecution { id, status, .. } = started_command.item else {
+    let ThreadItemPayload::CommandExecution { id, status, .. } = started_command.item.payload
+    else {
         unreachable!("helper returns command execution items");
     };
     assert_eq!(
@@ -3942,12 +3944,12 @@ async fn websocket_v2_tool_call_delegated_turn_can_execute_shell_tool() -> Resul
     );
 
     let completed_command = wait_for_completed_command_execution(&mut harness.mcp).await?;
-    let ThreadItem::CommandExecution {
+    let ThreadItemPayload::CommandExecution {
         id,
         status,
         aggregated_output,
         ..
-    } = completed_command.item
+    } = completed_command.item.payload
     else {
         unreachable!("helper returns command execution items");
     };
@@ -4268,7 +4270,7 @@ async fn wait_for_started_command_execution(
 ) -> Result<ItemStartedNotification> {
     loop {
         let started = read_notification::<ItemStartedNotification>(mcp, "item/started").await?;
-        if let ThreadItem::CommandExecution { .. } = &started.item {
+        if let ThreadItemPayload::CommandExecution { .. } = &started.item.payload {
             return Ok(started);
         }
     }
@@ -4280,7 +4282,7 @@ async fn wait_for_completed_command_execution(
     loop {
         let completed =
             read_notification::<ItemCompletedNotification>(mcp, "item/completed").await?;
-        if let ThreadItem::CommandExecution { .. } = &completed.item {
+        if let ThreadItemPayload::CommandExecution { .. } = &completed.item.payload {
             return Ok(completed);
         }
     }

@@ -6,10 +6,10 @@ use codex_model_provider_info::ModelProviderInfo;
 use core_test_support::responses;
 use serde_json::json;
 use std::time::Duration;
-use wiremock::{
-    Mock, ResponseTemplate,
-    matchers::{method, path},
-};
+use wiremock::Mock;
+use wiremock::ResponseTemplate;
+use wiremock::matchers::method;
+use wiremock::matchers::path;
 
 #[tokio::test]
 async fn stalled_compaction_times_out_and_preserves_original_history() -> anyhow::Result<()> {

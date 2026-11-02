@@ -3,6 +3,12 @@ packages:
   - codex-rs/responses-api-proxy/npm
   - sdk/typescript
 
+# pnpm 12 reads these settings here; keep .npmrc for older pnpm versions.
+nodeLinker: hoisted
+shamefullyHoist: true
+strictPeerDependencies: false
+preferWorkspacePackages: true
+
 minimumReleaseAge: 10080
 minimumReleaseAgeExclude: []
 

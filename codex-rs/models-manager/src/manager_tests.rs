@@ -42,6 +42,8 @@ mod cache_identity_tests;
 #[path = "model_info_overrides_tests.rs"]
 mod model_info_overrides_tests;
 
+#[path = "catalog_origin_tests.rs"]
+mod catalog_origin_tests;
 #[path = "context_window_policy_tests.rs"]
 mod context_window_policy_tests;
 
@@ -353,7 +355,11 @@ where
 }
 
 fn static_manager_for_tests(model_catalog: ModelsResponse) -> StaticModelsManager {
-    StaticModelsManager::new(/*auth_manager*/ None, model_catalog)
+    StaticModelsManager::new(
+        /*auth_manager*/ None,
+        model_catalog,
+        ModelOrigin::ExplicitConfig,
+    )
 }
 
 #[tokio::test]
@@ -543,6 +549,13 @@ async fn injected_cache_read_error_falls_back_and_persists_remote_models() {
 async fn injected_cache_write_error_does_not_fail_remote_refresh() {
     let remote_models = vec![remote_model("remote", "Remote", /*priority*/ 0)];
     let cache = TestModelsCache::failing(/*load_error*/ false, /*store_error*/ true);
+    *cache.entry.lock().unwrap() = Some(ModelsCacheEntry {
+        identity: Some("test-provider".to_string()),
+        fetched_at: Utc::now(),
+        etag: None,
+        client_version: Some(crate::client_version_to_whole()),
+        models: vec![remote_model("cached", "Cached", /*priority*/ 0)],
+    });
     let endpoint = TestModelsEndpoint::new(vec![remote_models.clone()]);
     let manager = OpenAiModelsManager::new_with_cache(
         cache,
@@ -553,13 +566,22 @@ async fn injected_cache_write_error_does_not_fail_remote_refresh() {
     );
 
     let catalog = manager
-        .raw_model_catalog(
-            RefreshStrategy::OnlineIfUncached,
-            DEFAULT_HTTP_CLIENT_FACTORY,
-        )
+        .raw_model_catalog(RefreshStrategy::Online, DEFAULT_HTTP_CLIENT_FACTORY)
         .await;
 
     assert_eq!(catalog.models, remote_models);
+    assert_eq!(
+        manager
+            .model_catalog_with_origins(RefreshStrategy::InMemory, DEFAULT_HTTP_CLIENT_FACTORY)
+            .await,
+        remote_models
+            .into_iter()
+            .map(|model| CatalogModel {
+                model,
+                origin: ModelOrigin::Provider,
+            })
+            .collect::<Vec<_>>()
+    );
     assert_eq!(endpoint.fetch_count(), 1);
 }
 
@@ -881,8 +903,8 @@ async fn borrowed_openai_lookup_matches_owned_catalog_authority() {
         for identity in [Some("test-provider"), Some("different-account"), None] {
             {
                 let mut entry = manager.remote_models.write().await;
-                entry.identity = identity.map(str::to_string);
-                entry.models = vec![
+                entry.entry.identity = identity.map(str::to_string);
+                entry.entry.models = vec![
                     remote_model("model-long", "First", 0),
                     remote_model("model-long", "Second", 1),
                 ];
@@ -1330,7 +1352,7 @@ async fn authoritative_catalog_refresh_failure_preserves_snapshot_and_freshness(
                 .await,
             initial_info
         );
-        assert_eq!(manager.remote_models.read().await.clone(), stored[0]);
+        assert_eq!(manager.remote_models.read().await.entry, stored[0]);
         assert_eq!(cache.stored_entries(), stored);
 
         let restarted = OpenAiModelsManager::new_with_cache(
@@ -1464,7 +1486,7 @@ async fn online_refresh_updates_access_programs_with_unchanged_etag() {
         );
         assert_eq!(manager.get_remote_models().await, vec![model]);
         assert_eq!(
-            manager.remote_models.read().await.etag.as_deref(),
+            manager.remote_models.read().await.entry.etag.as_deref(),
             Some("stable-catalog-etag")
         );
 
@@ -1483,7 +1505,13 @@ async fn online_refresh_updates_access_programs_with_unchanged_etag() {
         );
         assert_eq!(cache_endpoint.fetch_count(), 0);
         assert_eq!(
-            cache_manager.remote_models.read().await.etag.as_deref(),
+            cache_manager
+                .remote_models
+                .read()
+                .await
+                .entry
+                .etag
+                .as_deref(),
             Some("stable-catalog-etag")
         );
     }
@@ -1888,6 +1916,7 @@ async fn static_manager_reads_latest_auth_mode() {
         ModelsResponse {
             models: vec![chatgpt_only_model, api_model],
         },
+        ModelOrigin::ExplicitConfig,
     );
 
     let chatgpt_models = manager

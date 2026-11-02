@@ -227,12 +227,14 @@ class AppServerHarness:
         shutil.rmtree(self.workspace, ignore_errors=True)
 
     def app_server_config(self) -> CodexConfig:
-        """Prefer the CI binary, then a local debug build, then the installed runtime."""
-        binary_name = "codex.exe" if os.name == "nt" else "codex"
-        debug_binary = Path(__file__).resolve().parents[3] / "codex-rs/target/debug" / binary_name
+        """Prefer the CI binary, then a local release build, then the installed runtime."""
+        binary_name = "aicodex.exe" if os.name == "nt" else "aicodex"
+        release_binary = (
+            Path(__file__).resolve().parents[3] / "codex-rs/target/release" / binary_name
+        )
         codex_bin = os.environ.get("CODEX_EXEC_PATH")
-        if codex_bin is None and debug_binary.is_file():
-            codex_bin = str(debug_binary)
+        if codex_bin is None and release_binary.is_file():
+            codex_bin = str(release_binary)
         return CodexConfig(
             codex_bin=codex_bin,
             cwd=str(self.workspace),

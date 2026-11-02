@@ -35,10 +35,12 @@ async fn frozen_cloud_skills_with_named_executor_request_history() -> Result<()>
             )),
         |config: &Config| SkillsExtensionConfig {
             include_instructions: true,
+            omit_descriptions: false,
             max_context_tokens: config.skill_max_context_tokens,
             bundled_skills_enabled: false,
             cloud_skill_enabled: true,
             shadow_selection_enabled: false,
+            catalog_deltas_enabled: config.features.enabled(Feature::SkillCatalogDeltas),
         },
     );
     let server = start_mock_server().await;
@@ -89,16 +91,19 @@ async fn frozen_cloud_skills_with_named_executor_request_history() -> Result<()>
     // Discovery v2 scans the executor user's .agents/skills independently of CODEX_HOME.
     // Keep this fixture independent of skills installed in the developer's real home.
     let executor_home = tempfile::tempdir()?;
-    let executor = core_test_support::exec_server::ExecServerProcess::start_with_env(&[
-        (
-            "HOME",
-            executor_home.path().to_str().expect("UTF-8 test home"),
-        ),
-        (
-            "USERPROFILE",
-            executor_home.path().to_str().expect("UTF-8 test home"),
-        ),
-    ])
+    let executor = core_test_support::exec_server::ExecServerProcess::start_with_version_and_env(
+        "0.164.0",
+        &[
+            (
+                "HOME",
+                executor_home.path().to_str().expect("UTF-8 test home"),
+            ),
+            (
+                "USERPROFILE",
+                executor_home.path().to_str().expect("UTF-8 test home"),
+            ),
+        ],
+    )
     .await?;
     test.thread_manager
         .environment_manager()

@@ -1,6 +1,8 @@
 //! 目录刷新由线程拥有，不能阻塞当前响应流；同线程最多一个任务，失败也有冷却。
 
 use futures::FutureExt;
+use futures::future::BoxFuture;
+use futures::future::Shared;
 use std::future::Future;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -19,6 +21,7 @@ pub(crate) struct ModelsRefreshBackground {
 #[derive(Default)]
 struct RefreshState {
     task: Option<JoinHandle<()>>,
+    shutdown_completion: Option<Shared<BoxFuture<'static, ()>>>,
     last_started: Option<Instant>,
     closed: bool,
 }
@@ -34,15 +37,26 @@ impl Drop for RefreshState {
 impl ModelsRefreshBackground {
     /// Stop admission and wait until the refresh future has released its resources.
     pub(crate) async fn shutdown(&self) {
-        let mut state = self.state.lock().await;
-        state.closed = true;
-        // Keep the handle in state while awaiting so cancellation of this shutdown
-        // cannot detach it, and concurrent shutdown callers wait for the same task.
-        if let Some(task) = state.task.as_mut() {
-            task.abort();
-            let _ = task.await;
+        let completion = {
+            let mut state = self.state.lock().await;
+            state.closed = true;
+            if state.shutdown_completion.is_none() {
+                state.shutdown_completion = state.task.take().map(|task| {
+                    task.abort();
+                    async move {
+                        let _ = task.await;
+                    }
+                    .boxed()
+                    .shared()
+                });
+            }
+            // State owns the join future even if a shutdown caller is cancelled. Every
+            // caller waits for the same resource release without retaining the state lock.
+            state.shutdown_completion.clone()
+        };
+        if let Some(completion) = completion {
+            completion.await;
         }
-        state.task = None;
     }
 
     /// 锁竞争直接合并请求；这里只调度，不等待网络，也不跨刷新持有状态锁。

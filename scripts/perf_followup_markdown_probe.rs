@@ -1,5 +1,8 @@
 //! 依赖仓库已有 pulldown-cmark 产物验证引用的非局部影响；不是新的增量 renderer。
-use pulldown_cmark::{Event, Options, Parser, Tag};
+use pulldown_cmark::Event;
+use pulldown_cmark::Options;
+use pulldown_cmark::Parser;
+use pulldown_cmark::Tag;
 
 fn links(source: &str) -> Vec<(String, String)> {
     Parser::new_ext(source, Options::empty())

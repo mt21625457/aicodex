@@ -1,7 +1,8 @@
 //! 工具输入生成的临时通知；生命周期由 thread/turn 标识约束，不进入聊天正文。
 use crate::JsonSchema;
 use crate::TS;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]

@@ -411,7 +411,7 @@ async fn delegated_reasoning_never_enters_live_history() {
         &mut chat,
         thread_id,
         turn_id,
-        ThreadItem::Reasoning {
+        ThreadItemPayload::Reasoning {
             transcript_metadata: None,
             id: "reasoning".into(),
             summary: vec!["private summary".into()],
@@ -440,7 +440,7 @@ async fn delegated_reasoning_never_enters_live_history() {
         &mut chat,
         thread_id,
         turn_id,
-        ThreadItem::Reasoning {
+        ThreadItemPayload::Reasoning {
             transcript_metadata: None,
             id: "late-reasoning".into(),
             summary: vec!["private late summary".into()],
@@ -461,7 +461,7 @@ async fn delegated_reasoning_never_enters_live_history() {
         &mut chat,
         thread_id,
         "late-start-turn",
-        ThreadItem::Reasoning {
+        ThreadItemPayload::Reasoning {
             transcript_metadata: None,
             id: "late-start-reasoning".into(),
             summary: vec!["private delayed start".into()],
@@ -512,7 +512,7 @@ async fn delegated_reasoning_never_enters_live_history() {
         }
     }
     assert!(!chat.is_realtime_delegated_reasoning_turn(turn_id));
-    let typed_reasoning = ThreadItem::Reasoning {
+    let typed_reasoning = ThreadItemPayload::Reasoning {
         transcript_metadata: None,
         id: "typed-reasoning".into(),
         summary: vec!["ordinary summary".into()],

@@ -19,7 +19,7 @@ CODE_SIGNING_ID = "codex"
 APP = Path("CodexCLI.app")
 EXECUTABLE = APP / "Contents/MacOS/codex"
 SIGNING = Path(__file__).resolve().parent
-HELPERS = ("bin/codex-code-mode-host", "codex-path/rg")
+HELPERS = ("bin/codex-code-mode-host", "bin/codex-exec-server", "codex-path/rg")
 LAUNCHER = """#!/bin/sh
 set -eu
 entry="$0"
@@ -123,18 +123,18 @@ def prepare(package, reports, configuration: ProfileConfiguration):
         metadata["variant"] != "codex"
         or metadata["layoutVersion"] != 1
         or metadata["target"] not in ("aarch64-apple-darwin", "x86_64-apple-darwin")
-        or metadata["entrypoint"] != "bin/codex"
+        or metadata["entrypoint"] != "bin/aicodex"
     ):
         raise ValueError("Expected a canonical macOS CLI package")
-    for relative in ("bin/codex", *HELPERS):
+    for relative in ("bin/aicodex", *HELPERS):
         path = package / relative
         if path.is_symlink() or not path.is_file() or not os.access(path, os.X_OK):
             raise ValueError(f"Expected a regular executable: {relative}")
     # Refuse to overwrite a previously prepared or signed bundle.
     (package / EXECUTABLE).parent.mkdir(parents=True, exist_ok=False)
-    (package / "bin/codex").rename(package / EXECUTABLE)
-    (package / "bin/codex").write_text(LAUNCHER)
-    (package / "bin/codex").chmod(0o755)
+    (package / "bin/aicodex").rename(package / EXECUTABLE)
+    (package / "bin/aicodex").write_text(LAUNCHER)
+    (package / "bin/aicodex").chmod(0o755)
     contents = package / APP / "Contents"
     shutil.copyfile(configuration.profile, contents / "embedded.provisionprofile")
     (contents / "Info.plist").write_bytes(
@@ -171,7 +171,7 @@ def verify(package, reports, expected_target, configuration: ProfileConfiguratio
         package / APP / "Contents/embedded.provisionprofile"
     ).read_bytes() != configuration.profile.read_bytes():
         raise ValueError("Embedded profile differs from the reviewed profile")
-    if (package / "bin/codex").read_text() != LAUNCHER:
+    if (package / "bin/aicodex").read_text() != LAUNCHER:
         raise ValueError("Unexpected CLI launcher")
     metadata = json.loads((package / "codex-package.json").read_text())
     if metadata["target"] != expected_target:

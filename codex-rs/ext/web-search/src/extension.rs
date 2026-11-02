@@ -25,7 +25,9 @@ use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_protocol::config_types::WebSearchContextSize;
 use codex_protocol::config_types::WebSearchMode;
+use codex_protocol::openai_models::ModelInfo;
 
+use crate::schema::LITERATURE_SEARCH_QUERY;
 use crate::tool::WebSearchTool;
 
 #[derive(Clone)]
@@ -136,10 +138,11 @@ impl ConfigContributor<Config> for WebSearchExtension {
 }
 
 impl ToolContributor for WebSearchExtension {
-    fn tools(
+    fn tools_for_step(
         &self,
         session_store: &ExtensionData,
         thread_store: &ExtensionData,
+        step_store: &ExtensionData,
     ) -> Vec<
         Arc<dyn for<'call> codex_extension_api::ToolExecutor<codex_extension_api::ToolCall<'call>>>,
     > {
@@ -164,6 +167,12 @@ impl ToolContributor for WebSearchExtension {
             moonshot_search: config.moonshot_search.clone(),
             moonshot_feature_enabled: config.moonshot_feature_enabled,
             settings: config.settings.clone(),
+            supports_literature_search: step_store.get::<ModelInfo>().is_some_and(|model| {
+                model
+                    .experimental_supported_tools
+                    .iter()
+                    .any(|tool| tool == LITERATURE_SEARCH_QUERY)
+            }),
             originator: thread_store
                 .get::<ThreadOriginator>()
                 .map(|originator| originator.0.clone()),
@@ -232,6 +241,7 @@ mod tests {
         let registry = builder.build();
         let session_store = ExtensionData::new("session");
         let thread_store = ExtensionData::new("11111111-1111-4111-8111-111111111111");
+        let step_store = ExtensionData::new("step");
         thread_store.insert(WebSearchExtensionConfig {
             available: true,
             http_client_factory: HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
@@ -245,7 +255,9 @@ mod tests {
         let tool_names = registry
             .tool_contributors()
             .iter()
-            .flat_map(|contributor| contributor.tools(&session_store, &thread_store))
+            .flat_map(|contributor| {
+                contributor.tools_for_step(&session_store, &thread_store, &step_store)
+            })
             .map(|tool| (tool.tool_name(), tool.supports_parallel_tool_calls()))
             .collect::<Vec<_>>();
 

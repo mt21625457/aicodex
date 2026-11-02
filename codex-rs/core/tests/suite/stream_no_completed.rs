@@ -71,6 +71,9 @@ async fn retries_on_early_close() {
         supports_websockets: false,
         supports_standalone_web_search: false,
         capabilities: None,
+        project_id: None,
+        location: None,
+        credential_file: None,
         include_internal_metadata: false,
     };
 
@@ -135,6 +138,9 @@ async fn grok_retries_after_responses_stream_idle_timeout() {
         capabilities: None,
         gateway_oauth: None,
         model_catalog_url: None,
+        project_id: None,
+        location: None,
+        credential_file: None,
         include_internal_metadata: false,
         name: "grok-test".into(),
         base_url: Some(format!("{}/v1", server.uri())),

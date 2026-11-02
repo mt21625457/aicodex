@@ -32,7 +32,18 @@ import type { SubAgentActivityKind } from "./SubAgentActivityKind";
 import type { TranscriptMetadata } from "./TranscriptMetadata";
 import type { UserInput } from "./UserInput";
 
-export type ThreadItem = { "type": "userMessage", id: string, clientId: string | null, content: Array<UserInput>, transcriptMetadata: TranscriptMetadata | null, } | { "type": "hookPrompt", id: string, fragments: Array<HookPromptFragment>, } | { "type": "agentMessage", id: string, text: string, phase: MessagePhase | null, memoryCitation: MemoryCitation | null, transcriptMetadata: TranscriptMetadata | null, delivery: AgentMessageDelivery | null, questions: Array<AsyncUserInputQuestion> | null, } | { "type": "functionCallOutput", id: string, name: string, namespace: string | null, output: FunctionCallOutputBody, } | { "type": "plan", id: string, text: string, } | { "type": "reasoning", id: string, summary: Array<string>, content: Array<string>, transcriptMetadata: TranscriptMetadata | null, } | { "type": "commandExecution", id: string,
+/**
+ * A thread item and its recorded lifecycle times. The payload stays flat on the wire.
+ */
+export type ThreadItem = {
+/**
+ * Unix timestamp in milliseconds when the item started, if recorded.
+ */
+startedAtMs?: number | null,
+/**
+ * Unix timestamp in milliseconds when the item completed, if recorded.
+ */
+completedAtMs?: number | null, } & ({ "type": "userMessage", id: string, clientId: string | null, content: Array<UserInput>, transcriptMetadata: TranscriptMetadata | null, } | { "type": "hookPrompt", id: string, fragments: Array<HookPromptFragment>, } | { "type": "agentMessage", id: string, text: string, phase: MessagePhase | null, memoryCitation: MemoryCitation | null, transcriptMetadata: TranscriptMetadata | null, delivery: AgentMessageDelivery | null, questions: Array<AsyncUserInputQuestion> | null, } | { "type": "functionCallOutput", id: string, name: string, namespace: string | null, output: FunctionCallOutputBody, } | { "type": "plan", id: string, text: string, } | { "type": "reasoning", id: string, summary: Array<string>, content: Array<string>, transcriptMetadata: TranscriptMetadata | null, } | { "type": "commandExecution", id: string,
 /**
  * Trusted first-party plugin id when this command resolves to one plugin script.
  */
@@ -131,4 +142,4 @@ model: string | null,
 /**
  * Resolved reasoning effort at sub-agent creation, when known.
  */
-reasoningEffort: ReasoningEffort | null, id: string, kind: SubAgentActivityKind, agentThreadId: string, agentPath: string, } | { "type": "webSearch" } & WebSearchItem | { "type": "imageView", id: string, path: LegacyAppPathString, } | { "type": "sleep" } & SleepItem | { "type": "imageGeneration" } & ImageGenerationItem | { "type": "enteredReviewMode", id: string, review: string, } | { "type": "exitedReviewMode", id: string, review: string, } | { "type": "contextCompaction", id: string, };
+reasoningEffort: ReasoningEffort | null, id: string, kind: SubAgentActivityKind, agentThreadId: string, agentPath: string, } | { "type": "webSearch" } & WebSearchItem | { "type": "imageView", id: string, path: LegacyAppPathString, } | { "type": "sleep" } & SleepItem | { "type": "imageGeneration" } & ImageGenerationItem | { "type": "enteredReviewMode", id: string, review: string, } | { "type": "exitedReviewMode", id: string, review: string, } | { "type": "contextCompaction", id: string, });

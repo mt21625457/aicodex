@@ -5,6 +5,7 @@ pub(crate) mod common;
 pub(crate) mod endpoint;
 pub(crate) mod error;
 pub(crate) mod files;
+mod guardian_assessment;
 pub(crate) mod images;
 pub(crate) mod provider;
 pub(crate) mod rate_limits;
@@ -18,6 +19,8 @@ pub(crate) mod telemetry;
 
 /// Product token sent by every model-provider protocol and transport.
 pub const AICODEX_USER_AGENT: &str = concat!("aicodex/", env!("CARGO_PKG_VERSION"));
+/// Path of the Responses endpoint, relative to a provider's base URL.
+pub const RESPONSES_PATH: &str = "/responses";
 
 pub use crate::requests::headers::build_session_headers;
 pub use codex_client::RequestTelemetry;
@@ -88,6 +91,8 @@ pub use crate::endpoint::ResponsesWebsocketClient;
 pub use crate::endpoint::ResponsesWebsocketClose;
 pub use crate::endpoint::ResponsesWebsocketConnection;
 pub use crate::endpoint::ResponsesWebsocketProbe;
+pub use crate::endpoint::ResponsesWebsocketProbeError;
+pub use crate::endpoint::ResponsesWebsocketProbeFailureStage;
 pub use crate::endpoint::SearchClient;
 pub use crate::endpoint::build_moonshot_search_http_client;
 pub use crate::endpoint::session_update_session_json;
@@ -97,6 +102,7 @@ pub use crate::error::ProviderStreamErrorKind;
 pub use crate::files::HostedFileUploadContext;
 pub use crate::files::OPENAI_FILE_UPLOAD_LIMIT_BYTES;
 pub use crate::files::upload_openai_file;
+pub use crate::guardian_assessment::GuardianAssessment;
 pub use crate::images::ImageBackground;
 pub use crate::images::ImageData;
 pub use crate::images::ImageEditRequest;

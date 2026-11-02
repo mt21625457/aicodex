@@ -188,9 +188,7 @@ fn shell_output_cache_admission_budget(items: &[ResponseItem]) -> usize {
 
 fn shell_call_id(item: &ResponseItem) -> Option<&str> {
     match item {
-        ResponseItem::LocalShellCall { call_id, id, .. } => {
-            call_id.as_deref().or_else(|| id.as_deref())
-        }
+        ResponseItem::LocalShellCall { call_id, id, .. } => call_id.as_deref().or(id.as_deref()),
         ResponseItem::CustomToolCall { call_id, name, .. } if name == "apply_patch" => {
             Some(call_id)
         }
@@ -367,6 +365,7 @@ fn normalize_image_detail(detail: &mut Option<ImageDetail>, model_info: &ModelIn
 }
 
 pub struct ResponseStream {
+    pub(crate) routing_affinity: Option<codex_http_client::ChatGptRoutingAffinity>,
     pub(crate) rx_event: mpsc::Receiver<Result<ResponseEvent>>,
     pub(crate) interrupt: Option<oneshot::Sender<codex_api::ResponseInterrupt>>,
     /// Signals the mapper task that the consumer stopped polling before the

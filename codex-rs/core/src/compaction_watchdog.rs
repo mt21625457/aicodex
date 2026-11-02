@@ -2,7 +2,8 @@
 //! 仅观察事件种类与时间，不记录摘要、凭据或响应标识；取消时随请求一起释放。
 
 use crate::client_common::ResponseEvent;
-use codex_protocol::error::{CodexErr, Result};
+use codex_protocol::error::CodexErr;
+use codex_protocol::error::Result;
 use std::future::Future;
 use std::time::Duration;
 use tokio::time::Instant;

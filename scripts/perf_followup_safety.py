@@ -51,7 +51,9 @@ def read_rows(connection: sqlite3.Connection) -> list[tuple[int, int]]:
     ).fetchall()
 
 
-def boundary_prototype(rows: list[tuple[int, int]], byte_cap: int, row_cap: int) -> list[tuple[int, int]]:
+def boundary_prototype(
+    rows: list[tuple[int, int]], byte_cap: int, row_cap: int
+) -> list[tuple[int, int]]:
     # 这只是被检验的候选算法，故意不加安全域回退，以展示错误输入的反例。
     retained = list(rows)
     total = sum(weight for _, weight in retained)
@@ -61,7 +63,9 @@ def boundary_prototype(rows: list[tuple[int, int]], byte_cap: int, row_cap: int)
     return retained
 
 
-def run_oracle(connection: sqlite3.Connection, sql: str, byte_cap: int, row_cap: int) -> list[tuple[int, int]]:
+def run_oracle(
+    connection: sqlite3.Connection, sql: str, byte_cap: int, row_cap: int
+) -> list[tuple[int, int]]:
     # 保留生产函数现有的全局汇总预检查，不总是无条件执行 DELETE。
     total, count = connection.execute(
         "SELECT total_bytes,row_count FROM logs_usage_totals WHERE singleton=1"
@@ -84,7 +88,13 @@ def check_sqlite(max_rows: int) -> dict:
                     connection.execute("SAVEPOINT candidate")
                     actual = run_oracle(connection, sql, byte_cap, row_cap)
                     expected = boundary_prototype(original, byte_cap, row_cap)
-                    assert actual == expected, (weights, byte_cap, row_cap, actual, expected)
+                    assert actual == expected, (
+                        weights,
+                        byte_cap,
+                        row_cap,
+                        actual,
+                        expected,
+                    )
                     totals = connection.execute(
                         "SELECT total_bytes,row_count FROM logs_usage_totals WHERE singleton=1"
                     ).fetchone()
@@ -102,7 +112,9 @@ def check_sqlite(max_rows: int) -> dict:
 
     fill_rows(connection, (I64_MAX, 1, -I64_MAX))
     original = read_rows(connection)
-    assert connection.execute("SELECT total_bytes,row_count FROM logs_usage_totals").fetchone() == (1, 3)
+    assert connection.execute(
+        "SELECT total_bytes,row_count FROM logs_usage_totals"
+    ).fetchone() == (1, 3)
     connection.execute("SAVEPOINT overflow_case")
     try:
         run_oracle(connection, sql, I64_MAX, 2)
@@ -114,20 +126,27 @@ def check_sqlite(max_rows: int) -> dict:
     connection.execute("ROLLBACK TO overflow_case")
     connection.execute("RELEASE overflow_case")
     assert read_rows(connection) == original
-    assert [weight for _, weight in boundary_prototype(original, I64_MAX, 2)] == [I64_MAX]
+    assert [weight for _, weight in boundary_prototype(original, I64_MAX, 2)] == [
+        I64_MAX
+    ]
 
     # SQLite INTEGER affinity 并非严格类型约束，不能把 schema 声明当作安全域证明。
     connection.execute("DELETE FROM logs")
     connection.execute(
         "INSERT INTO logs(ts,ts_nanos,level,target,estimated_bytes) VALUES(0,0,'INFO','probe',0.5)"
     )
-    assert connection.execute("SELECT typeof(estimated_bytes) FROM logs").fetchone() == ("real",)
+    assert connection.execute(
+        "SELECT typeof(estimated_bytes) FROM logs"
+    ).fetchone() == ("real",)
     connection.close()
     return {
         "sqlite_version": sqlite3.sqlite_version,
         "nonnegative_small_domain_cases": verified,
         "negative_counterexample": {"oracle": [-4], "unsafe_boundary": [6, -4]},
-        "overflow_counterexample": {"oracle_error": overflow_error, "unsafe_boundary": [I64_MAX]},
+        "overflow_counterexample": {
+            "oracle_error": overflow_error,
+            "unsafe_boundary": [I64_MAX],
+        },
         "non_integer_storage_allowed": True,
         "scope": "真实 SQL 及触发器；不代表 SQLx 错误解码、并发事务或性能验收",
     }
@@ -183,7 +202,11 @@ def check_history() -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--max-rows", type=int, choices=range(1, 5), default=3)
-    parser.add_argument("--markdown-rlib", type=Path, help="已有 pulldown_cmark rlib；可选，不触发 Cargo")
+    parser.add_argument(
+        "--markdown-rlib",
+        type=Path,
+        help="已有 pulldown_cmark rlib；可选，不触发 Cargo",
+    )
     parser.add_argument("--output", type=Path, help="将结果另存 JSON")
     args = parser.parse_args()
     result = {"sqlite": check_sqlite(args.max_rows), "history": check_history()}
@@ -191,11 +214,21 @@ def main() -> None:
         library = args.markdown_rlib.resolve()
         with tempfile.TemporaryDirectory(prefix="aicodex-markdown-proof-") as directory:
             binary = Path(directory) / "probe"
-            subprocess.run([
-                "rustc", "--edition=2024", "-O", str(ROOT / "scripts/perf_followup_markdown_probe.rs"),
-                "-L", f"dependency={library.parent}", "--extern", f"pulldown_cmark={library}",
-                "-o", str(binary),
-            ], check=True)
+            subprocess.run(
+                [
+                    "rustc",
+                    "--edition=2024",
+                    "-O",
+                    str(ROOT / "scripts/perf_followup_markdown_probe.rs"),
+                    "-L",
+                    f"dependency={library.parent}",
+                    "--extern",
+                    f"pulldown_cmark={library}",
+                    "-o",
+                    str(binary),
+                ],
+                check=True,
+            )
             output = subprocess.check_output([str(binary)], text=True).strip()
             result["markdown_parser"] = output
     serialized = json.dumps(result, ensure_ascii=False, indent=2)
