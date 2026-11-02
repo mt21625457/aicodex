@@ -239,6 +239,7 @@ trust_level = "trusted"
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
     anyhow::ensure!(
         Command::new(&program)
+            .env("AICODEX_HOME", &home)
             .env("CODEX_HOME", &home)
             .arg("--version")
             .output()?

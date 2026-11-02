@@ -9105,14 +9105,18 @@ async fn shutdown_runtime_releases_model_refresh_while_session_is_retained() {
     let session = Arc::new(session);
     let (started, running) = tokio::sync::oneshot::channel();
     let (send, mut receive) = tokio::sync::oneshot::channel::<()>();
-    session
-        .services
-        .models_refresh_background
-        .schedule(async move {
+    session.services.models_refresh_background.schedule(
+        crate::models_refresh_background::RefreshKey {
+            catalog: 0,
+            auth_generation: None,
+            etag: "test".to_string(),
+        },
+        async move {
             let _sender = send;
             let _ = started.send(());
             std::future::pending::<()>().await;
-        });
+        },
+    );
     running.await.unwrap();
 
     handlers::shutdown_session_runtime(&session).await;
@@ -9122,12 +9126,16 @@ async fn shutdown_runtime_releases_model_refresh_while_session_is_retained() {
         Err(tokio::sync::oneshot::error::TryRecvError::Closed)
     );
     let (send, mut receive) = tokio::sync::oneshot::channel::<()>();
-    session
-        .services
-        .models_refresh_background
-        .schedule(async move {
+    session.services.models_refresh_background.schedule(
+        crate::models_refresh_background::RefreshKey {
+            catalog: 0,
+            auth_generation: None,
+            etag: "test".to_string(),
+        },
+        async move {
             let _ = send.send(());
-        });
+        },
+    );
     assert_eq!(
         receive.try_recv(),
         Err(tokio::sync::oneshot::error::TryRecvError::Closed)

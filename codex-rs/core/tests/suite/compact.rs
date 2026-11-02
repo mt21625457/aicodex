@@ -1344,7 +1344,9 @@ async fn failed_compaction_preserves_history_after_restart() -> Result<()> {
     .await;
     assert_eq!(
         errors,
-        vec!["stream disconnected before completion: stream closed before response.completed"]
+        vec![
+            "stream disconnected before completion: closed_after_message_start_before_stop: stream closed before response.completed"
+        ]
     );
     assert_eq!(test.codex.token_usage_info().await, Some(original_usage));
 
@@ -5632,7 +5634,7 @@ async fn auto_compact_accounts_for_encrypted_reasoning(continuation: ContinueThr
     ]);
     let second_turn = sse(vec![
         ev_reasoning_item("post-reasoning", &["post"], &[&post_last_reasoning_content]),
-        ev_completed_with_tokens("r2", /*total_tokens*/ 500),
+        ev_completed_with_tokens("r2", /*total_tokens*/ 80),
     ]);
     let third_turn = sse(vec![
         ev_assistant_message("m3", THIRD_USER_MSG),

@@ -1132,6 +1132,63 @@ mod thread_processor_behavior_tests {
     }
 
     #[test]
+    fn merge_persisted_resume_metadata_migrates_saved_route_with_model_or_reasoning_override()
+    -> Result<()> {
+        for (model, provider, expected_provider) in [
+            (
+                "deepseek-v4-pro",
+                "aicodex_gateway",
+                "aicodex_gateway_responses",
+            ),
+            (
+                "deepseek-v4-pro",
+                "aicodex_gateway_claude",
+                "aicodex_gateway_responses",
+            ),
+            (
+                "claude-sonnet-4",
+                "aicodex_gateway_claude",
+                "aicodex_gateway_claude",
+            ),
+            ("deepseek-v4-pro", "unknown_provider", "unknown_provider"),
+        ] {
+            let mut metadata = test_thread_metadata(Some(model), Some(ReasoningEffort::High))?;
+            metadata.model_provider = provider.to_string();
+            for (mut typesafe, mut request) in [
+                (
+                    ConfigOverrides {
+                        model: Some("deepseek-v4-flash".to_string()),
+                        ..Default::default()
+                    },
+                    None,
+                ),
+                (
+                    ConfigOverrides::default(),
+                    Some(HashMap::from([(
+                        "model".to_string(),
+                        json!("deepseek-v4-flash"),
+                    )])),
+                ),
+                (
+                    ConfigOverrides::default(),
+                    Some(HashMap::from([(
+                        "model_reasoning_effort".to_string(),
+                        json!("low"),
+                    )])),
+                ),
+            ] {
+                let expected_model = typesafe.model.clone();
+                let expected_request = request.clone();
+                merge_persisted_resume_metadata(&mut request, &mut typesafe, &metadata);
+                assert_eq!(typesafe.model_provider.as_deref(), Some(expected_provider));
+                assert_eq!(typesafe.model, expected_model);
+                assert_eq!(request, expected_request);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn merge_persisted_resume_metadata_skips_missing_values() -> Result<()> {
         let mut request_overrides = None;
         let mut typesafe_overrides = ConfigOverrides::default();

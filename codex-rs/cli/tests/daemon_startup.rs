@@ -97,6 +97,7 @@ async fn elevated_local_tui_uses_embedded_without_starting_daemon() -> Result<()
     let home = tempfile::tempdir()?;
     for operation in ["start", "restart"] {
         let output = Command::new(&codex)
+            .env("AICODEX_HOME", home.path())
             .env("CODEX_HOME", home.path())
             .args(["app-server", "daemon", operation])
             .output()?;
@@ -169,6 +170,7 @@ async fn daemon_startup(command: &str) -> Result<()> {
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
     anyhow::ensure!(
         Command::new(&codex)
+            .env("AICODEX_HOME", home.path())
             .env("CODEX_HOME", home.path())
             .arg("--version")
             .output()?
@@ -224,6 +226,7 @@ async fn daemon_startup(command: &str) -> Result<()> {
     ] {
         env.remove(key);
     }
+    env.insert("AICODEX_HOME".into(), home.path().display().to_string());
     env.insert("CODEX_HOME".into(), home.path().display().to_string());
     env.insert(
         "CODEX_SQLITE_HOME".into(),

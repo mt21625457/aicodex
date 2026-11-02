@@ -47,6 +47,7 @@ fn local_command(home: &TempDir) -> Result<Command> {
     let mut command = Command::new(codex_utils_cargo_bin::cargo_bin("aicodex")?);
     command
         .current_dir(home.path())
+        .env("AICODEX_HOME", home.path())
         .env("CODEX_HOME", home.path())
         .env("NO_PROXY", "127.0.0.1,localhost")
         .env("no_proxy", "127.0.0.1,localhost")
@@ -220,6 +221,11 @@ async fn network_only_human_output() -> Result<()> {
         .output()?;
     let stdout = String::from_utf8(output.stdout)?;
     assert!(output.status.success(), "{stdout}");
+    let version_header = format!("Codex Doctor v{}\n", env!("CARGO_PKG_VERSION"));
+    let body = stdout
+        .strip_prefix(&version_header)
+        .context("doctor must report the actual package version in its header")?;
+    let stdout = format!("Codex Doctor v0.0.0\n{body}");
     insta::assert_snapshot!("network_only_human_output", stdout);
     Ok(())
 }
@@ -243,6 +249,11 @@ async fn network_only_config_failure_human_output() -> Result<()> {
     let file_row = Regex::new(r"(?m)^(      file +).+[\\/]config\.toml$")?;
     assert!(file_row.is_match(&stdout), "{stdout}");
     let stdout = file_row.replace_all(&stdout, "${1}<CODEX_HOME>/config.toml");
+    let version_header = format!("Codex Doctor v{}\n", env!("CARGO_PKG_VERSION"));
+    let body = stdout
+        .strip_prefix(&version_header)
+        .context("doctor must report the actual package version in its header")?;
+    let stdout = format!("Codex Doctor v0.0.0\n{body}");
     insta::assert_snapshot!("network_only_config_failure_human_output", stdout);
     Ok(())
 }
@@ -313,6 +324,7 @@ trust_level = "trusted"
 
         let output = Command::new(codex_utils_cargo_bin::cargo_bin("aicodex")?)
             .current_dir(codex_home.path())
+            .env("AICODEX_HOME", codex_home.path())
             .env("CODEX_HOME", codex_home.path())
             .env("NO_PROXY", "127.0.0.1,localhost")
             .env("no_proxy", "127.0.0.1,localhost")
@@ -391,6 +403,7 @@ async fn invalid_custom_ca_falls_back_to_system_roots() -> Result<()> {
         let mut command = Command::new(codex_utils_cargo_bin::cargo_bin("aicodex")?);
         command
             .args(["doctor", "--json"])
+            .env("AICODEX_HOME", codex_home.path())
             .env("CODEX_HOME", codex_home.path())
             .env("CODEX_CA_CERTIFICATE", &certificate)
             .stdin(Stdio::null());
@@ -454,6 +467,7 @@ fn doctor_reports_macos_system_proxy_configuration_and_policy() -> Result<()> {
 fn doctor_report(codex_home: &Path) -> Result<Value> {
     let output = Command::new(codex_utils_cargo_bin::cargo_bin("aicodex")?)
         .args(["doctor", "--json"])
+        .env("AICODEX_HOME", codex_home)
         .env("CODEX_HOME", codex_home)
         .stdin(Stdio::null())
         .output()

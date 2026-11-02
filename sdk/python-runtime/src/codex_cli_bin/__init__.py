@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 
@@ -16,8 +17,17 @@ def bundled_package_dir() -> Path:
 
 
 def bundled_codex_path() -> Path:
-    exe = "codex.exe" if os.name == "nt" else "codex"
-    path = bundled_package_dir() / "bin" / exe
+    package_dir = bundled_package_dir()
+    suffix = ".exe" if os.name == "nt" else ""
+    metadata = json.loads(
+        (package_dir / PACKAGE_METADATA_FILENAME).read_text(encoding="utf-8")
+    )
+    entrypoint = metadata.get("entrypoint", f"bin/codex{suffix}")
+    if entrypoint not in (f"bin/codex{suffix}", f"bin/aicodex{suffix}"):
+        raise ValueError(
+            f"{PACKAGE_NAME} has an invalid canonical CLI entrypoint: {entrypoint!r}"
+        )
+    path = package_dir / entrypoint
     if not path.is_file():
         raise FileNotFoundError(
             f"{PACKAGE_NAME} is installed but missing its packaged codex binary at {path}"

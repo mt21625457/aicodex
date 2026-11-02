@@ -134,6 +134,7 @@ impl CloudManagedConfigFixture {
         command
             .kill_on_drop(true)
             .current_dir(self.codex_home.path())
+            .env("AICODEX_HOME", self.codex_home.path())
             .env("CODEX_HOME", self.codex_home.path())
             .env("NO_PROXY", "127.0.0.1,localhost")
             .env("no_proxy", "127.0.0.1,localhost")
@@ -562,6 +563,7 @@ async fn startup_config_sign_out_reloads_policy_without_starting_runtime() -> Re
         let baseline = successful_json(
             fixture
                 .command(&["app-server", "--print-startup-config"])?
+                .env("AICODEX_HOME", signed_out_home.path())
                 .env("CODEX_HOME", signed_out_home.path()),
         )
         .await?;

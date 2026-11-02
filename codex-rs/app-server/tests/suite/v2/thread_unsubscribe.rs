@@ -718,7 +718,7 @@ enabled_tools = []
                 },
                 responses::sse(vec![
                     responses::ev_assistant_message(
-                        &format!("child-result-{tool}"),
+                        &format!("msg_child-result-{tool}"),
                         "Remember the initial child result",
                     ),
                     responses::ev_completed("child-done"),
@@ -837,7 +837,7 @@ enabled_tools = []
             .filter(|item| item["role"] == "assistant")
             .collect::<Vec<_>>(),
         vec![json!({
-            "id": "child-result-spawn_agent", "type": "message", "role": "assistant",
+            "id": "msg_child-result-spawn_agent", "type": "message", "role": "assistant",
             "content": [{"type": "output_text", "text": "Remember the initial child result"}],
         })],
     );

@@ -139,6 +139,7 @@ fn unavailable_thread_dispatches_recovery_and_local_commands() {
         SlashCommand::Status,
         SlashCommand::DebugConfig,
         SlashCommand::Pwd,
+        #[cfg(debug_assertions)]
         SlashCommand::Rollout,
         SlashCommand::Copy,
         SlashCommand::Raw,
@@ -154,6 +155,21 @@ fn unavailable_thread_dispatches_recovery_and_local_commands() {
         );
         assert_eq!(composer.current_text(), "");
     }
+}
+
+#[cfg(not(debug_assertions))]
+#[test]
+fn unavailable_thread_preserves_hidden_rollout_command_draft() {
+    let (mut composer, _) = new_test_composer();
+    composer.set_text_content("/rollout".into(), Vec::new(), Vec::new());
+    assert_eq!(
+        composer.handle_restricted_key(
+            KeyEvent::from(KeyCode::Enter),
+            RestrictedInputMode::UnavailableThread,
+        ),
+        InputResult::None,
+    );
+    assert_eq!(composer.current_text(), "/rollout");
 }
 
 #[test]

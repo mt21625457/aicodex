@@ -1923,8 +1923,9 @@ fn create_seatbelt_args_with_read_only_git_and_codex_subpaths() {
     assert!(
         policy_text.contains("WRITABLE_ROOT_0_EXCLUDED_1")
             && policy_text.contains("WRITABLE_ROOT_0_EXCLUDED_2")
-            && policy_text.contains("WRITABLE_ROOT_0_EXCLUDED_3"),
-        "expected symbolic cwd .git/.agents/.aicodex carveouts in policy:\n{policy_text}",
+            && policy_text.contains("WRITABLE_ROOT_0_EXCLUDED_3")
+            && policy_text.contains("WRITABLE_ROOT_0_EXCLUDED_4"),
+        "expected symbolic cwd .git/.agents/.aicodex/.aws carveouts in policy:\n{policy_text}",
     );
     assert!(
         policy_text.contains("WRITABLE_ROOT_1_EXCLUDED_0")
@@ -1986,7 +1987,7 @@ fn create_seatbelt_args_with_read_only_git_and_codex_subpaths() {
                 .display()
         ),
         format!(
-            "-DWRITABLE_ROOT_0_EXCLUDED_3={}",
+            "-DWRITABLE_ROOT_0_EXCLUDED_4={}",
             cwd.canonicalize()
                 .expect("canonicalize cwd")
                 .join(".aws")

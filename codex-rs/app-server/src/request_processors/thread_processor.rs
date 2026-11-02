@@ -277,7 +277,12 @@ fn merge_persisted_resume_metadata(
             .as_ref()
             .is_some_and(|overrides| overrides.contains_key("model_provider"))
     {
-        typesafe_overrides.model_provider = Some(persisted_metadata.model_provider.clone());
+        // Canonicalize the saved route even when only model or reasoning is overridden.
+        typesafe_overrides.model_provider = remap_oauth_gateway_provider_for_deepseek(
+            persisted_metadata.model.as_deref(),
+            Some(persisted_metadata.model_provider.clone()),
+            persisted_metadata.model_provider.as_str(),
+        );
     }
 
     if has_model_override {
@@ -285,11 +290,6 @@ fn merge_persisted_resume_metadata(
     }
 
     typesafe_overrides.model = persisted_metadata.model.clone();
-    typesafe_overrides.model_provider = remap_oauth_gateway_provider_for_deepseek(
-        persisted_metadata.model.as_deref(),
-        Some(persisted_metadata.model_provider.clone()),
-        persisted_metadata.model_provider.as_str(),
-    );
 
     if let Some(reasoning_effort) = persisted_metadata.reasoning_effort.as_ref() {
         request_overrides.get_or_insert_with(HashMap::new).insert(
@@ -4126,6 +4126,10 @@ impl ThreadRequestProcessor {
             persist_extended_history: _persist_extended_history,
         } = params.clone();
         let include_turns = !exclude_turns;
+        let explicit_provider_override = model_provider.is_some()
+            || request_overrides
+                .as_ref()
+                .is_some_and(|overrides| overrides.contains_key("model_provider"));
 
         let prepared_model_context = prepared_config
             .as_mut()
@@ -4412,6 +4416,16 @@ impl ThreadRequestProcessor {
                                 }
                                 _ => None,
                             }),
+                        config_state
+                            .persisted_metadata
+                            .as_ref()
+                            .and_then(|metadata| metadata.model.as_deref())
+                            .or_else(|| {
+                                resume_source_thread
+                                    .as_ref()
+                                    .and_then(|thread| thread.model.as_deref())
+                            }),
+                        explicit_provider_override,
                         request_overrides,
                         typesafe_overrides,
                         history_cwd,

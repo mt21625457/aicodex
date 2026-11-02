@@ -532,36 +532,91 @@ async fn multi_agent_v2_tools_emit_collaborator_analytics() -> Result<()> {
 
 #[tokio::test]
 async fn metrics_exporters_respect_analytics_preferences() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let collector = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/metrics"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .expect(6)
+        .mount(&collector)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(
+            "/opentelemetry.proto.collector.metrics.v1.MetricsService/Export",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(vec![0; 5], "application/grpc")
+                .insert_header("grpc-status", "0"),
+        )
+        .expect(6)
+        .mount(&collector)
+        .await;
+
     let codex_home = TempDir::new()?;
     let mut config = ConfigBuilder::default()
         .codex_home(codex_home.path().to_path_buf())
         .build()
         .await?;
+    let blocked_network =
+        codex_http_client::NetworkPolicy::unmanaged().restrict_to_endpoints(Default::default());
+    // The dependency may use a different profile from this test binary. Query
+    // its exporter directly, independently of core's analytics-consent gate.
+    // Reject all network traffic before DNS, including the built-in endpoint.
+    let baseline = codex_otel::OtelProvider::try_new(&codex_otel::OtelSettings {
+        http_client_factory: config
+            .http_client_factory()
+            .with_network_policy(blocked_network.clone()),
+        service_name: "codex-app-server".into(),
+        service_version: SERVICE_VERSION.into(),
+        codex_home: codex_home.path().to_path_buf(),
+        environment: config.otel.environment.to_string(),
+        exporter: codex_otel::OtelExporter::None,
+        trace_exporter: codex_otel::OtelExporter::None,
+        metrics_exporter: codex_otel::OtelExporter::Statsig,
+        runtime_metrics: false,
+        span_attributes: Default::default(),
+        tracestate: Default::default(),
+    })
+    .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    let statsig_enabled = baseline
+        .as_ref()
+        .is_some_and(|otel| otel.metrics().is_some());
+    if let Some(baseline) = baseline {
+        baseline
+            .shutdown_with_timeout(Duration::from_secs(5))
+            .await?;
+    }
+
     for exporter in [
         OtelExporterKind::None,
         OtelExporterKind::Statsig,
         OtelExporterKind::OtlpHttp {
-            endpoint: "http://localhost:4318".to_string(),
+            endpoint: format!("{}/v1/metrics", collector.uri()),
             headers: HashMap::new(),
             protocol: OtelHttpProtocol::Json,
             tls: None,
         },
         OtelExporterKind::OtlpGrpc {
-            endpoint: "http://localhost:4317".to_string(),
+            endpoint: collector.uri(),
             headers: HashMap::new(),
             tls: None,
         },
     ] {
+        config.application_network_policy = if matches!(exporter, OtelExporterKind::Statsig) {
+            blocked_network.clone()
+        } else {
+            codex_http_client::NetworkPolicy::unmanaged()
+        };
         config.otel.metrics_exporter = exporter;
         for analytics_enabled in [None, Some(false), Some(true)] {
             config.analytics_enabled = analytics_enabled;
             for default_analytics_enabled in [false, true] {
                 let expected_metrics = match config.otel.metrics_exporter {
                     OtelExporterKind::None => false,
-                    // The built-in exporter is disabled in debug builds even with consent.
                     OtelExporterKind::Statsig => {
-                        !cfg!(debug_assertions)
-                            && analytics_enabled.unwrap_or(default_analytics_enabled)
+                        statsig_enabled && analytics_enabled.unwrap_or(default_analytics_enabled)
                     }
                     OtelExporterKind::OtlpHttp { .. } | OtelExporterKind::OtlpGrpc { .. } => true,
                 };
@@ -597,6 +652,8 @@ async fn metrics_exporters_respect_analytics_preferences() -> Result<()> {
             }
         }
     }
+
+    collector.verify().await;
 
     Ok(())
 }

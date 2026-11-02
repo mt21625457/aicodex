@@ -2939,7 +2939,13 @@ async fn thread_resume_returns_rollout_history() -> Result<()> {
 async fn thread_resume_remaps_stale_oauth_claude_provider_for_deepseek() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let model = "deepseek/deepseek-r1:free";
-    for provider_override in [None, Some("lmstudio")] {
+    for (provider_override, model_override, reasoning_override) in [
+        (None, false, false),
+        (Some("lmstudio"), false, false),
+        (Some("missing_migration_provider"), false, false),
+        (None, true, false),
+        (None, false, true),
+    ] {
         let codex_home = TempDir::new()?;
         mock_responses_config(&server.uri())
             .with_model_provider("aicodex_gateway_responses")
@@ -2977,9 +2983,23 @@ async fn thread_resume_remaps_stale_oauth_claude_provider_for_deepseek() -> Resu
             .send_thread_resume_request(ThreadResumeParams {
                 thread_id: conversation_id,
                 model_provider: provider_override.map(str::to_string),
+                model: model_override.then(|| model.to_string()),
+                config: reasoning_override
+                    .then(|| HashMap::from([("model_reasoning_effort".to_string(), json!("low"))])),
                 ..Default::default()
             })
             .await?;
+        if provider_override == Some("missing_migration_provider") {
+            let error = timeout(
+                DEFAULT_READ_TIMEOUT,
+                mcp.read_stream_until_error_message(RequestId::Integer(resume_id)),
+            )
+            .await??;
+            let data = error.error.data.expect("typed provider error");
+            assert_eq!(data["type"], "modelProviderNotConfigured");
+            assert_eq!(data["modelProvider"], "missing_migration_provider");
+            continue;
+        }
         let ThreadResumeResponse {
             thread,
             model: resumed_model,

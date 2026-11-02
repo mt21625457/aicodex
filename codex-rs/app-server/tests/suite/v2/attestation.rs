@@ -30,12 +30,11 @@ use tokio::time::timeout;
 
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(60);
 const ATTESTATION_HEADER: &str = "v1.integration-test";
-const APP_SERVER_ATTESTATION_HEADER: &str = r#"{"v":1,"s":0,"t":"v1.integration-test"}"#;
 
 #[test_case(ThreadStartParams::default(); "persistent")]
 #[test_case(ThreadStartParams { ephemeral: Some(true), ..Default::default() }; "ephemeral")]
 #[tokio::test]
-async fn attestation_generate_round_trip_adds_header_to_responses_websocket_handshake(
+async fn automatic_attestation_stays_disabled_for_responses_websocket_handshake(
     thread_start_params: ThreadStartParams,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -105,8 +104,8 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
     let mut turn_started = false;
     let mut turn_completed = false;
     let mut attestation_requests = 0;
-    // Prewarming can request attestation before thread/start or turn/start responds.
-    // Service those requests immediately instead of buffering them behind RPC responses.
+    // Observe prewarming as well as the turn. Service unexpected attestation
+    // requests so a regression fails the count assertion instead of timing out.
     timeout(DEFAULT_READ_TIMEOUT, async {
         loop {
             match mcp.read_next_message().await? {
@@ -160,7 +159,7 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
         }
     })
     .await??;
-    assert!(attestation_requests > 0);
+    assert_eq!(attestation_requests, 0);
 
     assert!(
         websocket_server
@@ -168,10 +167,7 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
             .await
     );
     let handshake = websocket_server.single_handshake();
-    assert_eq!(
-        handshake.header("x-oai-attestation").as_deref(),
-        Some(APP_SERVER_ATTESTATION_HEADER)
-    );
+    assert_eq!(handshake.header("x-oai-attestation").as_deref(), None);
 
     websocket_server.shutdown().await;
     Ok(())
@@ -200,6 +196,3 @@ supports_websockets = true
         ),
     )
 }
-
-// Startup prewarming can request attestation before thread/start or turn/start
-// returns. Service server requests while awaiting each client response.

@@ -663,13 +663,10 @@ async fn reconnect_exhaustion_and_unknown_initial_thread_stay_offline() -> Resul
     assert_eq!(start.elapsed().as_secs(), 120);
     app.begin_reconnect();
     app.chat_widget.reconnect_failed();
-    assert_snapshot!(
-        "reconnect_failed",
-        format!(
-            "{error}\n{}",
-            render_bottom_popup(&app.chat_widget, /*width*/ 80)
-        )
-    );
+    // The status indicator uses the real clock even while Tokio time is paused.
+    let popup = render_bottom_popup(&app.chat_widget, /*width*/ 80)
+        .replace("◦ Reconnect failed", "• Reconnect failed");
+    assert_snapshot!("reconnect_failed", format!("{error}\n{popup}"));
     tokio::time::resume();
     Ok(())
 }

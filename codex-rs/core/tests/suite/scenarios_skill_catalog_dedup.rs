@@ -208,7 +208,10 @@ async fn skill_catalog_deltas_survive_resume_and_rebuild_after_compaction() -> R
     let mut extensions = ExtensionRegistryBuilder::new();
     install_with_providers(
         &mut extensions,
-        SkillProviders::new().with_host_provider(Arc::new(HostSkillProvider::new())),
+        SkillProviders::new().with_host_provider(Arc::new(super::ScenarioHostSkills {
+            root: dunce::canonicalize(home.path())?,
+            provider: HostSkillProvider::new(),
+        })),
         |config: &Config| SkillsExtensionConfig {
             include_instructions: config.include_skill_instructions,
             omit_descriptions: config.features.enabled(Feature::OmitSkillDescriptions),

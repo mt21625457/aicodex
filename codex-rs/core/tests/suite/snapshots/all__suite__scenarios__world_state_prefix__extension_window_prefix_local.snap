@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_world_state_prefix_tests.rs
+assertion_line: 192
 expression: "context_snapshot::format_context_snapshot(\"An extension supplies A, stays unchanged, appends B, then supplies C during compaction. Only C starts the new window. Non-developer prefix fragments are never rendered.\",\n&[SnapshotEntry::captured(&requests[0]).labeled(\"Initial policy A\"),\nSnapshotEntry::captured(&requests[1]).labeled(\"Unchanged policy A\"),\nSnapshotEntry::captured(&requests[2]).labeled(\"Policy B appends to existing history\"),\nSnapshotEntry::captured(&requests[3]).labeled(\"Compaction request\"),\nSnapshotEntry::items(&replacement).labeled(\"Stored replacement before next turn\"),\nSnapshotEntry::captured(&requests[4]).labeled(\"Unchanged policy C after compaction\"),],\n&ContextSnapshotOptions::default().include_request_settings(),)"
 ---
 Scenario: An extension supplies A, stays unchanged, appends B, then supplies C during compaction. Only C starts the new window. Non-developer prefix fragments are never rendered.
@@ -16,7 +17,7 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn; Initial policy A) --
-00:additional_tools/developer (3; hash=bf2e30605ff5dc17):
+00:additional_tools/developer (3; hash=8fcd3df7f9bdfdc6):
         - namespace/functions; hash=fada4a476a3754dd
           - custom/exec
           - function/wait
@@ -24,7 +25,7 @@ Settings:
           - function/request_user_input_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=c586fb14818272de
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
@@ -51,12 +52,15 @@ Settings:
 
 02:message/developer:
     <scenario_instructions>scenario_prefix: A</scenario_instructions>
-03:message/developer[2]:
-    [01] <permissions instructions>
+03:message/developer[3]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <permissions instructions>
         Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `danger-full-access`...ll commands are permitted. Network access is enabled. [hash=c134061cebb94a1b]
         Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.
         </permissions instructions>
-    [02] <collaboration_mode># Collaboration Mode: Default
+    [03] <collaboration_mode># Collaboration Mode: Default
 
         You are now in Default mode. Any previous instructions for other modes (e.g. Plan mode) are no longer active.
 
@@ -132,7 +136,7 @@ Settings:
 ## Window 2 (after request 4: input diverged at item 02)
 Settings: unavailable (items only)
 -- request 5 (items; Stored replacement before next turn) --
-00:additional_tools/developer (3; hash=bf2e30605ff5dc17):
+00:additional_tools/developer (3; hash=8fcd3df7f9bdfdc6):
         - namespace/functions; hash=fada4a476a3754dd
           - custom/exec
           - function/wait
@@ -140,7 +144,7 @@ Settings: unavailable (items only)
           - function/request_user_input_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=c586fb14818272de
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
@@ -171,12 +175,15 @@ Settings: unavailable (items only)
     Plan the release.
 04:message/user:
     Check the plan.
-05:message/developer[2]:
-    [01] <permissions instructions>
+05:message/developer[3]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <permissions instructions>
         Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `danger-full-access`...ll commands are permitted. Network access is enabled. [hash=c134061cebb94a1b]
         Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.
         </permissions instructions>
-    [02] <collaboration_mode># Collaboration Mode: Default
+    [03] <collaboration_mode># Collaboration Mode: Default
 
         You are now in Default mode. Any previous instructions for other modes (e.g. Plan mode) are no longer active.
 
@@ -229,7 +236,7 @@ Settings: unavailable (items only)
 ## Window 3 (after request 5)
 Settings: same as window 1
 -- request 6 (turn; Unchanged policy C after compaction) --
-00:additional_tools/developer (3; hash=bf2e30605ff5dc17):
+00:additional_tools/developer (3; hash=8fcd3df7f9bdfdc6):
         - namespace/functions; hash=fada4a476a3754dd
           - custom/exec
           - function/wait
@@ -237,7 +244,7 @@ Settings: same as window 1
           - function/request_user_input_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=c586fb14818272de
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
@@ -268,12 +275,15 @@ Settings: same as window 1
     Plan the release.
 04:message/user:
     Check the plan.
-05:message/developer[2]:
-    [01] <permissions instructions>
+05:message/developer[3]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <permissions instructions>
         Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `danger-full-access`...ll commands are permitted. Network access is enabled. [hash=c134061cebb94a1b]
         Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.
         </permissions instructions>
-    [02] <collaboration_mode># Collaboration Mode: Default
+    [03] <collaboration_mode># Collaboration Mode: Default
 
         You are now in Default mode. Any previous instructions for other modes (e.g. Plan mode) are no longer active.
 

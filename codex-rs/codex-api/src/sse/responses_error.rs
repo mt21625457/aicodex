@@ -57,6 +57,7 @@ pub(super) fn parse_failed_response(response: Option<Value>) -> ApiError {
                 | "cyber_policy"
                 | "bio_policy"
                 | "misalignment_policy_violation"
+                | "policy_capacity_unavailable"
                 | "server_is_overloaded"
                 | "rate_limit_exceeded"
                 | "slow_down"

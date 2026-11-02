@@ -50,6 +50,7 @@ impl Fixture {
             // Translate the fixture before the timed diagnostic command.
             anyhow::ensure!(
                 std::process::Command::new(&program)
+                    .env("AICODEX_HOME", &home)
                     .env("CODEX_HOME", &home)
                     .arg("--version")
                     .output()?
@@ -119,6 +120,7 @@ wire_api = "responses"
         let mut command = assert_cmd::Command::new(&self.program);
         command
             .current_dir(&self.workspace)
+            .env("AICODEX_HOME", &self.home)
             .env("CODEX_HOME", &self.home)
             .env("HOME", self.root.path())
             .env("PATH", &self.path)

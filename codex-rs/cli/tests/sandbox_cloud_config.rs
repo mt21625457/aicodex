@@ -137,6 +137,7 @@ async fn run_cloud_sandbox(args: &[&str], bundle: Value) -> Result<Option<TempDi
     let chatgpt_base_url_override = format!("chatgpt_base_url=\"{chatgpt_base_url}\"");
     let output = Command::new(&codex)
         .current_dir(codex_home.path())
+        .env("AICODEX_HOME", codex_home.path())
         .env("CODEX_HOME", codex_home.path())
         .env("NO_PROXY", "127.0.0.1,localhost")
         .env("no_proxy", "127.0.0.1,localhost")

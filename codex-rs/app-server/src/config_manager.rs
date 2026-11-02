@@ -539,10 +539,25 @@ impl ConfigManager {
     pub(crate) async fn load_for_resume(
         &self,
         saved_provider: Option<&str>,
+        saved_model: Option<&str>,
+        explicit_provider_override: bool,
         request_overrides: Option<HashMap<String, serde_json::Value>>,
         typesafe_overrides: ConfigOverrides,
         cwd: Option<PathBuf>,
     ) -> std::io::Result<Config> {
+        // Only this released gateway alias migration can change a saved route. Unknown
+        // providers retain the ordinary fail-closed validation, including explicit overrides.
+        let migrating_deepseek_gateway = saved_model
+            .is_some_and(codex_models_manager::model_info::is_deepseek_model_slug)
+            && matches!(
+                saved_provider,
+                Some("aicodex_gateway" | "aicodex_gateway_claude")
+            );
+        let saved_provider = if migrating_deepseek_gateway {
+            Some("aicodex_gateway_responses")
+        } else {
+            saved_provider
+        };
         let requested_provider = typesafe_overrides.model_provider.clone().or_else(|| {
             request_overrides
                 .as_ref()
@@ -594,10 +609,15 @@ impl ConfigManager {
                     }
                 }
                 let current_provider = current_provider?;
-                for provider in [
-                    saved_provider.unwrap_or(requested_provider),
-                    requested_provider,
+                for (provider, is_requested) in [
+                    (saved_provider.unwrap_or(requested_provider), false),
+                    (requested_provider, true),
                 ] {
+                    // The existing DeepSeek migration contract permits an explicit configured
+                    // destination. Both routes already passed configuration and policy checks.
+                    if migrating_deepseek_gateway && explicit_provider_override && is_requested {
+                        continue;
+                    }
                     if provider != current_provider {
                         return Err(std::io::Error::new(
                             std::io::ErrorKind::InvalidInput,

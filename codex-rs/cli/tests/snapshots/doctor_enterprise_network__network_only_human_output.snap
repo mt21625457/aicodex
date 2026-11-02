@@ -15,5 +15,5 @@ Connectivity
 -------------------------------------------------------------
 4 ok | 0 warn | 0 fail ok
 
-Run codex doctor without --summary for detailed diagnostics.
+Run aicodex doctor without --summary for detailed diagnostics.
 --all expand truncated lists       --json redacted report

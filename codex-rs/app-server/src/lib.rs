@@ -574,6 +574,7 @@ pub async fn run_main_with_transport_options(
         .await?;
     let mut config_warnings = Vec::new();
     let mut plugin_startup_config = PluginStartupConfig::Current;
+    let startup_config_failed = startup.config.is_err();
     let config = match startup.config {
         Ok(config) => config,
         Err(err) if is_unsupported_untrusted_approval_policy_error(&err) => {
@@ -596,12 +597,19 @@ pub async fn run_main_with_transport_options(
         }
     };
     config.validate_windows_mxc_requirement()?;
-    config.auth_config().validate()?;
+    // Cloud-policy recovery must retain the local account authority and endpoint.
+    // Runtime defaults omit user settings and must not redirect policy requests.
+    let auth_config = if startup_config_failed {
+        &startup.bootstrap
+    } else {
+        &config
+    };
+    auth_config.auth_config().validate()?;
     let auth_manager =
-        AuthManager::shared_from_config(&config, /*enable_codex_api_key_env*/ false)
+        AuthManager::shared_from_config(auth_config, /*enable_codex_api_key_env*/ false)
             .await
             .map_err(std::io::Error::other)?;
-    config_manager.update_managed_config_loader(auth_manager.clone(), &config);
+    config_manager.update_managed_config_loader(auth_manager.clone(), auth_config);
     config_manager
         .sync_default_client_residency_requirement()
         .await;

@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_guardian_agent_messages_tests.rs
+assertion_line: 265
 expression: snapshot
 ---
 Scenario: A historical MAv2 send_message call and an encrypted parent reply reach both Guardian reviews exactly once, in order. Calls retain their original IDs, namespace and encryption metadata, with a paired evidence-only output. The second review appends to the first request. Ciphertext and decisions are mocked; this verifies transport, not backend decryption or authorization outcomes.
@@ -8,8 +9,11 @@ Scenario: A historical MAv2 send_message call and an encrypted parent reply reac
 -- request 1 (turn) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>
-01:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+01:message/developer[2]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 02:message/developer:
     You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.
 
@@ -42,8 +46,11 @@ Scenario: A historical MAv2 send_message call and an encrypted parent reply reac
 -- request 3 (turn) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>
-01:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+01:message/developer[2]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 02:message/developer:
     You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.
 
@@ -160,8 +167,11 @@ Scenario: A historical MAv2 send_message call and an encrypted parent reply reac
 -- request 5 (turn) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>
-01:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+01:message/developer[2]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 02:message/developer:
     You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.
 
@@ -325,8 +335,11 @@ Scenario: A historical MAv2 send_message call and an encrypted parent reply reac
 -- request 7 (turn) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>
-01:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+01:message/developer[2]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 02:message/developer:
     You are `/root`, the primary agent in a team of agents collaborating to fulfill the user's goals.
 

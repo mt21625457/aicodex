@@ -694,6 +694,9 @@ async fn grok_goal_budget_limit_stops_before_another_model_follow_up() -> Result
     MockResponsesConfig::new(server.uri())
         .with_model("grok-4.5")
         .enable_feature(Feature::Goals)
+        // This case consumes the completed response's usage before applying its budget stop.
+        // Instant-interrupt stream preemption is covered separately and can discard that usage.
+        .disable_feature(Feature::InstantInterrupt)
         .with_extra_config("[goals]\nmax_goal_token_budget = 100")
         .write(codex_home.path())?;
 

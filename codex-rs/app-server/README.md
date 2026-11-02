@@ -772,12 +772,16 @@ Paginated threads support the same views. Their `full` view is materialized from
 `thread/items/list` pages full persisted items across a thread, optionally filtered to one turn:
 
 ```json
-{ "method": "thread/items/list", "id": 25, "params": {
+{
+  "method": "thread/items/list",
+  "id": 25,
+  "params": {
     "threadId": "thr_123",
     "turnId": "turn_456",
     "limit": 100,
     "sortDirection": "asc"
-} }
+  }
+}
 ```
 
 Each returned entry includes the containing `turnId` and its full `item`, so clients can group
@@ -867,13 +871,13 @@ Use `thread/metadata/update` to patch sqlite-backed `gitInfo` without resuming a
 
 Experimental `daybreakEnabled` saves the client's on/off preference through `thread/metadata/update`. Omitted or null leaves the preference unchanged. The sqlite-backed `Thread.daybreakEnabled` is the source of truth: thread read/start/resume/fork responses return the saved value, or null when unset. Updates are persisted before the response. Saving a preference works before the first turn and does not require resuming the thread. Ephemeral threads are unsupported.
 
-| Client action | Daybreak behavior |
-| --- | --- |
-| Create a task | Copy the client's default on/off preference with `thread/metadata/update` before sending its first turn. |
-| Change the toggle | Save only that thread's preference through `thread/metadata/update`. An active turn keeps its original program. |
-| Start a turn | Compute `cyberAccessProgram` from the thread's preference and selected model. Starting or steering a turn never changes the saved toggle. |
-| Resume | Restore the saved preference, without applying the client's current default. |
-| Fork | Copy the parent's preference; later changes to either thread are independent. |
+| Client action     | Daybreak behavior                                                                                                                         |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Create a task     | Copy the client's default on/off preference with `thread/metadata/update` before sending its first turn.                                  |
+| Change the toggle | Save only that thread's preference through `thread/metadata/update`. An active turn keeps its original program.                           |
+| Start a turn      | Compute `cyberAccessProgram` from the thread's preference and selected model. Starting or steering a turn never changes the saved toggle. |
+| Resume            | Restore the saved preference, without applying the client's current default.                                                              |
+| Fork              | Copy the parent's preference; later changes to either thread are independent.                                                             |
 
 The saved preference controls the client's toggle; app-server does not derive a request program from it. `turn/start` has no `daybreakEnabled` field.
 
@@ -1896,7 +1900,7 @@ Because audio is intentionally separate from `ThreadItem`, clients can opt out o
 The app-server streams JSON-RPC notifications while a turn is running. Each turn emits `turn/started` when it begins running and ends with `turn/completed` (final `turn` status). Token usage events stream separately via `thread/tokenUsage/updated`. Clients subscribe to the events they care about, rendering each item incrementally as updates arrive. The per-item lifecycle is always: `item/started` → zero or more item-specific deltas → `item/completed`.
 
 - `turn/started` — `{ turn }` with the turn id, empty `items`, and `status: "inProgress"`.
- - `thread/tokenUsage/updated` — `{ threadId, turnId, tokenUsage }` with accumulated `total`, per-response `last`, nullable `modelContextWindow`, and explicit model-visible `contextTokens` / `contextSource` when available. Chat Completions uses the latest provider request total as `providerUsage`; when a compatible stream completes without its optional final usage chunk, core emits a `localEstimate` instead. Cached prompt tokens remain part of the input total and are not added to context occupancy a second time. For `body_after_prefix` auto-compaction, the first Chat local estimate fixes the estimated prefix baseline so subsequent growth can still reach the configured compact limit.
+- `thread/tokenUsage/updated` — `{ threadId, turnId, tokenUsage }` with accumulated `total`, per-response `last`, nullable `modelContextWindow`, and explicit model-visible `contextTokens` / `contextSource` when available. Chat Completions uses the latest provider request total as `providerUsage`; when a compatible stream completes without its optional final usage chunk, core emits a `localEstimate` instead. Cached prompt tokens remain part of the input total and are not added to context occupancy a second time. For `body_after_prefix` auto-compaction, the first Chat local estimate fixes the estimated prefix baseline so subsequent growth can still reach the configured compact limit.
 - `turn/completed` — `{ turn }` where `turn.status` is `completed`, `interrupted`, or `failed`; successful turns include their final agent message when available, and failures carry `{ error: { message, codexErrorInfo?, additionalDetails?, misalignment? } }`.
 - `turn/diff/updated` — `{ threadId, turnId, diff }` represents the up-to-date snapshot of the turn-level unified diff, emitted after every FileChange item. `diff` is the latest aggregated unified diff across every file change in the turn. UIs can render this to show the full "what changed" view without stitching individual `fileChange` items.
 - `turn/plan/updated` — `{ turnId, explanation?, plan }` whenever the agent shares or changes its plan; each `plan` entry is `{ step, status }` with `status` in `pending`, `inProgress`, or `completed`.
@@ -1931,6 +1935,7 @@ The app-server streams JSON-RPC notifications while a turn is running. Each turn
   items; their existing `subAgentActivity` notifications are unchanged, and `list_agents` emits no
   activity item. Calls cancelled during handler execution are recorded privately with status
   `interrupted`, distinct from tool failures.
+
 - `webSearch` — `{id, query, action?, results?}` for a web search request issued by the agent; `action` mirrors the Responses API web_search action payload (`search`, `open_page`, `find_in_page`) and may be omitted until completion. For standalone web search, `results` contains the out-of-band structured result DTOs returned by `/v1/alpha/search`; clients should ignore result types and fields they do not understand.
 - `imageGeneration` — `{id, status, revisedPrompt, result, transparentBackground, savedPath?}` for a generated image. `transparentBackground` is `true` when the Images API reports a transparent background, `false` when it reports an opaque background, and `null` when the background is automatic, unavailable, or the item has not completed. The field is always present on v2 item payloads, including persisted and resumed items.
 - `imageView` — `{id, path}` emitted when the agent invokes the image viewer tool.
@@ -2348,30 +2353,34 @@ MCP tool hooks appear with `handlerType: "mcpTool"`. Their `server` and `tool` f
 {
   "id": 28,
   "result": {
-    "data": [{
-      "cwd": "/Users/me/project",
-      "hooks": [{
-        "key": "/Users/me/.codex/config.toml:pre_tool_use:0:0",
-        "eventName": "pre_tool_use",
-        "handlerType": "command",
-        "async": false,
-        "isManaged": false,
-        "matcher": "Bash",
-        "command": "python3 /Users/me/hook.py",
-        "timeoutSec": 5,
-        "statusMessage": "running hook",
-        "additionalContextLimit": null,
-        "sourcePath": "/Users/me/.codex/config.toml",
-        "source": "user",
-        "pluginId": null,
-        "displayOrder": 0,
-        "enabled": true,
-        "currentHash": "sha256:...",
-        "trustStatus": "untrusted"
-      }],
-      "warnings": [],
-      "errors": []
-    }]
+    "data": [
+      {
+        "cwd": "/Users/me/project",
+        "hooks": [
+          {
+            "key": "/Users/me/.codex/config.toml:pre_tool_use:0:0",
+            "eventName": "pre_tool_use",
+            "handlerType": "command",
+            "async": false,
+            "isManaged": false,
+            "matcher": "Bash",
+            "command": "python3 /Users/me/hook.py",
+            "timeoutSec": 5,
+            "statusMessage": "running hook",
+            "additionalContextLimit": null,
+            "sourcePath": "/Users/me/.codex/config.toml",
+            "source": "user",
+            "pluginId": null,
+            "displayOrder": 0,
+            "enabled": true,
+            "currentHash": "sha256:...",
+            "trustStatus": "untrusted"
+          }
+        ],
+        "warnings": [],
+        "errors": []
+      }
+    ]
   }
 }
 ```
@@ -2383,21 +2392,24 @@ To disable a non-managed hook, upsert a state entry at `hooks.state` with `confi
   "method": "config/batchWrite",
   "id": 29,
   "params": {
-    "edits": [{
-      "keyPath": "hooks.state",
-      "value": {
-        "/Users/me/.codex/config.toml:pre_tool_use:0:0": {
-          "enabled": false
-        }
-      },
-      "mergeStrategy": "upsert"
-    }],
+    "edits": [
+      {
+        "keyPath": "hooks.state",
+        "value": {
+          "/Users/me/.codex/config.toml:pre_tool_use:0:0": {
+            "enabled": false
+          }
+        },
+        "mergeStrategy": "upsert"
+      }
+    ],
     "reloadUserConfig": true
   }
 }
 ```
 
 To re-enable it, upsert the same hook key with `"enabled": true`.
+
 ## Apps
 
 Use `app/installed` to read installed apps and whether each app is currently enabled and callable.
@@ -3218,9 +3230,14 @@ later. Existing trust decisions and permission checks for projects are unchanged
 # Review delivery
 
 `review/start` runs the review on the supplied thread and returns that same
-`reviewThreadId`. Clients can omit `delivery`, send `null`, or specify `"inline"`.
-Clients that used `"detached"` should call `thread/start` and pass the new thread id
-to `review/start`. To keep the original conversation history with custom review
+`reviewThreadId` when clients omit `delivery`, send `null`, or specify `"inline"`.
+The deprecated `"detached"` delivery remains supported for legacy-history threads:
+it creates a separate review thread and returns its id. Paginated threads reject
+detached delivery. Both accepted and rejected detached requests emit a deprecation
+notice.
+
+Clients should migrate to `thread/start` and pass the new thread id to
+`review/start`. To keep the original conversation history with custom review
 instructions, use `thread/fork` followed by `turn/start`.
 
 # Thread removal

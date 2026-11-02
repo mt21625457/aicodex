@@ -285,7 +285,11 @@ pub async fn load_default_config_for_test_with_cloud_config_bundle(
         .build()
         .await
         .expect("defaults for test should always succeed");
-    config.sqlite = codex_state::SqliteConfig::new_for_testing(codex_home.path().abs());
+    let mut sqlite = codex_state::SqliteConfig::new_for_testing(codex_home.path().abs());
+    if let Some(log_dir) = config.configured_log_dir() {
+        sqlite = sqlite.with_local_logs_home(log_dir.to_path_buf());
+    }
+    config.sqlite = sqlite;
     let _ = config.features.disable(Feature::Apps);
     config
 }

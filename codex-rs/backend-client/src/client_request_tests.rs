@@ -177,6 +177,12 @@ fn run_without_environment_proxies(test_name: &str) -> bool {
     ] {
         command.env_remove(key);
     }
+    // Reqwest can discover macOS system proxies even after proxy env vars are removed.
+    // Keep the initial loopback request direct; the explicit injected fallback proxy
+    // has its own no-proxy policy and must still receive the retried request.
+    for key in ["NO_PROXY", "no_proxy"] {
+        command.env(key, "127.0.0.1,localhost,::1");
+    }
     let output = command.output().expect("run isolated proxy test");
     assert!(
         output.status.success(),

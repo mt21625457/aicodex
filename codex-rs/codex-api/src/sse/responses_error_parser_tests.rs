@@ -68,3 +68,29 @@ async fn explicit_rate_limit_code_takes_precedence_over_media_message() {
         other => panic!("expected a rate limit error, got {other:?}"),
     }
 }
+
+#[tokio::test(start_paused = true)]
+async fn policy_capacity_code_preserves_retry_advice_over_media_message() {
+    for retry_seconds in [None, Some(3)] {
+        let mut response = serde_json::json!({
+            "error": {
+                "code": "policy_capacity_unavailable",
+                "message": "Could not process image: policy-restricted capacity unavailable."
+            }
+        });
+        if let Some(seconds) = retry_seconds {
+            response["error"]["headers"] = serde_json::json!({"retry-after": seconds.to_string()});
+        }
+        let error = parse_failed_response(Some(response));
+        match error {
+            ApiError::PolicyCapacityUnavailable { retry_after } => {
+                assert_eq!(
+                    retry_after,
+                    retry_seconds
+                        .and_then(|seconds| RetryAfter::from_delay(Duration::from_secs(seconds)))
+                );
+            }
+            other => panic!("expected a policy capacity error, got {other:?}"),
+        }
+    }
+}

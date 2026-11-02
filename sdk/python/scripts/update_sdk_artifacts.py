@@ -237,14 +237,24 @@ def _extract_codex_package_archive(package_archive: Path, runtime_package_root: 
 
 def _validate_codex_package_layout(package_dir: Path, package_source: Path) -> None:
     missing_entries = []
-    if not (package_dir / CODEX_PACKAGE_METADATA).is_file():
+    metadata_path = package_dir / CODEX_PACKAGE_METADATA
+    entrypoint = f"bin/{runtime_binary_name()}"
+    if not metadata_path.is_file():
         missing_entries.append(CODEX_PACKAGE_METADATA)
+    else:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        entrypoint = metadata.get("entrypoint", entrypoint)
+        suffix = ".exe" if _is_windows() else ""
+        if entrypoint not in (f"bin/codex{suffix}", f"bin/aicodex{suffix}"):
+            raise RuntimeError(
+                f"Invalid canonical CLI entrypoint in {package_source}: {entrypoint!r}"
+            )
     for entry in ("bin", "codex-resources", "codex-path"):
         if not (package_dir / entry).is_dir():
             missing_entries.append(entry)
-    package_binary = package_dir / "bin" / runtime_binary_name()
+    package_binary = package_dir / entrypoint
     if not package_binary.is_file():
-        missing_entries.append(str(Path("bin") / runtime_binary_name()))
+        missing_entries.append(entrypoint)
     code_mode_host = package_dir / "bin" / runtime_code_mode_host_name()
     if not code_mode_host.is_file():
         missing_entries.append(str(Path("bin") / runtime_code_mode_host_name()))

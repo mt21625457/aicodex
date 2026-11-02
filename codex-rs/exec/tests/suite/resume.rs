@@ -632,6 +632,8 @@ async fn exec_resume_accepts_global_flags_after_subcommand() -> anyhow::Result<(
         .arg("--last")
         .arg("--config")
         .arg(base_config)
+        .arg("--config")
+        .arg("model_providers.openai.supports_websockets=false")
         .arg("--json")
         .arg("--model")
         .arg("gpt-5.2-codex")

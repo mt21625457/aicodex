@@ -213,6 +213,7 @@ async fn credentials_stay_out_of_persisted_and_feedback_logs() -> Result<()> {
     let bearer = "synthetic-provider-bearer";
     let header = "synthetic-provider-header";
     let attestation = "synthetic-attestation-token";
+    let attestation_header = format!(r#"{{"v":1,"s":0,"t":"{attestation}"}}"#);
     let account_id = "123e4567-e89b-42d3-a456-426614174011";
     let initial_token = encode_id_token(
         &ChatGptIdTokenClaims::new()
@@ -245,7 +246,11 @@ async fn credentials_stay_out_of_persisted_and_feedback_logs() -> Result<()> {
     let server_uri = server.uri();
     MockResponsesConfig::new(&server_uri)
         .with_root_config(&format!("chatgpt_base_url = \"{server_uri}/backend-api\""))
-        .with_provider_config("requires_openai_auth = true\nsupports_websockets = false")
+        // Automatic attestation is disabled on this branch. Supply a synthetic
+        // credential explicitly so both persisted log paths still exercise it.
+        .with_provider_config(&format!(
+            "requires_openai_auth = true\nsupports_websockets = false\nhttp_headers = {{ x-oai-attestation = '{attestation_header}' }}",
+        ))
         .with_extra_config(&format!(
             r#"
 [model_providers.bearer_provider]
@@ -324,9 +329,6 @@ supports_websockets = false
                 match app_server.read_next_message().await? {
                     JSONRPCMessage::Request(request) => {
                         let (request_id, result) = match ServerRequest::try_from(request)? {
-                            ServerRequest::AttestationGenerate { request_id, .. } => {
-                                (request_id, json!({ "token": attestation }))
-                            }
                             ServerRequest::ChatgptAuthTokensRefresh { request_id, .. } => (
                                 request_id,
                                 json!({
@@ -371,7 +373,7 @@ supports_websockets = false
     assert_eq!(requests[0].header("x-credential").as_deref(), Some(header));
     assert_eq!(
         requests[2].header("x-oai-attestation"),
-        Some(format!(r#"{{"v":1,"s":0,"t":"{attestation}"}}"#))
+        Some(attestation_header)
     );
 
     // Wait for a later event so buffered logs cannot hide a leak.

@@ -1,13 +1,13 @@
 ---
 source: core/tests/suite/scenarios.rs
-assertion_line: 723
+assertion_line: 743
 expression: "context_snapshot::format_request_history_snapshot(\"Available file references pass through. A later request replaces missing files, preserves references on backend errors, rechecks each distinct ID once, and keeps canonical history intact.\",\n&requests, &ContextSnapshotOptions::default().rewrite_known_segments(),)"
 ---
 Scenario: Available file references pass through. A later request replaces missing files, preserves references on backend errors, rechecks each distinct ID once, and keeps canonical history intact.
 
 ## Window 1
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=bf2e30605ff5dc17):
+00:additional_tools/developer (3; hash=8fcd3df7f9bdfdc6):
         - namespace/functions; hash=fada4a476a3754dd
           - custom/exec
           - function/wait
@@ -15,7 +15,7 @@ Scenario: Available file references pass through. A later request replaces missi
           - function/request_user_input_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=c586fb14818272de
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
@@ -24,9 +24,12 @@ Scenario: Available file references pass through. A later request replaces missi
           - function/wait_agent
 01:message/developer:
     <MODEL_INSTRUCTIONS>
-02:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <COLLABORATION_MODE>
+02:message/developer[3]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <COLLABORATION_MODE>
 03:message/developer:
     <MULTI_AGENT_ROLE>
 04:message/developer:
@@ -43,7 +46,7 @@ Scenario: Available file references pass through. A later request replaces missi
 
 ## Window 2 (after request 1: input diverged at item 06)
 -- request 2 (turn) --
-00:additional_tools/developer (3; hash=bf2e30605ff5dc17):
+00:additional_tools/developer (3; hash=8fcd3df7f9bdfdc6):
         - namespace/functions; hash=fada4a476a3754dd
           - custom/exec
           - function/wait
@@ -51,7 +54,7 @@ Scenario: Available file references pass through. A later request replaces missi
           - function/request_user_input_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=c586fb14818272de
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
@@ -60,9 +63,12 @@ Scenario: Available file references pass through. A later request replaces missi
           - function/wait_agent
 01:message/developer:
     <MODEL_INSTRUCTIONS>
-02:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <COLLABORATION_MODE>
+02:message/developer[3]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <COLLABORATION_MODE>
 03:message/developer:
     <MULTI_AGENT_ROLE>
 04:message/developer:

@@ -16654,6 +16654,7 @@ dependencies = [
 [[package]]
 name = "v8"
 version = "152.2.0"
+source = "git+https://github.com/seanh-oai/rusty_v8.git?rev=350c5a859a9b3c84ab8701b3ad51e3b7699b30c0#350c5a859a9b3c84ab8701b3ad51e3b7699b30c0"
 dependencies = [
  "bindgen",
  "bitflags 2.13.1",

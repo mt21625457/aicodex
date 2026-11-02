@@ -3670,11 +3670,18 @@ async fn try_run_sampling_request(
                 let originator = codex_otel::auth_storage::AuthStorageOriginator::from_client_name(
                     &turn_context.originator,
                 );
-                sess.services
-                    .models_refresh_background
-                    .schedule(originator.scope(async move {
+                sess.services.models_refresh_background.schedule(
+                    crate::models_refresh_background::RefreshKey {
+                        catalog: Arc::as_ptr(&manager) as *const () as usize,
+                        auth_generation: manager
+                            .auth_manager()
+                            .map(|auth| auth.auth_change_state_receiver().borrow().generation),
+                        etag: etag.clone(),
+                    },
+                    originator.scope(async move {
                         manager.refresh_if_new_etag(etag, factory).await;
-                    }));
+                    }),
+                );
             }
             ResponseEvent::Completed {
                 response_id,

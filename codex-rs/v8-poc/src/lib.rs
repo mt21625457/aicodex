@@ -161,19 +161,26 @@ mod tests {
             #[allow(clippy::absurd_extreme_comparisons)]
             let on_heap =
                 v8::TYPED_ARRAY_MAX_SIZE_IN_HEAP != 0 && length <= v8::TYPED_ARRAY_MAX_SIZE_IN_HEAP;
-            // Check native placement before asking C++ to copy into storage:
+            assert_eq!(view.byte_length(), length);
+            // Empty views may legitimately keep their buffer lazy even when the
+            // compiled on-heap limit is zero; their pointer has no byte identity.
+            // Check nonempty native placement before asking C++ to copy into storage:
             // stale size-zero bindings must fail here rather than abort in FFI.
-            assert_eq!(view.has_buffer(), !on_heap, "byte length {length}");
+            if length > 0 {
+                assert_eq!(view.has_buffer(), !on_heap, "byte length {length}");
+            }
 
             let mut storage = vec![0; v8::TYPED_ARRAY_MAX_SIZE_IN_HEAP];
             let storage_ptr = storage.as_ptr();
             let contents = view.get_contents(&mut storage);
             assert_eq!(contents, vec![90; length], "byte length {length}");
-            if on_heap {
+            if length > 0 && on_heap {
                 assert_eq!(contents.as_ptr(), storage_ptr);
             }
             // Reading inline contents copies bytes without promoting the view.
-            assert_eq!(view.has_buffer(), !on_heap, "byte length {length}");
+            if length > 0 {
+                assert_eq!(view.has_buffer(), !on_heap, "byte length {length}");
+            }
         }
     }
 

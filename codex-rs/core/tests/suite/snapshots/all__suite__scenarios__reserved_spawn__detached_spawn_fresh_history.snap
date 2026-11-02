@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_reserved_spawn.rs
+assertion_line: 515
 expression: history
 ---
 Scenario: A prepares a child. After A and its manager shut down, a second manager creates the idle child and then starts its first turn.
@@ -16,9 +17,12 @@ Scenario: A prepares a child. After A and its manager shut down, a second manage
           - function/sleep
 01:message/developer:
     <MODEL_INSTRUCTIONS>
-02:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <COLLABORATION_MODE>
+02:message/developer[3]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <COLLABORATION_MODE>
 03:message/developer:
     <MULTI_AGENT_ROLE>
 04:message/developer:
@@ -43,9 +47,12 @@ Scenario: A prepares a child. After A and its manager shut down, a second manage
           - function/sleep
 01:message/developer:
     <MODEL_INSTRUCTIONS>
-02:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <COLLABORATION_MODE>
+02:message/developer[3]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <COLLABORATION_MODE>
 03:message/developer:
     <MULTI_AGENT_ROLE>
 04:message/developer:

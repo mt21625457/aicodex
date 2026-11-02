@@ -5,11 +5,11 @@ expression: stdout
 Codex Doctor v0.0.0
 
 Notes
-   [XX] config       config could not be loaded - Fix the reported config error, then rerun codex doctor.
+   [XX] config       config could not be loaded - Fix the reported config error, then rerun aicodex doctor.
 -------------------------------------------------------------
 
 Configuration
-  [XX] config       config could not be loaded - Fix the reported config error, then rerun codex doctor.
+  [XX] config       config could not be loaded - Fix the reported config error, then rerun aicodex doctor.
       feature flags            0 enabled · 0 overridden
       error                    invalid configuration
       file                     <CODEX_HOME>/config.toml

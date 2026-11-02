@@ -24,13 +24,38 @@ use tokio::io::BufReader;
 
 #[tokio::test]
 async fn standalone_initializes_reports_version_and_runs_helpers() -> anyhow::Result<()> {
-    let binary = cargo_bin("codex-exec-server")?;
+    verify_standalone(/*packaged*/ true).await
+}
+
+#[tokio::test]
+async fn source_standalone_reports_zero_package_version_and_runs_helpers() -> anyhow::Result<()> {
+    verify_standalone(/*packaged*/ false).await
+}
+
+async fn verify_standalone(packaged: bool) -> anyhow::Result<()> {
+    let installation = tempfile::tempdir()?;
+    let bin_dir = installation.path().join("bin");
+    std::fs::create_dir(&bin_dir)?;
+    let binary = bin_dir.join(format!("codex-exec-server{}", std::env::consts::EXE_SUFFIX));
+    codex_utils_cargo_bin::copy_executable(&cargo_bin("codex-exec-server")?, &binary)?;
+    let expected_executor_version = if packaged {
+        std::fs::write(
+            installation.path().join("codex-package.json"),
+            serde_json::to_vec(&json!({"version": env!("CARGO_PKG_VERSION")}))?,
+        )?;
+        env!("CARGO_PKG_VERSION")
+    } else {
+        // Without package metadata the protocol identifies a source build, even
+        // when the binary was compiled with Cargo's release profile.
+        "0.0.0"
+    };
     let directory = tempfile::tempdir()?;
     let cwd = url::Url::from_directory_path(directory.path())
         .map_err(|()| anyhow::anyhow!("file URI"))?;
     let version = tokio::process::Command::from(background_command(&binary))
         .arg("--version")
         .env("CODEX_HOME", directory.path())
+        .env("AICODEX_HOME", directory.path())
         .output()
         .await?;
     assert!(version.status.success(), "{version:?}");
@@ -75,6 +100,7 @@ async fn standalone_initializes_reports_version_and_runs_helpers() -> anyhow::Re
             .args(["--listen", "stdio"])
             .current_dir(directory.path())
             .env("CODEX_HOME", directory.path())
+            .env("AICODEX_HOME", directory.path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -90,7 +116,7 @@ async fn standalone_initializes_reports_version_and_runs_helpers() -> anyhow::Re
         assert_eq!(response["id"], 1);
         assert!(response["result"]["sessionId"].is_string(), "{response}");
         let environment = response["result"]["environmentInfo"].clone();
-        assert_eq!(environment["executorVersion"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(environment["executorVersion"], expected_executor_version);
         let initialized = json!({"method": "initialized", "params": {}});
         let info = json!({"id": 2, "method": "environment/info", "params": {}});
         stdin
@@ -103,7 +129,8 @@ async fn standalone_initializes_reports_version_and_runs_helpers() -> anyhow::Re
         let file = directory.path().join("readable.txt");
         std::fs::write(&file, "ok")?;
         let read = json!({"id": 3, "method": "fs/readFile", "params": {
-            "path": url::Url::from_file_path(&file).unwrap(), "sandbox": sandbox,
+            "path": url::Url::from_file_path(&file)
+                .map_err(|()| anyhow::anyhow!("temporary fixture path must be an absolute file URL"))?, "sandbox": sandbox,
         }});
         stdin.write_all(format!("{read}\n").as_bytes()).await?;
         let response: Value =

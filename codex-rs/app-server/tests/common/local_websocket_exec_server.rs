@@ -24,13 +24,32 @@ pub(crate) struct LocalWebsocketExecServer {
 }
 
 impl LocalWebsocketExecServer {
-    pub(crate) async fn start(codex_home: &Path, exec_server_program: &Path) -> Result<Self> {
+    pub(crate) async fn start(
+        codex_home: &Path,
+        exec_server_program: &Path,
+        env_overrides: &[(String, Option<String>)],
+    ) -> Result<Self> {
         let mut command = Command::new(exec_server_program);
         command.stdin(Stdio::null());
         command.stdout(Stdio::piped());
         command.stderr(Stdio::inherit());
         command.current_dir(codex_home);
         command.env("CODEX_HOME", codex_home);
+        command.env("HOME", codex_home);
+        command.env("USERPROFILE", codex_home);
+        // Mirror the app-server fixture home while preserving explicit overrides.
+        for (key, value) in env_overrides {
+            if matches!(key.as_str(), "HOME" | "USERPROFILE") {
+                match value {
+                    Some(value) => {
+                        command.env(key, value);
+                    }
+                    None => {
+                        command.env_remove(key);
+                    }
+                }
+            }
+        }
         #[cfg(target_os = "linux")]
         command.env(
             CODEX_LINUX_SANDBOX_EXE_ENV_VAR,

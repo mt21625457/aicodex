@@ -285,6 +285,11 @@ impl TestAppServer {
         cmd.env("AICODEX_HOME", codex_home);
         cmd.env("CODEX_HOME", codex_home);
         cmd.env("CODEX_SQLITE_HOME", codex_home);
+        // Host and local-executor skills also scan the platform home independently
+        // of CODEX_HOME. Keep that discovery inside the fixture by default;
+        // suite-provided environment overrides below retain precedence.
+        cmd.env("HOME", codex_home);
+        cmd.env("USERPROFILE", codex_home);
         cmd.env("RUST_LOG", "warn");
         // Keep integration tests isolated from host managed configuration.
         cmd.env(
@@ -2067,9 +2072,12 @@ impl TestAppServerBuilder {
                         // Local auto environments normally use stdio. Start a
                         // host-local WebSocket fixture so the delay interposer has a
                         // socket stream to wrap.
-                        let local_websocket_exec_server =
-                            LocalWebsocketExecServer::start(&codex_home, &exec_server_program)
-                                .await?;
+                        let local_websocket_exec_server = LocalWebsocketExecServer::start(
+                            &codex_home,
+                            &exec_server_program,
+                            &env_overrides,
+                        )
+                        .await?;
                         let interposer = WebsocketDelayInterposer::start(
                             local_websocket_exec_server.websocket_url(),
                             added_delay,

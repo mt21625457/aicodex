@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios.rs
+assertion_line: 3201
 expression: "context_snapshot::format_context_snapshot(description, &entries,\n&ContextSnapshotOptions::default().include_request_settings(),)"
 ---
 Scenario: Catalog root and omitted-path wording follows the selected model, appending changed permissions once while preserving prior input and the mandatory omission warning.
@@ -15,13 +16,13 @@ Settings:
   stream: true
   tool_choice: "auto"
 -- request 1 (request) --
-00:additional_tools/developer (2; hash=4c702e756cd52226):
+00:additional_tools/developer (2; hash=b4551955e78b5fed):
         - namespace/functions; hash=ce01915b77cef9ee
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
           - function/view_image
-        - namespace/multi_agent_v1: Tools for spawning and managing sub-agents.; hash=c826e5b07fd2820f
+        - namespace/multi_agent_v1: Tools for spawning and managing sub-agents.; hash=1dda6d79358d14d2
           - function/close_agent
           - function/resume_agent
           - function/send_input
@@ -29,14 +30,17 @@ Settings:
           - function/wait_agent
 01:message/developer:
     Help with the workspace.
-02:message/developer:
-    <permissions instructions>
-    Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `workspace-write`: T...ries requires approval. Network access is restricted. [hash=99963de5837f6638]
-    Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.
-    Model A roots: <BOUNDED_ROOT_LIST>.
-    Model A omitted paths:
-    Additional permission paths/globs are omitted. All restrictions still apply; do not use escalation or additional permissions to bypass omitted read denials.
-    </permissions instructions>
+02:message/developer[2]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <permissions instructions>
+        Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `workspace-write`: T...ries requires approval. Network access is restricted. [hash=99963de5837f6638]
+        Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.
+        Model A roots: <BOUNDED_ROOT_LIST>.
+        Model A omitted paths:
+        Additional permission paths/globs are omitted. All restrictions still apply; do not use escalation or additional permissions to bypass omitted read denials.
+        </permissions instructions>
 03:message/user:
     <environment_context>
       <cwd><CWD></cwd>
@@ -52,13 +56,13 @@ Settings:
 Settings: relative to window 1
   model: "catalog-writable-roots-b"
 -- request 2 (request) --
-00:additional_tools/developer (2; hash=4c702e756cd52226):
+00:additional_tools/developer (2; hash=b4551955e78b5fed):
         - namespace/functions; hash=ce01915b77cef9ee
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
           - function/view_image
-        - namespace/multi_agent_v1: Tools for spawning and managing sub-agents.; hash=c826e5b07fd2820f
+        - namespace/multi_agent_v1: Tools for spawning and managing sub-agents.; hash=1dda6d79358d14d2
           - function/close_agent
           - function/resume_agent
           - function/send_input
@@ -66,14 +70,17 @@ Settings: relative to window 1
           - function/wait_agent
 01:message/developer:
     Help with the workspace.
-02:message/developer:
-    <permissions instructions>
-    Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `workspace-write`: T...ries requires approval. Network access is restricted. [hash=99963de5837f6638]
-    Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.
-    Model A roots: <BOUNDED_ROOT_LIST>.
-    Model A omitted paths:
-    Additional permission paths/globs are omitted. All restrictions still apply; do not use escalation or additional permissions to bypass omitted read denials.
-    </permissions instructions>
+02:message/developer[2]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <permissions instructions>
+        Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `workspace-write`: T...ries requires approval. Network access is restricted. [hash=99963de5837f6638]
+        Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.
+        Model A roots: <BOUNDED_ROOT_LIST>.
+        Model A omitted paths:
+        Additional permission paths/globs are omitted. All restrictions still apply; do not use escalation or additional permissions to bypass omitted read denials.
+        </permissions instructions>
 03:message/user:
     <environment_context>
       <cwd><CWD></cwd>
