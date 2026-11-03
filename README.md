@@ -76,6 +76,7 @@ You can also use Codex with an API key, but this requires [additional setup](htt
 
 - [**Codex Documentation**](https://developers.openai.com/codex)
 - [**Contributing**](./docs/contributing.md)
+- [**内核 Bug 记录与回归约束**](./bugs/README.md)
 - [**Installing & building**](./docs/install.md)
 - [**Open source fund**](./docs/open-source-fund.md)
 
