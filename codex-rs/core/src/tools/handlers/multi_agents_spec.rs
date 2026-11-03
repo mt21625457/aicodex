@@ -904,6 +904,7 @@ fn spawn_agent_models_description(
     )
 }
 
+// 保留工具的 number 声明是服务端模型契约；整数语义由 handler 精确校验，不能收窄公开 schema。
 fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema {
     let properties = BTreeMap::from([
         (
@@ -918,7 +919,7 @@ fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema
         ),
         (
             "timeout_ms".to_string(),
-            JsonSchema::integer(Some(format!(
+            JsonSchema::number(Some(format!(
                 "Timeout in milliseconds. Defaults to {}, min {}, max {}. Prefer longer waits (minutes) to avoid busy polling.",
                 options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,
             ))),
@@ -935,7 +936,7 @@ fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema
 fn wait_agent_tool_parameters_v2(options: WaitAgentTimeoutOptions) -> JsonSchema {
     let properties = BTreeMap::from([(
         "timeout_ms".to_string(),
-        JsonSchema::integer(Some(format!(
+        JsonSchema::number(Some(format!(
             "Timeout in milliseconds. Defaults to {}, min {}, max {}.",
             options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,
         ))),
