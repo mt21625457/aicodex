@@ -567,6 +567,8 @@ impl CodexErr {
             | CodexErrorDetails::InternalServerError
             | CodexErrorDetails::InternalAgentDied => CodexErrorInfo::InternalServerError,
             CodexErrorDetails::UnsupportedOperation(_)
+            // 参数拒绝应跨 app-server 边界保留 badRequest，不能退化成无类型的 Other。
+            | CodexErrorDetails::InvalidRequest(_)
             | CodexErrorDetails::ThreadNotFound(_)
             | CodexErrorDetails::AgentLimitReached { .. } => CodexErrorInfo::BadRequest,
             CodexErrorDetails::Sandbox(_) => CodexErrorInfo::SandboxError,

@@ -64,6 +64,7 @@ impl Prompt {
         model_info: &ModelInfo,
     ) -> Vec<ResponseItem> {
         let mut input = self.input.clone();
+        crate::client_tool_schema_compat::normalize_historical_wait_schema(&mut input);
         normalize_image_details(&mut input, model_info);
         // when using the *Freeform* apply_patch tool specifically, tool outputs
         // should be structured text, not json. Do NOT reserialize when using

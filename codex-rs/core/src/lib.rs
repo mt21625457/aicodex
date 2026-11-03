@@ -13,6 +13,7 @@ mod apply_patch;
 mod apps;
 mod client;
 mod client_common;
+mod client_tool_schema_compat;
 mod model_request;
 mod realtime_context;
 mod realtime_conversation;
