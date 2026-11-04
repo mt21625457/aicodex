@@ -33,7 +33,7 @@ impl Gauge {
         let _ = self
             .value
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                Some(value.saturating_sub(1))
+                value.checked_sub(1)
             });
     }
 

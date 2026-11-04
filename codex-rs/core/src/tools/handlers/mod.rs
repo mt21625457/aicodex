@@ -190,7 +190,12 @@ fn selected_executor<'a>(
     snapshot: &'a TurnEnvironmentSnapshot,
 ) -> Result<&'a TurnEnvironment, FunctionCallError> {
     match environments {
-        ToolEnvironments::Arguments(args) if let [(_, env)] = args.as_slice() => Ok(env),
+        ToolEnvironments::Arguments(args) => match args.as_slice() {
+            [(_, env)] => Ok(env),
+            _ => Err(FunctionCallError::Fatal(
+                "expected one executor for this call".to_string(),
+            )),
+        },
         // Direct handler callers may supply only the step context.
         ToolEnvironments::All => resolve_tool_environment(snapshot, /*environment_id*/ None),
         _ => Err(FunctionCallError::Fatal(
