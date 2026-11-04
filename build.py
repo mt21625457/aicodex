@@ -756,6 +756,67 @@ def build_codex_cli_targets(
 # ---------------------------------------------------------------------------
 
 
+def remove_legacy_pnpm_links() -> None:
+    """Remove only local virtual-store symlinks before a Windows hoisted install.
+
+    pnpm 12's installer can attempt file deletion on old directory symlinks,
+    which Windows rejects with ERROR_ACCESS_DENIED. Never traverse these links
+    or delete their targets, real package directories, or external links.
+    """
+    if sys.platform != "win32":
+        return
+    config = run(["pnpm", "config", "get", "nodeLinker"],
+                 cwd=REPO_ROOT, capture_output=True)
+    if config.stdout.strip() != "hoisted":
+        return
+
+    root = REPO_ROOT.resolve()
+    store = root / "node_modules" / ".pnpm"
+    if store.resolve() != store:
+        return
+    for relative in (
+        "node_modules",
+        "codex-cli/node_modules",
+        "codex-rs/responses-api-proxy/npm/node_modules",
+        "sdk/typescript/node_modules",
+    ):
+        modules = root / relative
+        # Reject redirected ancestors as well as a linked node_modules itself.
+        if modules.resolve() != modules or not modules.is_dir():
+            continue
+        candidates = list(modules.iterdir())
+        for scope in list(candidates):
+            if (scope.name.startswith("@") and scope.is_dir()
+                    and scope.resolve() == scope):
+                candidates.extend(scope.iterdir())
+        for link in candidates:
+            if not link.is_symlink():
+                continue
+            target = link.resolve()
+            if not target.is_relative_to(store):
+                continue
+            print(f"  → Removing legacy pnpm link: {link.relative_to(root)}",
+                  file=sys.stderr)
+            # Python handles Windows directory symlinks in unlink(), including
+            # dangling links. This is non-recursive and preserves the target.
+            link.unlink()
+        # Interrupted migrations can leave old command shims even after all
+        # links are gone. They shadow the new root-level hoisted commands.
+        bins = modules / ".bin"
+        if bins.resolve() != bins or not bins.is_dir():
+            continue
+        for shim in bins.iterdir():
+            if (shim.is_symlink() or not shim.is_file()
+                    or shim.suffix.lower() not in ("", ".cmd", ".ps1")
+                    or shim.stat().st_size > 64 * 1024):
+                continue
+            content = shim.read_text(encoding="utf-8", errors="replace")
+            if "NODE_PATH" in content and re.search(r"[/\\]\.pnpm[/\\]", content):
+                print(f"  → Removing legacy pnpm shim: {shim.relative_to(root)}",
+                      file=sys.stderr)
+                shim.unlink()
+
+
 def build_ts(*, install_deps: bool = True, verbose: bool = False) -> None:
     """Build TypeScript packages using pnpm."""
     if not node_available():
@@ -767,6 +828,7 @@ def build_ts(*, install_deps: bool = True, verbose: bool = False) -> None:
         sys.exit(1)
 
     if install_deps:
+        remove_legacy_pnpm_links()
         run(["pnpm", "install"], cwd=REPO_ROOT)
 
     print("TypeScript dependencies installed.", file=sys.stderr)
