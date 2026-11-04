@@ -228,7 +228,9 @@ def locked_profile(target_fd, relative):
             )
             stack.callback(os.close, fd)
             if os.fstat(fd).st_dev != target_device:
-                raise CacheError(f"mount point in profile path is unsupported: {relative}")
+                raise CacheError(
+                    f"mount point in profile path is unsupported: {relative}"
+                )
         root_before = os.fstat(fd)
         lock_flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
         created = False
@@ -380,10 +382,15 @@ def prune(target, profiles, rust_analyzer, min_age_days, apply=False, *, now=Non
                 lock_info.st_ino,
             ):
                 raise CacheError(f"Cargo lock changed during locking: {path}")
-            latest = max(age_state["baseline"], inspect_fd(fd, root_device=target_device))
+            latest = max(
+                age_state["baseline"], inspect_fd(fd, root_device=target_device)
+            )
             # Creating a missing lock changes the directory's mtime ourselves.
             # Exclude only those exact creation timestamps, not later activity.
-            if not age_state["created"] or opened.st_mtime != age_state["root_after_creation"]:
+            if (
+                not age_state["created"]
+                or opened.st_mtime != age_state["root_after_creation"]
+            ):
                 latest = max(latest, opened.st_mtime)
             if not age_state["created"] or current_lock.st_mtime != lock_info.st_mtime:
                 latest = max(latest, current_lock.st_mtime)

@@ -1,12 +1,13 @@
 ---
 source: core/tests/suite/scenarios_retained_tool_outputs.rs
+assertion_line: 141
 expression: "context_snapshot::format_request_history_snapshot(if enabled\n{\n    \"Retained thread instructions stop emergency tool-output trimming. Compaction keeps whole outputs within the shared 64K retention budget, dropping oversized task details and older instructions. A cold resume preserves the latest instruction unchanged.\"\n} else\n{\n    \"With retention disabled, the client can still send retain=true. Tool outputs use ordinary emergency trimming and are not retained after compaction and cold resume.\"\n}, &requests, &ContextSnapshotOptions::default().rewrite_known_segments(),)"
 ---
 Scenario: With retention disabled, the client can still send retain=true. Tool outputs use ordinary emergency trimming and are not retained after compaction and cold resume.
 
 ## Window 1
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=bf2e30605ff5dc17):
+00:additional_tools/developer (3; hash=8fcd3df7f9bdfdc6):
         - namespace/functions; hash=fada4a476a3754dd
           - custom/exec
           - function/wait
@@ -14,7 +15,7 @@ Scenario: With retention disabled, the client can still send retain=true. Tool o
           - function/request_user_input_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=c586fb14818272de
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
@@ -48,7 +49,7 @@ Scenario: With retention disabled, the client can still send retain=true. Tool o
 
 ## Window 2 (after request 3: input diverged at item 11)
 -- request 4 (compaction) --
-00:additional_tools/developer (3; hash=bf2e30605ff5dc17):
+00:additional_tools/developer (3; hash=8fcd3df7f9bdfdc6):
         - namespace/functions; hash=fada4a476a3754dd
           - custom/exec
           - function/wait
@@ -56,7 +57,7 @@ Scenario: With retention disabled, the client can still send retain=true. Tool o
           - function/request_user_input_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=c586fb14818272de
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
@@ -90,7 +91,7 @@ Scenario: With retention disabled, the client can still send retain=true. Tool o
 
 ## Window 3 (after request 4: input diverged at item 06)
 -- request 5 (turn) --
-00:additional_tools/developer (3; hash=bf2e30605ff5dc17):
+00:additional_tools/developer (3; hash=8fcd3df7f9bdfdc6):
         - namespace/functions; hash=fada4a476a3754dd
           - custom/exec
           - function/wait
@@ -98,7 +99,7 @@ Scenario: With retention disabled, the client can still send retain=true. Tool o
           - function/request_user_input_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=c586fb14818272de
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents

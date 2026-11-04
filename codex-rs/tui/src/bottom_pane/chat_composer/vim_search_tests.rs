@@ -115,7 +115,11 @@ fn vim_search_query_edits_and_paste_preserve_the_draft() {
 #[test]
 fn empty_vim_normal_slash_opens_commands() {
     snapshot_composer_state_with_width(
-        "vim_empty_normal_slash",
+        if cfg!(debug_assertions) {
+            "vim_empty_normal_slash"
+        } else {
+            "vim_empty_normal_slash_release"
+        },
         /*width*/ 60,
         /*enhanced_keys_supported*/ false,
         |composer| {

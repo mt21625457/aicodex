@@ -237,14 +237,24 @@ def _extract_codex_package_archive(package_archive: Path, runtime_package_root: 
 
 def _validate_codex_package_layout(package_dir: Path, package_source: Path) -> None:
     missing_entries = []
-    if not (package_dir / CODEX_PACKAGE_METADATA).is_file():
+    metadata_path = package_dir / CODEX_PACKAGE_METADATA
+    entrypoint = f"bin/{runtime_binary_name()}"
+    if not metadata_path.is_file():
         missing_entries.append(CODEX_PACKAGE_METADATA)
+    else:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        entrypoint = metadata.get("entrypoint", entrypoint)
+        suffix = ".exe" if _is_windows() else ""
+        if entrypoint not in (f"bin/codex{suffix}", f"bin/aicodex{suffix}"):
+            raise RuntimeError(
+                f"Invalid canonical CLI entrypoint in {package_source}: {entrypoint!r}"
+            )
     for entry in ("bin", "codex-resources", "codex-path"):
         if not (package_dir / entry).is_dir():
             missing_entries.append(entry)
-    package_binary = package_dir / "bin" / runtime_binary_name()
+    package_binary = package_dir / entrypoint
     if not package_binary.is_file():
-        missing_entries.append(str(Path("bin") / runtime_binary_name()))
+        missing_entries.append(entrypoint)
     code_mode_host = package_dir / "bin" / runtime_code_mode_host_name()
     if not code_mode_host.is_file():
         missing_entries.append(str(Path("bin") / runtime_code_mode_host_name()))
@@ -529,6 +539,13 @@ def _normalized_schema_bundle_text(schema_dir: Path) -> str:
     _preserve_guardian_approval_path_wrappers(schema)
     definitions = schema.get("definitions", {})
     if isinstance(definitions, dict):
+        # Pydantic represents the tagged item union as its existing nominal variant classes.
+        # Give each variant the shared fields so live and persisted items parse identically.
+        thread_item = definitions.get("ThreadItem", {})
+        timing = thread_item.pop("properties", {})
+        for variant in thread_item.get("oneOf", []):
+            variant["properties"].update(timing)
+
         # Older SDKs accept omission for these nullable project and section IDs.
         for model, field in (
             ("Thread", "projectId"),
@@ -540,6 +557,9 @@ def _normalized_schema_bundle_text(schema_dir: Path) -> str:
                 required.remove(field)
         for name, definition in definitions.items():
             if isinstance(definition, dict):
+                if name == "ReviewDelivery":
+                    # Preserve ReviewDelivery.inline when only one delivery mode remains.
+                    definition["x-enum-field-as-literal"] = False
                 if name == "CodexErrorInfo":
                     _normalize_open_ended_enum(definition)
                 _flatten_string_enum_one_of(definition)

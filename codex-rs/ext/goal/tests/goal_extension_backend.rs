@@ -2027,6 +2027,7 @@ impl GoalExtensionHarness {
         let turn_store = ExtensionData::new(turn_id);
         let token_usage = TokenUsageInfo {
             total_token_usage: usage.clone(),
+            last_usage_includes_reasoning: None,
             last_token_usage: last_usage.clone(),
             context_tokens: None,
             context_source: None,

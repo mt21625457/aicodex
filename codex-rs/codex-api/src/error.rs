@@ -171,6 +171,9 @@ pub enum ApiError {
     },
     #[error("Flex capacity unavailable.")]
     FlexUnavailable,
+    /// Server-confirmed capacity failure on a policy-restricted route.
+    #[error("policy-restricted capacity unavailable")]
+    PolicyCapacityUnavailable { retry_after: Option<RetryAfter> },
     #[error("server overloaded")]
     ServerOverloaded { retry_after: Option<RetryAfter> },
 }
@@ -186,7 +189,30 @@ pub(crate) fn parse_terminal_provider_error(
     status: Option<StatusCode>,
 ) -> Option<ApiError> {
     let error = error?;
-    let code = error.get("code")?.as_str()?;
+    let code = error
+        .get("code")
+        .and_then(Value::as_str)
+        .filter(|code| !code.is_empty());
+    // 网关已建立 SSE 后也可能拒绝请求，code=null、type=invalid_request_error
+    // 是明确的参数错误，不是断网。仅在没有更具体错误码时使用 type，保留专用分类。
+    // HTTP 非 2xx 继续由原边界保留完整错误体；这里只补齐流内错误的终态分类。
+    if status.is_none()
+        && (matches!(code, Some("invalid_request_error" | "invalid_request"))
+            || (code.is_none() && error["type"] == "invalid_request_error"))
+    {
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .filter(|message| !message.trim().is_empty())
+            .unwrap_or("Invalid request.")
+            .to_owned();
+        // 保留既有媒体错误专用分类；通用参数错误不能覆盖图片修复等上层行为。
+        return Some(match ProviderMediaErrorKind::classify(None, &message) {
+            Some(kind) => ApiError::ProviderMedia { kind, message },
+            None => ApiError::InvalidRequest { message },
+        });
+    }
+    let code = code?;
     match (code, status) {
         ("flex_unavailable", None | Some(StatusCode::TOO_MANY_REQUESTS)) => {
             Some(ApiError::FlexUnavailable)

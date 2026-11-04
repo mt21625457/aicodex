@@ -7,6 +7,7 @@ use crate::error::ApiError;
 use crate::error::ProviderMediaErrorKind;
 use crate::error::ProviderStreamErrorKind;
 use crate::error::parse_terminal_provider_error;
+use crate::guardian_assessment::parse_guardian_assessment;
 use crate::rate_limits::parse_all_rate_limits;
 use crate::safety_buffering::treatment_from_headers;
 use crate::sse::progress::ProgressDeadline;
@@ -102,6 +103,7 @@ pub fn spawn_response_stream(
     });
 
     ResponseStream {
+        routing_affinity: None,
         rx_event,
         upstream_request_id,
         interrupt: None,
@@ -167,6 +169,7 @@ pub struct ResponsesStreamEvent {
     pub(crate) headers: Option<Value>,
     metadata: Option<Value>,
     response: Option<Value>,
+    response_id: Option<Value>,
     error: Option<Value>,
     item: Option<Value>,
     item_id: Option<String>,
@@ -238,6 +241,33 @@ impl ResponsesStreamEvent {
                     | "response.reasoning_summary_text.done"
                     | "response.reasoning_text.done"
             ) && self.text.as_ref().is_some_and(|text| !text.is_empty())
+    }
+
+    /// Collects independent typed notifications in delivery order. The transport
+    /// supplies safety buffering after applying its response-header treatment.
+    pub(crate) fn metadata_events(
+        &self,
+        safety_buffering: Option<SafetyBuffering>,
+    ) -> Vec<ResponseEvent> {
+        let guardian = if self.kind() == "response.metadata" {
+            parse_guardian_assessment(
+                self.response_id.as_ref().and_then(Value::as_str),
+                self.metadata.as_ref(),
+            )
+        } else {
+            None
+        };
+        [
+            self.model_verifications()
+                .map(ResponseEvent::ModelVerifications),
+            self.turn_moderation_metadata()
+                .map(ResponseEvent::TurnModerationMetadata),
+            safety_buffering.map(ResponseEvent::SafetyBuffering),
+            guardian.map(ResponseEvent::GuardianAssessment),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
     }
 
     pub(crate) fn model_verifications(&self) -> Option<Vec<ModelVerification>> {
@@ -641,9 +671,8 @@ async fn process_sse_with_treatment(
         if event.is_meaningful() {
             progress.mark_progress();
         }
-        let model_verifications = event.model_verifications();
-        let turn_moderation_metadata = event.turn_moderation_metadata();
         let safety_buffering = event.safety_buffering(&safety_buffering_treatment);
+        let metadata_events = event.metadata_events(safety_buffering);
 
         if let Some(model) = event.response_model()
             && last_server_model.as_deref() != Some(model.as_str())
@@ -657,29 +686,10 @@ async fn process_sse_with_treatment(
             }
             last_server_model = Some(model);
         }
-        if let Some(verifications) = model_verifications
-            && tx_event
-                .send(Ok(ResponseEvent::ModelVerifications(verifications)))
-                .await
-                .is_err()
-        {
-            return;
-        }
-        if let Some(metadata) = turn_moderation_metadata
-            && tx_event
-                .send(Ok(ResponseEvent::TurnModerationMetadata(metadata)))
-                .await
-                .is_err()
-        {
-            return;
-        }
-        if let Some(buffering) = safety_buffering
-            && tx_event
-                .send(Ok(ResponseEvent::SafetyBuffering(buffering)))
-                .await
-                .is_err()
-        {
-            return;
+        for metadata_event in metadata_events {
+            if tx_event.send(Ok(metadata_event)).await.is_err() {
+                return;
+            }
         }
 
         match process_responses_event(event) {

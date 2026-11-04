@@ -324,7 +324,11 @@ async fn run_compact_task_inner_impl(
         // Clone is required because of the loop
         let mut turn_input = history
             .clone()
-            .for_prompt(&turn_context.model_info().input_modalities);
+            .for_prompt(
+                &turn_context.model_info().input_modalities,
+                sess.services.image_store.as_ref(),
+            )
+            .await;
         sess.services
             .executed_tool_calls
             .attach_to_compaction_prompt(&mut turn_input);
@@ -931,8 +935,7 @@ async fn drain_to_completed(
     phase: CompactionPhase,
     watchdog: &mut crate::compaction_watchdog::CompactionWatchdog,
 ) -> CodexResult<CompactionAttemptOutcome> {
-    sess.set_server_reasoning_included(turn_context.model_info().use_responses_lite)
-        .await;
+    let mut includes_reasoning = turn_context.model_info().use_responses_lite;
     let trace_context = InferenceTraceContext::disabled();
     let stream_request = client_session.stream(
         prompt,
@@ -966,7 +969,7 @@ async fn drain_to_completed(
             // Keep each attempt isolated until the response completes successfully.
             Ok(ResponseEvent::OutputItemDone(item)) => output.push(item),
             Ok(ResponseEvent::ServerReasoningIncluded(included)) => {
-                sess.set_server_reasoning_included(included).await;
+                includes_reasoning = included;
             }
             Ok(ResponseEvent::RateLimits(snapshot)) => {
                 sess.update_rate_limits(turn_context, snapshot).await;
@@ -987,8 +990,12 @@ async fn drain_to_completed(
                         usage_metadata.as_ref(),
                     )
                     .await;
-                    sess.update_token_usage_info(turn_context, token_usage.as_ref())
-                        .await?;
+                    sess.update_token_usage_info(
+                        turn_context,
+                        token_usage.as_ref(),
+                        includes_reasoning,
+                    )
+                    .await?;
                     if let Err(invalid) = validate_deepseek_compaction_output(&output) {
                         return Ok(CompactionAttemptOutcome::InvalidDeepSeekSummary(invalid));
                     }
@@ -1017,8 +1024,12 @@ async fn drain_to_completed(
                         usage_metadata.as_ref(),
                     )
                     .await;
-                    sess.update_token_usage_info(turn_context, token_usage.as_ref())
-                        .await?;
+                    sess.update_token_usage_info(
+                        turn_context,
+                        token_usage.as_ref(),
+                        includes_reasoning,
+                    )
+                    .await?;
                 }
                 return Ok(CompactionAttemptOutcome::Completed(CompactionResponse {
                     response_id,

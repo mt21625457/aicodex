@@ -30,9 +30,10 @@ impl Gauge {
 
     /// Decrements the gauge without allowing an underflow.
     pub fn decrement(&self) {
+        // ignore-reason: 零值时 checked_sub 返回 None，Err 仅表示无需减值，并非运行故障。
         let _ = self
             .value
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 value.checked_sub(1)
             });
     }

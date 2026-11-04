@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_model_instructions.rs
+assertion_line: 92
 expression: "context_snapshot::format_request_history_snapshot(\"Default, Work, Chat, unsupported, and repeated Work threads use their own catalog instructions and tools. Unsupported callers preserve the default request; repeated Work reuses its catalog.\",\n&requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
 ---
 Scenario: Default, Work, Chat, unsupported, and repeated Work threads use their own catalog instructions and tools. Unsupported callers preserve the default request; repeated Work reuses its catalog.
@@ -14,12 +15,12 @@ Settings:
   store: false
   stream: true
   tool_choice: "auto"
-  tools (6; hash=d558f97965d6db2b):
+  tools (6; hash=19458f8b7315c72c):
     - function/exec_command: Runs a command in a PTY, returning output or a session ID for ongoing interaction.; args=[cmd, justification, login, max_output_tokens, prefix_rule, sandbox_permissions, shell, tty, workdir, yield_time_ms]; hash=c04108e51a8548c5
     - function/write_stdin: Writes characters to an existing unified exec session and returns recent output.; args=[chars, max_output_tokens, session_id, yield_time_ms]; hash=7fb62d8a3e2df4e2
     - function/request_user_input: Request user input for one to three short questions and wait for the response. This tool is only ...; args=[questions]; hash=64a729b25c424fc6
     - function/view_image: View a local image file from the filesystem when visual inspection is needed. Use this for images...; args=[path]; hash=1908de9c0be7118a
-    - namespace/multi_agent_v1: Tools for spawning and managing sub-agents.; hash=6ac4ec60e68e50c0
+    - namespace/multi_agent_v1: Tools for spawning and managing sub-agents.; hash=3bfb7c75cf1f644b
       - function/close_agent
       - function/resume_agent
       - function/send_input
@@ -29,8 +30,11 @@ Settings:
 -- request 1 (turn) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>
-01:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+01:message/developer[2]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 02:message/user:
     <ENVIRONMENT_CONTEXT>
 03:message/user:
@@ -39,13 +43,16 @@ Settings:
 ## Window 2 (after request 1: input diverged at item 00)
 Settings: relative to window 1
   prompt_cache_key: "<PROMPT_CACHE_KEY 2>"
-  tools (7; hash=7cc079a7a7aa5604):
+  tools (7; hash=bf99f711d3632379):
     + custom/apply_patch: The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the pat...; hash=dea9f12b0111a4ba
 -- request 2 (turn) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>
-01:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+01:message/developer[2]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 02:message/user:
     <ENVIRONMENT_CONTEXT>
 03:message/user:
@@ -54,13 +61,16 @@ Settings: relative to window 1
 ## Window 3 (after request 2: input diverged at item 00)
 Settings: relative to window 2
   prompt_cache_key: "<PROMPT_CACHE_KEY 3>"
-  tools (6; hash=d558f97965d6db2b):
+  tools (6; hash=19458f8b7315c72c):
     - removed custom/apply_patch
 -- request 3 (turn) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>
-01:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+01:message/developer[2]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 02:message/user:
     <ENVIRONMENT_CONTEXT>
 03:message/user:
@@ -72,8 +82,11 @@ Settings: relative to window 3
 -- request 4 (turn) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>
-01:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+01:message/developer[2]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 02:message/user:
     <ENVIRONMENT_CONTEXT>
 03:message/user:
@@ -82,13 +95,16 @@ Settings: relative to window 3
 ## Window 5 (after request 4: input diverged at item 00)
 Settings: relative to window 4
   prompt_cache_key: "<PROMPT_CACHE_KEY 5>"
-  tools (7; hash=7cc079a7a7aa5604):
+  tools (7; hash=bf99f711d3632379):
     + custom/apply_patch: The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the pat...; hash=dea9f12b0111a4ba
 -- request 5 (turn) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>
-01:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+01:message/developer[2]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 02:message/user:
     <ENVIRONMENT_CONTEXT>
 03:message/user:

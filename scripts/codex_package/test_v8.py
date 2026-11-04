@@ -321,7 +321,9 @@ class DownloadFileTest(unittest.TestCase):
 
     def test_retries_connection_timeout_then_succeeds(self) -> None:
         with patch.object(
-            v8, "urlopen", side_effect=[URLError(TimeoutError("timed out")), io.BytesIO(b"complete")]
+            v8,
+            "urlopen",
+            side_effect=[URLError(TimeoutError("timed out")), io.BytesIO(b"complete")],
         ) as download:
             v8.download_file(self.url, self.dest)
         self.assertEqual(download.call_count, 2)
@@ -336,16 +338,22 @@ class DownloadFileTest(unittest.TestCase):
                 return super().read(size)
 
         with patch.object(
-            v8, "urlopen", side_effect=[InterruptedResponse(b"partial"), io.BytesIO(b"complete")]
+            v8,
+            "urlopen",
+            side_effect=[InterruptedResponse(b"partial"), io.BytesIO(b"complete")],
         ):
             v8.download_file(self.url, self.dest)
         self.assertEqual(self.dest.read_bytes(), b"complete")
         self.assertFalse(list(self.dest.parent.glob("*.tmp")))
 
-    def test_exhausted_retries_preserve_existing_file_and_explain_recovery(self) -> None:
+    def test_exhausted_retries_preserve_existing_file_and_explain_recovery(
+        self,
+    ) -> None:
         self.dest.write_bytes(b"previous")
         with (
-            patch.object(v8, "urlopen", side_effect=URLError(TimeoutError("timed out"))) as download,
+            patch.object(
+                v8, "urlopen", side_effect=URLError(TimeoutError("timed out"))
+            ) as download,
             self.assertRaisesRegex(RuntimeError, "HTTPS_PROXY") as error,
         ):
             v8.download_file(self.url, self.dest)
@@ -356,7 +364,11 @@ class DownloadFileTest(unittest.TestCase):
 
     def test_http_404_fails_without_retry(self) -> None:
         with (
-            patch.object(v8, "urlopen", side_effect=HTTPError(self.url, 404, "Not Found", {}, None)) as download,
+            patch.object(
+                v8,
+                "urlopen",
+                side_effect=HTTPError(self.url, 404, "Not Found", {}, None),
+            ) as download,
             self.assertRaisesRegex(RuntimeError, "404"),
         ):
             v8.download_file(self.url, self.dest)
@@ -365,7 +377,12 @@ class DownloadFileTest(unittest.TestCase):
 
     def test_http_503_retries(self) -> None:
         with patch.object(
-            v8, "urlopen", side_effect=[HTTPError(self.url, 503, "Unavailable", {}, None), io.BytesIO(b"complete")]
+            v8,
+            "urlopen",
+            side_effect=[
+                HTTPError(self.url, 503, "Unavailable", {}, None),
+                io.BytesIO(b"complete"),
+            ],
         ) as download:
             v8.download_file(self.url, self.dest)
         self.assertEqual(download.call_count, 2)

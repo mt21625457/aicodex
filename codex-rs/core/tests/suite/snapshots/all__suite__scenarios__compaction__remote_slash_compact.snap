@@ -17,7 +17,7 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn; Before /compact) --
-00:additional_tools/developer (3; hash=bf2e30605ff5dc17):
+00:additional_tools/developer (3; hash=8fcd3df7f9bdfdc6):
         - namespace/functions; hash=fada4a476a3754dd
           - custom/exec
           - function/wait
@@ -25,7 +25,7 @@ Settings:
           - function/request_user_input_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=c586fb14818272de
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
@@ -113,7 +113,7 @@ Settings:
 ## Window 2 (after request 2: input diverged at item 07)
 Settings: unavailable (items only)
 -- request 3 (items; Stored replacement before next turn) --
-00:additional_tools/developer (3; hash=bf2e30605ff5dc17):
+00:additional_tools/developer (3; hash=8fcd3df7f9bdfdc6):
         - namespace/functions; hash=fada4a476a3754dd
           - custom/exec
           - function/wait
@@ -121,7 +121,7 @@ Settings: unavailable (items only)
           - function/request_user_input_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=c586fb14818272de
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
@@ -205,7 +205,7 @@ Settings: unavailable (items only)
 ## Window 3 (after request 3)
 Settings: same as window 1
 -- request 4 (turn; First turn after /compact) --
-00:additional_tools/developer (3; hash=bf2e30605ff5dc17):
+00:additional_tools/developer (3; hash=8fcd3df7f9bdfdc6):
         - namespace/functions; hash=fada4a476a3754dd
           - custom/exec
           - function/wait
@@ -213,7 +213,7 @@ Settings: same as window 1
           - function/request_user_input_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=c586fb14818272de
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents

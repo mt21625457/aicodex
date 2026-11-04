@@ -30,11 +30,39 @@ impl ExecServerProcess {
 
     pub async fn start_with_env(env: &[(&str, &str)]) -> Result<Self> {
         let codex_home = TempDir::new()?;
-        let mut child = Command::new(codex_utils_cargo_bin::cargo_bin("aicodex")?)
+        let mut command = Command::new(codex_utils_cargo_bin::cargo_bin("aicodex")?);
+        command.envs(env.iter().copied());
+        Self::start_command(command, codex_home).await
+    }
+
+    pub async fn start_with_version(version: &str) -> Result<Self> {
+        Self::start_with_version_and_env(version, &[]).await
+    }
+
+    pub async fn start_with_version_and_env(version: &str, env: &[(&str, &str)]) -> Result<Self> {
+        let codex_home = TempDir::new()?;
+        let package = codex_home.path().join("package");
+        let bin = package.join("bin");
+        std::fs::create_dir_all(&bin)?;
+        let executable = bin.join(format!("aicodex{}", std::env::consts::EXE_SUFFIX));
+        codex_utils_cargo_bin::copy_executable(
+            &codex_utils_cargo_bin::cargo_bin("aicodex")?,
+            &executable,
+        )?;
+        std::fs::write(
+            package.join("codex-package.json"),
+            serde_json::to_vec(&serde_json::json!({"version": version}))?,
+        )?;
+        let mut command = Command::new(executable);
+        command.envs(env.iter().copied());
+        Self::start_command(command, codex_home).await
+    }
+
+    async fn start_command(mut command: Command, codex_home: TempDir) -> Result<Self> {
+        let mut child = command
             .args(["exec-server", "--listen", "ws://127.0.0.1:0"])
             .env("AICODEX_HOME", codex_home.path())
             .env("CODEX_HOME", codex_home.path())
-            .envs(env.iter().copied())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

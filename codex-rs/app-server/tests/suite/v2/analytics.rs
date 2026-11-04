@@ -15,7 +15,7 @@ use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::SandboxPolicy;
 use codex_app_server_protocol::ServerRequest;
-use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadStartParams;
@@ -132,8 +132,17 @@ async fn guardian_review_turns_and_tools_reach_analytics() -> Result<()> {
     let server = responses::start_mock_server().await;
     let codex_home = TempDir::new()?;
     mount_analytics_capture(&server, codex_home.path()).await?;
+    let catalog_path = codex_home.path().join("guardian-models.json");
+    std::fs::write(
+        &catalog_path,
+        serde_json::to_vec(&bundled_models_response()?)?,
+    )?;
     MockResponsesConfig::new(&server.uri())
-        .with_root_config(&format!("chatgpt_base_url = \"{}\"", server.uri()))
+        .with_root_config(&format!(
+            "chatgpt_base_url = \"{}\"\nmodel_catalog_json = {}",
+            server.uri(),
+            serde_json::to_string(&catalog_path)?
+        ))
         .with_provider_config("supports_websockets = false")
         .enable_feature(Feature::GuardianApproval)
         .disable_feature(Feature::Apps)
@@ -440,8 +449,8 @@ async fn multi_agent_v2_tools_emit_collaborator_analytics() -> Result<()> {
         .items;
     let child_thread_id = items
         .iter()
-        .find_map(|item| match item {
-            ThreadItem::SubAgentActivity {
+        .find_map(|item| match &item.payload {
+            ThreadItemPayload::SubAgentActivity {
                 id,
                 agent_thread_id,
                 ..
@@ -452,12 +461,14 @@ async fn multi_agent_v2_tools_emit_collaborator_analytics() -> Result<()> {
     assert!(
         !items
             .iter()
-            .any(|item| matches!(item, ThreadItem::CollabAgentToolCall { .. }))
+            .any(|item| matches!(&item.payload, ThreadItemPayload::CollabAgentToolCall { .. }))
     );
     let activity_ids = items
         .iter()
-        .filter_map(|item| match item {
-            ThreadItem::SubAgentActivity { id, .. } if id.starts_with("call-") => Some(id.as_str()),
+        .filter_map(|item| match &item.payload {
+            ThreadItemPayload::SubAgentActivity { id, .. } if id.starts_with("call-") => {
+                Some(id.as_str())
+            }
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -521,36 +532,91 @@ async fn multi_agent_v2_tools_emit_collaborator_analytics() -> Result<()> {
 
 #[tokio::test]
 async fn metrics_exporters_respect_analytics_preferences() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let collector = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/metrics"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .expect(6)
+        .mount(&collector)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(
+            "/opentelemetry.proto.collector.metrics.v1.MetricsService/Export",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(vec![0; 5], "application/grpc")
+                .insert_header("grpc-status", "0"),
+        )
+        .expect(6)
+        .mount(&collector)
+        .await;
+
     let codex_home = TempDir::new()?;
     let mut config = ConfigBuilder::default()
         .codex_home(codex_home.path().to_path_buf())
         .build()
         .await?;
+    let blocked_network =
+        codex_http_client::NetworkPolicy::unmanaged().restrict_to_endpoints(Default::default());
+    // The dependency may use a different profile from this test binary. Query
+    // its exporter directly, independently of core's analytics-consent gate.
+    // Reject all network traffic before DNS, including the built-in endpoint.
+    let baseline = codex_otel::OtelProvider::try_new(&codex_otel::OtelSettings {
+        http_client_factory: config
+            .http_client_factory()
+            .with_network_policy(blocked_network.clone()),
+        service_name: "codex-app-server".into(),
+        service_version: SERVICE_VERSION.into(),
+        codex_home: codex_home.path().to_path_buf(),
+        environment: config.otel.environment.to_string(),
+        exporter: codex_otel::OtelExporter::None,
+        trace_exporter: codex_otel::OtelExporter::None,
+        metrics_exporter: codex_otel::OtelExporter::Statsig,
+        runtime_metrics: false,
+        span_attributes: Default::default(),
+        tracestate: Default::default(),
+    })
+    .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+    let statsig_enabled = baseline
+        .as_ref()
+        .is_some_and(|otel| otel.metrics().is_some());
+    if let Some(baseline) = baseline {
+        baseline
+            .shutdown_with_timeout(Duration::from_secs(5))
+            .await?;
+    }
+
     for exporter in [
         OtelExporterKind::None,
         OtelExporterKind::Statsig,
         OtelExporterKind::OtlpHttp {
-            endpoint: "http://localhost:4318".to_string(),
+            endpoint: format!("{}/v1/metrics", collector.uri()),
             headers: HashMap::new(),
             protocol: OtelHttpProtocol::Json,
             tls: None,
         },
         OtelExporterKind::OtlpGrpc {
-            endpoint: "http://localhost:4317".to_string(),
+            endpoint: collector.uri(),
             headers: HashMap::new(),
             tls: None,
         },
     ] {
+        config.application_network_policy = if matches!(exporter, OtelExporterKind::Statsig) {
+            blocked_network.clone()
+        } else {
+            codex_http_client::NetworkPolicy::unmanaged()
+        };
         config.otel.metrics_exporter = exporter;
         for analytics_enabled in [None, Some(false), Some(true)] {
             config.analytics_enabled = analytics_enabled;
             for default_analytics_enabled in [false, true] {
                 let expected_metrics = match config.otel.metrics_exporter {
                     OtelExporterKind::None => false,
-                    // The built-in exporter is disabled in debug builds even with consent.
                     OtelExporterKind::Statsig => {
-                        !cfg!(debug_assertions)
-                            && analytics_enabled.unwrap_or(default_analytics_enabled)
+                        statsig_enabled && analytics_enabled.unwrap_or(default_analytics_enabled)
                     }
                     OtelExporterKind::OtlpHttp { .. } | OtelExporterKind::OtlpGrpc { .. } => true,
                 };
@@ -561,15 +627,33 @@ async fn metrics_exporters_respect_analytics_preferences() -> Result<()> {
                     default_analytics_enabled,
                 )
                 .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+                let metrics = provider.as_ref().and_then(|otel| otel.metrics());
+                let metrics_enabled = metrics.is_some();
+                // Exercise the nonempty export path that concurrent tests can
+                // trigger through process-global metrics.
+                let record_result = metrics
+                    .map(|metrics| {
+                        metrics.counter("codex.test.analytics_preferences", /*inc*/ 1, &[])
+                    })
+                    .transpose();
+                if let Some(provider) = provider {
+                    // Keep Tokio running while the gRPC exporter flushes; a
+                    // synchronous drop can deadlock this current-thread runtime.
+                    provider
+                        .shutdown_with_timeout(Duration::from_secs(/*secs*/ 5))
+                        .await?;
+                }
+                record_result?;
                 assert_eq!(
-                    provider.as_ref().and_then(|otel| otel.metrics()).is_some(),
-                    expected_metrics,
+                    metrics_enabled, expected_metrics,
                     "exporter={:?}, analytics={analytics_enabled:?}, default={default_analytics_enabled}",
                     config.otel.metrics_exporter,
                 );
             }
         }
     }
+
+    collector.verify().await;
 
     Ok(())
 }

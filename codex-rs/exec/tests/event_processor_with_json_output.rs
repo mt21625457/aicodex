@@ -16,6 +16,7 @@ use codex_app_server_protocol::PatchApplyStatus as ApiPatchApplyStatus;
 use codex_app_server_protocol::PatchChangeKind as ApiPatchChangeKind;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::ThreadTokenUsage;
 use codex_app_server_protocol::TokenUsageBreakdown;
 use codex_app_server_protocol::Turn;
@@ -168,7 +169,7 @@ fn turn_started_emits_turn_started_event() {
 #[test]
 fn command_execution_started_and_completed_translate_to_thread_events() {
     let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
-    let command_item = ThreadItem::CommandExecution {
+    let command_item = ThreadItemPayload::CommandExecution {
         model_context: None,
         sandbox_type: None,
         id: "cmd-1".to_string(),
@@ -186,13 +187,14 @@ fn command_execution_started_and_completed_translate_to_thread_events() {
         transcript_metadata: None,
     };
 
-    let started =
-        processor.collect_thread_events(ServerNotification::ItemStarted(ItemStartedNotification {
-            item: command_item,
-            thread_id: "thread-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            started_at_ms: 0,
-        }));
+    let started = processor.collect_thread_events(ServerNotification::ItemStarted(
+        ItemStartedNotification::new(
+            "thread-1".to_string(),
+            "turn-1".to_string(),
+            command_item,
+            /*started_at_ms*/ 0,
+        ),
+    ));
     assert_eq!(
         started,
         CollectedThreadEvents {
@@ -212,8 +214,10 @@ fn command_execution_started_and_completed_translate_to_thread_events() {
     );
 
     let completed = processor.collect_thread_events(ServerNotification::ItemCompleted(
-        ItemCompletedNotification {
-            item: ThreadItem::CommandExecution {
+        ItemCompletedNotification::new(
+            "thread-1".to_string(),
+            "turn-1".to_string(),
+            ThreadItemPayload::CommandExecution {
                 model_context: None,
                 sandbox_type: None,
                 id: "cmd-1".to_string(),
@@ -230,10 +234,9 @@ fn command_execution_started_and_completed_translate_to_thread_events() {
                 duration_ms: Some(3),
                 transcript_metadata: None,
             },
-            thread_id: "thread-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            completed_at_ms: 0,
-        },
+            /*started_at_ms*/ None,
+            /*completed_at_ms*/ 0,
+        ),
     ));
     assert_eq!(
         completed,
@@ -259,17 +262,18 @@ fn empty_reasoning_items_are_ignored() {
     let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
 
     let collected = processor.collect_thread_events(ServerNotification::ItemCompleted(
-        ItemCompletedNotification {
-            item: ThreadItem::Reasoning {
+        ItemCompletedNotification::new(
+            "thread-1".to_string(),
+            "turn-1".to_string(),
+            ThreadItemPayload::Reasoning {
                 id: "reasoning-1".to_string(),
                 summary: Vec::new(),
                 content: vec!["raw reasoning".to_string()],
                 transcript_metadata: None,
             },
-            thread_id: "thread-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            completed_at_ms: 0,
-        },
+            /*started_at_ms*/ None,
+            /*completed_at_ms*/ 0,
+        ),
     ));
 
     assert_eq!(
@@ -286,15 +290,16 @@ fn unsupported_items_do_not_consume_synthetic_ids() {
     let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
 
     let ignored = processor.collect_thread_events(ServerNotification::ItemCompleted(
-        ItemCompletedNotification {
-            item: ThreadItem::Plan {
+        ItemCompletedNotification::new(
+            "thread-1".to_string(),
+            "turn-1".to_string(),
+            ThreadItemPayload::Plan {
                 id: "plan-1".to_string(),
                 text: "ignored plan".to_string(),
             },
-            thread_id: "thread-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            completed_at_ms: 0,
-        },
+            /*started_at_ms*/ None,
+            /*completed_at_ms*/ 0,
+        ),
     ));
 
     assert_eq!(
@@ -306,8 +311,10 @@ fn unsupported_items_do_not_consume_synthetic_ids() {
     );
 
     let collected = processor.collect_thread_events(ServerNotification::ItemCompleted(
-        ItemCompletedNotification {
-            item: ThreadItem::AgentMessage {
+        ItemCompletedNotification::new(
+            "thread-1".to_string(),
+            "turn-1".to_string(),
+            ThreadItemPayload::AgentMessage {
                 id: "message-1".to_string(),
                 text: "hello".to_string(),
                 phase: None,
@@ -316,10 +323,9 @@ fn unsupported_items_do_not_consume_synthetic_ids() {
                 delivery: None,
                 questions: None,
             },
-            thread_id: "thread-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            completed_at_ms: 0,
-        },
+            /*started_at_ms*/ None,
+            /*completed_at_ms*/ 0,
+        ),
     ));
 
     assert_eq!(
@@ -343,17 +349,18 @@ fn reasoning_items_emit_summary_not_raw_content() {
     let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
 
     let collected = processor.collect_thread_events(ServerNotification::ItemCompleted(
-        ItemCompletedNotification {
-            item: ThreadItem::Reasoning {
+        ItemCompletedNotification::new(
+            "thread-1".to_string(),
+            "turn-1".to_string(),
+            ThreadItemPayload::Reasoning {
                 id: "reasoning-1".to_string(),
                 summary: vec!["safe summary".to_string()],
                 content: vec!["raw reasoning".to_string()],
                 transcript_metadata: None,
             },
-            thread_id: "thread-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            completed_at_ms: 0,
-        },
+            /*started_at_ms*/ None,
+            /*completed_at_ms*/ 0,
+        ),
     ));
 
     assert_eq!(
@@ -377,8 +384,10 @@ fn web_search_completion_preserves_query_and_action() {
     let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
 
     let collected = processor.collect_thread_events(ServerNotification::ItemCompleted(
-        ItemCompletedNotification {
-            item: ThreadItem::WebSearch(ApiWebSearchItem {
+        ItemCompletedNotification::new(
+            "thread-1".to_string(),
+            "turn-1".to_string(),
+            ThreadItemPayload::WebSearch(ApiWebSearchItem {
                 id: "search-1".to_string(),
                 query: "rust async await".to_string(),
                 action: Some(ApiWebSearchAction::Search {
@@ -387,10 +396,9 @@ fn web_search_completion_preserves_query_and_action() {
                 }),
                 results: None,
             }),
-            thread_id: "thread-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            completed_at_ms: 0,
-        },
+            /*started_at_ms*/ None,
+            /*completed_at_ms*/ 0,
+        ),
     ));
 
     assert_eq!(
@@ -441,17 +449,18 @@ fn web_search_page_actions_and_results_survive_json_output() {
         ] {
             let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
             let collected = processor.collect_thread_events(ServerNotification::ItemCompleted(
-                ItemCompletedNotification {
-                    item: ThreadItem::WebSearch(ApiWebSearchItem {
+                ItemCompletedNotification::new(
+                    "thread-1".to_string(),
+                    "turn-1".to_string(),
+                    ThreadItemPayload::WebSearch(ApiWebSearchItem {
                         id: "search-1".to_string(),
                         query: url.to_string(),
                         action: Some(action.clone()),
                         results: results.clone(),
                     }),
-                    thread_id: "thread-1".to_string(),
-                    turn_id: "turn-1".to_string(),
-                    completed_at_ms: 0,
-                },
+                    /*started_at_ms*/ None,
+                    /*completed_at_ms*/ 0,
+                ),
             ));
 
             let mut expected_item = json!({
@@ -475,22 +484,25 @@ fn web_search_page_actions_and_results_survive_json_output() {
 fn web_search_start_and_completion_reuse_item_id() {
     let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
 
-    let started =
-        processor.collect_thread_events(ServerNotification::ItemStarted(ItemStartedNotification {
-            item: ThreadItem::WebSearch(ApiWebSearchItem {
+    let started = processor.collect_thread_events(ServerNotification::ItemStarted(
+        ItemStartedNotification::new(
+            "thread-1".to_string(),
+            "turn-1".to_string(),
+            ThreadItemPayload::WebSearch(ApiWebSearchItem {
                 id: "search-1".to_string(),
                 query: String::new(),
                 action: None,
                 results: None,
             }),
-            thread_id: "thread-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            started_at_ms: 0,
-        }));
+            /*started_at_ms*/ 0,
+        ),
+    ));
 
     let completed = processor.collect_thread_events(ServerNotification::ItemCompleted(
-        ItemCompletedNotification {
-            item: ThreadItem::WebSearch(ApiWebSearchItem {
+        ItemCompletedNotification::new(
+            "thread-1".to_string(),
+            "turn-1".to_string(),
+            ThreadItemPayload::WebSearch(ApiWebSearchItem {
                 id: "search-1".to_string(),
                 query: "rust async await".to_string(),
                 action: Some(ApiWebSearchAction::Search {
@@ -499,10 +511,9 @@ fn web_search_start_and_completion_reuse_item_id() {
                 }),
                 results: None,
             }),
-            thread_id: "thread-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            completed_at_ms: 0,
-        },
+            /*started_at_ms*/ None,
+            /*completed_at_ms*/ 0,
+        ),
     ));
 
     assert_eq!(
@@ -548,9 +559,11 @@ fn web_search_start_and_completion_reuse_item_id() {
 fn mcp_tool_call_begin_and_end_emit_item_events() {
     let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
 
-    let started =
-        processor.collect_thread_events(ServerNotification::ItemStarted(ItemStartedNotification {
-            item: ThreadItem::McpToolCall {
+    let started = processor.collect_thread_events(ServerNotification::ItemStarted(
+        ItemStartedNotification::new(
+            "thread-1".to_string(),
+            "turn-1".to_string(),
+            ThreadItemPayload::McpToolCall {
                 id: "mcp-1".to_string(),
                 server: "server_a".to_string(),
                 tool: "tool_x".to_string(),
@@ -565,13 +578,14 @@ fn mcp_tool_call_begin_and_end_emit_item_events() {
                 error: None,
                 duration_ms: None,
             },
-            thread_id: "thread-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            started_at_ms: 0,
-        }));
+            /*started_at_ms*/ 0,
+        ),
+    ));
     let completed = processor.collect_thread_events(ServerNotification::ItemCompleted(
-        ItemCompletedNotification {
-            item: ThreadItem::McpToolCall {
+        ItemCompletedNotification::new(
+            "thread-1".to_string(),
+            "turn-1".to_string(),
+            ThreadItemPayload::McpToolCall {
                 id: "mcp-1".to_string(),
                 server: "server_a".to_string(),
                 tool: "tool_x".to_string(),
@@ -590,10 +604,9 @@ fn mcp_tool_call_begin_and_end_emit_item_events() {
                 error: None,
                 duration_ms: Some(1_000),
             },
-            thread_id: "thread-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            completed_at_ms: 0,
-        },
+            /*started_at_ms*/ None,
+            /*completed_at_ms*/ 0,
+        ),
     ));
 
     assert_eq!(
@@ -645,8 +658,10 @@ fn mcp_tool_call_failure_sets_failed_status() {
     let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
 
     let collected = processor.collect_thread_events(ServerNotification::ItemCompleted(
-        ItemCompletedNotification {
-            item: ThreadItem::McpToolCall {
+        ItemCompletedNotification::new(
+            "thread-1".to_string(),
+            "turn-1".to_string(),
+            ThreadItemPayload::McpToolCall {
                 id: "mcp-2".to_string(),
                 server: "server_b".to_string(),
                 tool: "tool_y".to_string(),
@@ -663,10 +678,9 @@ fn mcp_tool_call_failure_sets_failed_status() {
                 }),
                 duration_ms: Some(5),
             },
-            thread_id: "thread-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            completed_at_ms: 0,
-        },
+            /*started_at_ms*/ None,
+            /*completed_at_ms*/ 0,
+        ),
     ));
 
     assert_eq!(
@@ -696,9 +710,11 @@ fn mcp_tool_call_failure_sets_failed_status() {
 fn mcp_tool_call_defaults_arguments_and_preserves_structured_content() {
     let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
 
-    let started =
-        processor.collect_thread_events(ServerNotification::ItemStarted(ItemStartedNotification {
-            item: ThreadItem::McpToolCall {
+    let started = processor.collect_thread_events(ServerNotification::ItemStarted(
+        ItemStartedNotification::new(
+            "thread-1".to_string(),
+            "turn-1".to_string(),
+            ThreadItemPayload::McpToolCall {
                 id: "mcp-3".to_string(),
                 server: "server_c".to_string(),
                 tool: "tool_z".to_string(),
@@ -713,13 +729,14 @@ fn mcp_tool_call_defaults_arguments_and_preserves_structured_content() {
                 error: None,
                 duration_ms: None,
             },
-            thread_id: "thread-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            started_at_ms: 0,
-        }));
+            /*started_at_ms*/ 0,
+        ),
+    ));
     let completed = processor.collect_thread_events(ServerNotification::ItemCompleted(
-        ItemCompletedNotification {
-            item: ThreadItem::McpToolCall {
+        ItemCompletedNotification::new(
+            "thread-1".to_string(),
+            "turn-1".to_string(),
+            ThreadItemPayload::McpToolCall {
                 id: "mcp-3".to_string(),
                 server: "server_c".to_string(),
                 tool: "tool_z".to_string(),
@@ -741,10 +758,9 @@ fn mcp_tool_call_defaults_arguments_and_preserves_structured_content() {
                 error: None,
                 duration_ms: Some(10),
             },
-            thread_id: "thread-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            completed_at_ms: 0,
-        },
+            /*started_at_ms*/ None,
+            /*completed_at_ms*/ 0,
+        ),
     ));
 
     assert_eq!(
@@ -798,9 +814,11 @@ fn mcp_tool_call_defaults_arguments_and_preserves_structured_content() {
 fn collab_spawn_begin_and_end_emit_item_events() {
     let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
 
-    let started =
-        processor.collect_thread_events(ServerNotification::ItemStarted(ItemStartedNotification {
-            item: ThreadItem::CollabAgentToolCall {
+    let started = processor.collect_thread_events(ServerNotification::ItemStarted(
+        ItemStartedNotification::new(
+            "thread-parent".to_string(),
+            "turn-1".to_string(),
+            ThreadItemPayload::CollabAgentToolCall {
                 id: "collab-1".to_string(),
                 tool: CollabAgentTool::SpawnAgent,
                 status: ApiCollabAgentToolCallStatus::InProgress,
@@ -811,13 +829,14 @@ fn collab_spawn_begin_and_end_emit_item_events() {
                 reasoning_effort: None,
                 agents_states: std::collections::HashMap::new(),
             },
-            thread_id: "thread-parent".to_string(),
-            turn_id: "turn-1".to_string(),
-            started_at_ms: 0,
-        }));
+            /*started_at_ms*/ 0,
+        ),
+    ));
     let completed = processor.collect_thread_events(ServerNotification::ItemCompleted(
-        ItemCompletedNotification {
-            item: ThreadItem::CollabAgentToolCall {
+        ItemCompletedNotification::new(
+            "thread-parent".to_string(),
+            "turn-1".to_string(),
+            ThreadItemPayload::CollabAgentToolCall {
                 id: "collab-1".to_string(),
                 tool: CollabAgentTool::SpawnAgent,
                 status: ApiCollabAgentToolCallStatus::Completed,
@@ -834,10 +853,9 @@ fn collab_spawn_begin_and_end_emit_item_events() {
                     },
                 )]),
             },
-            thread_id: "thread-parent".to_string(),
-            turn_id: "turn-1".to_string(),
-            completed_at_ms: 0,
-        },
+            /*started_at_ms*/ None,
+            /*completed_at_ms*/ 0,
+        ),
     ));
 
     assert_eq!(
@@ -891,8 +909,10 @@ fn file_change_completion_maps_change_kinds() {
     let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
 
     let collected = processor.collect_thread_events(ServerNotification::ItemCompleted(
-        ItemCompletedNotification {
-            item: ThreadItem::FileChange {
+        ItemCompletedNotification::new(
+            "thread-1".to_string(),
+            "turn-1".to_string(),
+            ThreadItemPayload::FileChange {
                 id: "patch-1".to_string(),
                 changes: vec![
                     ApiFileUpdateChange {
@@ -913,10 +933,9 @@ fn file_change_completion_maps_change_kinds() {
                 ],
                 status: ApiPatchApplyStatus::Completed,
             },
-            thread_id: "thread-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            completed_at_ms: 0,
-        },
+            /*started_at_ms*/ None,
+            /*completed_at_ms*/ 0,
+        ),
     ));
 
     assert_eq!(
@@ -954,8 +973,10 @@ fn file_change_declined_maps_to_failed_status() {
     let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
 
     let collected = processor.collect_thread_events(ServerNotification::ItemCompleted(
-        ItemCompletedNotification {
-            item: ThreadItem::FileChange {
+        ItemCompletedNotification::new(
+            "thread-1".to_string(),
+            "turn-1".to_string(),
+            ThreadItemPayload::FileChange {
                 id: "patch-2".to_string(),
                 changes: vec![ApiFileUpdateChange {
                     path: "file.txt".to_string(),
@@ -964,10 +985,9 @@ fn file_change_declined_maps_to_failed_status() {
                 }],
                 status: ApiPatchApplyStatus::Declined,
             },
-            thread_id: "thread-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            completed_at_ms: 0,
-        },
+            /*started_at_ms*/ None,
+            /*completed_at_ms*/ 0,
+        ),
     ));
 
     assert_eq!(
@@ -995,8 +1015,10 @@ fn agent_message_item_updates_final_message() {
     let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
 
     let collected = processor.collect_thread_events(ServerNotification::ItemCompleted(
-        ItemCompletedNotification {
-            item: ThreadItem::AgentMessage {
+        ItemCompletedNotification::new(
+            "thread-1".to_string(),
+            "turn-1".to_string(),
+            ThreadItemPayload::AgentMessage {
                 id: "msg-1".to_string(),
                 text: "hello".to_string(),
                 phase: None,
@@ -1005,10 +1027,9 @@ fn agent_message_item_updates_final_message() {
                 delivery: None,
                 questions: None,
             },
-            thread_id: "thread-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            completed_at_ms: 0,
-        },
+            /*started_at_ms*/ None,
+            /*completed_at_ms*/ 0,
+        ),
     ));
 
     assert_eq!(
@@ -1032,9 +1053,11 @@ fn agent_message_item_updates_final_message() {
 fn agent_message_item_started_is_ignored() {
     let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
 
-    let collected =
-        processor.collect_thread_events(ServerNotification::ItemStarted(ItemStartedNotification {
-            item: ThreadItem::AgentMessage {
+    let collected = processor.collect_thread_events(ServerNotification::ItemStarted(
+        ItemStartedNotification::new(
+            "thread-1".to_string(),
+            "turn-1".to_string(),
+            ThreadItemPayload::AgentMessage {
                 id: "msg-1".to_string(),
                 text: "hello".to_string(),
                 phase: None,
@@ -1043,10 +1066,9 @@ fn agent_message_item_started_is_ignored() {
                 delivery: None,
                 questions: None,
             },
-            thread_id: "thread-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            started_at_ms: 0,
-        }));
+            /*started_at_ms*/ 0,
+        ),
+    ));
 
     assert_eq!(
         collected,
@@ -1062,17 +1084,18 @@ fn reasoning_item_completed_uses_synthetic_id() {
     let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
 
     let collected = processor.collect_thread_events(ServerNotification::ItemCompleted(
-        ItemCompletedNotification {
-            item: ThreadItem::Reasoning {
+        ItemCompletedNotification::new(
+            "thread-1".to_string(),
+            "turn-1".to_string(),
+            ThreadItemPayload::Reasoning {
                 id: "rs-1".to_string(),
                 summary: vec!["thinking...".to_string()],
                 content: vec!["raw".to_string()],
                 transcript_metadata: None,
             },
-            thread_id: "thread-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            completed_at_ms: 0,
-        },
+            /*started_at_ms*/ None,
+            /*completed_at_ms*/ 0,
+        ),
     ));
 
     assert_eq!(
@@ -1394,7 +1417,7 @@ fn turn_completion_recovers_final_message_from_turn_items() {
                 id: "turn-1".to_string(),
                 root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
-                items: vec![ThreadItem::AgentMessage {
+                items: vec![ThreadItem::untimed(ThreadItemPayload::AgentMessage {
                     id: "msg-1".to_string(),
                     text: "final answer".to_string(),
                     phase: None,
@@ -1402,7 +1425,7 @@ fn turn_completion_recovers_final_message_from_turn_items() {
                     transcript_metadata: None,
                     delivery: None,
                     questions: None,
-                }],
+                })],
                 status: TurnStatus::Completed,
                 error: None,
                 started_at: None,
@@ -1428,9 +1451,11 @@ fn turn_completion_recovers_final_message_from_turn_items() {
 fn turn_completion_reconciles_started_items_from_turn_items() {
     let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
 
-    let started =
-        processor.collect_thread_events(ServerNotification::ItemStarted(ItemStartedNotification {
-            item: ThreadItem::CommandExecution {
+    let started = processor.collect_thread_events(ServerNotification::ItemStarted(
+        ItemStartedNotification::new(
+            "thread-1".to_string(),
+            "turn-1".to_string(),
+            ThreadItemPayload::CommandExecution {
                 model_context: None,
                 sandbox_type: None,
                 id: "cmd-1".to_string(),
@@ -1447,10 +1472,9 @@ fn turn_completion_reconciles_started_items_from_turn_items() {
                 duration_ms: None,
                 transcript_metadata: None,
             },
-            thread_id: "thread-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            started_at_ms: 0,
-        }));
+            /*started_at_ms*/ 0,
+        ),
+    ));
     assert_eq!(
         started,
         CollectedThreadEvents {
@@ -1476,7 +1500,8 @@ fn turn_completion_reconciles_started_items_from_turn_items() {
                 id: "turn-1".to_string(),
                 root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
-                items: vec![ThreadItem::CommandExecution {
+                items: vec![ThreadItem::untimed(ThreadItemPayload::CommandExecution {
+                    transcript_metadata: None,
                     model_context: None,
                     sandbox_type: None,
                     id: "cmd-1".to_string(),
@@ -1491,8 +1516,7 @@ fn turn_completion_reconciles_started_items_from_turn_items() {
                     aggregated_output: Some("a.txt\n".to_string()),
                     exit_code: Some(0),
                     duration_ms: Some(3),
-                    transcript_metadata: None,
-                }],
+                })],
                 status: TurnStatus::Completed,
                 error: None,
                 started_at: None,
@@ -1530,8 +1554,10 @@ fn turn_completion_reconciles_started_items_from_turn_items() {
 fn turn_completion_overwrites_stale_final_message_from_turn_items() {
     let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
     let _ = processor.collect_thread_events(ServerNotification::ItemCompleted(
-        ItemCompletedNotification {
-            item: ThreadItem::AgentMessage {
+        ItemCompletedNotification::new(
+            "thread-1".to_string(),
+            "turn-1".to_string(),
+            ThreadItemPayload::AgentMessage {
                 id: "msg-stale".to_string(),
                 text: "stale answer".to_string(),
                 phase: None,
@@ -1540,10 +1566,9 @@ fn turn_completion_overwrites_stale_final_message_from_turn_items() {
                 delivery: None,
                 questions: None,
             },
-            thread_id: "thread-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            completed_at_ms: 0,
-        },
+            /*started_at_ms*/ None,
+            /*completed_at_ms*/ 0,
+        ),
     ));
 
     let completed = processor.collect_thread_events(ServerNotification::TurnCompleted(
@@ -1553,7 +1578,7 @@ fn turn_completion_overwrites_stale_final_message_from_turn_items() {
                 id: "turn-1".to_string(),
                 root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
-                items: vec![ThreadItem::AgentMessage {
+                items: vec![ThreadItem::untimed(ThreadItemPayload::AgentMessage {
                     id: "msg-1".to_string(),
                     text: "final answer".to_string(),
                     phase: None,
@@ -1561,7 +1586,7 @@ fn turn_completion_overwrites_stale_final_message_from_turn_items() {
                     transcript_metadata: None,
                     delivery: None,
                     questions: None,
-                }],
+                })],
                 status: TurnStatus::Completed,
                 error: None,
                 started_at: None,
@@ -1587,8 +1612,10 @@ fn turn_completion_overwrites_stale_final_message_from_turn_items() {
 fn turn_completion_preserves_streamed_final_message_when_turn_items_are_empty() {
     let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
     let _ = processor.collect_thread_events(ServerNotification::ItemCompleted(
-        ItemCompletedNotification {
-            item: ThreadItem::AgentMessage {
+        ItemCompletedNotification::new(
+            "thread-1".to_string(),
+            "turn-1".to_string(),
+            ThreadItemPayload::AgentMessage {
                 id: "msg-streamed".to_string(),
                 text: "streamed answer".to_string(),
                 phase: None,
@@ -1597,10 +1624,9 @@ fn turn_completion_preserves_streamed_final_message_when_turn_items_are_empty() 
                 delivery: None,
                 questions: None,
             },
-            thread_id: "thread-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            completed_at_ms: 0,
-        },
+            /*started_at_ms*/ None,
+            /*completed_at_ms*/ 0,
+        ),
     ));
 
     let completed = processor.collect_thread_events(ServerNotification::TurnCompleted(
@@ -1637,8 +1663,10 @@ fn failed_turn_clears_stale_final_message() {
     let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
 
     let collected = processor.collect_thread_events(ServerNotification::ItemCompleted(
-        ItemCompletedNotification {
-            item: ThreadItem::AgentMessage {
+        ItemCompletedNotification::new(
+            "thread-1".to_string(),
+            "turn-1".to_string(),
+            ThreadItemPayload::AgentMessage {
                 id: "msg-1".to_string(),
                 text: "partial answer".to_string(),
                 phase: None,
@@ -1647,10 +1675,9 @@ fn failed_turn_clears_stale_final_message() {
                 delivery: None,
                 questions: None,
             },
-            thread_id: "thread-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            completed_at_ms: 0,
-        },
+            /*started_at_ms*/ None,
+            /*completed_at_ms*/ 0,
+        ),
     ));
 
     assert_eq!(collected.status, CodexStatus::Running);
@@ -1693,10 +1720,10 @@ fn turn_completion_falls_back_to_final_plan_text() {
                 id: "turn-1".to_string(),
                 root_turn_id: None,
                 items_view: codex_app_server_protocol::TurnItemsView::Full,
-                items: vec![ThreadItem::Plan {
+                items: vec![ThreadItem::untimed(ThreadItemPayload::Plan {
                     id: "plan-1".to_string(),
                     text: "ship the typed adapter".to_string(),
-                }],
+                })],
                 status: TurnStatus::Completed,
                 error: None,
                 started_at: None,

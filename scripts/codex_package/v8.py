@@ -234,7 +234,12 @@ def download_file(url: str, dest: Path) -> None:
                 if isinstance(exc, HTTPError):
                     exc.close()
                 retryable = not isinstance(exc, HTTPError) or exc.code in {
-                    408, 429, 500, 502, 503, 504
+                    408,
+                    429,
+                    500,
+                    502,
+                    503,
+                    504,
                 }
                 if not retryable or attempt == DOWNLOAD_ATTEMPTS:
                     raise RuntimeError(

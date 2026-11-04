@@ -1666,11 +1666,20 @@ async fn config_requests_surface_cloud_config_bundle_load_errors(
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/backend-api/wham/config/bundle"))
+        .and(wiremock::matchers::header(
+            "authorization",
+            "Bearer chatgpt-token",
+        ))
+        .and(wiremock::matchers::header(
+            "chatgpt-account-id",
+            "account-123",
+        ))
         .respond_with(
             ResponseTemplate::new(401)
                 .insert_header("content-type", "text/html")
                 .set_body_string("<html>nope</html>"),
         )
+        .expect(1..)
         .mount(&server)
         .await;
     Mock::given(method("POST"))
@@ -1678,10 +1687,17 @@ async fn config_requests_surface_cloud_config_bundle_load_errors(
         .respond_with(ResponseTemplate::new(401).set_body_json(json!({
             "error": { "code": "refresh_token_invalidated" }
         })))
+        .expect(1..)
         .mount(&server)
         .await;
 
     let codex_home = TempDir::new()?;
+    // Keep this recovery test local even if startup incorrectly replaces the
+    // configured endpoint with the production default after the first failure.
+    std::fs::write(
+        codex_home.path().join("requirements.toml"),
+        "[application.network.domains]\n\"127.0.0.1\" = \"allow\"\n",
+    )?;
     let model_server = create_mock_responses_server_repeating_assistant("Done").await;
     let chatgpt_base_url = format!("{}/backend-api", server.uri());
     create_config_toml_with_chatgpt_base_url(

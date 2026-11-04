@@ -50,6 +50,7 @@ impl Fixture {
             // Translate the fixture before the timed diagnostic command.
             anyhow::ensure!(
                 std::process::Command::new(&program)
+                    .env("AICODEX_HOME", &home)
                     .env("CODEX_HOME", &home)
                     .arg("--version")
                     .output()?
@@ -119,6 +120,7 @@ wire_api = "responses"
         let mut command = assert_cmd::Command::new(&self.program);
         command
             .current_dir(&self.workspace)
+            .env("AICODEX_HOME", &self.home)
             .env("CODEX_HOME", &self.home)
             .env("HOME", self.root.path())
             .env("PATH", &self.path)
@@ -217,7 +219,7 @@ fn doctor_reports_failed_database_paths() -> Result<()> {
     let fixture = Fixture::new()?;
     let sqlite_home = fixture.root.path().join("sqlite");
     std::fs::create_dir(&sqlite_home)?;
-    let sqlite = SqliteConfig::from_sqlite_home(AbsolutePathBuf::try_from(sqlite_home.clone())?);
+    let sqlite = SqliteConfig::new_for_testing(AbsolutePathBuf::try_from(sqlite_home.clone())?);
     let config_file = fixture.home.join("config.toml");
     let config = std::fs::read_to_string(&config_file)?;
     let sqlite_home = toml::Value::String(sqlite_home.display().to_string());
@@ -311,7 +313,7 @@ fn doctor_redacts_failed_database_paths_in_json() -> Result<()> {
     let fixture = Fixture::new()?;
     let sqlite_home = fixture.root.path().join("doctor-secret-sqlite");
     std::fs::create_dir(&sqlite_home)?;
-    let sqlite = SqliteConfig::from_sqlite_home(AbsolutePathBuf::try_from(sqlite_home.clone())?);
+    let sqlite = SqliteConfig::new_for_testing(AbsolutePathBuf::try_from(sqlite_home.clone())?);
     let config_file = fixture.home.join("config.toml");
     let config = std::fs::read_to_string(&config_file)?;
     let sqlite_home = toml::Value::String(sqlite_home.display().to_string());

@@ -1923,8 +1923,9 @@ fn create_seatbelt_args_with_read_only_git_and_codex_subpaths() {
     assert!(
         policy_text.contains("WRITABLE_ROOT_0_EXCLUDED_1")
             && policy_text.contains("WRITABLE_ROOT_0_EXCLUDED_2")
-            && policy_text.contains("WRITABLE_ROOT_0_EXCLUDED_3"),
-        "expected symbolic cwd .git/.agents/.aicodex carveouts in policy:\n{policy_text}",
+            && policy_text.contains("WRITABLE_ROOT_0_EXCLUDED_3")
+            && policy_text.contains("WRITABLE_ROOT_0_EXCLUDED_4"),
+        "expected symbolic cwd .git/.agents/.aicodex/.aws carveouts in policy:\n{policy_text}",
     );
     assert!(
         policy_text.contains("WRITABLE_ROOT_1_EXCLUDED_0")
@@ -1986,7 +1987,7 @@ fn create_seatbelt_args_with_read_only_git_and_codex_subpaths() {
                 .display()
         ),
         format!(
-            "-DWRITABLE_ROOT_0_EXCLUDED_3={}",
+            "-DWRITABLE_ROOT_0_EXCLUDED_4={}",
             cwd.canonicalize()
                 .expect("canonicalize cwd")
                 .join(".aws")
@@ -2040,7 +2041,7 @@ fn create_seatbelt_args_with_read_only_git_and_codex_subpaths() {
     assert!(
         !output.status.success(),
         "command to write {} should fail under seatbelt",
-        config_toml.display()
+        &config_toml.display()
     );
     assert_seatbelt_denied(&output.stderr, &config_toml);
 
@@ -2078,7 +2079,7 @@ fn create_seatbelt_args_with_read_only_git_and_codex_subpaths() {
     assert!(
         !output.status.success(),
         "command to write {} should fail under seatbelt",
-        pre_commit_hook.display()
+        &pre_commit_hook.display()
     );
     assert_seatbelt_denied(&output.stderr, &pre_commit_hook);
 
@@ -2116,7 +2117,7 @@ fn create_seatbelt_args_with_read_only_git_and_codex_subpaths() {
     assert!(
         output.status.success(),
         "command to write {} should succeed under seatbelt",
-        allowed_file.display()
+        &allowed_file.display()
     );
     assert_eq!(
         "this is allowed\n",

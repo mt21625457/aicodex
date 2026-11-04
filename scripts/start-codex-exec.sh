@@ -25,6 +25,12 @@ remote_path='~/code/codex-sync'
 local_exec_server_port="${CODEX_REMOTE_EXEC_SERVER_LOCAL_PORT:-8765}"
 remote_exec_server_start_timeout_seconds="${CODEX_REMOTE_EXEC_SERVER_START_TIMEOUT_SECONDS:-15}"
 
+build_profile="${CODEX_REMOTE_EXEC_SERVER_BUILD_PROFILE:-release}"
+case "$build_profile" in
+  release|dev) ;;
+  *) echo "CODEX_REMOTE_EXEC_SERVER_BUILD_PROFILE must be release or dev" >&2; exit 2 ;;
+esac
+
 remote_exec_server_pid=''
 remote_exec_server_log_path=''
 remote_exec_server_pid_path=''
@@ -91,20 +97,24 @@ remote_start_output="$(
   ssh "${remote_host}" bash -s -- \
     "${remote_exec_server_log_path}" \
     "${remote_exec_server_pid_path}" \
-    "${remote_exec_server_start_timeout_seconds}" <<'EOF'
+    "${remote_exec_server_start_timeout_seconds}" \
+    "${build_profile}" <<'EOF'
 set -euo pipefail
 
 remote_exec_server_log_path="$1"
 remote_exec_server_pid_path="$2"
 remote_exec_server_start_timeout_seconds="$3"
+build_profile="$4"
+profile_dir="$build_profile"
+[[ "$build_profile" != "dev" ]] || profile_dir="debug"
 remote_repo_root="$HOME/code/codex-sync"
 remote_codex_rs="$remote_repo_root/codex-rs"
 
 cd "${remote_codex_rs}"
-cargo build -p codex-cli --bin codex
+cargo build --profile "$build_profile" -p codex-cli --bin aicodex
 
 rm -f "${remote_exec_server_log_path}" "${remote_exec_server_pid_path}"
-nohup ./target/debug/codex exec-server --listen ws://127.0.0.1:0 \
+nohup "./target/${profile_dir}/aicodex" exec-server --listen ws://127.0.0.1:0 \
   >"${remote_exec_server_log_path}" 2>&1 &
 remote_exec_server_pid="$!"
 echo "${remote_exec_server_pid}" >"${remote_exec_server_pid_path}"
@@ -169,8 +179,8 @@ fi
 echo "Remote exec server: ${listen_url}"
 echo "Remote exec server log: ${remote_exec_server_log_path}"
 echo "Press Ctrl-C to stop the SSH tunnel and remote exec server."
-echo "Start codex via: "
-printf '  CODEX_EXEC_SERVER_URL=ws://127.0.0.1:%s codex -C %q\n' \
+echo "Start aicodex via: "
+printf '  CODEX_EXEC_SERVER_URL=ws://127.0.0.1:%s aicodex -C %q\n' \
   "${local_exec_server_port}" \
   "${remote_repo_root}"
 

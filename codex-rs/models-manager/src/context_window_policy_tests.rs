@@ -4,7 +4,8 @@ use super::openai_manager_for_tests;
 use super::static_manager_for_tests;
 use crate::ModelsManagerConfig;
 use crate::manager::ModelsManager;
-use crate::model_info::{model_info_from_slug, with_config_overrides};
+use crate::model_info::model_info_from_slug;
+use crate::model_info::with_config_overrides;
 use codex_protocol::openai_models::ModelsResponse;
 
 #[tokio::test]

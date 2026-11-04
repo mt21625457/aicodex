@@ -29,7 +29,7 @@ use tokio::sync::oneshot;
 
 #[tokio::test]
 async fn accepted_output_survives_success_and_stream_failure() -> Result<()> {
-    let codex = codex_utils_cargo_bin::cargo_bin("codex")?;
+    let codex = codex_utils_cargo_bin::cargo_bin("aicodex")?;
     for (source_id, terminal, status) in [
         (
             Some("msg-original"),
@@ -104,6 +104,7 @@ async fn accepted_output_survives_success_and_stream_failure() -> Result<()> {
         // There is no following request to prove acceptance of this final item.
         let bundle = std::fs::read_dir(traces.path())?.next().unwrap()?.path();
         let reduced = tokio::process::Command::new(&codex)
+            .env("AICODEX_HOME", home.path())
             .env("CODEX_HOME", home.path())
             .args(["debug", "trace-reduce"])
             .arg(&bundle)
@@ -154,7 +155,7 @@ async fn accepted_output_survives_success_and_stream_failure() -> Result<()> {
 
 #[tokio::test]
 async fn accepted_output_survives_interruption_and_shutdown() -> Result<()> {
-    let codex = codex_utils_cargo_bin::cargo_bin("codex")?;
+    let codex = codex_utils_cargo_bin::cargo_bin("aicodex")?;
     let home = TempDir::new()?;
     let traces = TempDir::new()?;
     let (release_response, response_gate) = oneshot::channel();
@@ -222,6 +223,7 @@ async fn accepted_output_survives_interruption_and_shutdown() -> Result<()> {
     // have preserved the accepted output even without response.completed.
     let bundle = std::fs::read_dir(traces.path())?.next().unwrap()?.path();
     let reduced = tokio::process::Command::new(&codex)
+        .env("AICODEX_HOME", home.path())
         .env("CODEX_HOME", home.path())
         .args(["debug", "trace-reduce"])
         .arg(&bundle)

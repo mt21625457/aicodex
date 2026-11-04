@@ -1728,7 +1728,10 @@ async fn check_apply_patch_streaming(interleave_function: bool) -> Result<()> {
         for event in &mut events {
             if event["type"] == "response.custom_tool_call_input.delta" {
                 event["item_id"] = json!("patch-b");
-                event.as_object_mut().unwrap().remove("call_id");
+                event
+                    .as_object_mut()
+                    .expect("streaming delta fixture must be an object")
+                    .remove("call_id");
             }
         }
         events.insert(

@@ -65,6 +65,7 @@ async fn cancelled_turn_skips_launch_but_preserves_existing_work(trigger: Compac
             total_tokens: 70_000,
             ..Default::default()
         }),
+        /*includes_reasoning*/ false,
     )
     .await
     .expect("record usage");
@@ -232,6 +233,7 @@ async fn provider_switch_rejects_previous_candidate_and_routes_new_attempt(
             total_tokens: 70_000,
             ..Default::default()
         }),
+        /*includes_reasoning*/ false,
     )
     .await
     .expect("record usage");

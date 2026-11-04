@@ -16,6 +16,118 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::time::Duration;
 
+/// 模拟安装版收到的 HTTP 200 SSE：参数错误必须立即终止，不能消费后续成功帧或重连。
+#[tokio::test(start_paused = true)]
+async fn invalid_tool_schema_is_terminal_even_when_sse_has_started() {
+    let message = "Invalid Value: 'tools'. Function 'collaboration.wait_agent' is reserved for use by this model and must match the configured schema.";
+    let error = json!({"type": "invalid_request_error", "code": null, "param": "tools", "message": message});
+    for failure in [
+        json!({"type": "error", "error": error}),
+        json!({"type": "response.error", "error": error}),
+        json!({"error": error}),
+        json!({"type": "response.failed", "response": {"error": error}}),
+    ] {
+        let completed = json!({"type": "response.completed", "response": {"id": "later"}});
+        let bytes = stream::iter([Ok(Bytes::from(format!(
+            "data: {failure}\n\ndata: {completed}\n\n"
+        )))])
+        .chain(stream::pending());
+        let mut stream = spawn_response_stream(
+            StreamResponse {
+                status: StatusCode::OK,
+                headers: HeaderMap::new(),
+                bytes: Box::pin(bytes),
+            },
+            Duration::from_secs(60),
+            None,
+            None,
+        );
+        let error = loop {
+            match stream.next().await {
+                Some(Ok(ResponseEvent::RateLimits(_))) => {}
+                Some(Err(error)) => break map_api_error(error),
+                event => panic!("expected invalid request, got {event:?}"),
+            }
+        };
+        assert_eq!(error.to_codex_protocol_error(), CodexErrorInfo::BadRequest);
+        assert_eq!(error.retry_delay(1), None);
+        assert!(error.to_string().contains(message));
+        assert!(stream.next().await.is_none());
+    }
+}
+
+/// type 的兼容不能盖过限流、上下文超限、模型不存在等更具体的结构化错误码。
+#[test]
+fn generic_invalid_request_type_preserves_specific_error_codes() {
+    for (code, expected) in [
+        ("rate_limit_exceeded", CodexErrorInfo::RateLimitExceeded),
+        (
+            "context_length_exceeded",
+            CodexErrorInfo::ContextWindowExceeded,
+        ),
+        ("model_not_found", CodexErrorInfo::ModelNotFound),
+    ] {
+        let event = serde_json::from_value(json!({
+            "type": "response.failed",
+            "response": {"error": {"type": "invalid_request_error", "code": code, "message": "fixture error"}}
+        })).unwrap();
+        let error = map_api_error(process_responses_event(event).unwrap_err().into_api_error());
+        assert_eq!(error.to_codex_protocol_error(), expected);
+    }
+}
+
+/// Only the explicit policy capacity code changes overload attribution.
+#[tokio::test(start_paused = true)]
+async fn policy_capacity_classification_preserves_overload_retry_behavior() {
+    for (code, error_type, expected) in [
+        (
+            "policy_capacity_unavailable",
+            None,
+            CodexErrorInfo::PolicyCapacityUnavailable,
+        ),
+        (
+            "server_is_overloaded",
+            Some("policy_error"),
+            CodexErrorInfo::ServerOverloaded,
+        ),
+        (
+            "server_is_overloaded",
+            None,
+            CodexErrorInfo::ServerOverloaded,
+        ),
+    ] {
+        for retry_after in [Some("3"), None] {
+            let event = serde_json::from_value(json!({
+                "type": "response.failed",
+                "response": {"error": {
+                    "type": error_type,
+                    "code": code,
+                    "headers": {"Retry-After": retry_after},
+                }},
+            }))
+            .unwrap();
+            let error = map_api_error(process_responses_event(event).unwrap_err().into_api_error());
+            assert_eq!(
+                (
+                    error.to_codex_protocol_error(),
+                    error.retry_delay(/*retry_count*/ 1),
+                    error.to_string()
+                ),
+                (
+                    expected.clone(),
+                    retry_after.map(|_| Duration::from_secs(3)),
+                    if expected == CodexErrorInfo::PolicyCapacityUnavailable {
+                        "Policy-restricted capacity is unavailable. Please try again later."
+                    } else {
+                        "Selected model is at capacity. Please try a different model."
+                    }
+                    .to_string()
+                )
+            );
+        }
+    }
+}
+
 /// Flex failures remain terminal even with retry headers and a later completed event.
 #[tokio::test(start_paused = true)]
 async fn flex_failure_with_retry_header_ends_stream_immediately() {

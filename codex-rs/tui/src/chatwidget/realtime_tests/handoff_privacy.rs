@@ -178,7 +178,7 @@ async fn voice_handoff_preserves_started_typed_reasoning_but_hides_new_reasoning
         &mut chat,
         thread_id,
         turn_id,
-        ThreadItem::Reasoning {
+        ThreadItemPayload::Reasoning {
             transcript_metadata: None,
             id: "typed-reasoning".into(),
             summary: Vec::new(),
@@ -213,7 +213,7 @@ async fn voice_handoff_preserves_started_typed_reasoning_but_hides_new_reasoning
         &mut chat,
         thread_id,
         turn_id,
-        ThreadItem::Reasoning {
+        ThreadItemPayload::Reasoning {
             transcript_metadata: None,
             id: "typed-reasoning".into(),
             summary: vec!["Typed beginning and typed tail".into()],
@@ -224,7 +224,7 @@ async fn voice_handoff_preserves_started_typed_reasoning_but_hides_new_reasoning
         &mut chat,
         thread_id,
         turn_id,
-        ThreadItem::Reasoning {
+        ThreadItemPayload::Reasoning {
             transcript_metadata: None,
             id: "private-reasoning".into(),
             summary: Vec::new(),
@@ -245,7 +245,7 @@ async fn voice_handoff_preserves_started_typed_reasoning_but_hides_new_reasoning
         &mut chat,
         thread_id,
         turn_id,
-        ThreadItem::Reasoning {
+        ThreadItemPayload::Reasoning {
             transcript_metadata: None,
             id: "private-reasoning".into(),
             summary: vec!["private after handoff".into()],

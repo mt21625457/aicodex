@@ -19,7 +19,6 @@ use super::ThreadConfigSource;
 use super::UserThreadConfig;
 use proto::thread_config_loader_client::ThreadConfigLoaderClient;
 
-#[allow(clippy::double_must_use)] // Emitted by async_trait in the generated tonic service.
 #[path = "proto/codex.thread_config.v1.rs"]
 mod proto;
 
@@ -210,6 +209,9 @@ fn model_provider_from_proto(
         supports_websockets: provider.supports_websockets,
         supports_standalone_web_search: provider.supports_standalone_web_search,
         capabilities: None,
+        project_id: provider.project_id,
+        location: provider.location,
+        credential_file: provider.credential_file.map(Into::into),
         include_internal_metadata: false,
     };
     Ok((id, info))
@@ -230,6 +232,8 @@ fn model_provider_to_proto(
         auth,
         gateway_oauth: _,
         aws: _,
+        project_id,
+        location,
         wire_api,
         query_params,
         http_headers,
@@ -243,6 +247,7 @@ fn model_provider_to_proto(
         supports_websockets,
         supports_standalone_web_search,
         include_internal_metadata: _,
+        credential_file,
         capabilities: _,
     } = provider;
 
@@ -252,6 +257,7 @@ fn model_provider_to_proto(
         name,
         base_url,
         model_catalog_url: model_catalog_url.map(RedactedString::into_inner),
+        credential_file: credential_file.map(|path| path.to_string_lossy().into_owned()),
         env_key,
         env_key_instructions,
         experimental_bearer_token: experimental_bearer_token.map(RedactedString::into_inner),
@@ -268,6 +274,8 @@ fn model_provider_to_proto(
         requires_openai_auth,
         supports_websockets,
         supports_standalone_web_search,
+        project_id,
+        location,
     }
 }
 
@@ -490,8 +498,36 @@ mod tests {
     }
 
     #[test]
+    fn model_provider_preserves_released_wire_ids_with_vertex_fields() {
+        // Fields 18 through 21 were already released by this fork. Vertex fields
+        // must not reinterpret the existing developer-role flag, budget or URL.
+        let encoded = [
+            0x90, 0x01, 0x01, // 18: supports_developer_role
+            0x98, 0x01, 0x01, // 19: supports_standalone_web_search
+            0xa0, 0x01, 0x7b, // 20: request_body_max_bytes = 123
+            0xaa, 0x01, 0x01, b'c', // 21: model_catalog_url
+            0xb2, 0x01, 0x01, b'p', // 22: project_id
+            0xba, 0x01, 0x01, b'l', // 23: location
+            0xc2, 0x01, 0x01, b'f', // 24: credential_file
+        ];
+        let decoded = <proto::ModelProvider as prost::Message>::decode(encoded.as_slice())
+            .expect("decode released and new provider fields");
+        assert_eq!(decoded.supports_developer_role, Some(true));
+        assert!(decoded.supports_standalone_web_search);
+        assert_eq!(decoded.request_body_max_bytes, Some(123));
+        assert_eq!(decoded.model_catalog_url.as_deref(), Some("c"));
+        assert_eq!(decoded.project_id.as_deref(), Some("p"));
+        assert_eq!(decoded.location.as_deref(), Some("l"));
+        assert_eq!(decoded.credential_file.as_deref(), Some("f"));
+        assert_eq!(prost::Message::encode_to_vec(&decoded), encoded);
+    }
+
+    #[test]
     fn model_provider_proto_roundtrips_through_domain_type() {
         let mut expected = expected_provider();
+        expected.project_id = Some("vertex-project".to_string());
+        expected.location = Some("us-central1".to_string());
+        expected.credential_file = Some(workspace_dir().join("adc.json").into_path_buf());
         expected.auth = None;
         expected.experimental_bearer_token = Some("synthetic-provider-token".into());
         let proto = model_provider_to_proto("local", expected.clone());
@@ -536,6 +572,7 @@ mod tests {
                             model_catalog_url: Some(
                                 "http://127.0.0.1:8061/api/codex/models".to_string(),
                             ),
+                            credential_file: None,
                             env_key: None,
                             env_key_instructions: None,
                             experimental_bearer_token: None,
@@ -574,6 +611,8 @@ mod tests {
                             supports_websockets: true,
                             supports_developer_role: None,
                             supports_standalone_web_search: true,
+                            project_id: None,
+                            location: None,
                         }],
                         features: HashMap::from([
                             ("plugins".to_string(), false),
@@ -640,6 +679,9 @@ mod tests {
             gateway_oauth: None,
             aws: None,
             capabilities: None,
+            project_id: None,
+            location: None,
+            credential_file: None,
             include_internal_metadata: false,
         }
     }

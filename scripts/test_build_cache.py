@@ -159,7 +159,11 @@ class BuildCacheTests(unittest.TestCase):
                 info = original(fd)
                 if info.st_ino != inode:
                     return info
-                values = {key: getattr(info, key) for key in dir(info) if key.startswith("st_")}
+                values = {
+                    key: getattr(info, key)
+                    for key in dir(info)
+                    if key.startswith("st_")
+                }
                 values["st_dev"] += 1
                 return SimpleNamespace(**values)
 

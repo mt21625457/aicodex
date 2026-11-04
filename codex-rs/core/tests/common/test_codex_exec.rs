@@ -16,6 +16,9 @@ impl TestCodexExecBuilder {
         );
         cmd.current_dir(self.cwd.path())
             .env("CODEX_HOME", self.home.path())
+            .env("AICODEX_HOME", self.home.path())
+            .env("NO_PROXY", "127.0.0.1,localhost,::1")
+            .env("no_proxy", "127.0.0.1,localhost,::1")
             .env("CODEX_SQLITE_HOME", self.home.path())
             .env(CODEX_API_KEY_ENV_VAR, "dummy");
         cmd
@@ -24,7 +27,10 @@ impl TestCodexExecBuilder {
         let mut cmd = self.cmd();
         let base = format!("{}/v1", server.uri());
         cmd.arg("-c")
-            .arg(format!("openai_base_url={}", toml_string_literal(&base)));
+            .arg(format!("openai_base_url={}", toml_string_literal(&base)))
+            // This helper serves HTTP SSE fixtures, not a WebSocket endpoint.
+            .arg("-c")
+            .arg("model_providers.openai.supports_websockets=false");
         cmd
     }
 

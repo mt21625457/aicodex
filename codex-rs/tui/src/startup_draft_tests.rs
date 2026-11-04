@@ -482,7 +482,7 @@ async fn startup_draft_preserves_non_bracketed_multiline_pastes_without_submitti
     assert!(pump.app_event_rx.try_recv().is_err());
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn startup_draft_preserves_deferred_paste_newlines_across_handoff() {
     let (event_tx, event_rx) = unbounded_channel();
     let mut pump = startup_test_pump(std::iter::empty());
@@ -522,7 +522,7 @@ async fn startup_draft_preserves_deferred_paste_newlines_across_handoff() {
     assert_eq!(pump.into_draft().text, "first line\ns");
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn startup_draft_does_not_turn_a_standalone_enter_into_a_newline_at_handoff() {
     let (_event_tx, event_rx) = unbounded_channel();
     let mut pump = startup_test_pump(std::iter::empty());

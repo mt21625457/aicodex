@@ -64,7 +64,15 @@ async fn older_cache_update_preserves_newer_network_catalog() {
             .apply_remote_models(older, CatalogUpdateSource::Cache)
             .await
     );
-    assert_eq!(*manager.remote_models.read().await, latest);
+    assert_eq!(manager.remote_models.read().await.entry, latest);
+    assert!(
+        manager
+            .remote_models
+            .read()
+            .await
+            .provider_model_ids
+            .contains(&latest.models[0].slug)
+    );
 }
 
 #[tokio::test]

@@ -2,7 +2,8 @@
 use codex_api::ResponseEvent;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::tool_input_progress::ToolInputProgressEvent;
-use tokio::time::{Duration, Instant};
+use tokio::time::Duration;
+use tokio::time::Instant;
 
 #[derive(Default)]
 pub(crate) struct ToolInputProgress {

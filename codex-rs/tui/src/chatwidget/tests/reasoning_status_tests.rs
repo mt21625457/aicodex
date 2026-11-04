@@ -18,17 +18,18 @@ fn delta(chat: &mut ChatWidget, id: &str, text: &str) {
 
 fn complete(chat: &mut ChatWidget, id: &str) {
     chat.handle_server_notification(
-        ServerNotification::ItemCompleted(ItemCompletedNotification {
-            thread_id: "thread-1".to_string(),
-            turn_id: "turn-1".to_string(),
-            completed_at_ms: 0,
-            item: AppServerThreadItem::Reasoning {
+        ServerNotification::ItemCompleted(ItemCompletedNotification::new(
+            "thread-1".to_string(),
+            "turn-1".to_string(),
+            AppServerThreadItemPayload::Reasoning {
                 transcript_metadata: None,
                 id: id.to_string(),
                 summary: Vec::new(),
                 content: Vec::new(),
             },
-        }),
+            /*started_at_ms*/ None,
+            /*completed_at_ms*/ 0,
+        )),
         /*replay_kind*/ None,
     );
 }
@@ -217,7 +218,7 @@ async fn reasoning_status_replay_retains_last_usable_heading() {
         ("third", Vec::new(), "Second heading"),
     ] {
         chat.handle_thread_item(
-            AppServerThreadItem::Reasoning {
+            AppServerThreadItemPayload::Reasoning {
                 transcript_metadata: None,
                 id: id.to_string(),
                 summary,
@@ -274,7 +275,7 @@ async fn completed_reasoning_stays_in_expanded_transcript_for_live_and_replay() 
         ] {
             if replay {
                 chat.handle_thread_item(
-                    AppServerThreadItem::Reasoning {
+                    AppServerThreadItemPayload::Reasoning {
                         transcript_metadata: None,
                         id: id.to_string(),
                         summary: vec![summary.to_string()],

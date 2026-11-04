@@ -11,6 +11,7 @@ import urllib.error
 import zipfile
 from email.parser import BytesParser
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -153,9 +154,17 @@ def test_root_format_driver_covers_all_formatter_groups(
         "--exclude-standard",
     ]
 
+    rust_files = ["codex-rs/core/src/lib.rs", "codex-rs/core/src/orphan.rs"]
+    for relative in rust_files:
+        source = tmp_path / relative
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("// fixture\n")
+
     # The Python SDK CI image has no Git; keep discovery mocked at the process boundary.
     def fake_check_output(args, *, cwd):
         assert cwd == tmp_path
+        if args == git_ls_files_args + ["--", "*.rs"]:
+            return ("\0".join(rust_files + ["codex-rs/deleted.rs"]) + "\0").encode()
         assert args == git_ls_files_args
         return b"MODULE.bazel\0README.md\0third_party/v8/libcxx.BUILD.bazel\0"
 
@@ -217,13 +226,21 @@ def test_root_format_driver_covers_all_formatter_groups(
     )
     assert formatters[0].commands[-1].args == ("just", "--unstable", "--fmt")
     assert checks[0].commands[-1].args == ("just", "--unstable", "--fmt", "--check")
-    # Keep Rust discovery scoped to Cargo workspace targets, matching Rust CI.
-    rustfmt_args = ("cargo", "fmt", "--", "--config", "imports_granularity=Item")
-    assert formatters[1].commands == (
-        script.Command(rustfmt_args, tmp_path / "codex-rs"),
+    # Include standalone Rust files that Cargo cannot discover, but skip deleted paths.
+    rust_workspace = tmp_path / "codex-rs"
+    rustfmt_args = (
+        "rustfmt",
+        "--edition",
+        "2024",
+        "--config-path",
+        str(rust_workspace / "rustfmt.toml"),
+        "--config",
+        "imports_granularity=Item,skip_children=true",
     )
+    source_args = ("core/src/lib.rs", "core/src/orphan.rs")
+    assert formatters[1].commands == (script.Command(rustfmt_args + source_args, rust_workspace),)
     assert checks[1].commands == (
-        script.Command(rustfmt_args + ("--check",), tmp_path / "codex-rs"),
+        script.Command(rustfmt_args + ("--check",) + source_args, rust_workspace),
     )
     format_buildifier_args = formatters[2].commands[-1].args
     check_buildifier_args = checks[2].commands[-1].args
@@ -779,6 +796,58 @@ def test_stage_runtime_release_copies_package_layout_and_sets_version(
     }
     assert 'name = "openai-codex-cli-bin"' in (staged / "pyproject.toml").read_text()
     assert 'version = "1.2.3"' in (staged / "pyproject.toml").read_text()
+
+
+@pytest.mark.parametrize("windows", [False, True])
+@pytest.mark.parametrize("name", ["codex", "aicodex"])
+@pytest.mark.parametrize("archive", [False, True])
+def test_runtime_preserves_canonical_entrypoint_from_package_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    windows: bool,
+    name: str,
+    archive: bool,
+) -> None:
+    script = _load_update_script_module()
+    monkeypatch.setattr(script, "_is_windows", lambda: windows)
+    package = _write_fake_codex_package(tmp_path / "package", script)
+    entrypoint = f"bin/{name}{'.exe' if windows else ''}"
+    source = package / "bin" / script.runtime_binary_name()
+    if source != package / entrypoint:
+        source.rename(package / entrypoint)
+    (package / "codex-package.json").write_text(json.dumps({"entrypoint": entrypoint}))
+    package_source = package
+    if archive:
+        package_source = tmp_path / "package.tar.gz"
+        _write_package_archive(package, package_source)
+    staged = script.stage_python_runtime_package(tmp_path / "stage", "1.2.3", package_source)
+    root = script.staged_runtime_package_root(staged)
+    spec = importlib.util.spec_from_file_location("staged_runtime", root / "__init__.py")
+    assert spec is not None and spec.loader is not None
+    runtime = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runtime)
+    monkeypatch.setattr(runtime, "os", SimpleNamespace(name="nt" if windows else "posix"))
+    assert runtime.bundled_codex_path() == root / entrypoint
+    assert runtime.bundled_codex_path().read_bytes() == (package / entrypoint).read_bytes()
+
+
+@pytest.mark.parametrize("entrypoint", ["../outside", "/tmp/codex", "bin/codex-exec-server"])
+def test_runtime_rejects_noncanonical_metadata_entrypoints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entrypoint: str
+) -> None:
+    script = _load_update_script_module()
+    package = _write_fake_codex_package(tmp_path / "package", script)
+    (package / "codex-package.json").write_text(json.dumps({"entrypoint": entrypoint}))
+    with pytest.raises(RuntimeError, match="Invalid canonical CLI entrypoint"):
+        script.stage_python_runtime_package(tmp_path / "stage", "1.2.3", package)
+    runtime_source = ROOT.parent / "python-runtime/src/codex_cli_bin/__init__.py"
+    spec = importlib.util.spec_from_file_location("invalid_runtime", runtime_source)
+    assert spec is not None and spec.loader is not None
+    runtime = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runtime)
+    monkeypatch.setattr(runtime, "bundled_package_dir", lambda: package)
+    with pytest.raises(ValueError, match="invalid canonical CLI entrypoint"):
+        runtime.bundled_codex_path()
 
 
 def test_normalize_codex_version_accepts_release_tags_and_pep440_versions() -> None:

@@ -136,6 +136,7 @@ mod model_catalog;
 mod models;
 mod models_refresh_worker;
 mod notification_media;
+mod otel_config;
 mod otel_reloader;
 mod outgoing_message;
 mod plugin_config_reload;
@@ -143,6 +144,7 @@ mod request_processors;
 mod request_serialization;
 mod server_request_error;
 mod skills_watcher;
+mod startup_warnings;
 mod thread_sample;
 mod thread_state;
 mod thread_status;
@@ -568,10 +570,11 @@ pub async fn run_main_with_transport_options(
         Arc::new(NoopThreadConfigLoader),
     );
     let startup = config_manager
-        .load_cloud_startup_config(startup_cwd.clone())
+        .load_managed_startup_config(startup_cwd.clone())
         .await?;
     let mut config_warnings = Vec::new();
     let mut plugin_startup_config = PluginStartupConfig::Current;
+    let startup_config_failed = startup.config.is_err();
     let config = match startup.config {
         Ok(config) => config,
         Err(err) if is_unsupported_untrusted_approval_policy_error(&err) => {
@@ -594,16 +597,19 @@ pub async fn run_main_with_transport_options(
         }
     };
     config.validate_windows_mxc_requirement()?;
-    config.auth_config().validate()?;
+    // Cloud-policy recovery must retain the local account authority and endpoint.
+    // Runtime defaults omit user settings and must not redirect policy requests.
+    let auth_config = if startup_config_failed {
+        &startup.bootstrap
+    } else {
+        &config
+    };
+    auth_config.auth_config().validate()?;
     let auth_manager =
-        AuthManager::shared_from_config(&config, /*enable_codex_api_key_env*/ false)
+        AuthManager::shared_from_config(auth_config, /*enable_codex_api_key_env*/ false)
             .await
             .map_err(std::io::Error::other)?;
-    config_manager.replace_cloud_config_bundle_loader(
-        auth_manager.clone(),
-        config.chatgpt_base_url.clone(),
-        config.http_client_factory(),
-    );
+    config_manager.update_managed_config_loader(auth_manager.clone(), auth_config);
     config_manager
         .sync_default_client_residency_requirement()
         .await;
@@ -1007,6 +1013,7 @@ pub async fn run_main_with_transport_options(
         let auth_manager = Arc::clone(&auth_manager);
         let initialize_notification_sender = outgoing_message_sender.clone();
         let outbound_control_tx = outbound_control_tx;
+        let (startup_warnings_tx, mut startup_warnings_rx) = mpsc::unbounded_channel();
         let mut processor = MessageProcessor::new(MessageProcessorArgs {
             cloud_skill_provider,
             outgoing: outgoing_message_sender,
@@ -1020,6 +1027,7 @@ pub async fn run_main_with_transport_options(
             log_db,
             state_db: state_db.clone(),
             config_warnings,
+            startup_warnings_tx,
             session_source,
             user_verification: Arc::new(crate::user_verification::Service::new(Arc::clone(
                 &auth_manager,
@@ -1300,6 +1308,9 @@ pub async fn run_main_with_transport_options(
                                 }
                             }
                         }
+                    }
+                    Some(message) = startup_warnings_rx.recv(), if connections.values().any(|state| state.session.initialized()) => {
+                        startup_warnings::send_warning(&initialize_notification_sender, message).await;
                     }
                     _ = connection_cleanup_tasks.reap_next() => {}
                     result = thread_listener_tasks.join_next(), if !thread_listener_tasks.is_empty() => {

@@ -64,7 +64,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: pnpm
 
       - name: Prepare Bazel CI
@@ -115,7 +115,7 @@ jobs:
           install_dir="${GITHUB_WORKSPACE}/.tmp/sdk-ci"
           mkdir -p "${install_dir}"
           install -m 755 "${bazel_output_paths[@]}" "${install_dir}"
-          echo "CODEX_EXEC_PATH=${install_dir}/codex" >> "$GITHUB_ENV"
+          echo "CODEX_EXEC_PATH=${install_dir}/aicodex" >> "$GITHUB_ENV"
 
       - name: Warm up Bazel-built codex
         shell: bash

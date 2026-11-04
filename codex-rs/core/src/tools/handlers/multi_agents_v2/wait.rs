@@ -141,7 +141,10 @@ impl CoreToolRuntime for Handler {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WaitArgs {
-    #[serde(default, deserialize_with = "crate::tools::handlers::wait_timeout::deserialize")]
+    #[serde(
+        default,
+        deserialize_with = "crate::tools::handlers::wait_timeout::deserialize"
+    )]
     timeout_ms: Option<i64>,
 }
 

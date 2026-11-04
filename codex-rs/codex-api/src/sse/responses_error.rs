@@ -57,6 +57,7 @@ pub(super) fn parse_failed_response(response: Option<Value>) -> ApiError {
                 | "cyber_policy"
                 | "bio_policy"
                 | "misalignment_policy_violation"
+                | "policy_capacity_unavailable"
                 | "server_is_overloaded"
                 | "rate_limit_exceeded"
                 | "slow_down"
@@ -110,6 +111,9 @@ pub(super) fn parse_failed_response(response: Option<Value>) -> ApiError {
             message: error
                 .message
                 .unwrap_or_else(|| "Invalid request.".to_string()),
+        },
+        Some("policy_capacity_unavailable") => ApiError::PolicyCapacityUnavailable {
+            retry_after: retry_after_header,
         },
         Some("server_is_overloaded") => ApiError::ServerOverloaded {
             retry_after: retry_after_header,

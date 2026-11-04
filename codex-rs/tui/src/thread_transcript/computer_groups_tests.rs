@@ -5,12 +5,13 @@ use crate::thread_transcript::RawReasoningVisibility;
 use crate::thread_transcript::TranscriptCells;
 use crate::thread_transcript::thread_items_to_transcript_cells;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::TurnItemsView;
 use codex_app_server_protocol::TurnStatus;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
 
-fn computer(id: &str) -> ThreadItem {
+fn computer(id: &str) -> ThreadItemPayload {
     serde_json::from_value(serde_json::json!({
         "type": "mcpToolCall", "id": id, "server": "cua_repl", "tool": "js",
         "status": "completed", "arguments": {"title": format!("Inspect {id}"), "code": "await cua.getState()"},
@@ -20,11 +21,11 @@ fn computer(id: &str) -> ThreadItem {
     })).unwrap()
 }
 
-fn turn(id: &str, items: Vec<ThreadItem>) -> Turn {
+fn turn(id: &str, items: Vec<ThreadItemPayload>) -> Turn {
     Turn {
         id: id.to_string(),
         root_turn_id: None,
-        items,
+        items: items.into_iter().map(ThreadItem::untimed).collect(),
         items_view: TurnItemsView::Full,
         status: TurnStatus::Completed,
         error: None,
@@ -34,11 +35,11 @@ fn turn(id: &str, items: Vec<ThreadItem>) -> Turn {
     }
 }
 
-fn project(items: &[ThreadItem]) -> TranscriptCells {
+fn project(items: &[impl std::borrow::Borrow<ThreadItemPayload>]) -> TranscriptCells {
     thread_items_to_transcript_cells(
         /*thread_id*/ None,
         &AbsolutePathBuf::current_dir().unwrap(),
-        items.to_vec(),
+        items.iter().map(|entry| entry.borrow().clone()),
         RawReasoningVisibility::Hidden,
         /*config*/ None,
     )
@@ -50,7 +51,7 @@ fn every_page_split_retains_the_same_rich_computer_group() {
         "turn",
         vec![
             computer("first"),
-            ThreadItem::Reasoning {
+            ThreadItemPayload::Reasoning {
                 transcript_metadata: None,
                 id: "reasoning-first".to_owned(),
                 summary: vec!["Inspect the second screen".to_owned()],
@@ -58,7 +59,7 @@ fn every_page_split_retains_the_same_rich_computer_group() {
             },
             computer("second"),
             computer("third"),
-            ThreadItem::Reasoning {
+            ThreadItemPayload::Reasoning {
                 transcript_metadata: None,
                 id: "reasoning-second".to_owned(),
                 summary: vec!["Confirm the final screen".to_owned()],
@@ -133,7 +134,7 @@ fn joins_respect_actual_turns_and_intervening_items() {
     assert!(join_computer_groups(&older[0], &newer[0], &turns).is_none());
     let grouped = project(&[
         first.clone(),
-        ThreadItem::Sleep(codex_app_server_protocol::SleepItem {
+        ThreadItemPayload::Sleep(codex_app_server_protocol::SleepItem {
             id: "sleep".into(),
             duration_ms: 10,
         }),
@@ -149,7 +150,7 @@ fn joins_respect_actual_turns_and_intervening_items() {
         "turn",
         vec![
             first,
-            ThreadItem::Reasoning {
+            ThreadItemPayload::Reasoning {
                 transcript_metadata: None,
                 id: "reasoning".to_string(),
                 summary: Vec::new(),
@@ -165,7 +166,7 @@ fn joins_respect_actual_turns_and_intervening_items() {
         joined.transcript_lines(/*width*/ 80),
         expected[0].transcript_lines(/*width*/ 80),
     );
-    turns[0].items[1] = ThreadItem::AgentMessage {
+    turns[0].items[1] = ThreadItem::untimed(ThreadItemPayload::AgentMessage {
         transcript_metadata: None,
         id: "message".to_string(),
         text: "Visible boundary".to_string(),
@@ -173,6 +174,6 @@ fn joins_respect_actual_turns_and_intervening_items() {
         memory_citation: None,
         delivery: None,
         questions: None,
-    };
+    });
     assert!(join_computer_groups(&older[0], &newer[0], &turns).is_none());
 }

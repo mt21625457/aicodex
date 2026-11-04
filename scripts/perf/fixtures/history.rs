@@ -1,4 +1,6 @@
-use std::io::{BufRead, Seek, Write};
+use std::io::BufRead;
+use std::io::Seek;
+use std::io::Write;
 fn scan(path: &std::path::Path, offset: usize, expected: &str) -> usize {
     let file = std::fs::File::open(path).unwrap();
     file.lock_shared().unwrap();

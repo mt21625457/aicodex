@@ -93,6 +93,8 @@ async fn client_with_effort_updates(
     )?;
     let mut config = MockResponsesConfig::new(&server.uri()).with_model("gpt-5.4").with_provider_name("OpenAI")
         .with_root_config(&format!("model_catalog_json = {}\nmodel_reasoning_effort = \"high\"\nmodel_post_turn_compact_threshold_percent = 0", serde_json::to_string(&catalog)?));
+    // Keep the standalone web tool in the inherited-context fixture explicitly.
+    config = config.with_provider_config("supports_standalone_web_search = true");
     config = if overrides {
         config.enable_feature(Feature::ReasoningEffortOverride)
     } else {
@@ -563,6 +565,7 @@ async fn sample_skips_inherited_stop_hooks() -> Result<()> {
     let list_id = client
         .send_hooks_list_request(HooksListParams {
             cwds: vec![home.path().to_path_buf()],
+            ..Default::default()
         })
         .await?;
     let hooks: HooksListResponse = client.read_response(list_id).await?;

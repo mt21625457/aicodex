@@ -162,12 +162,15 @@ impl WebSearchHandler {
         })?;
         let provider_bearer = match turn.provider.api_auth().await {
             Ok(auth) => {
-                let headers = auth.resolve_auth_headers().await.map_err(|_| {
-                    FunctionCallError::RespondToModel(
+                let headers = auth
+                    .apply_auth_headers(http::HeaderMap::new())
+                    .await
+                    .map_err(|_| {
+                        FunctionCallError::RespondToModel(
                         "Moonshot web search could not resolve the primary provider authentication"
                             .to_string(),
                     )
-                })?;
+                    })?;
                 codex_web_search::provider_token_from_auth_headers(&headers)
             }
             Err(_) => None,
