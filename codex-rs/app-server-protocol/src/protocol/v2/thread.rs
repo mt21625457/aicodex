@@ -1781,11 +1781,39 @@ pub struct ThreadRuntimeLifecycle {
     pub last_terminal_turn_id: Option<String>,
 }
 
+/// 只读运行时证据，不代表磁盘期望配置，也不包含团队提示词或用户内容。
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, ExperimentalApi)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadAgentTeamPolicy {
+    pub agents_enabled: bool,
+    pub multi_agent_v2_enabled: bool,
+    /// 已加载配置的团队覆盖证据；旧服务器缺失时不可推断角色或提示词已经生效。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub config_evidence: Option<ThreadAgentTeamConfigEvidence>,
+}
+
+/// 哈希只描述配置声明，不读取角色文件，不包含用户内容或可续接响应标识。
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, ExperimentalApi)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadAgentTeamConfigEvidence {
+    /// SHA256(serde_json([description, config_file]))，使用 UTF-8、小写十六进制。
+    pub role_fingerprints: std::collections::BTreeMap<String, String>,
+    /// SHA256(serde_json(mode_hint))，缺失提示词编码为 null。
+    pub mode_hint_fingerprint: String,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, ExperimentalApi)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadReadResponse {
     pub thread: Thread,
+    /// 当前已加载会话的有效团队开关；未加载或旧服务器缺字段时保持未知。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub effective_agent_team_policy: Option<ThreadAgentTeamPolicy>,
     /// Lightweight, content-free runtime evidence for lifecycle reconciliation.
     /// Always serialized; `null` means no live snapshot. Older app-server builds
     /// may omit the field, and readers still accept that via `#[serde(default)]`.

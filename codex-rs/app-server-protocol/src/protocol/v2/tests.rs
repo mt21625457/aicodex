@@ -624,6 +624,11 @@ fn thread_resume_response_round_trips_initial_turns_page() {
     assert_eq!(decoded, response);
 
     let read_response = ThreadReadResponse {
+        effective_agent_team_policy: Some(ThreadAgentTeamPolicy {
+            agents_enabled: true,
+            multi_agent_v2_enabled: true,
+            config_evidence: None,
+        }),
         thread: thread.clone(),
         read_state: Some(ThreadReadState {
             first_unread: Some(ThreadUnreadPosition::ThreadStart),
@@ -649,6 +654,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
     assert_eq!(decoded, read_response);
 
     let no_live_lifecycle = ThreadReadResponse {
+        effective_agent_team_policy: None,
         thread: thread.clone(),
         read_state: None,
         runtime_lifecycle: None,
@@ -658,7 +664,15 @@ fn thread_resume_response_round_trips_initial_turns_page() {
         serde_json::Value::Null
     );
 
+    assert_eq!(
+        value["effectiveAgentTeamPolicy"],
+        json!({"agentsEnabled": true, "multiAgentV2Enabled": true})
+    );
     let mut legacy_value = value;
+    legacy_value
+        .as_object_mut()
+        .expect("object")
+        .remove("effectiveAgentTeamPolicy");
     legacy_value
         .as_object_mut()
         .expect("thread read response should be an object")
@@ -667,6 +681,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
         .expect("deserialize legacy thread read response");
     assert_eq!(legacy.thread, thread);
     assert_eq!(legacy.runtime_lifecycle, None);
+    assert_eq!(legacy.effective_agent_team_policy, None);
 }
 
 #[test]
@@ -5791,4 +5806,33 @@ fn feedback_paths_preserve_native_wire_spelling_before_host_validation() {
             path
         );
     }
+}
+
+#[test]
+fn compaction_error_preserves_typed_context_and_accepts_older_events() {
+    use codex_protocol::compaction_error::{CompactionErrorContext, CompactionTimeoutKind};
+    let error = CodexErrorInfo::from(
+        codex_protocol::protocol::CodexErrorInfo::CompactionTimeout {
+            context: Some(CompactionErrorContext {
+                kind: CompactionTimeoutKind::RetryBudget,
+                attempt: Some(2),
+                stage: Some("awaiting_summary".into()),
+                elapsed_ms: Some(200000),
+                idle_ms: Some(20),
+                remaining_ms: Some(100000),
+                last_error_category: Some("stream".into()),
+            }),
+        },
+    );
+    let value = serde_json::to_value(&error).expect("serialize compaction");
+    assert_eq!(
+        value["compactionTimeout"]["context"]["kind"],
+        "retry_budget"
+    );
+    assert_eq!(value["compactionTimeout"]["context"]["elapsedMs"], 200000);
+    let restored: CodexErrorInfo = serde_json::from_value(value).expect("read new event");
+    assert_eq!(restored, error);
+    let old: CodexErrorInfo =
+        serde_json::from_value(json!({"compactionTimeout": {}})).expect("read older event");
+    assert_eq!(old, CodexErrorInfo::CompactionTimeout { context: None });
 }

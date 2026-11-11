@@ -2136,6 +2136,10 @@ pub enum NonSteerableTurnKind {
 #[schemars(rename_all = "snake_case")]
 #[ts(rename_all = "snake_case")]
 pub enum CodexErrorInfo {
+    /// 压缩预算耗尽，与传输断连分开分类。
+    CompactionTimeout {
+        context: Option<crate::compaction_error::CompactionErrorContext>,
+    },
     ContextWindowExceeded,
     SessionBudgetExceeded,
     UsageLimitExceeded,
@@ -2184,7 +2188,8 @@ impl CodexErrorInfo {
     pub fn affects_turn_status(&self) -> bool {
         match self {
             Self::ThreadRollbackFailed | Self::ActiveTurnNotSteerable { .. } => false,
-            Self::ContextWindowExceeded
+            Self::CompactionTimeout { .. }
+            | Self::ContextWindowExceeded
             | Self::SessionBudgetExceeded
             | Self::UsageLimitExceeded
             | Self::RateLimitExceeded

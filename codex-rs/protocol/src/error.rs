@@ -80,6 +80,7 @@ pub struct CodexErr {
     retry_after: Option<RetryAfter>,
     retry_disabled: bool,
     agent_context: Option<AgentErrorContext>,
+    compaction_context: Option<crate::compaction_error::CompactionErrorContext>,
 }
 
 /// A terminal response that stopped before the model finished, with any reported usage.
@@ -280,6 +281,7 @@ impl From<CodexErrorDetails> for CodexErr {
             retry_after: None,
             retry_disabled: false,
             agent_context: None,
+            compaction_context: None,
         }
     }
 }
@@ -346,6 +348,7 @@ macro_rules! codex_err_unit_constructors {
                 retry_after: None,
                 retry_disabled: false,
                 agent_context: None,
+                compaction_context: None,
             };
         )*
     };
@@ -515,6 +518,15 @@ impl CodexErr {
         self
     }
 
+    /// 附加压缩诊断；调用方仅传安全分类，不传原始网络错误正文。
+    pub fn with_compaction_context(
+        mut self,
+        context: crate::compaction_error::CompactionErrorContext,
+    ) -> Self {
+        self.compaction_context = Some(context);
+        self
+    }
+
     /// Disables retries without discarding the semantic error category.
     pub fn without_retry(mut self) -> Self {
         self.retry_disabled = true;
@@ -557,7 +569,8 @@ impl CodexErr {
                     http_status_code: self.http_status_code_value(),
                 }
             }
-            CodexErrorDetails::CompactionTimeout | CodexErrorDetails::ResponseStreamFailed(_) => {
+            CodexErrorDetails::CompactionTimeout => CodexErrorInfo::CompactionTimeout { context: self.compaction_context.clone() },
+            CodexErrorDetails::ResponseStreamFailed(_) => {
                 CodexErrorInfo::ResponseStreamConnectionFailed {
                     http_status_code: self.http_status_code_value(),
                 }

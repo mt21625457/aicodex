@@ -109,6 +109,8 @@ CHANGELOG.ignore.md
 # Python bytecode files
 __pycache__/
 *.pyc
+.pytest_cache/
+.ruff_cache/
 
 # Default build.py runtime companions
 /codex-code-mode-host

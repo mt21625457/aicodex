@@ -17,6 +17,10 @@ use serde_json::Value;
     rename_all = "snake_case"
 )]
 enum CodexErrorInfoWire {
+    /// 压缩预算耗尽，与传输断连分开分类。
+    CompactionTimeout {
+        context: Option<crate::compaction_error::CompactionErrorContext>,
+    },
     ContextWindowExceeded,
     SessionBudgetExceeded,
     UsageLimitExceeded,

@@ -74,6 +74,10 @@ pub enum NonSteerableTurnKind {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub enum CodexErrorInfo {
+    /// 压缩预算耗尽；旧记录可不含诊断。
+    CompactionTimeout {
+        context: Option<codex_protocol::compaction_error::CompactionErrorContext>,
+    },
     ContextWindowExceeded,
     SessionBudgetExceeded,
     UsageLimitExceeded,
@@ -152,6 +156,9 @@ where
 impl From<CoreCodexErrorInfo> for CodexErrorInfo {
     fn from(value: CoreCodexErrorInfo) -> Self {
         match value {
+            CoreCodexErrorInfo::CompactionTimeout { context } => {
+                CodexErrorInfo::CompactionTimeout { context }
+            }
             CoreCodexErrorInfo::ContextWindowExceeded => CodexErrorInfo::ContextWindowExceeded,
             CoreCodexErrorInfo::SessionBudgetExceeded => CodexErrorInfo::SessionBudgetExceeded,
             CoreCodexErrorInfo::UsageLimitExceeded => CodexErrorInfo::UsageLimitExceeded,

@@ -1,3 +1,6 @@
+#[path = "thread_agent_team_policy.rs"]
+mod thread_agent_team_policy;
+
 #[path = "daemon_continuation.rs"]
 mod daemon_continuation;
 
@@ -3134,9 +3137,18 @@ impl ThreadRequestProcessor {
                 // 发送完成后发出，无需为等待发送保留整段会话的深拷贝。
                 turn_id: resolve_token_usage_turn_id(&view.thread.turns, view.token_usage_turn_id),
             });
+        // 仅从已加载会话取得有效配置；历史元数据不能证明开关已应用。
+        let effective_agent_team_policy = match self.thread_manager.get_thread(thread_uuid).await {
+            Ok(thread) => {
+                let config = thread.config().await;
+                Some(thread_agent_team_policy::snapshot(&config))
+            }
+            Err(_) => None,
+        };
         Ok((
             ThreadReadResponse {
                 thread: view.thread,
+                effective_agent_team_policy,
                 runtime_lifecycle: view.runtime_lifecycle,
                 read_state,
             },

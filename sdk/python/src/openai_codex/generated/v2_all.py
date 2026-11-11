@@ -792,6 +792,13 @@ class CommandMigration(BaseModel):
     name: str
 
 
+class CompactionTimeoutKind(Enum):
+    idle = "idle"
+    total = "total"
+    retry_budget = "retry_budget"
+    unknown = "unknown"
+
+
 class ComputerUseMacosConfig(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -5130,6 +5137,41 @@ class ThreadActiveFlag(Enum):
     waiting_on_user_input = "waitingOnUserInput"
 
 
+class ThreadAgentTeamConfigEvidence(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    mode_hint_fingerprint: Annotated[
+        str,
+        Field(
+            alias="modeHintFingerprint",
+            description="SHA256(serde_json(mode_hint))，缺失提示词编码为 null。",
+        ),
+    ]
+    role_fingerprints: Annotated[
+        dict[str, str],
+        Field(
+            alias="roleFingerprints",
+            description="SHA256(serde_json([description, config_file]))，使用 UTF-8、小写十六进制。",
+        ),
+    ]
+
+
+class ThreadAgentTeamPolicy(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    agents_enabled: Annotated[bool, Field(alias="agentsEnabled")]
+    config_evidence: Annotated[
+        ThreadAgentTeamConfigEvidence | None,
+        Field(
+            alias="configEvidence",
+            description="已加载配置的团队覆盖证据；旧服务器缺失时不可推断角色或提示词已经生效。",
+        ),
+    ] = None
+    multi_agent_v2_enabled: Annotated[bool, Field(alias="multiAgentV2Enabled")]
+
+
 class ThreadApproveGuardianDeniedActionParams(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -8071,31 +8113,6 @@ class ActiveTurnNotSteerableCodexErrorInfo(BaseModel):
     ]
 
 
-class CodexErrorInfo(
-    RootModel[
-        CodexErrorInfoValue
-        | HttpConnectionFailedCodexErrorInfo
-        | ResponseStreamConnectionFailedCodexErrorInfo
-        | ResponseStreamDisconnectedCodexErrorInfo
-        | ResponseTooManyFailedAttemptsCodexErrorInfo
-        | ActiveTurnNotSteerableCodexErrorInfo
-        | dict[str, Any]
-    ]
-):
-    root: Annotated[
-        CodexErrorInfoValue
-        | HttpConnectionFailedCodexErrorInfo
-        | ResponseStreamConnectionFailedCodexErrorInfo
-        | ResponseStreamDisconnectedCodexErrorInfo
-        | ResponseTooManyFailedAttemptsCodexErrorInfo
-        | ActiveTurnNotSteerableCodexErrorInfo
-        | dict[str, Any],
-        Field(
-            description="This translation layer make sure that we expose codex error code in camel case.\n\nWhen an upstream HTTP status is available (for example, from the Responses API or a provider), it is forwarded in `httpStatusCode` on the relevant `codexErrorInfo` variant."
-        ),
-    ]
-
-
 class CollabAgentState(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -8263,6 +8280,19 @@ class CommandExecResizeParams(BaseModel):
         ),
     ]
     size: Annotated[CommandExecTerminalSize, Field(description="New PTY size in character cells.")]
+
+
+class CompactionErrorContext(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    attempt: Annotated[int | None, Field(ge=0)] = None
+    elapsed_ms: Annotated[int | None, Field(alias="elapsedMs", ge=0)] = None
+    idle_ms: Annotated[int | None, Field(alias="idleMs", ge=0)] = None
+    kind: CompactionTimeoutKind
+    last_error_category: Annotated[str | None, Field(alias="lastErrorCategory")] = None
+    remaining_ms: Annotated[int | None, Field(alias="remainingMs", ge=0)] = None
+    stage: str | None = None
 
 
 class ComputerUseRequirements(BaseModel):
@@ -11107,21 +11137,6 @@ class ToolsV2(BaseModel):
     web_search: WebSearchToolConfig | None = None
 
 
-class TurnError(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    additional_details: Annotated[str | None, Field(alias="additionalDetails")] = None
-    codex_error_info: Annotated[CodexErrorInfo | None, Field(alias="codexErrorInfo")] = None
-    message: str
-    misalignment: Annotated[
-        MisalignmentErrorDetails | None,
-        Field(
-            description="Optional public explanation and continuation instruction for a misalignment block."
-        ),
-    ] = None
-
-
 class TurnPlanStep(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -11432,6 +11447,48 @@ class ConfigValueWriteRequest(BaseModel):
     params: ConfigValueWriteParams
 
 
+class CompactionTimeout(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    context: CompactionErrorContext | None = None
+
+
+class CompactionTimeoutCodexErrorInfo(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+    )
+    compaction_timeout: Annotated[CompactionTimeout, Field(alias="compactionTimeout")]
+
+
+class CodexErrorInfo(
+    RootModel[
+        CodexErrorInfoValue
+        | CompactionTimeoutCodexErrorInfo
+        | HttpConnectionFailedCodexErrorInfo
+        | ResponseStreamConnectionFailedCodexErrorInfo
+        | ResponseStreamDisconnectedCodexErrorInfo
+        | ResponseTooManyFailedAttemptsCodexErrorInfo
+        | ActiveTurnNotSteerableCodexErrorInfo
+        | dict[str, Any]
+    ]
+):
+    root: Annotated[
+        CodexErrorInfoValue
+        | CompactionTimeoutCodexErrorInfo
+        | HttpConnectionFailedCodexErrorInfo
+        | ResponseStreamConnectionFailedCodexErrorInfo
+        | ResponseStreamDisconnectedCodexErrorInfo
+        | ResponseTooManyFailedAttemptsCodexErrorInfo
+        | ActiveTurnNotSteerableCodexErrorInfo
+        | dict[str, Any],
+        Field(
+            description="This translation layer make sure that we expose codex error code in camel case.\n\nWhen an upstream HTTP status is available (for example, from the Responses API or a provider), it is forwarded in `httpStatusCode` on the relevant `codexErrorInfo` variant."
+        ),
+    ]
+
+
 class ComputerUseConfig(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -11522,16 +11579,6 @@ class ConfigWriteResponse(BaseModel):
     )
     status: WriteStatus
     version: str
-
-
-class ErrorNotification(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    error: TurnError
-    thread_id: Annotated[str, Field(alias="threadId")]
-    turn_id: Annotated[str, Field(alias="turnId")]
-    will_retry: Annotated[bool, Field(alias="willRetry")]
 
 
 class ExternalAgentConfigImportCompletedNotification(BaseModel):
@@ -11906,21 +11953,6 @@ class ResponseItem(
         | ContextCompactionResponseItem
         | OtherResponseItem
     )
-
-
-class ErrorServerNotification(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    emitted_at_ms: Annotated[
-        int | None,
-        Field(
-            alias="emittedAtMs",
-            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
-        ),
-    ] = None
-    method: Annotated[Literal["error"], Field(title="ErrorNotificationMethod")]
-    params: ErrorNotification
 
 
 class ThreadReadStateChangedServerNotification(BaseModel):
@@ -12309,105 +12341,19 @@ class ItemThreadTimelineEntry(BaseModel):
     type: Annotated[Literal["item"], Field(title="ItemThreadTimelineEntryType")]
 
 
-class TurnCompletedThreadTimelineEntry(BaseModel):
+class TurnError(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
-    completed_at: int | None = None
-    duration_ms: int | None = None
-    error: TurnError | None = None
-    position: Annotated[int, Field(ge=0)]
-    started_at: int | None = None
-    status: TurnStatus
-    turn_id: str
-    type: Annotated[Literal["turnCompleted"], Field(title="TurnCompletedThreadTimelineEntryType")]
-
-
-class ThreadTimelineEntry(
-    RootModel[
-        ItemThreadTimelineEntry
-        | RealtimeThreadTimelineEntry
-        | TurnStartedThreadTimelineEntry
-        | TurnCompletedThreadTimelineEntry
-    ]
-):
-    root: Annotated[
-        ItemThreadTimelineEntry
-        | RealtimeThreadTimelineEntry
-        | TurnStartedThreadTimelineEntry
-        | TurnCompletedThreadTimelineEntry,
-        Field(description="EXPERIMENTAL - one item or turn boundary in canonical rollout order."),
-    ]
-
-
-class Turn(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    completed_at: Annotated[
-        int | None,
+    additional_details: Annotated[str | None, Field(alias="additionalDetails")] = None
+    codex_error_info: Annotated[CodexErrorInfo | None, Field(alias="codexErrorInfo")] = None
+    message: str
+    misalignment: Annotated[
+        MisalignmentErrorDetails | None,
         Field(
-            alias="completedAt", description="Unix timestamp (in seconds) when the turn completed."
+            description="Optional public explanation and continuation instruction for a misalignment block."
         ),
     ] = None
-    duration_ms: Annotated[
-        int | None,
-        Field(
-            alias="durationMs",
-            description="Duration between turn start and completion in milliseconds, if known.",
-        ),
-    ] = None
-    error: Annotated[
-        TurnError | None, Field(description="Error associated with a failed or interrupted turn.")
-    ] = None
-    id: Annotated[
-        str, Field(description="Identifier for this turn. Codex-generated turn IDs are UUIDv7.")
-    ]
-    items: Annotated[
-        list[ThreadItem], Field(description="Thread items currently included in this turn payload.")
-    ]
-    items_view: Annotated[
-        TurnItemsView | None,
-        Field(
-            alias="itemsView",
-            description="Describes how much of `items` has been loaded for this turn.",
-        ),
-    ] = "full"
-    root_turn_id: Annotated[
-        str | None,
-        Field(
-            alias="rootTurnId",
-            description="ID of the first turn in the chain of work that led to this turn. Pass this as `rootTurnId` when starting work on behalf of this turn. May be null in older history or a `review/start` response.",
-        ),
-    ] = None
-    started_at: Annotated[
-        int | None,
-        Field(alias="startedAt", description="Unix timestamp (in seconds) when the turn started."),
-    ] = None
-    status: TurnStatus
-
-
-class TurnCompletedNotification(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    thread_id: Annotated[str, Field(alias="threadId")]
-    turn: Turn
-
-
-class TurnStartResponse(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    turn: Turn
-
-
-class TurnStartedNotification(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    thread_id: Annotated[str, Field(alias="threadId")]
-    turn: Turn
 
 
 class TurnToolOutput(BaseModel):
@@ -12421,15 +12367,6 @@ class TurnToolOutput(BaseModel):
         bool | None,
         Field(description="Requests retention of this output in the thread's model history."),
     ] = None
-
-
-class TurnsPage(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    backwards_cursor: Annotated[str | None, Field(alias="backwardsCursor")] = None
-    data: list[Turn]
-    next_cursor: Annotated[str | None, Field(alias="nextCursor")] = None
 
 
 class AdditionalFileSystemPermissions(BaseModel):
@@ -12560,6 +12497,16 @@ class ConfigRequirementsReadResponse(BaseModel):
             description="Whether Fast and Ultra Fast requirements are enforced independently. Older servers omit this field and use Fast mode as a shared speed gate.",
         ),
     ] = None
+
+
+class ErrorNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    error: TurnError
+    thread_id: Annotated[str, Field(alias="threadId")]
+    turn_id: Annotated[str, Field(alias="turnId")]
+    will_retry: Annotated[bool, Field(alias="willRetry")]
 
 
 class ExternalAgentConfigDetectResponse(BaseModel):
@@ -12748,21 +12695,7 @@ class RequestPermissionProfile(BaseModel):
     network: AdditionalNetworkPermissions | None = None
 
 
-class ReviewStartResponse(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    review_thread_id: Annotated[
-        str,
-        Field(
-            alias="reviewThreadId",
-            description="The thread hosting the review, which may be a new detached thread.",
-        ),
-    ]
-    turn: Turn
-
-
-class TurnStartedServerNotification(BaseModel):
+class ErrorServerNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
@@ -12773,23 +12706,8 @@ class TurnStartedServerNotification(BaseModel):
             description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
         ),
     ] = None
-    method: Annotated[Literal["turn/started"], Field(title="Turn/startedNotificationMethod")]
-    params: TurnStartedNotification
-
-
-class TurnCompletedServerNotification(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    emitted_at_ms: Annotated[
-        int | None,
-        Field(
-            alias="emittedAtMs",
-            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
-        ),
-    ] = None
-    method: Annotated[Literal["turn/completed"], Field(title="Turn/completedNotificationMethod")]
-    params: TurnCompletedNotification
+    method: Annotated[Literal["error"], Field(title="ErrorNotificationMethod")]
+    params: ErrorNotification
 
 
 class ItemStartedServerNotification(BaseModel):
@@ -12822,435 +12740,90 @@ class ItemCompletedServerNotification(BaseModel):
     params: ItemCompletedNotification
 
 
-class Thread(BaseModel):
+class TurnCompletedThreadTimelineEntry(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
-    agent_nickname: Annotated[
-        str | None,
-        Field(
-            alias="agentNickname",
-            description="Optional random unique nickname assigned to an AgentControl-spawned sub-agent.",
-        ),
-    ] = None
-    agent_role: Annotated[
-        str | None,
-        Field(
-            alias="agentRole",
-            description="Optional role (agent_role) assigned to an AgentControl-spawned sub-agent.",
-        ),
-    ] = None
-    cli_version: Annotated[
-        str, Field(alias="cliVersion", description="Version of the CLI that created the thread.")
+    completed_at: int | None = None
+    duration_ms: int | None = None
+    error: TurnError | None = None
+    position: Annotated[int, Field(ge=0)]
+    started_at: int | None = None
+    status: TurnStatus
+    turn_id: str
+    type: Annotated[Literal["turnCompleted"], Field(title="TurnCompletedThreadTimelineEntryType")]
+
+
+class ThreadTimelineEntry(
+    RootModel[
+        ItemThreadTimelineEntry
+        | RealtimeThreadTimelineEntry
+        | TurnStartedThreadTimelineEntry
+        | TurnCompletedThreadTimelineEntry
     ]
-    created_at: Annotated[
-        int,
-        Field(
-            alias="createdAt",
-            description="Unix timestamp (in seconds) when the thread was created.",
-        ),
+):
+    root: Annotated[
+        ItemThreadTimelineEntry
+        | RealtimeThreadTimelineEntry
+        | TurnStartedThreadTimelineEntry
+        | TurnCompletedThreadTimelineEntry,
+        Field(description="EXPERIMENTAL - one item or turn boundary in canonical rollout order."),
     ]
-    cwd: Annotated[AbsolutePathBuf, Field(description="Working directory captured for the thread.")]
-    effort: Annotated[
-        ReasoningEffort | None,
-        Field(description="Latest observed reasoning effort for this thread."),
-    ] = None
-    ephemeral: Annotated[
-        bool,
+
+
+class Turn(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    completed_at: Annotated[
+        int | None,
         Field(
-            description="Whether the thread is ephemeral and should not be materialized on disk."
-        ),
-    ]
-    forked_from_id: Annotated[
-        str | None,
-        Field(
-            alias="forkedFromId",
-            description="Source thread id when this thread was created by forking another thread.",
+            alias="completedAt", description="Unix timestamp (in seconds) when the turn completed."
         ),
     ] = None
-    git_info: Annotated[
-        GitInfo | None,
+    duration_ms: Annotated[
+        int | None,
         Field(
-            alias="gitInfo",
-            description="Optional Git metadata captured when the thread was created.",
+            alias="durationMs",
+            description="Duration between turn start and completion in milliseconds, if known.",
         ),
     ] = None
-    history_mode: Annotated[
-        ThreadHistoryMode | None,
-        Field(
-            alias="historyMode",
-            description="Persisted thread history contract selected when this thread was created.",
-        ),
-    ] = "legacy"
+    error: Annotated[
+        TurnError | None, Field(description="Error associated with a failed or interrupted turn.")
+    ] = None
     id: Annotated[
-        str, Field(description="Identifier for this thread. Codex-generated thread IDs are UUIDv7.")
+        str, Field(description="Identifier for this turn. Codex-generated turn IDs are UUIDv7.")
     ]
-    model: Annotated[
-        str | None,
-        Field(
-            description="Current configured model when loaded, otherwise the latest persisted model. Null when unavailable. This is not per-turn execution telemetry."
-        ),
-    ] = None
-    model_id: Annotated[
-        str | None,
-        Field(
-            alias="modelId",
-            description="Latest observed model for this thread, when recorded in thread metadata.",
-        ),
-    ] = None
-    model_provider: Annotated[
-        str,
-        Field(
-            alias="modelProvider",
-            description="Model provider used for this thread (for example, 'openai').",
-        ),
+    items: Annotated[
+        list[ThreadItem], Field(description="Thread items currently included in this turn payload.")
     ]
-    name: Annotated[str | None, Field(description="Optional user-facing thread title.")] = None
-    originator: Annotated[
+    items_view: Annotated[
+        TurnItemsView | None,
+        Field(
+            alias="itemsView",
+            description="Describes how much of `items` has been loaded for this turn.",
+        ),
+    ] = "full"
+    root_turn_id: Annotated[
         str | None,
         Field(
-            description="Originator recorded when the thread was created, independent of its current client or executor. Null when the recorded originator is unavailable."
+            alias="rootTurnId",
+            description="ID of the first turn in the chain of work that led to this turn. Pass this as `rootTurnId` when starting work on behalf of this turn. May be null in older history or a `review/start` response.",
         ),
     ] = None
-    parent_thread_id: Annotated[
-        str | None,
-        Field(
-            alias="parentThreadId",
-            description="The ID of the parent thread. This will only be set if this thread is a subagent.",
-        ),
-    ] = None
-    path: Annotated[str | None, Field(description="[UNSTABLE] Path to the thread on disk.")] = None
-    preview: Annotated[
-        str, Field(description="Usually the first user message in the thread, if available.")
-    ]
-    project_id: Annotated[
-        str | None,
-        Field(
-            alias="projectId",
-            description="Canonical project assignment owned by app-server, if any.",
-        ),
-    ] = None
-    reasoning_effort: Annotated[
-        ReasoningEffort | None,
-        Field(
-            alias="reasoningEffort",
-            description="Current configured reasoning effort when loaded, otherwise the latest persisted effort. Null when unset or unavailable. This is not per-turn execution telemetry.",
-        ),
-    ] = None
-    recency_at: Annotated[
+    started_at: Annotated[
         int | None,
-        Field(
-            alias="recencyAt",
-            description="Unix timestamp (in seconds) used for thread recency ordering.",
-        ),
+        Field(alias="startedAt", description="Unix timestamp (in seconds) when the turn started."),
     ] = None
-    section: Annotated[
-        ThreadSection | None,
-        Field(description="The independently persisted section selected for this thread, if any."),
-    ] = None
-    section_entered_at: Annotated[
-        int | None,
-        Field(
-            alias="sectionEnteredAt",
-            description="Unix timestamp in seconds when the thread entered its current section.",
-        ),
-    ] = None
-    session_id: Annotated[
-        str,
-        Field(
-            alias="sessionId",
-            description="Session id shared by threads that belong to the same session tree.",
-        ),
-    ]
-    source: Annotated[
-        SessionSource,
-        Field(
-            description="Origin of the thread (CLI, VSCode, aicodex exec, aicodex app-server, etc.)."
-        ),
-    ]
-    status: Annotated[ThreadStatus, Field(description="Current runtime status for the thread.")]
-    thread_source: Annotated[
-        ThreadSource | None,
-        Field(
-            alias="threadSource",
-            description="Optional analytics source classification for this thread.",
-        ),
-    ] = None
-    turns: Annotated[
-        list[Turn],
-        Field(
-            description="Only populated on `thread/resume`, `thread/fork`, and `thread/read` (when `includeTurns` is true) responses. For all other responses and notifications returning a Thread, the turns field will be an empty list."
-        ),
-    ]
-    updated_at: Annotated[
-        int,
-        Field(
-            alias="updatedAt",
-            description="Unix timestamp (in seconds) when the thread was last updated.",
-        ),
-    ]
-    wire_api: Annotated[
-        str | None,
-        Field(
-            alias="wireApi",
-            description="Wire protocol inferred for the recorded model/provider pair.",
-        ),
-    ] = None
+    status: TurnStatus
 
 
-class ThreadForkResponse(BaseModel):
+class TurnCompletedNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
-    approval_policy: Annotated[AskForApproval, Field(alias="approvalPolicy")]
-    approvals_reviewer: Annotated[
-        ApprovalsReviewer,
-        Field(
-            alias="approvalsReviewer",
-            description="Reviewer currently used for approval requests on this thread.",
-        ),
-    ]
-    cwd: AbsolutePathBuf
-    disabled_plugin_ids: Annotated[
-        list[str] | None,
-        Field(
-            alias="disabledPluginIds",
-            description="Saved list of disabled plugin IDs. Does not yet filter plugin capabilities.",
-        ),
-    ] = []
-    instruction_sources: Annotated[
-        list[LegacyAppPathString] | None,
-        Field(
-            alias="instructionSources",
-            description="Environment-native paths to instruction source files currently loaded for this thread.",
-            validate_default=True,
-        ),
-    ] = []
-    model: str
-    model_provider: Annotated[str, Field(alias="modelProvider")]
-    reasoning_effort: Annotated[ReasoningEffort | None, Field(alias="reasoningEffort")] = None
-    sandbox: Annotated[
-        SandboxPolicy,
-        Field(
-            description="Legacy sandbox policy retained for compatibility. Experimental clients should prefer `activePermissionProfile` for profile provenance."
-        ),
-    ]
-    service_tier: Annotated[str | None, Field(alias="serviceTier")] = None
-    thread: Thread
-
-
-class ThreadListResponse(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    backwards_cursor: Annotated[
-        str | None,
-        Field(
-            alias="backwardsCursor",
-            description="Opaque cursor to pass as `cursor` when reversing `sortDirection`. This is only populated when the page contains at least one thread. Use it with the opposite `sortDirection`; for timestamp sorts it anchors at the start of the page timestamp so same-second updates are not skipped.",
-        ),
-    ] = None
-    data: list[Thread]
-    next_cursor: Annotated[
-        str | None,
-        Field(
-            alias="nextCursor",
-            description="Opaque cursor to pass to the next call to continue after the last item. if None, there are no more items to return.",
-        ),
-    ] = None
-
-
-class ThreadMetadataUpdateResponse(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    thread: Thread
-
-
-class ThreadReadResponse(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    runtime_lifecycle: Annotated[
-        ThreadRuntimeLifecycle | None,
-        Field(
-            alias="runtimeLifecycle",
-            description="Lightweight, content-free runtime evidence for lifecycle reconciliation. Always serialized; `null` means no live snapshot. Older app-server builds may omit the field, and readers still accept that via `#[serde(default)]`.",
-        ),
-    ] = None
-    thread: Thread
-
-
-class ThreadResumeResponse(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    approval_policy: Annotated[AskForApproval, Field(alias="approvalPolicy")]
-    approvals_reviewer: Annotated[
-        ApprovalsReviewer,
-        Field(
-            alias="approvalsReviewer",
-            description="Reviewer currently used for approval requests on this thread.",
-        ),
-    ]
-    collaboration_mode: Annotated[
-        CollaborationMode | None,
-        Field(
-            alias="collaborationMode",
-            description="Effective collaboration mode. Absent when resuming from an older server.",
-        ),
-    ] = None
-    cwd: AbsolutePathBuf
-    disabled_plugin_ids: Annotated[
-        list[str] | None,
-        Field(
-            alias="disabledPluginIds",
-            description="Saved list of disabled plugin IDs. Does not yet filter plugin capabilities.",
-        ),
-    ] = []
-    instruction_sources: Annotated[
-        list[LegacyAppPathString] | None,
-        Field(
-            alias="instructionSources",
-            description="Environment-native paths to instruction source files currently loaded for this thread.",
-            validate_default=True,
-        ),
-    ] = []
-    items_backwards_cursor: Annotated[
-        str | None,
-        Field(
-            alias="itemsBackwardsCursor",
-            description='Opaque cursor for hydrating paginated items backwards.\n\nPass this as `cursor` to `thread/items/list` with `sortDirection: "desc"`. The first page includes the item identified by the cursor.',
-        ),
-    ] = None
-    model: str
-    model_provider: Annotated[str, Field(alias="modelProvider")]
-    reasoning_effort: Annotated[ReasoningEffort | None, Field(alias="reasoningEffort")] = None
-    sandbox: Annotated[
-        SandboxPolicy,
-        Field(
-            description="Legacy sandbox policy retained for compatibility. Experimental clients should prefer `activePermissionProfile` for profile provenance."
-        ),
-    ]
-    service_tier: Annotated[str | None, Field(alias="serviceTier")] = None
-    thread: Thread
-    turns_backwards_cursor: Annotated[
-        str | None,
-        Field(
-            alias="turnsBackwardsCursor",
-            description='Opaque cursor for hydrating paginated turns backwards.\n\nPass this as `cursor` to `thread/turns/list` with `sortDirection: "desc"`. The first page includes the turn identified by the cursor.',
-        ),
-    ] = None
-
-
-class ThreadRevertResponse(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    items_backwards_cursor: Annotated[
-        str | None,
-        Field(
-            alias="itemsBackwardsCursor",
-            description='Opaque cursor for hydrating paginated items backwards.\n\nPass this as `cursor` to `thread/items/list` with `sortDirection: "desc"`. The first page includes the item identified by the cursor.',
-        ),
-    ] = None
-    thread: Annotated[
-        Thread,
-        Field(
-            description="Updated loaded thread metadata. `turns` is always empty; hydrate retained history through `thread/turns/list`."
-        ),
-    ]
-    turns_backwards_cursor: Annotated[
-        str | None,
-        Field(
-            alias="turnsBackwardsCursor",
-            description='Opaque cursor for hydrating paginated turns backwards.\n\nPass this as `cursor` to `thread/turns/list` with `sortDirection: "desc"`. The first page includes the turn identified by the cursor.',
-        ),
-    ] = None
-
-
-class ThreadSearchResult(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    snippet: str
-    thread: Thread
-
-
-class ThreadStartResponse(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    approval_policy: Annotated[AskForApproval, Field(alias="approvalPolicy")]
-    approvals_reviewer: Annotated[
-        ApprovalsReviewer,
-        Field(
-            alias="approvalsReviewer",
-            description="Reviewer currently used for approval requests on this thread.",
-        ),
-    ]
-    cwd: AbsolutePathBuf
-    disabled_plugin_ids: Annotated[
-        list[str] | None,
-        Field(
-            alias="disabledPluginIds",
-            description="Saved list of disabled plugin IDs. Does not yet filter plugin capabilities.",
-        ),
-    ] = []
-    instruction_sources: Annotated[
-        list[LegacyAppPathString] | None,
-        Field(
-            alias="instructionSources",
-            description="Environment-native paths to instruction source files currently loaded for this thread.",
-            validate_default=True,
-        ),
-    ] = []
-    model: str
-    model_provider: Annotated[str, Field(alias="modelProvider")]
-    reasoning_effort: Annotated[ReasoningEffort | None, Field(alias="reasoningEffort")] = None
-    sandbox: Annotated[
-        SandboxPolicy,
-        Field(
-            description="Legacy sandbox policy retained for compatibility. Experimental clients should prefer `activePermissionProfile` for profile provenance."
-        ),
-    ]
-    service_tier: Annotated[str | None, Field(alias="serviceTier")] = None
-    thread: Thread
-
-
-class ThreadStartedNotification(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    thread: Thread
-
-
-class ThreadTurnsListResponse(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    backwards_cursor: Annotated[
-        str | None,
-        Field(
-            alias="backwardsCursor",
-            description="Opaque cursor to pass as `cursor` when reversing `sortDirection`. This is only populated when the page contains at least one turn. Use it with the opposite `sortDirection` to include the anchor turn again and catch updates to that turn.",
-        ),
-    ] = None
-    data: list[Turn]
-    next_cursor: Annotated[
-        str | None,
-        Field(
-            alias="nextCursor",
-            description="Opaque cursor to pass to the next call to continue after the last turn. if None, there are no more turns to return.",
-        ),
-    ] = None
-
-
-class ThreadUnarchiveResponse(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    thread: Thread
+    thread_id: Annotated[str, Field(alias="threadId")]
+    turn: Turn
 
 
 class TurnStartParams(BaseModel):
@@ -13359,6 +12932,30 @@ class TurnStartParams(BaseModel):
             description="Optional source classification for the caller that starts this turn. Ignored when this request steers an already-active turn.",
         ),
     ] = None
+
+
+class TurnStartResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    turn: Turn
+
+
+class TurnStartedNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    thread_id: Annotated[str, Field(alias="threadId")]
+    turn: Turn
+
+
+class TurnsPage(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    backwards_cursor: Annotated[str | None, Field(alias="backwardsCursor")] = None
+    data: list[Turn]
+    next_cursor: Annotated[str | None, Field(alias="nextCursor")] = None
 
 
 class TurnStartRequest(BaseModel):
@@ -13734,7 +13331,21 @@ class PluginListResponse(BaseModel):
     marketplaces: list[PluginMarketplaceEntry]
 
 
-class ThreadStartedServerNotification(BaseModel):
+class ReviewStartResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    review_thread_id: Annotated[
+        str,
+        Field(
+            alias="reviewThreadId",
+            description="The thread hosting the review, which may be a new detached thread.",
+        ),
+    ]
+    turn: Turn
+
+
+class TurnStartedServerNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
@@ -13745,8 +13356,23 @@ class ThreadStartedServerNotification(BaseModel):
             description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
         ),
     ] = None
-    method: Annotated[Literal["thread/started"], Field(title="Thread/startedNotificationMethod")]
-    params: ThreadStartedNotification
+    method: Annotated[Literal["turn/started"], Field(title="Turn/startedNotificationMethod")]
+    params: TurnStartedNotification
+
+
+class TurnCompletedServerNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    emitted_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="emittedAtMs",
+            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
+        ),
+    ] = None
+    method: Annotated[Literal["turn/completed"], Field(title="Turn/completedNotificationMethod")]
+    params: TurnCompletedNotification
 
 
 class ItemAutoApprovalReviewStartedServerNotification(BaseModel):
@@ -13783,6 +13409,459 @@ class ItemAutoApprovalReviewCompletedServerNotification(BaseModel):
         Field(title="Item/autoApprovalReview/completedNotificationMethod"),
     ]
     params: ItemGuardianApprovalReviewCompletedNotification
+
+
+class Thread(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    agent_nickname: Annotated[
+        str | None,
+        Field(
+            alias="agentNickname",
+            description="Optional random unique nickname assigned to an AgentControl-spawned sub-agent.",
+        ),
+    ] = None
+    agent_role: Annotated[
+        str | None,
+        Field(
+            alias="agentRole",
+            description="Optional role (agent_role) assigned to an AgentControl-spawned sub-agent.",
+        ),
+    ] = None
+    cli_version: Annotated[
+        str, Field(alias="cliVersion", description="Version of the CLI that created the thread.")
+    ]
+    created_at: Annotated[
+        int,
+        Field(
+            alias="createdAt",
+            description="Unix timestamp (in seconds) when the thread was created.",
+        ),
+    ]
+    cwd: Annotated[AbsolutePathBuf, Field(description="Working directory captured for the thread.")]
+    effort: Annotated[
+        ReasoningEffort | None,
+        Field(description="Latest observed reasoning effort for this thread."),
+    ] = None
+    ephemeral: Annotated[
+        bool,
+        Field(
+            description="Whether the thread is ephemeral and should not be materialized on disk."
+        ),
+    ]
+    forked_from_id: Annotated[
+        str | None,
+        Field(
+            alias="forkedFromId",
+            description="Source thread id when this thread was created by forking another thread.",
+        ),
+    ] = None
+    git_info: Annotated[
+        GitInfo | None,
+        Field(
+            alias="gitInfo",
+            description="Optional Git metadata captured when the thread was created.",
+        ),
+    ] = None
+    history_mode: Annotated[
+        ThreadHistoryMode | None,
+        Field(
+            alias="historyMode",
+            description="Persisted thread history contract selected when this thread was created.",
+        ),
+    ] = "legacy"
+    id: Annotated[
+        str, Field(description="Identifier for this thread. Codex-generated thread IDs are UUIDv7.")
+    ]
+    model: Annotated[
+        str | None,
+        Field(
+            description="Current configured model when loaded, otherwise the latest persisted model. Null when unavailable. This is not per-turn execution telemetry."
+        ),
+    ] = None
+    model_id: Annotated[
+        str | None,
+        Field(
+            alias="modelId",
+            description="Latest observed model for this thread, when recorded in thread metadata.",
+        ),
+    ] = None
+    model_provider: Annotated[
+        str,
+        Field(
+            alias="modelProvider",
+            description="Model provider used for this thread (for example, 'openai').",
+        ),
+    ]
+    name: Annotated[str | None, Field(description="Optional user-facing thread title.")] = None
+    originator: Annotated[
+        str | None,
+        Field(
+            description="Originator recorded when the thread was created, independent of its current client or executor. Null when the recorded originator is unavailable."
+        ),
+    ] = None
+    parent_thread_id: Annotated[
+        str | None,
+        Field(
+            alias="parentThreadId",
+            description="The ID of the parent thread. This will only be set if this thread is a subagent.",
+        ),
+    ] = None
+    path: Annotated[str | None, Field(description="[UNSTABLE] Path to the thread on disk.")] = None
+    preview: Annotated[
+        str, Field(description="Usually the first user message in the thread, if available.")
+    ]
+    project_id: Annotated[
+        str | None,
+        Field(
+            alias="projectId",
+            description="Canonical project assignment owned by app-server, if any.",
+        ),
+    ] = None
+    reasoning_effort: Annotated[
+        ReasoningEffort | None,
+        Field(
+            alias="reasoningEffort",
+            description="Current configured reasoning effort when loaded, otherwise the latest persisted effort. Null when unset or unavailable. This is not per-turn execution telemetry.",
+        ),
+    ] = None
+    recency_at: Annotated[
+        int | None,
+        Field(
+            alias="recencyAt",
+            description="Unix timestamp (in seconds) used for thread recency ordering.",
+        ),
+    ] = None
+    section: Annotated[
+        ThreadSection | None,
+        Field(description="The independently persisted section selected for this thread, if any."),
+    ] = None
+    section_entered_at: Annotated[
+        int | None,
+        Field(
+            alias="sectionEnteredAt",
+            description="Unix timestamp in seconds when the thread entered its current section.",
+        ),
+    ] = None
+    session_id: Annotated[
+        str,
+        Field(
+            alias="sessionId",
+            description="Session id shared by threads that belong to the same session tree.",
+        ),
+    ]
+    source: Annotated[
+        SessionSource,
+        Field(
+            description="Origin of the thread (CLI, VSCode, aicodex exec, aicodex app-server, etc.)."
+        ),
+    ]
+    status: Annotated[ThreadStatus, Field(description="Current runtime status for the thread.")]
+    thread_source: Annotated[
+        ThreadSource | None,
+        Field(
+            alias="threadSource",
+            description="Optional analytics source classification for this thread.",
+        ),
+    ] = None
+    turns: Annotated[
+        list[Turn],
+        Field(
+            description="Only populated on `thread/resume`, `thread/fork`, and `thread/read` (when `includeTurns` is true) responses. For all other responses and notifications returning a Thread, the turns field will be an empty list."
+        ),
+    ]
+    updated_at: Annotated[
+        int,
+        Field(
+            alias="updatedAt",
+            description="Unix timestamp (in seconds) when the thread was last updated.",
+        ),
+    ]
+    wire_api: Annotated[
+        str | None,
+        Field(
+            alias="wireApi",
+            description="Wire protocol inferred for the recorded model/provider pair.",
+        ),
+    ] = None
+
+
+class ThreadForkResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    approval_policy: Annotated[AskForApproval, Field(alias="approvalPolicy")]
+    approvals_reviewer: Annotated[
+        ApprovalsReviewer,
+        Field(
+            alias="approvalsReviewer",
+            description="Reviewer currently used for approval requests on this thread.",
+        ),
+    ]
+    cwd: AbsolutePathBuf
+    disabled_plugin_ids: Annotated[
+        list[str] | None,
+        Field(
+            alias="disabledPluginIds",
+            description="Saved list of disabled plugin IDs. Does not yet filter plugin capabilities.",
+        ),
+    ] = []
+    instruction_sources: Annotated[
+        list[LegacyAppPathString] | None,
+        Field(
+            alias="instructionSources",
+            description="Environment-native paths to instruction source files currently loaded for this thread.",
+            validate_default=True,
+        ),
+    ] = []
+    model: str
+    model_provider: Annotated[str, Field(alias="modelProvider")]
+    reasoning_effort: Annotated[ReasoningEffort | None, Field(alias="reasoningEffort")] = None
+    sandbox: Annotated[
+        SandboxPolicy,
+        Field(
+            description="Legacy sandbox policy retained for compatibility. Experimental clients should prefer `activePermissionProfile` for profile provenance."
+        ),
+    ]
+    service_tier: Annotated[str | None, Field(alias="serviceTier")] = None
+    thread: Thread
+
+
+class ThreadListResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    backwards_cursor: Annotated[
+        str | None,
+        Field(
+            alias="backwardsCursor",
+            description="Opaque cursor to pass as `cursor` when reversing `sortDirection`. This is only populated when the page contains at least one thread. Use it with the opposite `sortDirection`; for timestamp sorts it anchors at the start of the page timestamp so same-second updates are not skipped.",
+        ),
+    ] = None
+    data: list[Thread]
+    next_cursor: Annotated[
+        str | None,
+        Field(
+            alias="nextCursor",
+            description="Opaque cursor to pass to the next call to continue after the last item. if None, there are no more items to return.",
+        ),
+    ] = None
+
+
+class ThreadMetadataUpdateResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    thread: Thread
+
+
+class ThreadReadResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    effective_agent_team_policy: Annotated[
+        ThreadAgentTeamPolicy | None,
+        Field(
+            alias="effectiveAgentTeamPolicy",
+            description="当前已加载会话的有效团队开关；未加载或旧服务器缺字段时保持未知。",
+        ),
+    ] = None
+    runtime_lifecycle: Annotated[
+        ThreadRuntimeLifecycle | None,
+        Field(
+            alias="runtimeLifecycle",
+            description="Lightweight, content-free runtime evidence for lifecycle reconciliation. Always serialized; `null` means no live snapshot. Older app-server builds may omit the field, and readers still accept that via `#[serde(default)]`.",
+        ),
+    ] = None
+    thread: Thread
+
+
+class ThreadResumeResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    approval_policy: Annotated[AskForApproval, Field(alias="approvalPolicy")]
+    approvals_reviewer: Annotated[
+        ApprovalsReviewer,
+        Field(
+            alias="approvalsReviewer",
+            description="Reviewer currently used for approval requests on this thread.",
+        ),
+    ]
+    collaboration_mode: Annotated[
+        CollaborationMode | None,
+        Field(
+            alias="collaborationMode",
+            description="Effective collaboration mode. Absent when resuming from an older server.",
+        ),
+    ] = None
+    cwd: AbsolutePathBuf
+    disabled_plugin_ids: Annotated[
+        list[str] | None,
+        Field(
+            alias="disabledPluginIds",
+            description="Saved list of disabled plugin IDs. Does not yet filter plugin capabilities.",
+        ),
+    ] = []
+    instruction_sources: Annotated[
+        list[LegacyAppPathString] | None,
+        Field(
+            alias="instructionSources",
+            description="Environment-native paths to instruction source files currently loaded for this thread.",
+            validate_default=True,
+        ),
+    ] = []
+    items_backwards_cursor: Annotated[
+        str | None,
+        Field(
+            alias="itemsBackwardsCursor",
+            description='Opaque cursor for hydrating paginated items backwards.\n\nPass this as `cursor` to `thread/items/list` with `sortDirection: "desc"`. The first page includes the item identified by the cursor.',
+        ),
+    ] = None
+    model: str
+    model_provider: Annotated[str, Field(alias="modelProvider")]
+    reasoning_effort: Annotated[ReasoningEffort | None, Field(alias="reasoningEffort")] = None
+    sandbox: Annotated[
+        SandboxPolicy,
+        Field(
+            description="Legacy sandbox policy retained for compatibility. Experimental clients should prefer `activePermissionProfile` for profile provenance."
+        ),
+    ]
+    service_tier: Annotated[str | None, Field(alias="serviceTier")] = None
+    thread: Thread
+    turns_backwards_cursor: Annotated[
+        str | None,
+        Field(
+            alias="turnsBackwardsCursor",
+            description='Opaque cursor for hydrating paginated turns backwards.\n\nPass this as `cursor` to `thread/turns/list` with `sortDirection: "desc"`. The first page includes the turn identified by the cursor.',
+        ),
+    ] = None
+
+
+class ThreadRevertResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    items_backwards_cursor: Annotated[
+        str | None,
+        Field(
+            alias="itemsBackwardsCursor",
+            description='Opaque cursor for hydrating paginated items backwards.\n\nPass this as `cursor` to `thread/items/list` with `sortDirection: "desc"`. The first page includes the item identified by the cursor.',
+        ),
+    ] = None
+    thread: Annotated[
+        Thread,
+        Field(
+            description="Updated loaded thread metadata. `turns` is always empty; hydrate retained history through `thread/turns/list`."
+        ),
+    ]
+    turns_backwards_cursor: Annotated[
+        str | None,
+        Field(
+            alias="turnsBackwardsCursor",
+            description='Opaque cursor for hydrating paginated turns backwards.\n\nPass this as `cursor` to `thread/turns/list` with `sortDirection: "desc"`. The first page includes the turn identified by the cursor.',
+        ),
+    ] = None
+
+
+class ThreadSearchResult(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    snippet: str
+    thread: Thread
+
+
+class ThreadStartResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    approval_policy: Annotated[AskForApproval, Field(alias="approvalPolicy")]
+    approvals_reviewer: Annotated[
+        ApprovalsReviewer,
+        Field(
+            alias="approvalsReviewer",
+            description="Reviewer currently used for approval requests on this thread.",
+        ),
+    ]
+    cwd: AbsolutePathBuf
+    disabled_plugin_ids: Annotated[
+        list[str] | None,
+        Field(
+            alias="disabledPluginIds",
+            description="Saved list of disabled plugin IDs. Does not yet filter plugin capabilities.",
+        ),
+    ] = []
+    instruction_sources: Annotated[
+        list[LegacyAppPathString] | None,
+        Field(
+            alias="instructionSources",
+            description="Environment-native paths to instruction source files currently loaded for this thread.",
+            validate_default=True,
+        ),
+    ] = []
+    model: str
+    model_provider: Annotated[str, Field(alias="modelProvider")]
+    reasoning_effort: Annotated[ReasoningEffort | None, Field(alias="reasoningEffort")] = None
+    sandbox: Annotated[
+        SandboxPolicy,
+        Field(
+            description="Legacy sandbox policy retained for compatibility. Experimental clients should prefer `activePermissionProfile` for profile provenance."
+        ),
+    ]
+    service_tier: Annotated[str | None, Field(alias="serviceTier")] = None
+    thread: Thread
+
+
+class ThreadStartedNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    thread: Thread
+
+
+class ThreadTurnsListResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    backwards_cursor: Annotated[
+        str | None,
+        Field(
+            alias="backwardsCursor",
+            description="Opaque cursor to pass as `cursor` when reversing `sortDirection`. This is only populated when the page contains at least one turn. Use it with the opposite `sortDirection` to include the anchor turn again and catch updates to that turn.",
+        ),
+    ] = None
+    data: list[Turn]
+    next_cursor: Annotated[
+        str | None,
+        Field(
+            alias="nextCursor",
+            description="Opaque cursor to pass to the next call to continue after the last turn. if None, there are no more turns to return.",
+        ),
+    ] = None
+
+
+class ThreadUnarchiveResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    thread: Thread
+
+
+class ThreadStartedServerNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    emitted_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="emittedAtMs",
+            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
+        ),
+    ] = None
+    method: Annotated[Literal["thread/started"], Field(title="Thread/startedNotificationMethod")]
+    params: ThreadStartedNotification
 
 
 class ServerNotification(

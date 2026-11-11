@@ -321,6 +321,7 @@ async fn run_compact_task_inner_impl(
     let mut allow_deepseek_prefix_reuse = true;
     let mut watchdog = crate::compaction_watchdog::CompactionWatchdog::new();
     let compaction_response = loop {
+        watchdog.begin_attempt()?;
         // Clone is required because of the loop
         let mut turn_input = history
             .clone()
@@ -367,6 +368,9 @@ async fn run_compact_task_inner_impl(
         )
         .await;
 
+        if let Err(error) = &attempt_result {
+            watchdog.record_error(error);
+        }
         match attempt_result {
             Ok(CompactionAttemptOutcome::Completed(response)) => {
                 break response;
@@ -426,6 +430,7 @@ async fn run_compact_task_inner_impl(
                 if retries < max_retries
                     && let Some(delay) = e.retry_delay(retries + 1)
                 {
+                    watchdog.admit_retry(delay)?;
                     retries += 1;
                     sess.notify_stream_error(
                         turn_context.as_ref(),

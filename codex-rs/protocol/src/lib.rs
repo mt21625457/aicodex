@@ -21,6 +21,7 @@ pub use tool_name::ToolName;
 pub mod approvals;
 pub mod capabilities;
 mod codex_error_info;
+pub mod compaction_error;
 pub mod config_types;
 mod guardian_transcript;
 pub use guardian_transcript::TranscriptFormat;

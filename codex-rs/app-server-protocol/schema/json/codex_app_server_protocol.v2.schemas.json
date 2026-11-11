@@ -4607,6 +4607,32 @@
         },
         {
           "additionalProperties": false,
+          "description": "压缩预算耗尽；旧记录可不含诊断。",
+          "properties": {
+            "compactionTimeout": {
+              "properties": {
+                "context": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/CompactionErrorContext"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "compactionTimeout"
+          ],
+          "title": "CompactionTimeoutCodexErrorInfo",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "properties": {
             "httpConnectionFailed": {
               "properties": {
@@ -5303,6 +5329,70 @@
         "name"
       ],
       "type": "object"
+    },
+    "CompactionErrorContext": {
+      "properties": {
+        "attempt": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "elapsedMs": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "idleMs": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/definitions/CompactionTimeoutKind"
+        },
+        "lastErrorCategory": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "remainingMs": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "stage": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "CompactionTimeoutKind": {
+      "enum": [
+        "idle",
+        "total",
+        "retry_budget",
+        "unknown"
+      ],
+      "type": "string"
     },
     "ComputerUseConfig": {
       "properties": {
@@ -19758,6 +19848,54 @@
       ],
       "type": "string"
     },
+    "ThreadAgentTeamConfigEvidence": {
+      "description": "哈希只描述配置声明，不读取角色文件，不包含用户内容或可续接响应标识。",
+      "properties": {
+        "modeHintFingerprint": {
+          "description": "SHA256(serde_json(mode_hint))，缺失提示词编码为 null。",
+          "type": "string"
+        },
+        "roleFingerprints": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "SHA256(serde_json([description, config_file]))，使用 UTF-8、小写十六进制。",
+          "type": "object"
+        }
+      },
+      "required": [
+        "modeHintFingerprint",
+        "roleFingerprints"
+      ],
+      "type": "object"
+    },
+    "ThreadAgentTeamPolicy": {
+      "description": "只读运行时证据，不代表磁盘期望配置，也不包含团队提示词或用户内容。",
+      "properties": {
+        "agentsEnabled": {
+          "type": "boolean"
+        },
+        "configEvidence": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadAgentTeamConfigEvidence"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "已加载配置的团队覆盖证据；旧服务器缺失时不可推断角色或提示词已经生效。"
+        },
+        "multiAgentV2Enabled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "agentsEnabled",
+        "multiAgentV2Enabled"
+      ],
+      "type": "object"
+    },
     "ThreadApproveGuardianDeniedActionParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
@@ -22186,6 +22324,17 @@
     "ThreadReadResponse": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
+        "effectiveAgentTeamPolicy": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadAgentTeamPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "当前已加载会话的有效团队开关；未加载或旧服务器缺字段时保持未知。"
+        },
         "runtimeLifecycle": {
           "anyOf": [
             {

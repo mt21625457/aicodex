@@ -11,12 +11,27 @@ use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
+#[test_case::test_case("timeout")]
+#[test_case::test_case("cancel")]
+#[test_case::test_case("incomplete")]
 #[tokio::test]
-async fn stalled_compaction_times_out_and_preserves_original_history() -> anyhow::Result<()> {
+async fn failed_compaction_preserves_original_history(mode: &str) -> anyhow::Result<()> {
     let server = responses::start_mock_server().await;
+    let response = if mode == "incomplete" {
+        ResponseTemplate::new(200)
+            .insert_header("content-type", "text/event-stream")
+            .set_body_string(responses::sse(vec![
+                responses::ev_assistant_message("partial", "must not replace original history"),
+                json!({"type":"response.incomplete", "response":{
+                    "id":"synthetic-incomplete", "incomplete_details":{"reason":"max_output_tokens"}
+                }}),
+            ]))
+    } else {
+        ResponseTemplate::new(200).set_delay(Duration::from_secs(30))
+    };
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
-        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(30)))
+        .respond_with(response)
         .mount(&server)
         .await;
     let provider = ModelProviderInfo::create_openai_provider(Some(format!("{}/v1", server.uri())));
@@ -56,19 +71,42 @@ async fn stalled_compaction_times_out_and_preserves_original_history() -> anyhow
         input: items,
         ..Default::default()
     };
-    let result = drain_to_completed(
+    let mut watchdog = if mode == "timeout" {
+        crate::compaction_watchdog::CompactionWatchdog::almost_expired()
+    } else {
+        // incomplete验证服务端终态，不让200ms测试截止与本机调度竞争。
+        crate::compaction_watchdog::CompactionWatchdog::new()
+    };
+    let request = drain_to_completed(
         &session,
         &turn,
         &mut client,
         &metadata,
         &prompt,
         CompactionPhase::MidTurn,
-        &mut crate::compaction_watchdog::CompactionWatchdog::almost_expired(),
-    )
-    .await;
-    assert!(
-        matches!(result, Err(ref error) if matches!(error.details(), CodexErrorDetails::CompactionTimeout))
+        &mut watchdog,
     );
+    // 取消通过丢弃网络future传播；晚到的响应不能再触及历史提交。
+    if mode == "cancel" {
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), request)
+                .await
+                .is_err()
+        );
+    } else {
+        let error = request.await.err().expect("failure must remain observable");
+        if mode == "incomplete" {
+            assert!(matches!(
+                error.details(),
+                CodexErrorDetails::ResponseIncomplete(_)
+            ));
+        } else {
+            assert!(matches!(
+                error.details(),
+                CodexErrorDetails::CompactionTimeout
+            ));
+        }
+    }
     let after = session.clone_history().await;
     assert_eq!(
         serde_json::to_value(before.raw_items().collect::<Vec<_>>())?,

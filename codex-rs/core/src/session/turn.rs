@@ -1730,7 +1730,10 @@ async fn run_pre_sampling_admission_compact(
         estimated_context_tokens = ?admission_status.estimated_context_tokens,
         estimated_auto_compact_scope_tokens = ?admission_status.estimated_auto_compact_scope_tokens,
         estimated_auto_compact_scope_limit_reached = admission_status.estimated_auto_compact_scope_limit_reached,
-        estimated_full_context_window_limit_reached = admission_status.estimated_full_context_window_limit_reached,
+        // 输入准入包含输出预留，不等同于UI显示的有效完整窗口已满。
+        estimated_input_admission_limit_reached = admission_status.estimated_full_context_window_limit_reached,
+        input_admission_limit = ?turn_context.model_info().auto_compact_context_limit(),
+        reserved_output_tokens = turn_context.model_info().reserved_output_tokens(),
         auto_compact_limit_scope = ?turn_context.config.model_auto_compact_token_limit_scope,
         auto_compact_window_prefill_tokens = ?admission_status.token_status.auto_compact_window_prefill_tokens,
         full_context_window_limit = ?turn_context.model_context_window(),

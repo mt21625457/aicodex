@@ -80,6 +80,32 @@
         },
         {
           "additionalProperties": false,
+          "description": "压缩预算耗尽；旧记录可不含诊断。",
+          "properties": {
+            "compactionTimeout": {
+              "properties": {
+                "context": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/CompactionErrorContext"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "compactionTimeout"
+          ],
+          "title": "CompactionTimeoutCodexErrorInfo",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "properties": {
             "httpConnectionFailed": {
               "properties": {
@@ -381,6 +407,70 @@
         "completed",
         "failed",
         "declined"
+      ],
+      "type": "string"
+    },
+    "CompactionErrorContext": {
+      "properties": {
+        "attempt": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "elapsedMs": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "idleMs": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/definitions/CompactionTimeoutKind"
+        },
+        "lastErrorCategory": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "remainingMs": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "stage": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "CompactionTimeoutKind": {
+      "enum": [
+        "idle",
+        "total",
+        "retry_budget",
+        "unknown"
       ],
       "type": "string"
     },

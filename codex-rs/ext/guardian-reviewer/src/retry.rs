@@ -194,7 +194,8 @@ fn should_retry_guardian_review(outcome: &GuardianReviewOutcome) -> bool {
             | CodexErrorInfo::ResponseTooManyFailedAttempts { http_status_code } => {
                 matches!(http_status_code, None | Some(408 | 429 | 500..=599))
             }
-            CodexErrorInfo::ContextWindowExceeded
+            CodexErrorInfo::CompactionTimeout { .. }
+            | CodexErrorInfo::ContextWindowExceeded
             | CodexErrorInfo::SessionBudgetExceeded
             | CodexErrorInfo::UsageLimitExceeded
             | CodexErrorInfo::CyberPolicy
