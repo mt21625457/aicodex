@@ -8,6 +8,7 @@
 | --- | --- | --- | --- |
 | [CORE-001](CORE-001-reserved-wait-schema-history.md) | 保留等待工具 schema 漂移、旧会话升级后仍失败、流内参数错误被重试 | 源码及运行验证通过；用户安装验收待完成 | 工具定义、历史请求、SSE、错误协议 |
 | [CORE-002](CORE-002-compaction-recovery-budget.md) | 压缩恢复预算与诊断 | 本地聚焦通过，安装与真实链路待验收 | 压缩、重试、错误协议 |
+| [CORE-003](CORE-003-atomic-update-deprecation.md) | Rust 1.99 原子更新 API 弃用警告 | 编译及聚焦测试通过 | 诊断计数、直接工具调用计数 |
 
 ## 记录和关闭要求
 
