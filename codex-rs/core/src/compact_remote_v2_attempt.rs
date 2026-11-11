@@ -2,6 +2,7 @@
 
 use crate::context::UserGoalUpdate;
 use codex_protocol::ResponseItemId;
+use codex_protocol::openai_models::CatalogModel;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -28,9 +29,9 @@ use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::TokenUsage;
 use codex_rollout_trace::CompactionTraceContext;
+use codex_tools::ToolSpec;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -53,7 +54,7 @@ pub(super) enum RemoteCompactV2AttemptInput<'a> {
 
 pub(crate) struct BackgroundCompactionCandidate {
     pub(crate) prefix: CompactionPrefix,
-    pub(super) model_info: Arc<ModelInfo>,
+    pub(super) model_info: Arc<CatalogModel>,
     pub(super) cutoff_world_state: Arc<WorldState>,
     pub(super) attempt: RemoteCompactV2Attempt,
 }
@@ -91,10 +92,8 @@ pub(super) async fn run_remote_compact_v2_attempt(
             let model_info = turn_context.model_info();
             let mut history = sess.clone_history().await;
             let input_goal_ids = UserGoalUpdate::message_ids(history.raw_items());
-            let tools_in_history = step_context.settings.model_info.use_responses_lite
-                && history
-                    .raw_items()
-                    .any(|item| matches!(item, ResponseItem::AdditionalTools { .. }));
+            let tools_in_history = step_context.incremental_tools_feature().is_some()
+                && history.has_tool_declarations();
             let base_instructions = if tools_in_history {
                 BaseInstructions {
                     text: String::new(),
@@ -118,9 +117,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
                 );
             }
             if estimated_deleted_tokens > 0 {
-                let max_local_deleted_tokens = sess
-                    .estimated_tokens_after_last_model_generated_item()
-                    .await;
+                let max_local_deleted_tokens = sess.estimated_tokens_since_last_usage().await;
                 analytics_details.active_context_tokens_before = analytics_details
                     .active_context_tokens_before
                     .map(|active_context_tokens_before| {
@@ -171,7 +168,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
             Some(input.window),
         ),
     };
-    let tools_in_history = model_info.use_responses_lite
+    let tools_in_history = step_context.incremental_tools_feature().is_some()
         && input
             .iter()
             .any(|item| matches!(item, ResponseItem::AdditionalTools { .. }));
@@ -180,7 +177,12 @@ pub(super) async fn run_remote_compact_v2_attempt(
     let prompt = Prompt {
         input,
         tools: if tools_in_history {
-            Arc::default()
+            tool_router
+                .model_visible_specs()
+                .iter()
+                .filter(|tool| matches!(tool, ToolSpec::WebSearch { .. }))
+                .cloned()
+                .collect()
         } else {
             tool_router.model_visible_specs()
         },
@@ -249,18 +251,15 @@ pub(crate) async fn capture_background_input(
     auth_owner_generation: Option<u64>,
     window: (String, u64, uuid::Uuid),
 ) -> BackgroundCompactionInput {
-    let base_instructions = if step_context.settings.model_info.use_responses_lite
-        && snapshot
-            .raw_items()
-            .any(|item| matches!(item, ResponseItem::AdditionalTools { .. }))
-    {
-        BaseInstructions {
-            text: String::new(),
-            provenance: None,
-        }
-    } else {
-        base_instructions
-    };
+    let base_instructions =
+        if step_context.incremental_tools_feature().is_some() && snapshot.has_tool_declarations() {
+            BaseInstructions {
+                text: String::new(),
+                provenance: None,
+            }
+        } else {
+            base_instructions
+        };
     let prefix = CompactionPrefix {
         generation: snapshot.history_version(),
         len: snapshot.annotated_items().len(),
