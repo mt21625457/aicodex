@@ -192,11 +192,28 @@ def run(
     env: dict[str, str] | None = None,
     check: bool = True,
     capture_output: bool = False,
+    filter_sccache_debug: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """Run a shell command and stream output."""
     merged_env = {**os.environ, **(env or {})}
     resolved_cmd = _resolve_windows_command(cmd, merged_env)
     print(f"  → {' '.join(cmd)}", file=sys.stderr)
+    if filter_sccache_debug:
+        if capture_output:
+            raise ValueError("sccache log filtering requires streamed output")
+        # Cargo replays cached wrapper stderr, including old diagnostic logs.
+        # Hide only anchored sccache DEBUG/TRACE records, never compiler diagnostics.
+        with subprocess.Popen(
+            resolved_cmd, cwd=cwd, env=merged_env, stderr=subprocess.PIPE, text=True
+        ) as process:
+            assert process.stderr is not None
+            for line in process.stderr:
+                if not re.match(r"^\[[^\]\r\n]+ (?:DEBUG|TRACE) sccache::[^\]\r\n]+\] ", line):
+                    print(line, end="", file=sys.stderr)
+            returncode = process.wait()
+        if check and returncode:
+            raise subprocess.CalledProcessError(returncode, resolved_cmd)
+        return subprocess.CompletedProcess(resolved_cmd, returncode)
     return subprocess.run(
         resolved_cmd,
         cwd=cwd,
@@ -270,6 +287,9 @@ def cargo_build_env(profile: str) -> dict[str, str]:
     wrapper = require_sccache_wrapper_command()
     env: dict[str, str] = {
         "RUSTC_WRAPPER": wrapper,
+        # Cargo can retain a failed wrapper -vV probe after a sandbox denial.
+        # Re-probe each build; this does not disable sccache's compilation cache.
+        "CARGO_CACHE_RUSTC_INFO": "0",
         # Incremental artifacts are not cacheable by sccache and get very large
         # in this workspace, so build.py always prefers the shared compiler cache.
         "CARGO_INCREMENTAL": "0",
@@ -629,6 +649,9 @@ def build_rust(
 
     version = read_aicodex_version()
     cargo_env = cargo_build_env(profile)
+    if not verbose:
+        # Leave warnings/errors enabled; --verbose preserves explicit debug settings.
+        cargo_env["SCCACHE_LOG"] = "warn"
     # 与标准分发共用锁定版本和 SHA-256 校验的 V8 依赖，禁止下载不匹配的默认库。
     # targets 模块通过此变量定位源码；只在导入期间设置，不改变调用方的环境。
     previous_root = os.environ.get("CODEX_REPO_ROOT")
@@ -648,7 +671,7 @@ def build_rust(
     if profile == RELEASE_BUILD_PROFILE:
         print("  → Enforcing minimized release profile", file=sys.stderr)
     with patched_rust_workspace_version(version):
-        run(cmd, cwd=RUST_ROOT, env=cargo_env)
+        run(cmd, cwd=RUST_ROOT, env=cargo_env, filter_sccache_debug=not verbose)
 
 
 def build_codex_cli(

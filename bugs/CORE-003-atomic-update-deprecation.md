@@ -12,6 +12,14 @@ Rust 1.99 将原子类型的 `fetch_update` 标记为弃用；替代名称
 - `codex-rs/diagnostics/src/lib.rs`：诊断计数递减，零值不下溢。
 - `codex-rs/core/src/tools/executed_tool_calls.rs`：直接调用计数预留，达到上限时拒绝预留。
 
+### 后续补漏：Code Mode cell ID
+
+`codex-rs/code-mode-runtime/src/session_runtime/mod.rs` 的 `allocate_cell_id`
+仍使用旧名称。改为 `try_update`，保持两处 Relaxed 顺序、checked_add、
+成功 ID 映射和溢出错误不变。本次按用户要求不运行 Rust 编译或测试，
+编译验收交由用户；此补漏提交可通过本文件的 Git 历史查询，
+不能沿用下文历史测试作为本次验收。
+
 ## 回归入口与验收边界
 
 - 在 `codex-rs/` 执行 `cargo test -p codex-diagnostics --lib --offline`：

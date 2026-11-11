@@ -1,10 +1,12 @@
 """默认构建入口的运行时交付回归：不能再发布缺少 Code Mode 宿主的 CLI。"""
 
-from contextlib import nullcontext
+from contextlib import nullcontext, redirect_stderr
 import importlib.util
+import io
 import os
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -118,6 +120,58 @@ class RuntimeBuildTest(unittest.TestCase):
 
 
 class CargoInvocationTest(unittest.TestCase):
+    def test_stream_filter_preserves_diagnostics_and_failure(self):
+        lines = [
+            "[2000-01-01T00:00:00Z DEBUG sccache::config] synthetic debug",
+            "[2000-01-01T00:00:00Z TRACE sccache::commands] synthetic trace",
+            "[2000-01-01T00:00:00Z WARN sccache::commands] cache warning",
+            "[2000-01-01T00:00:00Z ERROR sccache::commands] cache error",
+            "warning: compiler warning",
+            "error: compiler error",
+            '{"message":"DEBUG sccache:: is user content"}',
+        ]
+        # A synthetic child exercises the real streaming path without compiling Rust.
+        script = "import sys; sys.stderr.write(sys.argv[1]); sys.exit(7)"
+        cmd = [sys.executable, "-c", script, "\n".join(lines) + "\n"]
+        output = io.StringIO()
+        with redirect_stderr(output):
+            with self.assertRaises(subprocess.CalledProcessError) as raised:
+                build.run(
+                    cmd,
+                    filter_sccache_debug=True,
+                )
+        self.assertEqual(raised.exception.returncode, 7)
+        # Exclude the echoed command itself.
+        streamed = output.getvalue().removeprefix(f"  → {' '.join(cmd)}\n").splitlines()
+        self.assertEqual(streamed, lines[2:])
+
+    def test_unfiltered_output_retains_debug(self):
+        with patch.object(build.subprocess, "run") as run:
+            build.run(["synthetic-command"], filter_sccache_debug=False)
+        self.assertFalse(run.call_args.kwargs["capture_output"])
+
+    def test_profiles_reprobe_compiler_without_disabling_sccache(self):
+        for profile in ("release", "dev-small", "dev"):
+            with (
+                self.subTest(profile=profile),
+                patch.dict(os.environ, {"CARGO_CACHE_RUSTC_INFO": "1"}),
+                patch.object(
+                    build, "require_sccache_wrapper_command", return_value="sccache"
+                ) as require_wrapper,
+            ):
+                env = build.cargo_build_env(profile)
+                require_wrapper.assert_called_once_with()
+                self.assertEqual(env["RUSTC_WRAPPER"], "sccache")
+                self.assertEqual(env["CARGO_CACHE_RUSTC_INFO"], "0")
+                self.assertNotIn("SCCACHE_DISABLE", env)
+
+    def test_disabling_sccache_is_still_rejected(self):
+        with (
+            patch.dict(os.environ, {"SCCACHE_DISABLE": "1"}),
+            self.assertRaises(SystemExit),
+        ):
+            build.cargo_build_env("release")
+
     def test_build_includes_host_and_verified_v8_environment(self):
         # 不运行 Cargo；观察默认入口真实组装的命令及传给子进程的依赖环境。
         with patch.dict(os.environ, {"CODEX_REPO_ROOT": str(ROOT)}):
@@ -125,7 +179,7 @@ class CargoInvocationTest(unittest.TestCase):
         with (
             patch.object(build, "cargo_available", return_value=True),
             patch.object(
-                build, "cargo_build_env", return_value={"RUSTC_WRAPPER": "sccache"}
+                build, "require_sccache_wrapper_command", return_value="sccache"
             ),
             patch.object(
                 build, "patched_rust_workspace_version", return_value=nullcontext()
@@ -163,9 +217,14 @@ class CargoInvocationTest(unittest.TestCase):
             cwd=build.RUST_ROOT,
             env={
                 "RUSTC_WRAPPER": "sccache",
+                "CARGO_CACHE_RUSTC_INFO": "0",
+                "CARGO_INCREMENTAL": "0",
+                "SCCACHE_LOG": "warn",
+                **build.MINIMIZED_RELEASE_PROFILE_ENV,
                 "RUSTY_V8_ARCHIVE": "/verified/archive",
                 "RUSTY_V8_SRC_BINDING_PATH": "/verified/binding",
             },
+            filter_sccache_debug=True,
         )
 
 
