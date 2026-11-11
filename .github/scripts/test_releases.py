@@ -220,7 +220,7 @@ class DotSlashReleaseConfigTests(unittest.TestCase):
             {filename: set(outputs) for filename, outputs in self.configs.items()},
             {
                 "dotslash-config.json": {
-                    "codex",
+                    "aicodex",
                     "codex-app-server",
                     "codex-responses-api-proxy",
                     "bwrap",
@@ -240,7 +240,7 @@ class DotSlashReleaseConfigTests(unittest.TestCase):
         self.assertIn(missing_asset, self.assets)
         self.assertEqual(
             self.missing_assets(self.assets - {missing_asset}),
-            [("dotslash-config.json", "codex", "macos-aarch64")],
+            [("dotslash-config.json", "aicodex", "macos-aarch64")],
         )
 
     def test_missing_provisioned_cargo_asset_is_detected(self):
