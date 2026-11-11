@@ -1,8 +1,10 @@
 """Validate the actual Cargo storage defaults without building the workspace."""
 
-from pathlib import Path
+import json
+import re
 import tomllib
 import unittest
+from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,7 +25,7 @@ class BuildStorageConfigTest(unittest.TestCase):
         root = read_toml(ROOT / "rust-toolchain.toml")
         nested = read_toml(ROOT / "codex-rs/rust-toolchain.toml")
         self.assertEqual(root, nested)
-        self.assertEqual(root["toolchain"]["channel"], "1.95.0")
+        self.assertEqual(root["toolchain"]["channel"], "1.99.1")
         self.assertEqual(
             set(root["toolchain"]["components"]), {"clippy", "rustfmt", "rust-src"}
         )
@@ -34,6 +36,32 @@ class BuildStorageConfigTest(unittest.TestCase):
         for name, profile in self.profiles.items():
             with self.subTest(profile=name):
                 self.assertIsNot(profile.get("incremental"), True)
+
+    def test_stable_build_toolchains_match_cargo(self):
+        version = read_toml(ROOT / "rust-toolchain.toml")["toolchain"]["channel"]
+        module = (ROOT / "MODULE.bazel").read_text()
+        self.assertRegex(
+            module,
+            rf"toolchains\.toolchain\([\s\S]*?version = \"{re.escape(version)}\"",
+        )
+        lock = json.loads((ROOT / "MODULE.bazel.lock").read_text())
+        locked_text = json.dumps(lock)
+        self.assertIn(f"rustc-{version}-aarch64-apple-darwin.tar.xz", locked_text)
+        self.assertNotIn("rustc-1.95.0-", locked_text)
+        actions = list((ROOT / ".github/workflows").glob("*.yml"))
+        actions += list((ROOT / ".github/actions").glob("*/action.yml"))
+        stable_pins = 0
+        for path in actions:
+            for line in path.read_text().splitlines():
+                match = re.search(r"dtolnay/rust-toolchain@(\w+) # (\d+\.\d+\.\d+)", line)
+                if match:
+                    stable_pins += 1
+                    with self.subTest(path=path, line=line):
+                        self.assertEqual(match[2], version)
+                        self.assertEqual(
+                            match[1], "d124f86f28ff42855784ff3319f48ac182c248f8"
+                        )
+        self.assertGreater(stable_pins, 0)
 
     def test_sccache_budget_preserves_explicit_user_environment(self):
         budget = self.config["env"]["SCCACHE_CACHE_SIZE"]
