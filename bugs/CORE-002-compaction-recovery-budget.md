@@ -42,3 +42,19 @@ compaction_budget.rs拥有独立策略，compaction_progress.rs只检查完整�
 - 全仓 `cargo fmt --all -- --check` 仍报告未改动的 `multi_agents_spec_tests.rs` 既有格式差异；本次新增测试文件的直接 rustfmt 检查通过。
 
 以上属于源码及本机模拟验证，不构成真实服务、包内或安装后验收。
+
+## 0.167.1 合并兼容：本地估算与服务端用量边界
+
+上游新增“最后服务端用量覆盖的历史位置”，与本地全历史 `context_tokens` 估算合并后，如果仍从服务端边界追加尾部，会重复计入估算已包含的无 usage 输出和工具结果；无 usage 时调用 `set_context_usage` 还会覆盖最后一条服务端响应用量。
+
+责任层为 `context_manager/history.rs` 和 `session/turn.rs`。本地全上下文估算现在具有独立覆盖边界，保留服务端响应用量及其边界；估算与安装边界在同一 state 锁内完成，避免把并发新增输入错误标为已覆盖。服务端新用量和历史重写使本地边界失效。
+
+新增 `local_context_estimate_has_independent_usage_coverage` 回归：服务端 usage → 无 usage 输出 → 本地估算 → 新工具结果，分别检查上下文视图不重复、无 context 视图不遗漏、spending-only 保留边界、新服务端 usage 替换本地视图。聚焦命令：`cargo test -p codex-core --lib local_context_estimate_has_independent_usage_coverage`。本次合并尚未提交；测试运行结果由合并验收记录补充，不能将静态检查视为运行通过。
+
+交叉审核追加 `history_rewrite_invalidates_only_covered_local_context_estimate`：替换历史或删除首项时，同时清除失效本地覆盖边界和对应 context 字段，保留服务端响应 usage；不存在本地覆盖边界的 provider context 不受影响。否则仅清边界会让旧的全历史估算重新参与计算。
+
+合并后源码回归：nextest 跨模块聚焦集 1160 项全部通过，其中包含上述两项新增测试、`context_manager::history`、`compact`、`wait_`、`client_`、工具规划及模型目录回归。使用仓库校验的 V8 产物、禁用本机不可用的 sccache，并获准在沙箱外绑定测试模拟服务端口；未执行真实服务、包内或安装验收。
+
+扩展串行矩阵（关闭重试）运行 1613 项：1612 通过，1 项 Guardian initialize 超时；本问题的 history、compact 及场景回归通过。整组仍有失败，不能称为全量验收通过；模拟测试不代表真实代理链路或安装验收。
+
+后续复用相同构件，扩大矩阵至 1729 项（覆盖此前全部 1613 项），串行且关闭重试，全部通过；最终源码全工作区 `check --offline --tests` 通过。Guardian 首次启动差异及原始失败边界见 CORE-001 合并回归记录；没有通过修改业务断言或扩大 timeout 取得通过。合并未提交，未执行真实代理链路、包内或安装验收。

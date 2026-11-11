@@ -386,6 +386,8 @@ impl PtyCodex {
             .env("TERM_PROGRAM", "kitty")
             .env_remove("TERM_PROGRAM_VERSION")
             .env("OPENAI_API_KEY", "focus-palette-test")
+            // Override both names so an inherited AICODEX_HOME cannot select real state.
+            .env("AICODEX_HOME", codex_home.path())
             .env("CODEX_HOME", codex_home.path())
             .stdin(stdin)
             .stdout(stdout)

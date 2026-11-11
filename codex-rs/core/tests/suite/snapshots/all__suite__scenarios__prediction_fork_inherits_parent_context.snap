@@ -17,14 +17,14 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=ca6029e5308978c9):
+00:additional_tools/developer (2; hash=2594c0a8d6d19ebd):
         - namespace/functions; hash=101d32aa59ea258b
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
           - custom/apply_patch
           - function/view_image
-        - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=dba2fd5ebc4a6ac5
+        - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=0b1310f523e8d5fb
 01:message/developer:
     You are Codex, a coding agent based on GPT-5. You and the user share one workspace, and your job is to c...rate with them until their goal is genuinely handled. [hash=2a3efec66e7f8963]
 
@@ -43,7 +43,7 @@ Settings:
     - Before performing file edits of any kind, you provide updates explaining what edits you are making.
     - Tone of your updates must match your personality.
 
-02:message/developer[2]:
+02:message/developer[3]:
     [01] <context_continuation>
         The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
         </context_continuation>
@@ -64,6 +64,10 @@ Settings:
         - ["gh", "pr", "check"]
         - ["cargo", "test"]
         </permissions instructions>
+    [03] <tools>
+        Deferred tool namespaces:
+        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        </tools>
 03:message/user:
     <environment_context>
       <cwd><CWD></cwd>
@@ -93,14 +97,14 @@ Settings:
 ## Window 2 (after request 3: input repeated)
 Settings: same as window 1
 -- request 4 (turn) --
-00:additional_tools/developer (2; hash=ca6029e5308978c9):
+00:additional_tools/developer (2; hash=2594c0a8d6d19ebd):
         - namespace/functions; hash=101d32aa59ea258b
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
           - custom/apply_patch
           - function/view_image
-        - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=dba2fd5ebc4a6ac5
+        - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=0b1310f523e8d5fb
 01:message/developer:
     You are Codex, a coding agent based on GPT-5. You and the user share one workspace, and your job is to c...rate with them until their goal is genuinely handled. [hash=2a3efec66e7f8963]
 
@@ -119,7 +123,7 @@ Settings: same as window 1
     - Before performing file edits of any kind, you provide updates explaining what edits you are making.
     - Tone of your updates must match your personality.
 
-02:message/developer[2]:
+02:message/developer[3]:
     [01] <context_continuation>
         The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
         </context_continuation>
@@ -140,6 +144,10 @@ Settings: same as window 1
         - ["gh", "pr", "check"]
         - ["cargo", "test"]
         </permissions instructions>
+    [03] <tools>
+        Deferred tool namespaces:
+        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        </tools>
 03:message/user:
     <environment_context>
       <cwd><CWD></cwd>

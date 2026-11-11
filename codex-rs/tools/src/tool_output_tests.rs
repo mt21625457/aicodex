@@ -1,9 +1,38 @@
+use codex_protocol::models::AudioReference;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseInputItem;
 use pretty_assertions::assert_eq;
 
 use super::response_input_to_code_mode_result;
+
+#[test]
+fn code_mode_preserves_inline_and_uploaded_audio_from_serialized_messages() {
+    for (content, expected) in [
+        (
+            serde_json::json!({
+                "type": "input_audio",
+                "audio_url": "data:audio/wav;base64,YXVkaW8="
+            }),
+            "data:audio/wav;base64,YXVkaW8=",
+        ),
+        (
+            serde_json::json!({"type": "input_audio", "file_id": "file_audio"}),
+            "file_audio",
+        ),
+    ] {
+        let response: ResponseInputItem = serde_json::from_value(serde_json::json!({
+            "type": "message",
+            "role": "user",
+            "content": [content]
+        }))
+        .expect("old inline and new file audio references should deserialize");
+        assert_eq!(
+            response_input_to_code_mode_result(response),
+            serde_json::json!(expected)
+        );
+    }
+}
 
 #[test]
 fn code_mode_text_preserves_message_content() {
@@ -31,7 +60,14 @@ fn code_mode_text_preserves_message_content() {
                 detail: None,
             },
             ContentItem::InputAudio {
-                audio_url: "data:audio/wav;base64,def".to_string(),
+                audio: AudioReference::Inline {
+                    audio_url: "data:audio/wav;base64,def".to_string(),
+                },
+            },
+            ContentItem::InputAudio {
+                audio: AudioReference::File {
+                    file_id: "file_audio".to_string(),
+                },
             },
         ],
         phase: None,
@@ -40,7 +76,7 @@ fn code_mode_text_preserves_message_content() {
     assert_eq!(
         response_input_to_code_mode_result(response),
         serde_json::json!(
-            "Input text\nOutput text\nfile_123\ndata:image/png;base64,abc\ndata:audio/wav;base64,def"
+            "Input text\nOutput text\nfile_123\ndata:image/png;base64,abc\ndata:audio/wav;base64,def\nfile_audio"
         )
     );
 }

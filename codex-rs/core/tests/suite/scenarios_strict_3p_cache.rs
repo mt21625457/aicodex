@@ -1,6 +1,7 @@
 //! A server named "environment" adds, replaces, then removes MCP tools between turns.
 //! The execution environment runs throughout; this tests MCP refresh, not executor shutdown.
 
+use anyhow::Context;
 use anyhow::Result;
 use codex_core::ConfigRefreshOutcome;
 use codex_features::Feature;
@@ -50,6 +51,10 @@ async fn strict_3p_mcp_refresh_preserves_cache_while_exec_tracks_available_tools
     )
     .await?;
     let test = test_codex()
+        .with_code_mode_host_program(
+            codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")
+                .context("this scenario requires a built codex-code-mode-host binary")?,
+        )
         .with_config(|config| {
             super::configure_scenario_catalog(config);
             config.code_mode.disable_in_process_fallback = true;
@@ -162,7 +167,9 @@ text(JSON.stringify(results));"#;
             super::super::code_mode::custom_tool_output_last_non_empty_text(request, phase)
                 .expect("exec reports the current MCP catalog and dispatched tool results");
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&output)?,
+            serde_json::from_str::<serde_json::Value>(&output).with_context(|| format!(
+                "phase {phase}: exec returned non-JSON output: {output}"
+            ))?,
             expected,
             "phase {phase}: exec must discover and call exactly the currently registered MCP tools",
         );

@@ -1178,3 +1178,21 @@ fn new_boolean_features_materialize_resolved_overrides() {
         }
     }
 }
+
+#[test]
+fn model_change_suppression_config_preserves_omission_and_explicit_values() {
+    for (input, expected) in [
+        ("", false),
+        ("suppress_model_change_announcements = false", false),
+        ("suppress_model_change_announcements = true", true),
+    ] {
+        let config: FeaturesToml = toml::from_str(input).unwrap();
+        let mut features = Features::with_defaults();
+        features.apply_toml(&config);
+        assert_eq!(
+            features.enabled(Feature::SuppressModelChangeAnnouncements),
+            expected,
+            "{input}"
+        );
+    }
+}

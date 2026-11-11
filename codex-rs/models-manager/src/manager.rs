@@ -193,7 +193,7 @@ pub trait ModelsManager: fmt::Debug + Send + Sync {
                     .model_catalog_with_origins(refresh_strategy, http_client_factory)
                     .await
                     .into_iter()
-                    .map(|entry| entry.model)
+                    .map(|entry| Arc::unwrap_or_clone(entry.model))
                     .collect(),
             }
         })
@@ -288,20 +288,12 @@ pub trait ModelsManager: fmt::Debug + Send + Sync {
     }
 
     // todo(aibrahim): look if we can tighten it to pub(crate)
-    /// Look up model metadata, applying remote overrides and config adjustments.
+    /// Resolve model metadata and its source, preserving provenance through config adjustments.
     fn get_model_info<'a>(
         &'a self,
         model: &'a str,
         config: &'a ModelsManagerConfig,
-    ) -> ModelsManagerFuture<'a, ModelInfo> {
-        Box::pin(
-            async move {
-                let remote_models = self.get_remote_models().await;
-                construct_model_info_from_candidates(model, &remote_models, config)
-            }
-            .instrument(tracing::info_span!("get_model_info", model = model)),
-        )
-    }
+    ) -> ModelsManagerFuture<'a, CatalogModel>;
 
     /// Refresh models if the provided ETag differs from the cached ETag.
     ///
@@ -327,6 +319,8 @@ enum CatalogSource {
 }
 
 impl CatalogSource {
+    /// Mutable display-catalog merging needs ownership; inference borrows the
+    /// bundled catalog directly in `models_for_entry`.
     fn fallback_models(&self) -> Option<Vec<ModelInfo>> {
         match self {
             Self::Default => Some(load_remote_models_from_file().unwrap_or_default()),
@@ -559,33 +553,26 @@ impl ModelsManager for OpenAiModelsManager {
         &'a self,
         model: &'a str,
         config: &'a ModelsManagerConfig,
-    ) -> ModelsManagerFuture<'a, ModelInfo> {
+    ) -> ModelsManagerFuture<'a, CatalogModel> {
         Box::pin(async move {
             let selected = {
                 let entry = self.remote_models.read().await;
-                // 与整目录读取使用相同的身份和发现开关门控，不能借用到另一账户的目录。
-                // 只在锁内选择并复制最终模型；后续配置覆盖不持有目录锁。
-                let candidates = if !self.api_key_discovery_disabled()
-                    && entry.entry.identity.is_some()
-                    && entry.entry.identity == self.endpoint_client.identity()
-                {
-                    entry.entry.models.as_slice()
-                } else {
-                    match &self.catalog_source {
-                        CatalogSource::Default => crate::bundled_models_response_ref()
-                            .map(|catalog| catalog.models.as_slice())
-                            .unwrap_or_default(),
-                        CatalogSource::ExplicitProvider(_) => &[],
-                    }
+                let selected = self.models_for_entry(&entry.entry);
+                let models = match &selected {
+                    SelectedCatalog::CurrentSnapshot(models)
+                    | SelectedCatalog::Fallback(models) => models,
                 };
-                match &self.catalog_source {
-                    CatalogSource::Default => find_model_candidate(model, candidates),
-                    // 显式 provider 仍只允许精确匹配，不回退到内置目录或前缀匹配。
-                    CatalogSource::ExplicitProvider(_) => {
-                        candidates.iter().find(|candidate| candidate.slug == model)
-                    }
-                }
-                .cloned()
+                let model = match &self.catalog_source {
+                    CatalogSource::Default => find_model_candidate(model, models).cloned(),
+                    CatalogSource::ExplicitProvider(_) => models
+                        .iter()
+                        .find(|candidate| candidate.slug == model)
+                        .cloned(),
+                };
+                model.map(|model| CatalogModel {
+                    origin: entry.model_origin(&selected, &model.slug),
+                    model: model.into(),
+                })
             };
             construct_model_info(model, selected, config)
         })
@@ -617,9 +604,12 @@ impl OpenAiModelsManager {
         {
             SelectedCatalog::CurrentSnapshot(Cow::Borrowed(&entry.models))
         } else {
-            SelectedCatalog::Fallback(Cow::Owned(
-                self.catalog_source.fallback_models().unwrap_or_default(),
-            ))
+            SelectedCatalog::Fallback(Cow::Borrowed(match &self.catalog_source {
+                CatalogSource::Default => crate::bundled_models_response_ref()
+                    .map(|catalog| catalog.models.as_slice())
+                    .unwrap_or_default(),
+                CatalogSource::ExplicitProvider(_) => &[],
+            }))
         }
     }
 
@@ -897,7 +887,7 @@ impl ModelsManager for StaticModelsManager {
                 .iter()
                 .cloned()
                 .map(|model| CatalogModel {
-                    model,
+                    model: model.into(),
                     origin: self.origin,
                 })
                 .collect()
@@ -908,14 +898,10 @@ impl ModelsManager for StaticModelsManager {
         &'a self,
         model: &'a str,
         config: &'a ModelsManagerConfig,
-    ) -> ModelsManagerFuture<'a, ModelInfo> {
-        Box::pin(
-            async move {
-                // 静态目录由 manager 持有，单模型查询不必先克隆整份目录。
-                construct_model_info_from_candidates(model, &self.remote_models, config)
-            }
-            .instrument(tracing::info_span!("get_model_info", model = model)),
-        )
+    ) -> ModelsManagerFuture<'a, CatalogModel> {
+        Box::pin(async move {
+            construct_model_info_from_candidates(model, &self.remote_models, self.origin, config)
+        })
     }
 
     fn get_default_model<'a>(
@@ -1050,13 +1036,16 @@ fn find_model_by_namespaced_suffix<'a>(
 pub(crate) fn construct_model_info_from_candidates(
     model: &str,
     candidates: &[ModelInfo],
+    origin: ModelOrigin,
     config: &ModelsManagerConfig,
-) -> ModelInfo {
-    construct_model_info(
-        model,
-        find_model_candidate(model, candidates).cloned(),
-        config,
-    )
+) -> CatalogModel {
+    let remote = find_model_candidate(model, candidates)
+        .cloned()
+        .map(|model| CatalogModel {
+            model: model.into(),
+            origin,
+        });
+    construct_model_info(model, remote, config)
 }
 
 fn find_model_candidate<'a>(model: &str, candidates: &'a [ModelInfo]) -> Option<&'a ModelInfo> {
@@ -1068,19 +1057,17 @@ fn find_model_candidate<'a>(model: &str, candidates: &'a [ModelInfo]) -> Option<
 
 fn construct_model_info(
     model: &str,
-    remote: Option<ModelInfo>,
+    remote: Option<CatalogModel>,
     config: &ModelsManagerConfig,
-) -> ModelInfo {
-    let model_info = if let Some(remote) = remote {
-        ModelInfo {
-            slug: model.to_string(),
-            used_fallback_model_metadata: false,
-            ..remote
-        }
-    } else {
-        model_info::model_info_from_slug(model)
-    };
-    model_info::with_config_overrides(model_info, config)
+) -> CatalogModel {
+    let mut resolved = remote.unwrap_or_else(|| CatalogModel {
+        model: model_info::model_info_from_slug(model).into(),
+        origin: ModelOrigin::Synthetic,
+    });
+    let mut metadata = Arc::unwrap_or_clone(resolved.model);
+    metadata.slug = model.to_owned();
+    resolved.model = model_info::with_config_overrides(metadata, config).into();
+    resolved
 }
 
 #[cfg(test)]

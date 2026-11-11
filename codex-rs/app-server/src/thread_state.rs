@@ -98,6 +98,12 @@ pub(crate) enum ThreadListenerCommand {
     },
 }
 
+/// Retained until core resolves or withdraws the prompt, even if the client replies first.
+pub(crate) struct PendingNetworkApproval {
+    pub(crate) request_id: RequestId,
+    pub(crate) permission_guard: crate::thread_status::ThreadWatchActiveGuard,
+}
+
 /// Per-conversation accumulation of the latest states e.g. error message while a turn runs.
 #[derive(Default, Clone)]
 pub(crate) struct TurnSummary {
@@ -124,6 +130,7 @@ impl TurnSummary {
 pub(crate) struct ThreadState {
     goal_resume_lock: Arc<Mutex<()>>,
     pub(crate) pending_interrupts: PendingInterruptQueue,
+    pub(crate) network_approvals: HashMap<String, PendingNetworkApproval>,
     pub(crate) turn_summary: TurnSummary,
     pub(crate) declined_command_executions: HashSet<(String, String)>,
     pub(crate) last_terminal_turn_id: Option<String>,
@@ -138,6 +145,7 @@ pub(crate) struct ThreadState {
     current_turn_history: ThreadHistoryBuilder,
     transcript_metadata_by_item: HashMap<(String, String), TranscriptMetadata>,
     history_mode: ThreadHistoryMode,
+    evict_superseded_agent_text: bool,
     listener_thread: Option<Weak<CodexThread>>,
     watch_registration: WatchRegistration,
 }
@@ -180,6 +188,8 @@ impl ThreadState {
         self.listener_generation = self.listener_generation.wrapping_add(1);
         self.last_thread_settings = Some(thread_settings_baseline);
         self.history_mode = history_mode;
+        self.evict_superseded_agent_text =
+            history_mode == ThreadHistoryMode::Paginated && conversation.rollout_path().is_some();
         let (listener_command_tx, listener_command_rx) = mpsc::unbounded_channel();
         self.listener_command_tx = Some(listener_command_tx);
         self.listener_thread = Some(Arc::downgrade(conversation));
@@ -272,9 +282,13 @@ impl ThreadState {
         }
         // 只处理本次真正变动的 item。delta/usage 等不修改历史的事件不再复制整段 turn。
         // 保留旧逻辑的两个归属范围，也保留已完成 turn 的缓存，供晚到 completion 使用。
-        let changes = self
-            .current_turn_history
-            .handle_event_with_changes_for_history_mode(event, self.history_mode);
+        let changes = if self.evict_superseded_agent_text {
+            self.current_turn_history
+                .handle_live_paginated_event_with_changes(event)
+        } else {
+            self.current_turn_history
+                .handle_event_with_changes_for_history_mode(event, self.history_mode)
+        };
         let metadata_turn_id = transcript_metadata_turn_id(event);
         for change in changes.changed_items {
             if change.turn_id != event_turn_id && metadata_turn_id != Some(change.turn_id.as_str())

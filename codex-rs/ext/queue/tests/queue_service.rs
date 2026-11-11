@@ -1,3 +1,4 @@
+use codex_protocol::models::AudioReference;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -870,7 +871,9 @@ async fn local_attachments_are_snapshotted_before_enqueue_and_update() -> anyhow
             detail: Some(ImageDetail::Original),
         },
         UserInput::Audio {
-            audio_url: "data:audio/mpeg;base64,YXVkaW8=".to_string(),
+            audio: AudioReference::Inline {
+                audio_url: "data:audio/mpeg;base64,YXVkaW8=".to_string(),
+            },
         },
     );
 
@@ -912,7 +915,9 @@ async fn local_attachments_are_snapshotted_before_enqueue_and_update() -> anyhow
             detail: Some(ImageDetail::High),
         },
         UserInput::Audio {
-            audio_url: "data:audio/mp4;base64,ZWRpdGVkIGF1ZGlv".to_string(),
+            audio: AudioReference::Inline {
+                audio_url: "data:audio/mp4;base64,ZWRpdGVkIGF1ZGlv".to_string(),
+            },
         },
     );
 
@@ -951,7 +956,9 @@ async fn invalid_local_attachments_do_not_mutate_queue() -> anyhow::Result<()> {
             detail: Some(ImageDetail::Original),
         },
         UserInput::Audio {
-            audio_url: "data:audio/mpeg;base64,YXVkaW8=".to_string(),
+            audio: AudioReference::Inline {
+                audio_url: "data:audio/mpeg;base64,YXVkaW8=".to_string(),
+            },
         },
     );
 

@@ -247,9 +247,7 @@ fn response_input_to_code_mode_result(response: ResponseInputItem) -> JsonValue 
                             detail: detail.or(Some(DEFAULT_IMAGE_DETAIL)),
                         }
                     }
-                    codex_protocol::models::ContentItem::InputAudio { audio_url } => {
-                        FunctionCallOutputContentItem::InputAudio { audio_url }
-                    }
+                    item @ codex_protocol::models::ContentItem::InputAudio { .. } => item.into(),
                 })
                 .collect::<Vec<_>>(),
         ),

@@ -301,7 +301,6 @@ async fn history_hydration_archived_retry_uses_first_attempt_runtime_settings() 
                     config: &app.config,
                     local_settings: &app.local_settings,
                 },
-                &AppServerTarget::Embedded,
                 &target,
                 action,
                 initial,

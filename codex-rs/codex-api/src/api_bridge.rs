@@ -43,6 +43,7 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
         | ApiError::FlexUnavailable
         | ApiError::RateLimit(_)
         | ApiError::InvalidRequest { .. }
+        | ApiError::InvalidAudioInput { .. }
         | ApiError::ModelNotFound { .. }
         | ApiError::InvalidPrompt { .. }
         | ApiError::CyberPolicy { .. }
@@ -141,6 +142,9 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
             })
         }
         ApiError::InvalidRequest { message } => CodexErr::InvalidRequest(message),
+        ApiError::InvalidAudioInput { message } => {
+            CodexErr::new(CodexErrorDetails::InvalidAudioInput { message })
+        }
         ApiError::ModelNotFound { message, status } => {
             CodexErr::new(CodexErrorDetails::ModelNotFound { message, status })
         }

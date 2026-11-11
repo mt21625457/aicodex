@@ -17,21 +17,25 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=ca6029e5308978c9):
+00:additional_tools/developer (2; hash=2594c0a8d6d19ebd):
         - namespace/functions; hash=101d32aa59ea258b
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
           - custom/apply_patch
           - function/view_image
-        - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=dba2fd5ebc4a6ac5
+        - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=0b1310f523e8d5fb
 01:message/developer:
     <MODEL_INSTRUCTIONS>
-02:message/developer[2]:
+02:message/developer[3]:
     [01] <context_continuation>
         The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
         </context_continuation>
     [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <tools>
+        Deferred tool namespaces:
+        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        </tools>
 03:message/user:
     <ENVIRONMENT_CONTEXT>
 04:message/user:
@@ -56,22 +60,26 @@ Settings:
 ## Window 2 (after request 3: input diverged at item 00)
 Settings: same as window 1
 -- request 4 (turn) --
-00:additional_tools/developer (2; hash=7cb604bdf11e80e8):
+00:additional_tools/developer (2; hash=bb7ef5dda026a172):
         - namespace/functions; hash=36c9912d971c5be8
           - function/update_plan
           - function/request_user_input
           - custom/apply_patch
           - function/view_image
-        - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=dba2fd5ebc4a6ac5
+        - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=0b1310f523e8d5fb
 01:message/developer:
     <MODEL_INSTRUCTIONS>
 02:message/user:
     Begin with all tools.
-03:message/developer[2]:
+03:message/developer[3]:
     [01] <context_continuation>
         The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
         </context_continuation>
     [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <tools>
+        Deferred tool namespaces:
+        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        </tools>
 04:message/user:
     <ENVIRONMENT_CONTEXT>
 05:message/user:

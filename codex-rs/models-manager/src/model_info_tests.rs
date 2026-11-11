@@ -3,6 +3,7 @@ use crate::ModelsManagerConfig;
 use codex_prompts::render_model_instructions;
 use codex_protocol::config_types::Personality;
 use codex_protocol::openai_models::ApprovalMessages;
+use codex_protocol::openai_models::AppsMessages;
 use codex_protocol::openai_models::AutoReviewMessages;
 use codex_protocol::openai_models::CollaborationModeMessages;
 use codex_protocol::openai_models::ConfirmationPolicies;
@@ -90,6 +91,9 @@ fn base_instruction_override_is_literal_and_preserves_catalog_messages() {
         computer_use: Some("  # Native policy\r\n\n${native_markdown}\n".to_string()),
     };
     let mut messages = ModelMessages {
+        apps: Some(AppsMessages {
+            usage_instructions: Some("Catalog Apps instructions.".to_string()),
+        }),
         content_filter_guidance: None,
         persistent_instructions: Some(persistent_instructions.to_string()),
         tools: Some(ToolMessages {
@@ -244,7 +248,6 @@ fn unknown_model_uses_builtin_instruction_template() {
     let model = model_info_from_slug("unknown-model");
 
     assert_eq!(render_model_instructions(&model), BASE_INSTRUCTIONS);
-    assert!(model.used_fallback_model_metadata);
 }
 
 #[test]
@@ -381,12 +384,9 @@ fn grok_models_use_multi_agent_v2_metadata() {
 fn grok_remote_metadata_without_multi_agent_version_is_upgraded() {
     let model = model_info_from_slug("grok-4.5");
     let mut remote_model = model.clone();
-    remote_model.used_fallback_model_metadata = false;
     remote_model.multi_agent_version = None;
 
     let updated = with_config_overrides(remote_model, &ModelsManagerConfig::default());
 
-    let mut expected = model;
-    expected.used_fallback_model_metadata = false;
-    assert_eq!(updated, expected);
+    assert_eq!(updated, model);
 }

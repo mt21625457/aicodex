@@ -25,7 +25,7 @@ Scenario: Resolved local MXC selection preserves workspace-write permissions in 
     - Before performing file edits of any kind, you provide updates explaining what edits you are making.
     - Tone of your updates must match your personality.
 
-01:message/developer[2]:
+01:message/developer[3]:
     [01] <context_continuation>
         The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
         </context_continuation>
@@ -46,6 +46,10 @@ Scenario: Resolved local MXC selection preserves workspace-write permissions in 
         - ["cargo", "test"]
          The writable root is `<WORKSPACE_ROOT 1>`.
         </permissions instructions>
+    [03] <tools>
+        Deferred tool namespaces:
+        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        </tools>
 02:message/user:
     <environment_context>
       <cwd><CWD></cwd>

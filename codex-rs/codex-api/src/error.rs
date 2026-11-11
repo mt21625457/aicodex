@@ -154,6 +154,8 @@ pub enum ApiError {
     #[error("invalid request: {message}")]
     InvalidRequest { message: String },
     #[error("{message}")]
+    InvalidAudioInput { message: String },
+    #[error("{message}")]
     ModelNotFound {
         message: String,
         status: Option<StatusCode>,
@@ -214,6 +216,22 @@ pub(crate) fn parse_terminal_provider_error(
     }
     let code = code?;
     match (code, status) {
+        (
+            "audio_too_large"
+            | "audio_too_short"
+            | "invalid_audio"
+            | "invalid_audio_data"
+            | "invalid_audio_format"
+            | "missing_audio_sample_rate",
+            None | Some(StatusCode::BAD_REQUEST),
+        ) => Some(ApiError::InvalidAudioInput {
+            message: error
+                .get("message")
+                .and_then(Value::as_str)
+                .filter(|message| !message.trim().is_empty())
+                .unwrap_or("Invalid audio input.")
+                .to_owned(),
+        }),
         ("flex_unavailable", None | Some(StatusCode::TOO_MANY_REQUESTS)) => {
             Some(ApiError::FlexUnavailable)
         }

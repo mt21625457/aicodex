@@ -85,9 +85,12 @@ pub struct CodexErr {
 
 /// A terminal response that stopped before the model finished, with any reported usage.
 /// Content-filter retries and explicit interruptions have separate handling.
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(derive_more::Debug, Error, PartialEq, Eq)]
 #[error("Incomplete response returned, reason: {reason}")]
 pub struct ResponseIncompleteError {
+    /// Provider output items explicitly marked incomplete, retained for failed inference traces.
+    #[debug(skip)]
+    pub partial_output: Vec<serde_json::Value>,
     pub reason: String,
     pub response_id: Option<String>,
     pub token_usage: Option<TokenUsage>,
@@ -161,6 +164,8 @@ pub enum CodexErrorDetails {
     /// The provider returned a syntactically malformed response that cannot be consumed safely.
     #[error("malformed provider response: {0}")]
     MalformedProviderResponse(String),
+    #[error("{message}")]
+    InvalidAudioInput { message: String },
     #[error("{message}")]
     ModelNotFound {
         message: String,
@@ -450,6 +455,7 @@ impl CodexErr {
             | CodexErrorDetails::InvalidImageRequest()
             | CodexErrorDetails::InvalidRequest(_)
             | CodexErrorDetails::MalformedProviderResponse(_)
+            | CodexErrorDetails::InvalidAudioInput { .. }
             | CodexErrorDetails::ResponseIncomplete(_)
             | CodexErrorDetails::ModelNotFound { .. }
             | CodexErrorDetails::InvalidPrompt { .. }
@@ -579,7 +585,8 @@ impl CodexErr {
             CodexErrorDetails::SessionConfiguredNotFirstEvent
             | CodexErrorDetails::InternalServerError
             | CodexErrorDetails::InternalAgentDied => CodexErrorInfo::InternalServerError,
-            CodexErrorDetails::UnsupportedOperation(_)
+            CodexErrorDetails::InvalidAudioInput { .. }
+            | CodexErrorDetails::UnsupportedOperation(_)
             // 参数拒绝应跨 app-server 边界保留 badRequest，不能退化成无类型的 Other。
             | CodexErrorDetails::InvalidRequest(_)
             | CodexErrorDetails::ThreadNotFound(_)

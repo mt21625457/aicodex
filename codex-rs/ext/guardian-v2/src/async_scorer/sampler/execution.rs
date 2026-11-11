@@ -164,6 +164,7 @@ impl SamplingExecution {
                 | ApiError::MalformedResponse { .. }
                 | ApiError::ProviderMedia { .. }
                 | ApiError::InvalidRequest { .. }
+                | ApiError::InvalidAudioInput { .. }
                 | ApiError::ModelNotFound { .. }
                 | ApiError::InvalidPrompt { .. }
                 | ApiError::MisalignmentPolicyViolation { .. }

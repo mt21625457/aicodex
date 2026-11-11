@@ -18,6 +18,7 @@ use codex_login::TokenData;
 use codex_protocol::auth::AuthMode;
 use codex_protocol::error::CodexErr;
 use codex_protocol::openai_models::ModelAccessPrograms;
+use codex_protocol::openai_models::ModelOrigin;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::turn_input::CyberAccessProgram;
 use pretty_assertions::assert_eq;
@@ -577,7 +578,7 @@ async fn injected_cache_write_error_does_not_fail_remote_refresh() {
         remote_models
             .into_iter()
             .map(|model| CatalogModel {
-                model,
+                model: model.into(),
                 origin: ModelOrigin::Provider,
             })
             .collect::<Vec<_>>()
@@ -773,9 +774,12 @@ async fn dynamic_manager_preserves_requested_model_when_fallback_is_allowed() {
 }
 
 #[tokio::test]
-async fn get_model_info_tracks_fallback_usage() {
+async fn get_model_info_tracks_metadata_origin() {
     let codex_home = tempdir().expect("temp dir");
-    let config = ModelsManagerConfig::default();
+    let config = ModelsManagerConfig {
+        base_instructions: Some("Custom instructions".to_string()),
+        ..Default::default()
+    };
     let manager = openai_manager_for_tests(
         codex_home.path().to_path_buf(),
         TestModelsEndpoint::new(Vec::new()),
@@ -789,14 +793,21 @@ async fn get_model_info_tracks_fallback_usage() {
         .clone();
 
     let known = manager.get_model_info(known_slug.as_str(), &config).await;
-    assert!(!known.used_fallback_model_metadata);
+    assert_eq!(known.origin, ModelOrigin::Bundled);
     assert_eq!(known.slug, known_slug);
 
     let unknown = manager
         .get_model_info("model-that-does-not-exist", &config)
         .await;
-    assert!(unknown.used_fallback_model_metadata);
+    assert_eq!(unknown.origin, ModelOrigin::Synthetic);
     assert_eq!(unknown.slug, "model-that-does-not-exist");
+    assert_eq!(
+        unknown
+            .model_messages
+            .as_ref()
+            .and_then(|messages| messages.instructions_template.as_deref()),
+        config.base_instructions.as_deref()
+    );
 }
 
 #[tokio::test]
@@ -840,16 +851,14 @@ async fn get_model_info_uses_custom_catalog() {
     assert_eq!(model_info.display_name, "Overlay");
     assert_eq!(model_info.context_window, Some(272_000));
     assert!(model_info.supports_image_detail_original);
-    assert!(!model_info.used_fallback_model_metadata);
+    assert_eq!(model_info.origin, ModelOrigin::ExplicitConfig);
 
     let config = ModelsManagerConfig {
         model_context_window: Some(128_000),
         ..Default::default()
     };
-    let expected = ModelInfo {
-        context_window: Some(128_000),
-        ..model_info
-    };
+    let mut expected = model_info;
+    expected.context_window = Some(128_000);
     assert_eq!(
         manager
             .get_model_info("gpt-overlay-experiment", &config)
@@ -877,10 +886,17 @@ async fn borrowed_model_selection_preserves_first_match_and_owned_overrides() {
         let actual = manager.get_model_info(query, &config).await;
         assert_eq!(actual.display_name, "First long");
         assert_eq!(actual.slug, query);
-        assert!(!actual.used_fallback_model_metadata);
+        assert_eq!(actual.origin, ModelOrigin::ExplicitConfig);
         assert_eq!(
             actual,
-            construct_model_info(query, Some(catalog.models[1].clone()), &config)
+            construct_model_info(
+                query,
+                Some(CatalogModel {
+                    model: catalog.models[1].clone().into(),
+                    origin: ModelOrigin::ExplicitConfig,
+                }),
+                &config,
+            )
         );
     }
     assert_eq!(manager.get_remote_models().await, catalog.models);
@@ -918,16 +934,30 @@ async fn borrowed_openai_lookup_matches_owned_catalog_authority() {
                     "custom/model-long",
                     "gpt-6-sol",
                 ] {
-                    let expected = if explicit {
-                        construct_model_info(
-                            query,
-                            owned_catalog.iter().find(|m| m.slug == query).cloned(),
-                            &config,
-                        )
-                    } else {
-                        construct_model_info_from_candidates(query, &owned_catalog, &config)
-                    };
-                    assert_eq!(manager.get_model_info(query, &config).await, expected);
+                    let expected =
+                        if explicit {
+                            construct_model_info(
+                                query,
+                                owned_catalog.iter().find(|m| m.slug == query).cloned().map(
+                                    |model| CatalogModel {
+                                        model: model.into(),
+                                        origin: ModelOrigin::ExplicitConfig,
+                                    },
+                                ),
+                                &config,
+                            )
+                        } else {
+                            construct_model_info_from_candidates(
+                                query,
+                                &owned_catalog,
+                                ModelOrigin::ExplicitConfig,
+                                &config,
+                            )
+                        };
+                    assert_eq!(
+                        manager.get_model_info(query, &config).await.model,
+                        expected.model
+                    );
                 }
             }
         }
@@ -948,7 +978,7 @@ async fn get_model_info_matches_namespaced_suffix() {
 
     assert_eq!(model_info.slug, namespaced_model);
     assert!(model_info.supports_image_detail_original);
-    assert!(!model_info.used_fallback_model_metadata);
+    assert_eq!(model_info.origin, ModelOrigin::ExplicitConfig);
 }
 
 #[tokio::test]
@@ -963,7 +993,7 @@ async fn get_model_info_matches_hyphenated_provider_namespace_suffix() {
     let model_info = manager.get_model_info(&namespaced_model, &config).await;
 
     assert_eq!(model_info.slug, namespaced_model);
-    assert!(!model_info.used_fallback_model_metadata);
+    assert_eq!(model_info.origin, ModelOrigin::ExplicitConfig);
 }
 
 #[tokio::test]
@@ -986,7 +1016,7 @@ async fn get_model_info_rejects_multi_segment_namespace_suffix_matching() {
     let model_info = manager.get_model_info(&namespaced_model, &config).await;
 
     assert_eq!(model_info.slug, namespaced_model);
-    assert!(model_info.used_fallback_model_metadata);
+    assert_eq!(model_info.origin, ModelOrigin::Synthetic);
 }
 
 #[tokio::test]
@@ -1118,7 +1148,7 @@ async fn get_model_info_uses_fallback_for_bundled_models_when_chatgpt_remote_is_
         .await;
 
     assert_eq!(model_info.slug, bundled_slug);
-    assert!(model_info.used_fallback_model_metadata);
+    assert_eq!(model_info.origin, ModelOrigin::Synthetic);
 }
 
 #[tokio::test]
@@ -1218,7 +1248,10 @@ async fn authoritative_catalog_preserves_hidden_models_and_matches_exact_ids() {
             manager
                 .get_model_info(unknown, &ModelsManagerConfig::default())
                 .await,
-            model_info::model_info_from_slug(unknown)
+            CatalogModel {
+                model: model_info::model_info_from_slug(unknown).into(),
+                origin: ModelOrigin::Synthetic
+            }
         );
     }
 }

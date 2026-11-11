@@ -177,6 +177,7 @@ async fn resource_helpers_across_server_changes() -> Result<()> {
     let empty_server =
         AppsTestServer::mount_with_tools(&mcp, Arc::new(Mutex::new(Vec::new()))).await?;
     let test = test_codex()
+        .with_code_mode_host_program(codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?)
         .with_config(move |config| {
             super::configure_scenario_catalog(config);
             config.code_mode.disable_in_process_fallback = true;

@@ -21,6 +21,7 @@ use codex_protocol::openai_models::ApplyPatchToolType;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::openai_models::ModelOrigin;
 use codex_protocol::openai_models::ToolMode;
 use codex_protocol::openai_models::WebSearchToolType;
 use codex_protocol::protocol::MultiAgentVersion;
@@ -284,7 +285,8 @@ fn update_config(turn: &mut TurnContext, update: impl FnOnce(&mut crate::config:
 
 fn update_model_info(turn: &mut TurnContext, update: impl FnOnce(&mut ModelInfo)) {
     update_turn_settings_for_test(turn, |settings| {
-        update(Arc::make_mut(&mut settings.model_info));
+        let model = Arc::make_mut(&mut settings.model_info);
+        update(model);
     });
 }
 
@@ -436,6 +438,7 @@ fn mcp_runtime(
     RegisteredTool {
         runtime: handler,
         exposure,
+        native_review: Default::default(),
         model_spec: None,
     }
 }
@@ -1124,14 +1127,30 @@ async fn multiple_environments_expose_environment_selectors() {
 #[tokio::test]
 async fn provider_default_apply_patch_keeps_fallback_model_editing() {
     let plan = probe(|turn| {
-        update_model_info(turn, |model_info| {
+        update_turn_settings_for_test(turn, |settings| {
+            let model_info = Arc::make_mut(&mut settings.model_info);
             model_info.apply_patch_tool_type = None;
-            model_info.used_fallback_model_metadata = true;
+            model_info.origin = ModelOrigin::Synthetic;
         });
     })
     .await;
 
     plan.assert_visible_contains(&["apply_patch"]);
+}
+
+#[tokio::test]
+async fn provider_catalog_without_apply_patch_does_not_gain_fallback_editing() {
+    let plan = probe(|turn| {
+        update_turn_settings_for_test(turn, |settings| {
+            let model_info = Arc::make_mut(&mut settings.model_info);
+            model_info.apply_patch_tool_type = None;
+            model_info.origin = ModelOrigin::Provider;
+        });
+    })
+    .await;
+
+    plan.assert_visible_lacks(&["apply_patch"]);
+    plan.assert_registered_lacks(&["apply_patch"]);
 }
 
 #[tokio::test]
@@ -1145,8 +1164,13 @@ async fn apply_patch_respects_disabled_environment_access_without_losing_stable_
                     if !has_environment {
                         turn.initial_environments.environments.clear();
                     }
-                    update_model_info(turn, |model_info| {
-                        model_info.used_fallback_model_metadata = fallback_model;
+                    update_turn_settings_for_test(turn, |settings| {
+                        let model_info = Arc::make_mut(&mut settings.model_info);
+                        model_info.origin = if fallback_model {
+                            ModelOrigin::Synthetic
+                        } else {
+                            ModelOrigin::Provider
+                        };
                         model_info.apply_patch_tool_type =
                             (!fallback_model).then_some(ApplyPatchToolType::Freeform);
                     });
@@ -1784,6 +1808,7 @@ async fn strict_namespace_ownership_requires_tool_namespace_inventory_opt_in() {
             RegisteredTool {
                 runtime: Arc::new(McpHandler::new(tool).expect("MCP tool spec should build")),
                 exposure,
+                native_review: Default::default(),
                 model_spec: None,
             }
         })
@@ -2080,6 +2105,7 @@ async fn strict_tool_collisions_allow_multiple_tools_in_one_namespace() {
                         McpHandler::new(undocumented_tool).expect("MCP tool spec should build"),
                     ),
                     exposure: ToolExposure::Direct,
+                    native_review: Default::default(),
                     model_spec: None,
                 },
                 mcp_runtime("shared", "shared", "lookup", ToolExposure::Direct),
@@ -2122,6 +2148,7 @@ async fn relaxed_tool_collisions_preserve_first_nonempty_namespace_description()
             RegisteredTool {
                 runtime: Arc::new(McpHandler::new(tool).expect("MCP tool spec should build")),
                 exposure: ToolExposure::Direct,
+                native_review: Default::default(),
                 model_spec: None,
             }
         };
@@ -2291,6 +2318,11 @@ async fn tool_search_cache_rebuilds_when_deferred_sources_change() {
     let cache = ToolSearchHandlerCache::default();
 
     let (_session, mut first_turn) = make_session_and_context().await;
+    set_feature(
+        &mut first_turn,
+        Feature::DeferredToolWorldState,
+        /*enabled*/ false,
+    );
     update_turn_settings_for_test(&mut first_turn, |settings| {
         Arc::make_mut(&mut settings.model_info).supports_search_tool = true;
     });
@@ -2320,6 +2352,11 @@ async fn tool_search_cache_rebuilds_when_deferred_sources_change() {
     let first_plan = ToolPlanProbe::from_router(first_router);
 
     let (_session, mut second_turn) = make_session_and_context().await;
+    set_feature(
+        &mut second_turn,
+        Feature::DeferredToolWorldState,
+        /*enabled*/ false,
+    );
     update_turn_settings_for_test(&mut second_turn, |settings| {
         Arc::make_mut(&mut settings.model_info).supports_search_tool = true;
     });
@@ -2986,6 +3023,11 @@ async fn tool_mode_selector_overrides_feature_flags() {
 #[tokio::test]
 async fn v1_multi_agent_tools_defer_when_tool_search_available() {
     let plan = probe(|turn| {
+        set_feature(
+            turn,
+            Feature::DeferredToolWorldState,
+            /*enabled*/ false,
+        );
         update_turn_settings_for_test(turn, |settings| {
             Arc::make_mut(&mut settings.model_info).supports_search_tool = true;
         });

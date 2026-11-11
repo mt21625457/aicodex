@@ -56,6 +56,7 @@ use crate::tools::hosted_spec::WebSearchToolOptions;
 use crate::tools::hosted_spec::create_web_search_tool;
 use crate::tools::multi_agent_tool::multi_agent_v1_handler;
 use crate::tools::multi_agent_tool::multi_agent_v2_handler;
+use crate::tools::registry::NativeReview;
 use crate::tools::registry::RegisteredTool;
 use crate::tools::registry::ToolExposure;
 use crate::tools::registry::ToolRegistry;
@@ -81,6 +82,7 @@ use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::openai_models::ModelOrigin;
 use codex_protocol::openai_models::ToolMode;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_tools::IndirectNamespacePrefixes;
@@ -1435,7 +1437,7 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
     }
 
     let apply_patch_available = context.model_info.apply_patch_tool_type.is_some()
-        || context.model_info.used_fallback_model_metadata;
+        || turn_context.model_info().origin == ModelOrigin::Synthetic;
     // Ephemeral structured threads disable both environment access and shell tools.
     // Keep editing out of that restricted mode. Ordinary threads retain stable tools
     // even when their current step has no selected environment or disables the shell.
@@ -1501,11 +1503,20 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                 base_exposure
             };
             let tool_namespace = (!is_grok).then_some(configured_tool_namespace).flatten();
+            let native_review = if turn_context
+                .config
+                .features
+                .enabled(Feature::GuardianNativeMultiAgentHistory)
+            {
+                NativeReview::Required
+            } else {
+                NativeReview::Disabled
+            };
             let agent_type_description =
                 agent_type_description(turn_context, context.default_agent_type_description);
             let hide_spawn_agent_metadata =
                 turn_context.config.multi_agent_v2.hide_spawn_agent_metadata;
-            registry.register_trusted_with_exposure(
+            registry.register_trusted_with_native_review(
                 multi_agent_v2_handler(
                     SpawnAgentHandlerV2::new(
                         SpawnAgentToolOptions {
@@ -1537,9 +1548,10 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                     model_messages.multi_agent_tool_parameters_override("spawn_agent"),
                 ),
                 exposure,
+                native_review,
             );
             if !turn_context.config.multi_agent_v2.disable_direct_message {
-                registry.register_trusted_with_exposure(
+                registry.register_trusted_with_native_review(
                     multi_agent_v2_handler(
                         SendMessageHandlerV2,
                         tool_namespace,
@@ -1547,8 +1559,9 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                         model_messages.multi_agent_tool_parameters_override("send_message"),
                     ),
                     exposure,
+                    native_review,
                 );
-                registry.register_trusted_with_exposure(
+                registry.register_trusted_with_native_review(
                     multi_agent_v2_handler(
                         FollowupTaskHandlerV2,
                         tool_namespace,
@@ -1556,6 +1569,7 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                         model_messages.multi_agent_tool_parameters_override("followup_task"),
                     ),
                     exposure,
+                    native_review,
                 );
             }
             if turn_context.config.multi_agent_v2.wait_agent_enabled {
@@ -1569,7 +1583,7 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                     exposure,
                 );
             }
-            registry.register_trusted_with_exposure(
+            registry.register_trusted_with_native_review(
                 multi_agent_v2_handler(
                     InterruptAgentHandler,
                     tool_namespace,
@@ -1577,6 +1591,7 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                     model_messages.multi_agent_tool_parameters_override("interrupt_agent"),
                 ),
                 exposure,
+                native_review,
             );
             registry.register_trusted_with_exposure(
                 multi_agent_v2_handler(
@@ -1730,13 +1745,13 @@ fn append_extension_tool_executors(
 ) -> Option<ToolName> {
     let standalone_web_search_enabled = standalone_web_search_enabled(turn_context, model_info);
     let web_search_mode_on = turn_context.config.web_search_mode.value() != WebSearchMode::Disabled;
-    let standalone_web_search_provider_allowed =
-        turn_context.provider.info().supports_standalone_web_search
-            || turn_context
-                .provider
-                .info()
-                .uses_openai_actor_authorization()
-            || is_kimi_model_slug(&model_info.slug);
+    let standalone_web_search_provider_allowed = turn_context.provider.info().is_openai()
+        || turn_context.provider.info().supports_standalone_web_search
+        || turn_context
+            .provider
+            .info()
+            .uses_openai_actor_authorization()
+        || is_kimi_model_slug(&model_info.slug);
     let mut standalone_web_search_tool = None;
 
     for executor in executors {
