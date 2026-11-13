@@ -161,6 +161,7 @@ async fn tool_call_preserves_challenge_only_after_silent_refresh_fails() -> anyh
                 "--ignored",
                 "--nocapture",
             ])
+            .env("AICODEX_HOME", codex_home.path())
             .env("CODEX_HOME", codex_home.path())
             .env(CHILD_SERVER_URL_ENV, server_url)
             .env(CHILD_REFRESH_SUCCEEDS_ENV, refresh_succeeds.to_string())
@@ -285,6 +286,7 @@ async fn rejects_confidential_client_id_mismatch_before_contacting_provider() ->
     let codex_home = TempDir::new()?;
     let status = Command::new(std::env::current_exe()?)
         .args(["oauth_startup_child", "--exact", "--ignored", "--nocapture"])
+        .env("AICODEX_HOME", codex_home.path())
         .env("CODEX_HOME", codex_home.path())
         .env(CHILD_SERVER_URL_ENV, format!("{}/mcp", server.uri()))
         .env(CHILD_STORED_ISSUER_ENV, server.uri())
@@ -571,6 +573,7 @@ async fn assert_expired_token_refresh(
     let mut command = Command::new(std::env::current_exe()?);
     command
         .args(["oauth_startup_child", "--exact", "--ignored", "--nocapture"])
+        .env("AICODEX_HOME", codex_home.path())
         .env("CODEX_HOME", codex_home.path())
         .env(CHILD_SERVER_URL_ENV, server_url)
         .env(CHILD_STORED_ISSUER_ENV, authorization_server_issuer)
@@ -749,6 +752,7 @@ async fn run_issuer_startup_child(
             "--ignored",
             "--nocapture",
         ])
+        .env("AICODEX_HOME", codex_home.path())
         .env("CODEX_HOME", codex_home.path())
         .env(CHILD_SERVER_URL_ENV, server_url)
         .env(CHILD_STORED_ISSUER_ENV, stored_issuer)
@@ -874,6 +878,7 @@ async fn reports_auth_status_for_persisted_credentials() -> anyhow::Result<()> {
             "--ignored",
             "--nocapture",
         ])
+        .env("AICODEX_HOME", codex_home.path())
         .env("CODEX_HOME", codex_home.path())
         .status()
         .await?;
@@ -906,6 +911,7 @@ async fn identifies_expired_unrefreshable_token_startup_error() -> anyhow::Resul
             "--ignored",
             "--nocapture",
         ])
+        .env("AICODEX_HOME", codex_home.path())
         .env("CODEX_HOME", codex_home.path())
         .env(CHILD_SERVER_URL_ENV, format!("{}/mcp", server.uri()))
         .status()

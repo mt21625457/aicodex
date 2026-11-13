@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 mod experimental_api;
 mod precomputed_exports;
 mod protocol;

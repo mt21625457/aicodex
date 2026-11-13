@@ -239,6 +239,7 @@ class AppServerHarness:
             codex_bin=codex_bin,
             cwd=str(self.workspace),
             env={
+                "AICODEX_HOME": str(self.codex_home),
                 "CODEX_HOME": str(self.codex_home),
                 "CODEX_APP_SERVER_DISABLE_MANAGED_CONFIG": "1",
                 "RUST_LOG": "warn",

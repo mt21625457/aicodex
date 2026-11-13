@@ -104,6 +104,7 @@ pub struct ToolRouter {
     model_visible_specs: Arc<[ToolSpec]>,
     tool_mode: ToolMode,
     code_mode_tool_names: BTreeMap<String, ToolName>,
+    exec_definitions: Option<Arc<Vec<codex_code_mode::ExecDefinition>>>,
     tool_namespaces_info: Option<TurnToolNamespacesInfo>,
     can_manage_children: bool,
 }
@@ -144,6 +145,7 @@ impl ToolRouter {
         model_visible_specs: Vec<ToolSpec>,
         tool_mode: ToolMode,
         code_mode_tool_names: BTreeMap<String, ToolName>,
+        exec_definitions: Option<Arc<Vec<codex_code_mode::ExecDefinition>>>,
         tool_namespaces_info: Option<TurnToolNamespacesInfo>,
         child_management_tools: &[ToolName],
     ) -> Self {
@@ -152,6 +154,7 @@ impl ToolRouter {
             model_visible_specs: model_visible_specs.into(),
             tool_mode,
             code_mode_tool_names,
+            exec_definitions,
             tool_namespaces_info,
             can_manage_children: false,
         };
@@ -164,6 +167,10 @@ impl ToolRouter {
 
     pub(crate) fn model_visible_specs(&self) -> Arc<[ToolSpec]> {
         Arc::clone(&self.model_visible_specs)
+    }
+
+    pub(crate) fn exec_definitions(&self) -> Option<Arc<Vec<codex_code_mode::ExecDefinition>>> {
+        self.exec_definitions.clone()
     }
 
     pub(crate) fn tool_mode(&self) -> ToolMode {

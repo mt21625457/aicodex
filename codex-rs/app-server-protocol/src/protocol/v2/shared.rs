@@ -87,6 +87,8 @@ pub enum CodexErrorInfo {
     ModelNotFound,
     // Capacity is unavailable on a route restricted by server policy.
     PolicyCapacityUnavailable,
+    /// The workspace's inference hook explicitly denied this request.
+    InferenceHookDenied,
     CyberPolicy,
     MisalignmentPolicyViolation,
     TooManyDenials,
@@ -170,6 +172,7 @@ impl From<CoreCodexErrorInfo> for CodexErrorInfo {
                 CodexErrorInfo::PolicyCapacityUnavailable
             }
             CoreCodexErrorInfo::CyberPolicy => CodexErrorInfo::CyberPolicy,
+            CoreCodexErrorInfo::InferenceHookDenied => CodexErrorInfo::InferenceHookDenied,
             CoreCodexErrorInfo::BioPolicy => CodexErrorInfo::Other,
             CoreCodexErrorInfo::MisalignmentPolicyViolation => {
                 CodexErrorInfo::MisalignmentPolicyViolation

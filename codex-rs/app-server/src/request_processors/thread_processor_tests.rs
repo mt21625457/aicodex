@@ -137,6 +137,7 @@ mod persisted_resume_approval_policy_tests {
             ThreadSettingsAppliedEvent {
                 thread_id: None,
                 thread_settings: ThreadSettingsSnapshot {
+                    requested_approvals_reviewer: None,
                     model: "gpt-5".to_string(),
                     model_provider_id: "openai".to_string(),
                     service_tier: None,
@@ -177,16 +178,15 @@ mod persisted_resume_approval_policy_tests {
 
     fn turn_context_item(turn_id: &str, approval_policy: AskForApproval) -> RolloutItem {
         RolloutItem::TurnContext(TurnContextItem {
+            direct_only_tool_namespaces: None,
             turn_id: Some(turn_id.to_string()),
             root_turn_id: None,
             cwd: cwd(),
             disabled_plugin_ids: None,
             approval_policy,
             approvals_reviewer: None,
-            sandbox_policy: SandboxPolicy::new_read_only_policy(),
-            permission_profile: None,
+            permission_profile: PermissionProfile::read_only(),
             active_permission_profile: None,
-            file_system_sandbox_policy: None,
             model: "gpt-5".to_string(),
             comp_hash: None,
             collaboration_mode: None,
@@ -672,11 +672,14 @@ mod thread_processor_behavior_tests {
         let thread_id =
             ThreadId::from_string("00000000-0000-0000-0000-000000000123").expect("valid thread");
         let stored_thread = StoredThread {
+            creator_user_id: None,
+            creator_account_id: None,
             originator: None,
             thread_id,
             extra_config: None,
             rollout_path: Some(PathBuf::from("/tmp/thread.jsonl")),
             forked_from_id: None,
+            attached_to_thread_id: None,
             parent_thread_id: None,
             preview: "preview".to_string(),
             name: None,
@@ -950,13 +953,13 @@ mod thread_processor_behavior_tests {
         reasoning_effort: Option<ReasoningEffort>,
     ) -> Result<ThreadMetadata> {
         let thread_id = ThreadId::from_string("3f941c35-29b3-493b-b0a4-e25800d9aeb0")?;
-        let mut builder = ThreadMetadataBuilder::new(
+        let builder = ThreadMetadataBuilder::new(
             thread_id,
             PathBuf::from("/tmp/rollout.jsonl"),
             Utc::now(),
             codex_protocol::protocol::SessionSource::default(),
-        );
-        builder.model_provider = Some("mock_provider".to_string());
+        )
+        .with_model_provider(Some("mock_provider".to_string()));
         let mut metadata = builder.build("mock_provider");
         metadata.model = model.map(ToString::to_string);
         metadata.reasoning_effort = reasoning_effort;

@@ -109,13 +109,19 @@ impl ExecServerHarness {
         command.stdout(Stdio::piped());
         command.stderr(stderr);
         command.kill_on_drop(true);
-        if !command
-            .as_std()
-            .get_envs()
-            .any(|(key, value)| key == "CODEX_HOME" && value.is_some())
-        {
-            command.env("CODEX_HOME", codex_home.path());
-        }
+        let selected_home = ["AICODEX_HOME", "CODEX_HOME"]
+            .into_iter()
+            .find_map(|name| {
+                command
+                    .as_std()
+                    .get_envs()
+                    .find_map(|(key, value)| (key == name).then_some(value).flatten())
+                    .map(std::ffi::OsStr::to_os_string)
+            })
+            .unwrap_or_else(|| codex_home.path().as_os_str().to_os_string());
+        command
+            .env("AICODEX_HOME", &selected_home)
+            .env("CODEX_HOME", &selected_home);
         let mut child = command.spawn()?;
 
         let websocket_url = read_listen_url_from_stdout(&mut child).await?;

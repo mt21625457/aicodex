@@ -84,6 +84,7 @@ impl WorldStateSection for MultiAgentModeState {
                     Some(MultiAgentMode::Proactive | MultiAgentMode::Custom(_))
                 ) =>
             {
+                // A custom hint may also have enabled proactive delegation.
                 MultiAgentMode::ExplicitRequestOnly
             }
             (None, PreviousSectionState::Unknown) => MultiAgentMode::ExplicitRequestOnly,
@@ -94,7 +95,7 @@ impl WorldStateSection for MultiAgentModeState {
 
         let fragment = MultiAgentModeInstructions::from_mode(mode).map(|instructions| {
             Box::new(instructions.with_metadata(ContentItemMetadata::tool(self.namespace.clone())))
-                as Box<dyn ContextualUserFragment>
+                as super::WorldStateFragment
         });
         (
             Some(self.clone()),

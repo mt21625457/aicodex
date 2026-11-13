@@ -30,7 +30,7 @@ use tokio::sync::oneshot;
 
 #[tokio::test]
 async fn enabled_recording_cannot_silently_fail_to_start() -> Result<()> {
-    let codex = codex_utils_cargo_bin::cargo_bin("codex")?;
+    let codex = codex_utils_cargo_bin::cargo_bin("aicodex")?;
     let home = TempDir::new()?;
     let server = create_mock_responses_server_sequence(Vec::new()).await;
     MockResponsesConfig::new(&server.uri()).write(home.path())?;

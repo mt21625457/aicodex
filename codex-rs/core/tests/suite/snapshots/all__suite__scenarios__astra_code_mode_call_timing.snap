@@ -1,20 +1,21 @@
 ---
 source: core/tests/suite/scenarios.rs
+assertion_line: 2553
 expression: "context_snapshot::format_request_history_snapshot(\"Astra reads code-mode timings and the collector notice even at zero tokens, then a failed wait and a truncated script error.\",\n&mock.requests(), &ContextSnapshotOptions::default(),)"
 ---
 Scenario: Astra reads code-mode timings and the collector notice even at zero tokens, then a failed wait and a truncated script error.
 
 ## Window 1
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=8fcd3df7f9bdfdc6):
-        - namespace/functions; hash=fada4a476a3754dd
+00:additional_tools/developer (3; hash=e019c949fc483f83):
+        - namespace/functions; hash=03340277aa23936f
           - custom/exec
           - function/wait
           - function/request_user_input
           - function/request_user_input_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=c586fb14818272de
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents

@@ -42,9 +42,10 @@ async fn executor_startup_rejects_agent_identity_before_cloud_config() -> Result
         home.path().join("config.toml"),
         "cli_auth_credentials_store = 'file'\n",
     )?;
-    let mut command = tokio::process::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?);
+    let mut command = tokio::process::Command::new(codex_utils_cargo_bin::cargo_bin("aicodex")?);
     command
         .current_dir(home.path())
+        .env("AICODEX_HOME", home.path())
         .env("CODEX_HOME", home.path())
         .env_remove("CODEX_API_KEY")
         .env_remove("OPENAI_API_KEY")

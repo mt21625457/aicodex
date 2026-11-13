@@ -21,7 +21,6 @@ use codex_features::Feature;
 use codex_http_client::HttpClientFactory;
 use codex_login::AuthManager;
 use codex_model_provider::WorkspaceRoutingContext;
-use codex_model_provider::create_model_provider;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_protocol::config_types::WebSearchContextSize;
@@ -155,18 +154,20 @@ impl ToolContributor for WebSearchExtension {
         if !config.provider_supports_search || *mode == WebSearchMode::Disabled {
             return Vec::new();
         }
+        let auth = thread_store
+            .get::<codex_model_provider::ProviderAuthContext>()
+            .unwrap_or_else(|| {
+                Arc::new(codex_model_provider::ProviderAuthContext {
+                    credentials: Arc::clone(&self.auth_manager),
+                    runtime_auth: None,
+                })
+            });
 
         vec![Arc::new(WebSearchTool {
             session_id: session_store.level_id().to_string(),
             http_client_factory: config.http_client_factory.clone(),
-            primary_provider: create_model_provider(
-                config.primary_provider.clone(),
-                Some(self.auth_manager.clone()),
-            ),
-            openai_provider: create_model_provider(
-                config.openai_provider.clone(),
-                Some(self.auth_manager.clone()),
-            ),
+            primary_provider: auth.model_provider(config.primary_provider.clone()),
+            openai_provider: auth.model_provider(config.openai_provider.clone()),
             moonshot_search: config.moonshot_search.clone(),
             moonshot_feature_enabled: config.moonshot_feature_enabled,
             workspace_routing,

@@ -11,6 +11,7 @@
 | [CORE-003](CORE-003-atomic-update-deprecation.md) | Rust 1.99 原子更新 API 弃用警告 | 编译及聚焦测试通过 | 诊断计数、直接工具调用计数 |
 | [CORE-004](CORE-004-sccache-cached-probe-failure.md) | Cargo 复用 sccache 编译器探测失败 | 本机对照越过原错误，完整构建待验收 | 构建环境、编译器信息缓存 |
 | [CORE-005](CORE-005-build-diagnostic-noise.md) | sccache 调试日志重放与 TUI 宏警告 | Python 回归通过，Rust 编译交由用户 | 构建输出、TUI 宏调用 |
+| [CORE-006](CORE-006-upstream-0169-merge-compatibility.md) | 0.169.0 合并接口兼容与 SDK 测试隔离 | 当前修复先提交；完整验收未通过，测试停止 | 会话路由、认证、压缩、协议与测试 |
 
 ## 记录和关闭要求
 

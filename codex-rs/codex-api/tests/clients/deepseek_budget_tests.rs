@@ -12,6 +12,7 @@ async fn deepseek_history_budget_changes_only_wire_copy_and_model_switch_restore
     png.resize(8192, 0);
     let image = json!({"type":"input_image", "detail":"original", "image_url":format!("data:image/png;base64,{}", STANDARD.encode(png))});
     let mut request = ResponsesApiRequest {
+        prompt_cache_options: None,
         model: "gateway:deepseek-v4-flash".into(),
         input: serde_json::from_value(json!([
             {"type":"message", "role":"user", "content":[image]},
@@ -104,6 +105,7 @@ async fn typed_provider_requests_send_prepared_history_and_tool_images_once() ->
             {"type":"message", "role":"user", "content":[{"type":"input_text", "text":"continue"}]}
         ]);
         let request = ResponsesApiRequest {
+            prompt_cache_options: None,
             model: model.into(),
             input: serde_json::from_value(input)?,
             tools: Some(empty_tools().into()),

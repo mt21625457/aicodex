@@ -49,22 +49,25 @@ where
                 Err(error) => panic!("failed to create test CODEX_HOME: {error}"),
             };
             let previous_codex_home = std::env::var_os("CODEX_HOME");
+            let previous_aicodex_home = std::env::var_os("AICODEX_HOME");
             // Safety: this runs from a test ctor before test threads begin.
             unsafe {
                 std::env::set_var("CODEX_HOME", codex_home.path());
+                std::env::set_var("AICODEX_HOME", codex_home.path());
             }
 
             let arg0 = match arg0_dispatch() {
                 Some(arg0) => arg0,
                 None => panic!("failed to configure arg0 dispatch aliases for test binary"),
             };
-            match previous_codex_home.as_ref() {
-                Some(value) => unsafe {
-                    std::env::set_var("CODEX_HOME", value);
-                },
-                None => unsafe {
-                    std::env::remove_var("CODEX_HOME");
-                },
+            for (key, previous) in [
+                ("AICODEX_HOME", previous_aicodex_home.as_ref()),
+                ("CODEX_HOME", previous_codex_home.as_ref()),
+            ] {
+                match previous {
+                    Some(value) => unsafe { std::env::set_var(key, value) },
+                    None => unsafe { std::env::remove_var(key) },
+                }
             }
 
             Some(TestBinaryDispatchGuard {

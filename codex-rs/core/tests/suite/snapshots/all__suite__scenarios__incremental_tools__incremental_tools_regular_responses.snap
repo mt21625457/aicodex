@@ -1,6 +1,6 @@
 ---
 source: core/tests/suite/scenarios_incremental_tools.rs
-assertion_line: 399
+assertion_line: 439
 expression: "context_snapshot::format_request_history_snapshot(if\nsuppress_model_change_announcements == Some(true)\n{\n    \"A model switch suppresses the model ID announcement while appending changed tools and replacement instructions. Repeated turns preserve the prefix; compaction starts a new window with the updated base.\"\n} else if incremental_tools\n{\n    \"Tool definitions precede the initial base instructions. A model switch appends one developer notice, changed tools, and replacement instructions without rewriting the prefix; compaction starts a new window with the updated base.\"\n} else\n{\n    \"Regular Responses requests carry the full current tool catalog without an incremental notice; changed execution instructions replace the catalog on subsequent requests.\"\n}, &requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
 ---
 Scenario: Tool definitions precede the initial base instructions. A model switch appends one developer notice, changed tools, and replacement instructions without rewriting the prefix; compaction starts a new window with the updated base.
@@ -19,7 +19,7 @@ Settings:
   tools (1; hash=16d317804b13dd3d):
     - web_search; hash=e214d4db1bc49e89
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=019c865b71a05fec):
+00:additional_tools/developer (2; hash=7053f545799e3c38):
         - namespace/functions; hash=f3355f5705e28592
           - custom/exec
           - function/wait
@@ -28,12 +28,15 @@ Settings:
           - function/request_user_input
           - custom/apply_patch
           - function/view_image
-        - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=b573ed69c0b0e6c7
+        - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=0b1310f523e8d5fb
 01:message/developer:
     <MODEL_INSTRUCTIONS>
-02:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <tools>
+02:message/developer[3]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <tools>
         Deferred tool namespaces:
         - multi_agent_v1: Tools for spawning and managing sub-agents.
         </tools>
@@ -47,9 +50,9 @@ Settings:
 
 ## Window 2 (after request 2)
 Settings: relative to window 1
-  model: "updated-tools-model"
+  model: "gpt-5.4-updated-tools"
 -- request 3 (turn) --
-00:additional_tools/developer (2; hash=019c865b71a05fec):
+00:additional_tools/developer (2; hash=7053f545799e3c38):
         - namespace/functions; hash=f3355f5705e28592
           - custom/exec
           - function/wait
@@ -58,12 +61,15 @@ Settings: relative to window 1
           - function/request_user_input
           - custom/apply_patch
           - function/view_image
-        - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=b573ed69c0b0e6c7
+        - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=0b1310f523e8d5fb
 01:message/developer:
     <MODEL_INSTRUCTIONS>
-02:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <tools>
+02:message/developer[3]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <tools>
         Deferred tool namespaces:
         - multi_agent_v1: Tools for spawning and managing sub-agents.
         </tools>
@@ -80,7 +86,7 @@ Settings: relative to window 1
           - custom/exec
 08:message/developer:
     <model_instructions>
-    The current model is updated-tools-model.
+    The current model is gpt-5.4-updated-tools.
     The following instructions replace the previous base instructions:
 
     Review results before responding.
@@ -96,7 +102,7 @@ Settings: relative to window 1
 ## Window 3 (after request 5: input diverged at item 00)
 Settings: same as window 2
 -- request 6 (turn) --
-00:additional_tools/developer (2; hash=7df544e43dd38360):
+00:additional_tools/developer (2; hash=db14865914cb603c):
         - namespace/functions; hash=1e51a9a9273be2f8
           - custom/exec
           - function/wait
@@ -105,7 +111,7 @@ Settings: same as window 2
           - function/request_user_input
           - custom/apply_patch
           - function/view_image
-        - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=b573ed69c0b0e6c7
+        - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=0b1310f523e8d5fb
 01:message/developer:
     <MODEL_INSTRUCTIONS>
 02:message/user:
@@ -114,9 +120,12 @@ Settings: same as window 2
     Continue with the same tools.
 04:message/user:
     Continue with the updated execution instructions.
-05:message/developer[2]:
-    [01] <PERMISSIONS_INSTRUCTIONS>
-    [02] <tools>
+05:message/developer[3]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <tools>
         Deferred tool namespaces:
         - multi_agent_v1: Tools for spawning and managing sub-agents.
         </tools>

@@ -34,6 +34,7 @@ async fn recovery_retains_originator_without_initial_credentials() -> anyhow::Re
                 "--nocapture",
             ])
             .env("CODEX_MCP_RECOVERY_TELEMETRY_TEST_CHILD", "1")
+            .env("AICODEX_HOME", home.path())
             .env("CODEX_HOME", home.path())
             .output()
             .await?;

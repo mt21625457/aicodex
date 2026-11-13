@@ -963,10 +963,9 @@ async fn turn_start_additional_context_flows_to_model_input(
     let ThreadStartResponse { thread, .. } = mcp
         .start_thread(ThreadStartParams {
             model: Some("mock-model".to_string()),
-            config: Some(HashMap::from([(
-                "features.untrusted_as_tool_output".to_owned(),
-                json!(tool_outputs),
-            )])),
+            config: (!tool_outputs).then(|| {
+                HashMap::from([("features.untrusted_as_tool_output".to_owned(), json!(false))])
+            }),
             ..Default::default()
         })
         .await?;
@@ -3343,13 +3342,13 @@ async fn turn_start_reports_personality_overrides_v2(
 }
 
 #[tokio::test]
-async fn turn_start_defaults_local_image_detail_to_high() -> Result<()> {
+async fn turn_start_defaults_local_image_detail_to_original() -> Result<()> {
     let input_images = run_local_image_turn(/*detail*/ None).await?;
 
     assert_eq!(input_images.len(), 1);
     assert_eq!(
         input_images[0].get("detail").and_then(Value::as_str),
-        Some("high")
+        Some("original")
     );
 
     Ok(())
@@ -5078,6 +5077,8 @@ async fn direct_input_to_multi_agent_v2_subagent_starts_follow_up_turn(
         .request(|request_id| ClientRequest::ThreadList {
             request_id,
             params: codex_app_server_protocol::ThreadListParams {
+                include_attached_threads: false,
+                current_account_only: false,
                 excluded_thread_ids: None,
                 attached_to_thread_id: None,
                 originators: None,

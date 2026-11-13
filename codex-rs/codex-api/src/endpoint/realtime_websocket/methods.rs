@@ -64,6 +64,7 @@ use tungstenite::protocol::frame::coding::CloseCode;
 use url::Url;
 
 const REALTIME_WIRE_LOG_TARGET: &str = "codex_api::realtime_websocket::wire";
+mod sideband;
 const OPENAI_REALTIME_API_BASE_URL: &str = "https://api.openai.com/v1";
 
 #[derive(Debug, PartialEq, Eq)]
@@ -96,7 +97,8 @@ fn realtime_request_trace_summary(
 
 struct WsStream {
     tx_command: mpsc::Sender<WsCommand>,
-    pump_task: tokio::task::JoinHandle<()>,
+    transport_task: tokio::task::JoinHandle<()>,
+    sideband_input_stop: Option<tokio::sync::watch::Sender<bool>>,
     terminal_policy_error: tokio::sync::watch::Receiver<Option<NetworkPolicyDenied>>,
 }
 
@@ -119,7 +121,7 @@ impl WsStream {
         let (tx_message, rx_message) = async_channel::unbounded::<Result<Message, WsError>>();
 
         let (terminal_policy_tx, terminal_policy_error) = tokio::sync::watch::channel(None);
-        let pump_task = tokio::spawn(async move {
+        let transport_task = tokio::spawn(async move {
             let mut inner = inner;
             let report_write_policy_error = |error: &WsError| {
                 if let Some(denied) = codex_websocket_client::network_policy_denial(error) {
@@ -220,7 +222,8 @@ impl WsStream {
         (
             Self {
                 tx_command,
-                pump_task,
+                transport_task,
+                sideband_input_stop: None,
                 terminal_policy_error,
             },
             rx_message,
@@ -267,7 +270,7 @@ impl WsStream {
 
 impl Drop for WsStream {
     fn drop(&mut self) {
-        self.pump_task.abort();
+        self.transport_task.abort();
     }
 }
 
@@ -915,6 +918,7 @@ fn contains_transcript_entry(entries: &[RealtimeTranscriptEntry], role: &str, te
 pub struct RealtimeWebsocketClient {
     provider: Provider,
     http_client_factory: HttpClientFactory,
+    auth: Option<crate::SharedAuthProvider>,
     webrtc_sideband_base_url: String,
 }
 
@@ -930,8 +934,21 @@ impl RealtimeWebsocketClient {
         Self {
             provider,
             http_client_factory,
+            auth: None,
             webrtc_sideband_base_url: OPENAI_REALTIME_API_BASE_URL.to_string(),
         }
+    }
+
+    /// Use the transport captured with the selected authentication source.
+    pub fn with_http_client_factory(mut self, factory: HttpClientFactory) -> Self {
+        self.http_client_factory = factory;
+        self
+    }
+
+    /// Resolve request auth on every handshake, including sideband retries and reconnects.
+    pub fn with_auth(mut self, auth: crate::SharedAuthProvider) -> Self {
+        self.auth = Some(auth);
+        self
     }
 
     /// Overrides the direct WebRTC sideband URL for local development and tests.
@@ -1123,6 +1140,10 @@ impl RealtimeWebsocketClient {
             default_headers,
         );
         request.headers_mut().extend(headers);
+        if let Some(auth) = &self.auth {
+            let headers = std::mem::take(request.headers_mut());
+            *request.headers_mut() = auth.apply_auth_headers(headers).await?;
+        }
 
         crate::aicodex_app_proof::apply_to_headers(request.headers_mut(), "GET", ws_url.as_str());
 
@@ -3340,3 +3361,7 @@ mod tests {
         server.await.expect("server task");
     }
 }
+
+#[cfg(test)]
+#[path = "methods_auth_tests.rs"]
+mod auth_tests;

@@ -1,6 +1,7 @@
 //! 压缩失败的安全诊断合同；字段可选以兼容旧事件，不携带历史或响应凭据。
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 use ts_rs::TS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]

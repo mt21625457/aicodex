@@ -1,4 +1,64 @@
 use super::*;
+
+fn catalog_with_models(
+    config_manager: ConfigManager,
+    config: Arc<Config>,
+    models: SharedModelsManager,
+) -> Arc<ModelCatalog> {
+    struct TestCatalogFactory {
+        initial_provider: codex_model_provider_info::ModelProviderInfo,
+        initial_models: SharedModelsManager,
+        fallback: codex_models_manager::manager::ModelCatalogSettings,
+    }
+    impl codex_model_provider::ModelCatalogFactory for TestCatalogFactory {
+        fn build(
+            &self,
+            provider: codex_model_provider::SharedModelProvider,
+            catalog: Option<codex_protocol::openai_models::ModelsResponse>,
+            discovery: bool,
+        ) -> SharedModelsManager {
+            if provider.info() == &self.initial_provider && catalog.is_none() {
+                Arc::clone(&self.initial_models)
+            } else {
+                self.fallback.build(provider, catalog, discovery)
+            }
+        }
+
+        fn set_api_key_model_discovery_enabled(&self, enabled: bool) {
+            self.initial_models
+                .set_api_key_model_discovery_enabled(enabled);
+            self.fallback.set_api_key_model_discovery_enabled(enabled);
+        }
+    }
+    let startup = codex_core::build_startup_models(
+        &config,
+        AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing()),
+        uuid::Uuid::new_v4().to_string(),
+        Arc::new(TestCatalogFactory {
+            initial_provider: config.model_provider.clone(),
+            initial_models: models,
+            fallback: codex_models_manager::manager::ModelCatalogSettings::disk(
+                config.codex_home.clone(),
+            ),
+        }),
+    );
+    let manager = Arc::new(codex_core::ThreadManager::new(
+        &config,
+        startup,
+        codex_core::CodexAppsToolsCache::default(),
+        codex_protocol::protocol::SessionSource::Exec,
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        codex_extension_api::empty_extension_registry(),
+        Arc::new(codex_core::test_support::EmptyUserInstructionsProvider),
+        None,
+        codex_core::passthrough_image_store(),
+        codex_core::ThreadStoreBuilder::from_config(&config, None).build(),
+        None,
+        None,
+        None,
+    ));
+    Arc::new(ModelCatalog::new(config_manager, None, config, manager))
+}
 use codex_http_client::HttpClientFactory;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
@@ -89,13 +149,7 @@ async fn queued_discovery_rechecks_provider_requirements() {
         endpoint.clone(),
         /*auth_manager*/ None,
     ));
-    let catalog = Arc::new(ModelCatalog::new(
-        config_manager,
-        None,
-        config,
-        models_manager,
-        AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing()),
-    ));
+    let catalog = catalog_with_models(config_manager, config, models_manager);
     let refresh_lock = Arc::clone(&catalog.state.lock().await.refresh);
     let refresh = refresh_lock.lock().await;
     let request = tokio::spawn({
@@ -154,13 +208,7 @@ async fn cached_catalog(home: &std::path::Path, endpoint: Arc<SlowEndpoint>) -> 
             CodexAuth::create_dummy_chatgpt_auth_for_testing(),
         )),
     ));
-    Arc::new(ModelCatalog::new(
-        config_manager,
-        None,
-        config,
-        models_manager,
-        AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing()),
-    ))
+    catalog_with_models(config_manager, config, models_manager)
 }
 
 #[tokio::test]

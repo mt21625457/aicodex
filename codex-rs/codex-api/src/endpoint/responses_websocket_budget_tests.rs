@@ -82,6 +82,7 @@ async fn mimo_and_minimax_websocket_frames_prepare_images_and_preserve_metadata(
 
 fn request(model: &str) -> ResponsesApiRequest {
     ResponsesApiRequest {
+        prompt_cache_options: None,
         model: model.into(),
         input: Vec::new(),
         tools: None,

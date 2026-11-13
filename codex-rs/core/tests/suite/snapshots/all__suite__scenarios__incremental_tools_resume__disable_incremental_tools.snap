@@ -1,6 +1,6 @@
 ---
 source: core/tests/suite/scenarios_incremental_tools_resume.rs
-assertion_line: 206
+assertion_line: 212
 expression: "context_snapshot::format_request_history_snapshot(\"Disabling incremental tools preserves updates in the existing window; after compaction the generated catalog survives resume.\",\n&requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
 ---
 Scenario: Disabling incremental tools preserves updates in the existing window; after compaction the generated catalog survives resume.
@@ -17,8 +17,8 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=2594c0a8d6d19ebd):
-        - namespace/functions; hash=101d32aa59ea258b
+00:additional_tools/developer (2; hash=236733b0755f9cc3):
+        - namespace/functions; hash=106dd1b983efd2f7
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
@@ -60,8 +60,8 @@ Settings:
 ## Window 2 (after request 3: input diverged at item 00)
 Settings: same as window 1
 -- request 4 (turn) --
-00:additional_tools/developer (2; hash=bb7ef5dda026a172):
-        - namespace/functions; hash=36c9912d971c5be8
+00:additional_tools/developer (2; hash=f111c21038c90aae):
+        - namespace/functions; hash=e61b39bab731172a
           - function/update_plan
           - function/request_user_input
           - custom/apply_patch

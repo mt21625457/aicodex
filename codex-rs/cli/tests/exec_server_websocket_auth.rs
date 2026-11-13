@@ -43,6 +43,7 @@ async fn exec_server_websocket_auth_gates_rpc_connections() -> Result<()> {
             let mut command = Command::new(&codex);
             command
                 .args(["exec-server", "--listen", "ws://127.0.0.1:0", "--ws-auth"])
+                .env("AICODEX_HOME", home.path())
                 .env("CODEX_HOME", home.path())
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
@@ -178,6 +179,7 @@ fn exec_server_websocket_auth_rejects_inapplicable_transports() -> Result<()> {
         ),
     ] {
         assert_cmd::Command::new(&codex)
+            .env("AICODEX_HOME", home.path())
             .env("CODEX_HOME", home.path())
             .args([
                 "exec-server",
@@ -212,6 +214,7 @@ fn exec_server_websocket_auth_rejects_invalid_configuration() -> Result<()> {
         (vec!["--ws-auth", "capability-token"], "is required"),
     ] {
         assert_cmd::Command::new(&codex)
+            .env("AICODEX_HOME", home.path())
             .env("CODEX_HOME", home.path())
             .args(["exec-server"])
             .args(args)
@@ -250,6 +253,7 @@ async fn app_server_executor_auth_supports_tokens_and_legacy_configuration() -> 
                 ]);
             }
             let mut executor = command
+                .env("AICODEX_HOME", executor_home.path())
                 .env("CODEX_HOME", executor_home.path())
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())

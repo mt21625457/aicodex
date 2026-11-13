@@ -1,6 +1,6 @@
 ---
 source: core/tests/suite/scenarios.rs
-assertion_line: 2141
+assertion_line: 2359
 expression: "context_snapshot::format_request_history_snapshot(description,\n&mock.requests(),\n&ContextSnapshotOptions::default().include_request_settings(),)"
 ---
 Scenario: Astra calls list_agents using the selected catalog parameter schema.
@@ -17,15 +17,15 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=98d99a68dbbd8250):
-        - namespace/functions; hash=fada4a476a3754dd
+00:additional_tools/developer (3; hash=83697a0118230669):
+        - namespace/functions; hash=03340277aa23936f
           - custom/exec
           - function/wait
           - function/request_user_input
           - function/request_user_input_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=973de420fee9ff22
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=7e156cf57f85af87
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents

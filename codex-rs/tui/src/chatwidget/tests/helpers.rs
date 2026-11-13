@@ -48,6 +48,17 @@ pub(crate) fn set_placeholder_header_version(chat: &mut ChatWidget, version: &'s
     ));
 }
 
+/// Keep the running indicator stable in snapshots of selection and layout.
+pub(crate) fn normalize_working_snapshot(text: String) -> String {
+    let text = normalize_snapshot_paths(text)
+        .replace("◦ Working", "• Working")
+        .replace("◦ Wor…", "• Wor…");
+    regex_lite::Regex::new(r"• Working \(\d+s")
+        .expect("valid working timer pattern")
+        .replace_all(&text, "• Working (0s")
+        .into_owned()
+}
+
 pub(crate) fn normalize_snapshot_paths(text: impl Into<String>) -> String {
     let mut text = text.into();
 
@@ -931,6 +942,7 @@ pub(super) fn replay_agent_message(
 ) {
     chat.replay_thread_item(
         AppServerThreadItemPayload::AgentMessage {
+            moderation: None,
             id: item_id.to_string(),
             text: text.into(),
             phase: Some(MessagePhase::FinalAnswer),
@@ -1091,6 +1103,7 @@ pub(super) fn complete_assistant_message(
             chat.thread_id.map(|id| id.to_string()).unwrap_or_default(),
             "turn-1".to_string(),
             AppServerThreadItemPayload::AgentMessage {
+                moderation: None,
                 id: item_id.to_string(),
                 text: text.to_string(),
                 phase,
@@ -1109,6 +1122,8 @@ pub(super) fn complete_assistant_message(
 pub(super) fn pending_steer(text: &str) -> PendingSteer {
     PendingSteer {
         client_id: "test-submission".to_string(),
+        admitted_turn_id: None,
+        optimistically_rendered: false,
         user_message: UserMessage::from(text),
         history_record: UserMessageHistoryRecord::UserMessageText,
         source: UserMessageSource::Prompt,

@@ -1,6 +1,7 @@
 ---
 source: core/tests/suite/scenarios_incremental_tools.rs
-expression: "context_snapshot::format_request_history_snapshot(if use_responses_lite\n{\n    \"Tool definitions precede the initial base instructions. A model switch appends one developer notice, changed tools, and replacement instructions without rewriting the prefix; compaction starts a new window with the updated base.\"\n} else\n{\n    \"Regular Responses requests carry the full current tool catalog without an incremental notice; changed execution instructions replace the catalog on subsequent requests.\"\n}, &requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
+assertion_line: 439
+expression: "context_snapshot::format_request_history_snapshot(if\nsuppress_model_change_announcements == Some(true)\n{\n    \"A model switch suppresses the model ID announcement while appending changed tools and replacement instructions. Repeated turns preserve the prefix; compaction starts a new window with the updated base.\"\n} else if incremental_tools\n{\n    \"Tool definitions precede the initial base instructions. A model switch appends one developer notice, changed tools, and replacement instructions without rewriting the prefix; compaction starts a new window with the updated base.\"\n} else\n{\n    \"Regular Responses requests carry the full current tool catalog without an incremental notice; changed execution instructions replace the catalog on subsequent requests.\"\n}, &requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
 ---
 Scenario: Tool definitions precede the initial base instructions. A model switch appends one developer notice, changed tools, and replacement instructions without rewriting the prefix; compaction starts a new window with the updated base.
 
@@ -16,8 +17,8 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (2; hash=6794df4d953adc0c):
-        - namespace/functions; hash=cc6e8cf0e5405f3a
+00:additional_tools/developer (2; hash=7053f545799e3c38):
+        - namespace/functions; hash=f3355f5705e28592
           - custom/exec
           - function/wait
           - function/exec_command
@@ -49,8 +50,8 @@ Settings:
 Settings: relative to window 1
   model: "gpt-5.4-updated-tools"
 -- request 3 (turn) --
-00:additional_tools/developer (2; hash=6794df4d953adc0c):
-        - namespace/functions; hash=cc6e8cf0e5405f3a
+00:additional_tools/developer (2; hash=7053f545799e3c38):
+        - namespace/functions; hash=f3355f5705e28592
           - custom/exec
           - function/wait
           - function/exec_command
@@ -99,8 +100,8 @@ Settings: relative to window 1
 ## Window 3 (after request 5: input diverged at item 00)
 Settings: same as window 2
 -- request 6 (turn) --
-00:additional_tools/developer (2; hash=5ba7078f30de6851):
-        - namespace/functions; hash=9d5d7a0adab05fef
+00:additional_tools/developer (2; hash=db14865914cb603c):
+        - namespace/functions; hash=1e51a9a9273be2f8
           - custom/exec
           - function/wait
           - function/exec_command

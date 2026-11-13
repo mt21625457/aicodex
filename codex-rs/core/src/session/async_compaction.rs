@@ -2,6 +2,7 @@
 //! Discarded requests still charge completed usage; session shutdown cancels remaining network work.
 //! Snapshot capture and launch registration hold session state; prompt preparation does not.
 
+use codex_login::AuthOwner;
 use std::sync::Arc;
 
 use crate::compact_remote_v2::BackgroundCompactionCandidate;
@@ -27,7 +28,7 @@ struct CompactionAttempt {
     model_slug: String,
     provider_info: codex_model_provider_info::ModelProviderInfo,
     compaction_hash: Option<String>,
-    auth_owner_generation: Option<u64>,
+    auth_owner: Option<AuthOwner>,
 }
 
 #[derive(Default)]
@@ -39,21 +40,16 @@ pub(crate) struct AsyncCompactionState {
     shutdown_cancellation: CancellationToken,
 }
 
-pub(super) fn provider_auth_owner_generation(turn_context: &TurnContext) -> Option<u64> {
-    turn_context.provider.auth_manager().map(|manager| {
-        manager
-            .auth_change_state_receiver()
-            .borrow()
-            .owner_generation
-    })
+pub(super) fn provider_auth_owner(turn_context: &TurnContext) -> Option<AuthOwner> {
+    codex_model_provider::request_auth_owner(turn_context.provider.as_ref())
 }
 
 pub(super) fn enabled(turn_context: &TurnContext) -> bool {
-    turn_context
-        .config
-        .features
-        .enabled(Feature::AsyncCompaction)
-        && !turn_context.config.features.enabled(Feature::TokenBudget)
+    let features = &turn_context.config.features;
+    features.enabled(Feature::AsyncCompaction)
+        && !(features.enabled(Feature::AsyncCompactionRootOnly)
+            && turn_context.session_source.is_non_root_agent())
+        && !features.enabled(Feature::TokenBudget)
         && matches!(
             turn_context.provider.capabilities().remote_compaction,
             RemoteCompactionSupport::V2
@@ -67,7 +63,7 @@ pub(super) async fn maybe_start(
     phase: CompactionPhase,
     turn_cancellation: &CancellationToken,
     token_status: &ContextWindowTokenStatus,
-    (turn_state, auth_owner_generation): (Option<String>, Option<u64>),
+    (turn_state, auth_owner): (Option<String>, Option<AuthOwner>),
 ) {
     let turn_context = &step_context.turn;
     // Let the foreground establish the backend's model pin before starting a parallel request.
@@ -105,14 +101,14 @@ pub(super) async fn maybe_start(
             model_slug: model_info.slug.clone(),
             provider_info: turn_context.provider.info().clone(),
             compaction_hash: model_info.comp_hash.clone(),
-            auth_owner_generation,
+            auth_owner: auth_owner.clone(),
         };
         // Stop blocks new launches; already-running compaction remains session-owned.
         if turn_cancellation.is_cancelled()
             || state.shutting_down
             || state.async_compaction.last_attempt.as_ref() == Some(&attempt)
             || state.history.annotated_items().is_empty()
-            || provider_auth_owner_generation(turn_context) != auth_owner_generation
+            || provider_auth_owner(turn_context) != auth_owner
         {
             return;
         }
@@ -124,7 +120,7 @@ pub(super) async fn maybe_start(
             state.history.clone(),
             base_instructions,
             turn_state,
-            auth_owner_generation,
+            auth_owner,
             sess.current_window_from_state(&state),
         );
         let tasks = state.async_compaction.tasks.clone();
@@ -180,7 +176,7 @@ pub(super) async fn take_ready(
     if attempt.provider_info != *turn_context.provider.info()
         || attempt.model_slug != model.slug
         || attempt.compaction_hash != model.comp_hash
-        || attempt.auth_owner_generation != provider_auth_owner_generation(turn_context)
+        || attempt.auth_owner != provider_auth_owner(turn_context)
     {
         state.async_compaction.result = None;
         return None;
@@ -215,7 +211,7 @@ pub(crate) async fn wait_for_pending(
             || attempt.provider_info != *turn_context.provider.info()
             || attempt.model_slug != model.slug
             || attempt.compaction_hash != model.comp_hash
-            || attempt.auth_owner_generation != provider_auth_owner_generation(turn_context)
+            || attempt.auth_owner != provider_auth_owner(turn_context)
         {
             return None;
         }

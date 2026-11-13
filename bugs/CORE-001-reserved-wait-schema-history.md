@@ -93,3 +93,16 @@ RUST_MIN_STACK=16777216 cargo test -p codex-api --lib
 最终扩展串行矩阵（关闭重试）运行 1613 项：1612 通过，1 项 Guardian 集成测试在 initialize 阶段超时，尚未进入 review 断言，不能将整组报告为通过。本问题的等待 schema、历史恢复及场景快照回归均通过；快照中的工具 hash 更新已核对仅对应保留的 `integer` → `number` 契约修复。同一 Guardian 测试二进制直接运行通过，但不替代矩阵失败结果。合并仍未提交，真实服务、包内及安装后验收未执行。
 
 后续同构件 nextest 精确 Guardian 测试通过；将相同内容二进制复制到新 inode 可复现首次初始化超时、立即重跑通过，证据限于首次启动路径，不归因于未经验证的具体系统扫描机制。未改断言或扩大超时。最终复跑扩大至 1729 项，串行、零重试，1729 全部通过（248.572 秒）；按测试名核对覆盖此前全部 1613 项。最终源码的全工作区 `check --offline --tests` 通过。原始失败结果保留，以上仍非全仓所有测试或安装验收。
+
+## 0.169.0 合并回归（进行中）
+
+保留 number schema 与请求副本兼容，并接入上游 workspace、access program、
+inference hook、预算和单录音错误分类。无效 access program 属于参数错误，
+对外仍按本地合同映射 `badRequest`；workspace 专用分类与 4xx 不可重试
+是独立断言，不能把“非 workspace”误认为“允许重试”。
+
+修复后 `codex-api` 283/283、`codex-protocol` 391/391、
+`codex-app-server-protocol` 340 通过（1 个生成入口按设计忽略）。
+稳定/实验产物已重新生成并通过一致性测试。完整工作区及新旧会话运行验收
+仍在进行，见 [CORE-006](CORE-006-upstream-0169-merge-compatibility.md)；
+当前修复随合并提交保存；未打包、未安装，不以当前结果宣称全部验收完成。

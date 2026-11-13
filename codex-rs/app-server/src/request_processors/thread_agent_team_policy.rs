@@ -1,8 +1,10 @@
 //! 已加载团队配置的只读证据；哈希覆盖应用写入的角色声明和委派提示词。
-use codex_app_server_protocol::{ThreadAgentTeamConfigEvidence, ThreadAgentTeamPolicy};
+use codex_app_server_protocol::ThreadAgentTeamConfigEvidence;
+use codex_app_server_protocol::ThreadAgentTeamPolicy;
 use codex_core::config::Config;
 use codex_features::Feature;
-use sha2::{Digest, Sha256};
+use sha2::Digest;
+use sha2::Sha256;
 
 /// JSON 值已由字符串/空值构造，序列化不执行文件读取或配置刷新。
 fn fingerprint(value: serde_json::Value) -> String {

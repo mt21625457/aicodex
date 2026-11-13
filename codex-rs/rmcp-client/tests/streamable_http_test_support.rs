@@ -353,6 +353,7 @@ pub(crate) async fn spawn_exec_server() -> anyhow::Result<ExecServerProcess> {
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .kill_on_drop(true)
+        .env("AICODEX_HOME", codex_home.path())
         .env("CODEX_HOME", codex_home.path())
         .spawn()?;
 

@@ -49,6 +49,7 @@ fn voice_snapshot_directory_keeps_header_width_for_windows_paths() {
 fn test_agent_message(id: &str, text: &str) -> ThreadItemPayload {
     ThreadItemPayload::AgentMessage {
         transcript_metadata: None,
+        moderation: None,
         id: id.into(),
         text: text.into(),
         phase: Some(MessagePhase::FinalAnswer),
@@ -709,12 +710,11 @@ async fn replay_reconciles_only_matching_voice_captions_one_for_one() {
             AppEvent::InsertHistoryCell(cell) => Some(
                 cell.transcript_lines(/*width*/ 80)
                     .into_iter()
-                    .map(|line| line.to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n"),
+                    .map(|line| line.to_string()),
             ),
             _ => None,
         })
+        .flatten()
         .collect::<Vec<_>>()
         .join("\n");
     assert_eq!(rendered.matches("show <code> & tests").count(), 2);
@@ -746,6 +746,7 @@ async fn retained_caption_consumes_only_one_matching_answer_fallback_on_reattach
     );
     let answer = |id: &str, text: &str| ThreadItemPayload::AgentMessage {
         transcript_metadata: None,
+        moderation: None,
         id: id.into(),
         text: text.into(),
         phase: Some(MessagePhase::FinalAnswer),
@@ -1089,12 +1090,11 @@ async fn completed_voice_caption_survives_repeated_thread_replacement() {
                 AppEvent::InsertHistoryCell(cell) => Some(
                     cell.transcript_lines(/*width*/ 80)
                         .into_iter()
-                        .map(|line| line.to_string())
-                        .collect::<Vec<_>>()
-                        .join("\n"),
+                        .map(|line| line.to_string()),
                 ),
                 _ => None,
             })
+            .flatten()
             .collect::<Vec<_>>()
             .join("\n");
         assert_eq!(rendered.matches("spoken complete").count(), 1);

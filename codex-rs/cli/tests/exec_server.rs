@@ -124,6 +124,7 @@ async fn local_exec_server_projects_global_mxc_preference() -> Result<()> {
     let cwd = url::Url::from_directory_path(home.path())
         .map_err(|()| anyhow::anyhow!("could not convert home to file URL"))?;
     let mut child = tokio::process::Command::new(codex_utils_cargo_bin::cargo_bin("aicodex")?)
+        .env("AICODEX_HOME", home.path())
         .env("CODEX_HOME", home.path())
         .args([
             "-c",
@@ -380,9 +381,10 @@ async fn assert_pat_registry_reload(change: PatCredentialChange) -> Result<()> {
         .mount(&registry)
         .await;
 
-    let mut command = tokio::process::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?);
+    let mut command = tokio::process::Command::new(codex_utils_cargo_bin::cargo_bin("aicodex")?);
     command
         .current_dir(home.path())
+        .env("AICODEX_HOME", home.path())
         .env("CODEX_HOME", home.path())
         .env_remove("CODEX_ACCESS_TOKEN")
         .env("CODEX_AUTHAPI_BASE_URL", auth_server.uri())
@@ -532,6 +534,7 @@ metrics_exporter = {{ otlp-http = {{ endpoint = "{collector_url}/v1/metrics", pr
     let mut command = tokio::process::Command::new(executable);
     command
         .current_dir(codex_home.path())
+        .env("AICODEX_HOME", codex_home.path())
         .env("CODEX_HOME", codex_home.path())
         .env("CODEX_API_KEY", "test-api-key")
         .env_remove("CODEX_ACCESS_TOKEN")
@@ -724,6 +727,44 @@ metrics_exporter = {{ otlp-http = {{ endpoint = "{collector_url}/v1/metrics", pr
 }
 
 #[tokio::test]
+async fn forward_rejects_stdin_credentials_on_opposite_sides_of_subcommand() -> Result<()> {
+    let codex = codex_utils_cargo_bin::cargo_bin("aicodex")?;
+    let home = TempDir::new()?;
+    let remote = [
+        "--remote",
+        "https://registry.example",
+        "--environment-id",
+        "env-1",
+    ];
+    let bearer = "--registration-bearer-stdin";
+    let rotating = "--executor-credential-stdin";
+    for (before, after) in [(bearer, rotating), (rotating, bearer)] {
+        let mut child = tokio::process::Command::new(&codex)
+            .env("AICODEX_HOME", home.path())
+            .env("CODEX_HOME", home.path())
+            .arg("exec-server")
+            .args(remote)
+            .args([before, "forward", "--connect", "ws://127.0.0.1:8765"])
+            .args(remote)
+            .arg(after)
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()?;
+        // Keep the empty pipe open so either credential read would block.
+        let _stdin = child.stdin.take().context("credential pipe")?;
+        let output = tokio::time::timeout(Duration::from_secs(30), child.wait_with_output())
+            .await
+            .context("exec-server waited for a credential")??;
+        assert!(!output.status.success());
+        assert!(String::from_utf8(output.stderr)?.contains(
+            "--registration-bearer-stdin cannot be used with --executor-credential-stdin"
+        ));
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn remote_exec_server_scoped_credentials_authenticate_only_register_and_validate()
 -> Result<()> {
     const ENVIRONMENT: &str = "environment-scoped-credentials";
@@ -793,6 +834,7 @@ metrics_exporter = {{ otlp-http = {{ endpoint = "{}/v1/metrics", protocol = "jso
     )?;
     let mut command = tokio::process::Command::new(codex_utils_cargo_bin::cargo_bin("aicodex")?);
     command
+        .env("AICODEX_HOME", home.path())
         .env("CODEX_HOME", home.path())
         .env_remove(codex_exec_server::CODEX_EXEC_SERVER_EXIT_ON_STDIN_CLOSE_ENV_VAR)
         .env("CODEX_API_KEY", "general-api-key")
@@ -968,6 +1010,7 @@ async fn remote_exec_server_scoped_credentials_never_fall_back_for_another_envir
     )?;
     let mut command = tokio::process::Command::new(codex_utils_cargo_bin::cargo_bin("aicodex")?);
     let mut child = command
+        .env("AICODEX_HOME", home.path())
         .env("CODEX_HOME", home.path())
         .env("CODEX_API_KEY", "general-api-key")
         .env("CODEX_ACCESS_TOKEN", "general-agent-identity")

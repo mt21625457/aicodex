@@ -601,6 +601,13 @@ async fn run_installer_script(
     };
     let mut child = command
         .env(
+            "AICODEX_HOME",
+            package_root
+                .parent()
+                .and_then(Path::parent)
+                .context("package root has no Codex home")?,
+        )
+        .env(
             "CODEX_HOME",
             package_root
                 .parent()

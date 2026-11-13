@@ -502,7 +502,10 @@ fn wait_timeout_preserves_reserved_number_schema_for_both_tool_versions() {
         let wire = serde_json::to_value(tool).expect("serialize public wait tool");
         let function = wire.pointer(pointer).expect("public function declaration");
         assert_eq!(function["name"], "wait_agent");
-        assert_eq!(function["parameters"]["properties"]["timeout_ms"]["type"], "number");
+        assert_eq!(
+            function["parameters"]["properties"]["timeout_ms"]["type"],
+            "number"
+        );
         assert_eq!(function["parameters"]["additionalProperties"], false);
     }
 }

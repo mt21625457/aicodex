@@ -269,7 +269,10 @@ impl ThreadState {
 
     pub(crate) fn track_current_turn_event(&mut self, event_turn_id: &str, event: &EventMsg) {
         if let EventMsg::TurnStarted(payload) = event {
-            self.turn_summary.started_at = payload.started_at;
+            self.turn_summary = TurnSummary {
+                started_at: payload.started_at,
+                ..Default::default()
+            };
         }
         if let EventMsg::ItemCompleted(payload) = event
             && let CoreTurnItem::AgentMessage(item) = &payload.item
@@ -465,6 +468,7 @@ mod tests {
                 collaboration_mode_kind: Default::default(),
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
+                moderation: None,
                 message: "large answer 汉字\n".repeat(8192),
                 questions: None,
                 phase: None,
@@ -539,6 +543,7 @@ mod tests {
         state.track_current_turn_event(
             "turn-1",
             &EventMsg::AgentMessage(AgentMessageEvent {
+                moderation: None,
                 message: "I'll run that.".to_string(),
                 questions: None,
                 phase: None,
@@ -642,6 +647,7 @@ mod tests {
         // 多个带较大正文的 item、重复更新和终止后的晚到完成覆盖缓存与顺序。
         for index in 0..40 {
             events.push(EventMsg::AgentMessage(AgentMessageEvent {
+                moderation: None,
                 message: format!("{index}:{}", "正文".repeat(1000)),
                 questions: None,
                 phase: None,
@@ -671,6 +677,7 @@ mod tests {
         }));
         events.push(EventMsg::ItemCompleted(
             codex_protocol::protocol::ItemCompletedEvent {
+                content_token_count: None,
                 thread_id,
                 turn_id: "turn-1".into(),
                 item: TurnItem::CommandExecution(command_execution_item(
@@ -734,6 +741,7 @@ mod tests {
     fn thread_settings(model: &str) -> ThreadSettings {
         ThreadSettings {
             disabled_plugin_ids: Vec::new(),
+            environments: Some(Vec::new()),
             cwd: AbsolutePathBuf::from_absolute_path("/tmp").expect("absolute path"),
             approval_policy: AskForApproval::OnRequest,
             approvals_reviewer: ApprovalsReviewer::User,
