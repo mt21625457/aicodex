@@ -249,7 +249,7 @@ impl TurnRequestProcessor {
 
     pub(crate) async fn thread_prepare_approved_plan(
         &self,
-        request_id: &ConnectionRequestId,
+        _request_id: &ConnectionRequestId,
         params: ThreadPrepareApprovedPlanParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let (_, thread) = self.load_thread(&params.thread_id).await?;
