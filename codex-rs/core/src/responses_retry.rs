@@ -66,18 +66,7 @@ pub(crate) async fn handle_response_stream_error(
     if matches!(request, ResponsesStreamRequest::Sampling)
         && matches!(err.details(), CodexErrorDetails::ContentFilter)
     {
-        let model_info = &step_context.settings.model_info;
-        let guidance = ContentFilterGuidance {
-            text: codex_prompts::ResolvedModelMessages::from_model(model_info)
-                .content_filter_guidance()
-                .to_string(),
-        };
-        sess.record_conversation_items(
-            turn_context,
-            model_info,
-            &[ContextualUserFragment::into(guidance)],
-        )
-        .await;
+        record_content_filter_guidance(sess, step_context).await;
     }
     let operation = match request {
         ResponsesStreamRequest::Sampling => RetryOperation::Sampling,
@@ -172,6 +161,22 @@ pub(crate) async fn handle_response_stream_error(
             retry_at: retry_after.map(RetryAfter::deadline),
         });
     Err(err)
+}
+
+/// 内容过滤的上下文提示属于历史写入，在重试判定之前保持既有顺序。
+async fn record_content_filter_guidance(sess: &Session, step_context: &StepContext) {
+    let model_info = &step_context.settings.model_info;
+    let guidance = ContentFilterGuidance {
+        text: codex_prompts::ResolvedModelMessages::from_model(model_info)
+            .content_filter_guidance()
+            .to_string(),
+    };
+    sess.record_conversation_items(
+        &step_context.turn,
+        model_info,
+        &[ContextualUserFragment::into(guidance)],
+    )
+    .await;
 }
 
 fn log_retry(
