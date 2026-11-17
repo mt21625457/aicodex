@@ -330,6 +330,10 @@ impl ThreadState {
         }
         match event {
             EventMsg::StreamError(error) => self.recovery = error.recovery.clone(),
+            // 未结束的参数进度来自模型流；finished 也用于错误清理，不能证明恢复。
+            EventMsg::ToolInputProgress(progress) if !progress.finished => {
+                self.recovery = None;
+            }
             // 工具可在模型断流后并发完成；它们不能证明 provider 已恢复。
             EventMsg::ItemStarted(codex_protocol::protocol::ItemStartedEvent { item, .. })
             | EventMsg::ItemCompleted(codex_protocol::protocol::ItemCompletedEvent {

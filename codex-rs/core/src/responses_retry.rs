@@ -201,7 +201,7 @@ pub(crate) async fn handle_response_stream_error(
         sess.notify_stream_error(
             turn_context,
             format!("Reconnecting... {retry_count}/{max_retries}"),
-            err,
+            &err,
             Some(recovery),
         )
         .await;
@@ -210,7 +210,7 @@ pub(crate) async fn handle_response_stream_error(
         let delay = retry_at.saturating_duration_since(now);
         codex_client::record_retry!(retry_count, delay, operation);
         tokio::time::sleep_until(retry_at).await;
-        return Ok(());
+        return admit_retry_after_wait(sess, turn_context, err, retry_after, deadline);
     }
 
     record_exhausted_retry(sess, turn_context, retry_after);
@@ -244,7 +244,7 @@ async fn retry_after_transport_switch(
     sess.notify_stream_error(
         turn_context,
         "Reconnecting... switching transport",
-        err,
+        &err,
         Some(recovery),
     )
     .await;
@@ -252,7 +252,7 @@ async fn retry_after_transport_switch(
     if let Some(retry_after) = retry_after {
         tokio::time::sleep_until(retry_after.deadline()).await;
     }
-    Ok(())
+    admit_retry_after_wait(sess, turn_context, err, retry_after, deadline)
 }
 
 /// 连接恢复只受既定时间预算约束，通知和等待共用同一绝对重试时刻。
@@ -287,7 +287,7 @@ async fn retry_connection(
     sess.notify_stream_error(
         turn_context,
         "Reconnecting... waiting for network",
-        err,
+        &err,
         Some(recovery),
     )
     .await;
@@ -298,6 +298,25 @@ async fn retry_connection(
         .connection_retry_delay
         .saturating_mul(2)
         .min(MAX_CONNECTION_RETRY_DELAY);
+    admit_retry_after_wait(sess, turn_context, err, retry_after, deadline)
+}
+
+/// 通知交付、休眠和调度延迟均计入原预算；返回成功才允许调用者发出下一请求。
+fn admit_retry_after_wait(
+    sess: &Session,
+    turn: &TurnContext,
+    err: CodexErr,
+    advice: Option<RetryAfter>,
+    deadline: Instant,
+) -> Result<(), CodexErr> {
+    if Instant::now() >= deadline {
+        warn!(
+            code = "stream.recovery_budget_exhausted",
+            "response recovery budget exhausted after waiting"
+        );
+        record_exhausted_retry(sess, turn, advice);
+        return Err(err);
+    }
     Ok(())
 }
 

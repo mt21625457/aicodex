@@ -110,3 +110,25 @@ fn terminal_turn_cannot_be_reopened_by_late_retry_evidence() {
     assert!(snapshot.recovery.is_none());
     assert!(snapshot.active_turn_id.is_none());
 }
+
+#[test]
+fn tool_input_generation_clears_retry_but_cleanup_does_not() {
+    use codex_protocol::tool_input_progress::ToolInputProgressEvent;
+    let mut state = ThreadState::default();
+    state.track_current_turn_event("turn", &start("turn"));
+    state.track_current_turn_event("turn", &retry());
+    let progress = |finished| {
+        EventMsg::ToolInputProgress(ToolInputProgressEvent {
+            item_id: "tool".into(),
+            input_bytes: 0,
+            finished,
+        })
+    };
+    // finished 同时用于错误清理，不能被当成连接恢复；新调用的零字节开始则是实际流事件。
+    state.track_current_turn_event("turn", &progress(true));
+    assert!(state.runtime_lifecycle_snapshot().recovery.is_some());
+    state.track_current_turn_event("old", &progress(false));
+    assert!(state.runtime_lifecycle_snapshot().recovery.is_some());
+    state.track_current_turn_event("turn", &progress(false));
+    assert!(state.runtime_lifecycle_snapshot().recovery.is_none());
+}

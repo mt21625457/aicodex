@@ -6087,7 +6087,7 @@ impl Session {
         &self,
         turn_context: &TurnContext,
         message: impl Into<String>,
-        codex_error: CodexErr,
+        codex_error: &CodexErr,
         recovery: Option<codex_protocol::stream_recovery::StreamRecovery>,
     ) {
         let additional_details = codex_error.to_string();

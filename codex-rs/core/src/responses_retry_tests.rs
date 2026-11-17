@@ -180,3 +180,98 @@ async fn recovery_metadata_preserves_request_identity_and_reports_real_deadlines
         status.request_id
     );
 }
+
+/// 通知交付阻塞跨过总预算后，必须返回原错误，不能再准入请求。
+#[tokio::test]
+#[expect(
+    clippy::await_holding_invalid_type,
+    reason = "用交付锁模拟预算期间通知阻塞"
+)]
+async fn notification_delay_cannot_admit_retry_after_budget_expires() {
+    for branch in ["sampling", "connection", "transport"] {
+        let (mut session, turn_context) = make_session_and_context().await;
+        let step_context = StepContext::for_test(Arc::new(turn_context));
+        session.realtime_history = Some(Mutex::new(RealtimeHistoryState::default()));
+        let mut client = session.services.model_client.new_session();
+        let mut state = ResponsesStreamRetryState::default();
+        tokio::time::pause();
+        let deadline = Instant::now() + super::MAX_RECOVERY_WAIT;
+        let advice = RetryAfter::from_delay(Duration::from_secs(10)).unwrap();
+        let history_guard = session.realtime_history.as_ref().unwrap().lock().await;
+        // 三条等待路径共用真实交付阻塞，确保都在唤醒后执行预算准入检查。
+        let retry = async {
+            let error = CodexErr::InternalServerError.with_retry_after(advice);
+            match branch {
+                "connection" => {
+                    super::retry_connection(
+                        &mut state,
+                        &session,
+                        &step_context.turn,
+                        error,
+                        Some(advice),
+                        deadline,
+                        codex_client::RetryOperation::Sampling,
+                    )
+                    .await
+                }
+                "transport" => {
+                    super::retry_after_transport_switch(
+                        &state,
+                        &session,
+                        &step_context.turn,
+                        error,
+                        Some(advice),
+                        deadline,
+                    )
+                    .await
+                }
+                _ => {
+                    handle_response_stream_error(
+                        &mut state,
+                        2,
+                        error,
+                        &mut client,
+                        &session,
+                        &step_context,
+                        ResponsesStreamRequest::Sampling,
+                    )
+                    .await
+                }
+            }
+        };
+        tokio::pin!(retry);
+        assert!(futures::poll!(&mut retry).is_pending());
+        tokio::time::advance(super::MAX_RECOVERY_WAIT).await;
+        drop(history_guard);
+        let error = retry.await.expect_err("过期通知不能触发新请求");
+        assert_eq!(error.to_string(), CodexErr::InternalServerError.to_string());
+        assert_eq!(error.retry_after().unwrap().deadline(), advice.deadline());
+        tokio::time::resume();
+    }
+}
+
+/// 进程休眠造成退避唤醒超过预算时，也不能再发送请求。
+#[tokio::test]
+async fn backoff_wakeup_after_deadline_returns_original_error() {
+    let (session, turn_context) = make_session_and_context().await;
+    let step_context = StepContext::for_test(Arc::new(turn_context));
+    let mut client = session.services.model_client.new_session();
+    let mut state = ResponsesStreamRetryState::default();
+    tokio::time::pause();
+    let retry = handle_response_stream_error(
+        &mut state,
+        2,
+        CodexErr::InternalServerError,
+        &mut client,
+        &session,
+        &step_context,
+        ResponsesStreamRequest::Sampling,
+    );
+    tokio::pin!(retry);
+    assert!(futures::poll!(&mut retry).is_pending());
+    tokio::time::advance(super::MAX_RECOVERY_WAIT).await;
+    assert_eq!(
+        retry.await.unwrap_err().to_string(),
+        CodexErr::InternalServerError.to_string()
+    );
+}
