@@ -61,9 +61,9 @@ async fn stream_retry_preserves_deadline_across_delayed_notification() {
     let step_context = StepContext::for_test(Arc::new(turn_context));
     session.realtime_history = Some(Mutex::new(RealtimeHistoryState::default()));
     let mut client_session = session.services.model_client.new_session();
-    // The second retry emits a notification even when release builds hide the first.
+    // 首次重试在 release/debug 都必须发布通知，锁模拟延迟交付。
     let mut retry_state = ResponsesStreamRetryState {
-        retries: 1,
+        retries: 0,
         ..Default::default()
     };
 
@@ -96,5 +96,64 @@ async fn stream_retry_preserves_deadline_across_delayed_notification() {
     assert!(
         (advice.deadline()..=advice.deadline() + Duration::from_millis(1)).contains(&resumed_at),
         "retry resumed at {resumed_at:?}, expected {advice:?}"
+    );
+}
+
+/// 恢复预算耗尽后不能继续等待或因切换传输重新获得预算。
+#[tokio::test]
+async fn expired_recovery_budget_returns_original_error_without_retry() {
+    let (session, turn_context) = make_session_and_context().await;
+    let step_context = StepContext::for_test(Arc::new(turn_context));
+    let mut client = session.services.model_client.new_session();
+    tokio::time::pause();
+    let started_at = Instant::now();
+    tokio::time::advance(super::MAX_RECOVERY_WAIT).await;
+    let mut state = ResponsesStreamRetryState {
+        recovery_started_at: Some(started_at),
+        ..Default::default()
+    };
+    let result = handle_response_stream_error(
+        &mut state,
+        5,
+        CodexErr::Stream("synthetic disconnect".into()),
+        &mut client,
+        &session,
+        &step_context,
+        ResponsesStreamRequest::Sampling,
+    )
+    .await;
+    assert!(result.is_err());
+    assert_eq!(state.retries, 0);
+    assert_eq!(state.connection_retries, 0);
+}
+
+/// 超预算的 Retry-After 必须返回失败，不能提前请求或无限等候。
+#[tokio::test]
+async fn server_retry_deadline_cannot_extend_recovery_budget() {
+    tokio::time::pause();
+    let mut state = ResponsesStreamRetryState::default();
+    let advice = RetryAfter::from_delay(super::MAX_RECOVERY_WAIT + Duration::from_secs(1));
+    assert!(
+        state
+            .recovery_deadline(Duration::from_secs(1), advice)
+            .is_none()
+    );
+}
+
+/// 网络恢复也必须遵守服务端 Retry-After，不能用本地五秒退避提前重发。
+#[tokio::test]
+async fn connection_retry_honors_server_advice_without_shortening_local_backoff() {
+    tokio::time::pause();
+    let state = ResponsesStreamRetryState::default();
+    let now = Instant::now();
+    let later = RetryAfter::from_delay(Duration::from_secs(30));
+    assert_eq!(
+        state.connection_retry_at(later),
+        now + Duration::from_secs(30)
+    );
+    let earlier = RetryAfter::from_delay(Duration::from_secs(1));
+    assert_eq!(
+        state.connection_retry_at(earlier),
+        now + Duration::from_secs(5)
     );
 }

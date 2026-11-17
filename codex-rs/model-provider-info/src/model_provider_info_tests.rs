@@ -1215,3 +1215,14 @@ fn cyber_access_program_capability_uses_provider_identity_and_explicit_overrides
         }
     }
 }
+
+/// 默认值必须让无字节流及时进入错误/重试路径，同时保留用户的显式长等待。
+#[test]
+fn stream_idle_timeout_is_bounded_by_default_and_preserves_explicit_override() {
+    let provider = super::ModelProviderInfo::default();
+    assert_eq!(provider.stream_idle_timeout(), std::time::Duration::from_secs(300));
+    let explicit = super::ModelProviderInfo {
+        stream_idle_timeout_ms: Some(900_000), ..provider
+    };
+    assert_eq!(explicit.stream_idle_timeout(), std::time::Duration::from_secs(900));
+}
