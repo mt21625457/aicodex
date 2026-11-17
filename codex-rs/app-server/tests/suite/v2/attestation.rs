@@ -83,6 +83,7 @@ async fn automatic_attestation_stays_disabled_for_responses_websocket_handshake(
                 version: "0.1.0".to_string(),
             },
             Some(InitializeCapabilities {
+                required_human_approval: false,
                 explicit_gateway_oauth: false,
                 experimental_api: true,
                 request_attestation: true,

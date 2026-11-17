@@ -1,6 +1,6 @@
 ---
 source: core/tests/suite/scenarios_incremental_tools.rs
-assertion_line: 603
+assertion_line: 692
 expression: "context_snapshot::format_request_history_snapshot(scenario, &requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
 ---
 Scenario: MCP refreshes remove one tool, then its whole namespace, before restoring both tools. Removal notices append alone; restoration appends one developer notice before both namespace declarations. Unchanged turns do not repeat updates.
@@ -17,8 +17,8 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=b77c648bf32ec5c0):
-        - namespace/functions; hash=124fee69a69ed6b2
+00:additional_tools/developer (3; hash=c6476125e1d67bb3):
+        - namespace/functions; hash=6475578c7f948d18
           - function/exec_command
           - function/write_stdin
           - function/list_mcp_resources
@@ -27,7 +27,7 @@ Settings:
           - function/request_user_input
           - custom/apply_patch
           - function/view_image
-        - namespace/multi_agent_v1: Tools for spawning and managing sub-agents.; hash=245eb8e635f7507b
+        - namespace/multi_agent_v1: Tools for spawning and managing sub-agents.; hash=2327142bda177c50
           - function/close_agent
           - function/resume_agent
           - function/send_input

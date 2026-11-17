@@ -2,6 +2,48 @@ use super::*;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
+async fn cached_catalog_order_preserves_priority_selected_default() {
+    let home = tempdir().unwrap();
+    let endpoint = TestModelsEndpoint::new(vec![]);
+    let entry = ModelsCacheEntry {
+        fetched_at: Utc::now() - chrono::Duration::hours(1),
+        etag: None,
+        client_version: Some(crate::client_version_to_whole()),
+        identity: endpoint.identity(),
+        models: vec![
+            remote_model("display-first", "Display first", 10),
+            remote_model("priority-first", "Priority first", 0),
+        ],
+    };
+    FileModelsCache::new(home.path().join(MODEL_CACHE_FILE), DEFAULT_MODEL_CACHE_TTL)
+        .store(&entry)
+        .await
+        .unwrap();
+    let manager = openai_manager_for_tests(home.path().to_path_buf(), endpoint.clone())
+        .with_provider_catalog();
+    for _ in 0..2 {
+        let ordered = manager
+            .cached_models_for_display_in_catalog_order()
+            .await
+            .unwrap();
+        assert_eq!(
+            ordered
+                .iter()
+                .map(|model| model.model.as_str())
+                .collect::<Vec<_>>(),
+            ["display-first", "priority-first"]
+        );
+        assert_eq!(
+            ordered.iter().find(|model| model.is_default).unwrap().model,
+            "priority-first"
+        );
+        let priority = manager.cached_models_for_display().await.unwrap();
+        assert_eq!(priority[0].model, "priority-first");
+    }
+    assert_eq!(endpoint.fetch_count(), 0);
+}
+
+#[tokio::test]
 async fn explicit_provider_display_cache_does_not_add_bundled_models() {
     for models in [
         vec![],
@@ -54,16 +96,21 @@ async fn older_cache_update_preserves_newer_network_catalog() {
         models: vec![remote_model("older", "Older", /*priority*/ 0)],
         ..latest.clone()
     };
-    assert!(
-        manager
-            .apply_remote_models(latest.clone(), CatalogUpdateSource::Network)
-            .await
-    );
-    assert!(
-        manager
-            .apply_remote_models(older, CatalogUpdateSource::Cache)
-            .await
-    );
+    {
+        let mut current = manager.remote_models.write().await;
+        assert!(manager.apply_remote_models(
+            &mut current,
+            latest.clone(),
+            CatalogLoadMode::Refresh(RefreshStrategy::Online),
+            CatalogUpdateSource::Network
+        ));
+        assert!(manager.apply_remote_models(
+            &mut current,
+            older,
+            CatalogLoadMode::Refresh(RefreshStrategy::OnlineIfUncached),
+            CatalogUpdateSource::Cache
+        ));
+    }
     assert_eq!(manager.remote_models.read().await.entry, latest);
     assert!(
         manager

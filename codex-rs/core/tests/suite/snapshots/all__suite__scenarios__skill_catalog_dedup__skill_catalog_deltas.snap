@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_skill_catalog_dedup.rs
+assertion_line: 470
 expression: "context_snapshot::format_request_history_snapshot(\"Skill additions and edits share the remaining metadata budget across turns and resume. Removals stay silent and do not refund budget. Compaction rebuilds the current catalog and resets the allowance.\",\n&requests, &ContextSnapshotOptions::default().include_request_settings(),)"
 ---
 Scenario: Skill additions and edits share the remaining metadata budget across turns and resume. Removals stay silent and do not refund budget. Compaction rebuilds the current catalog and resets the allowance.
@@ -16,8 +17,8 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=bf2e30605ff5dc17):
-        - namespace/functions; hash=fada4a476a3754dd
+00:additional_tools/developer (3; hash=e019c949fc483f83):
+        - namespace/functions; hash=03340277aa23936f
           - custom/exec
           - function/wait
           - function/request_user_input
@@ -49,8 +50,11 @@ Settings:
     - Relevance: Determine what a plugin can help with from explicit user mention or from the plugin-associa..., MCP tools, and apps exposed elsewhere in this turn. [hash=620459a4e7b590f0]
     - Missing/blocked: If the user requests a plugin that does not have relevant callable capabilities for t..., say so briefly and continue with the best fallback. [hash=746b0469a8f6cb3e]
 
-02:message/developer[3]:
-    [01] <skills_instructions>
+02:message/developer[4]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <skills_instructions>
         ## Host skills
 
         ## Skills
@@ -60,18 +64,18 @@ Settings:
         - `r1` = `<SKILLS_ROOT>/.system`
         ### Available skills
         - imagegen: Generate or edit raster images when the task benefits from AI-created bitmap visuals such as...ctly in HTML/CSS/canvas. (file: r1/imagegen/SKILL.md) [hash=dcccaed407aafb03]
-        - openai-docs: Use for Codex models/pricing, scheduled tasks, skills, settings, setup, troubleshooting, ...merely mention Codex. (file: r1/openai-docs/SKILL.md) [hash=1c1693bbc4dfd0f7]
+        - openai-docs: API first-timers, Codex/Work Q&A. If the user already has an OpenAI API integration, skip...upplied text or data. (file: r1/openai-docs/SKILL.md) [hash=8ba7f79795ddc1cb]
         - skill-creator: Create or update a Codex skill with appropriately scoped instructions and any needed supporting resources. (file: r1/skill-creator/SKILL.md)
-        - skill-installer: Install Codex skills into $CODEX_HOME/skills from a curated list or a GitHub repo pat...g private repos). (file: r1/skill-installer/SKILL.md) [hash=80e87da510d34d88]
+        - skill-installer: Install Codex skills into $AICODEX_HOME/skills from a curated list or a GitHub repo p...g private repos). (file: r1/skill-installer/SKILL.md) [hash=c2d65891ba123ea6]
         - browser-testing: Run browser tests for web applications. (file: r0/browser-testing/SKILL.md)
         - code-review: Review code changes for correctness. (file: r0/code-review/SKILL.md)
         - release-notes: Draft release notes from recent commits. (file: r0/release-notes/SKILL.md)
         </skills_instructions>
-    [02] <permissions instructions>
+    [03] <permissions instructions>
         Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `danger-full-access`...ll commands are permitted. Network access is enabled. [hash=c134061cebb94a1b]
         Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.
         </permissions instructions>
-    [03] <collaboration_mode># Collaboration Mode: Default
+    [04] <collaboration_mode># Collaboration Mode: Default
 
         You are now in Default mode. Any previous instructions for other modes (e.g. Plan mode) are no longer active.
 
@@ -160,8 +164,8 @@ Settings:
 ## Window 2 (after request 7: input diverged at item 02)
 Settings: same as window 1
 -- request 8 (turn) --
-00:additional_tools/developer (3; hash=bf2e30605ff5dc17):
-        - namespace/functions; hash=fada4a476a3754dd
+00:additional_tools/developer (3; hash=e019c949fc483f83):
+        - namespace/functions; hash=03340277aa23936f
           - custom/exec
           - function/wait
           - function/request_user_input
@@ -203,8 +207,11 @@ Settings: same as window 1
     List the available skills after removing browser-testing.
 06:message/user:
     Continue with the same skills.
-07:message/developer[3]:
-    [01] <skills_instructions>
+07:message/developer[4]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <skills_instructions>
         ## Host skills
 
         ## Skills
@@ -214,18 +221,18 @@ Settings: same as window 1
         - `r1` = `<SKILLS_ROOT>/.system`
         ### Available skills
         - imagegen: Generate or edit raster images when the task benefits from AI-created bitmap visuals such as...ctly in HTML/CSS/canvas. (file: r1/imagegen/SKILL.md) [hash=dcccaed407aafb03]
-        - openai-docs: Use for Codex models/pricing, scheduled tasks, skills, settings, setup, troubleshooting, ...merely mention Codex. (file: r1/openai-docs/SKILL.md) [hash=1c1693bbc4dfd0f7]
+        - openai-docs: API first-timers, Codex/Work Q&A. If the user already has an OpenAI API integration, skip...upplied text or data. (file: r1/openai-docs/SKILL.md) [hash=8ba7f79795ddc1cb]
         - skill-creator: Create or update a Codex skill with appropriately scoped instructions and any needed supporting resources. (file: r1/skill-creator/SKILL.md)
-        - skill-installer: Install Codex skills into $CODEX_HOME/skills from a curated list or a GitHub repo pat...g private repos). (file: r1/skill-installer/SKILL.md) [hash=80e87da510d34d88]
+        - skill-installer: Install Codex skills into $AICODEX_HOME/skills from a curated list or a GitHub repo p...g private repos). (file: r1/skill-installer/SKILL.md) [hash=c2d65891ba123ea6]
         - code-review: Review code changes for correctness. (file: r0/code-review/SKILL.md)
         - incident-summary: Summarize incidents and follow-up actions. (file: r0/incident-summary/SKILL.md)
         - release-notes: Draft release notes grouped by feature and bug fix. (file: r0/release-notes/SKILL.md)
         </skills_instructions>
-    [02] <permissions instructions>
+    [03] <permissions instructions>
         Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `danger-full-access`...ll commands are permitted. Network access is enabled. [hash=c134061cebb94a1b]
         Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.
         </permissions instructions>
-    [03] <collaboration_mode># Collaboration Mode: Default
+    [04] <collaboration_mode># Collaboration Mode: Default
 
         You are now in Default mode. Any previous instructions for other modes (e.g. Plan mode) are no longer active.
 
@@ -295,8 +302,8 @@ Settings: same as window 1
 ## Window 3 (after request 11: input diverged at item 07)
 Settings: same as window 1
 -- request 12 (turn) --
-00:additional_tools/developer (3; hash=bf2e30605ff5dc17):
-        - namespace/functions; hash=fada4a476a3754dd
+00:additional_tools/developer (3; hash=e019c949fc483f83):
+        - namespace/functions; hash=03340277aa23936f
           - custom/exec
           - function/wait
           - function/request_user_input
@@ -344,8 +351,11 @@ Settings: same as window 1
     Continue after compaction.
 09:message/user:
     Continue with a smaller skills list budget.
-10:message/developer[3]:
-    [01] <skills_instructions>
+10:message/developer[4]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <skills_instructions>
         ## Host skills
 
         ## Skills
@@ -362,11 +372,11 @@ Settings: same as window 1
         - incident-summary: (file: r0/incident-summary/SKILL.md)
         - release-notes: (file: r0/release-notes/SKILL.md)
         </skills_instructions>
-    [02] <permissions instructions>
+    [03] <permissions instructions>
         Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `danger-full-access`...ll commands are permitted. Network access is enabled. [hash=c134061cebb94a1b]
         Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.
         </permissions instructions>
-    [03] <collaboration_mode># Collaboration Mode: Default
+    [04] <collaboration_mode># Collaboration Mode: Default
 
         You are now in Default mode. Any previous instructions for other modes (e.g. Plan mode) are no longer active.
 
@@ -436,8 +446,8 @@ Settings: same as window 1
 ## Window 4 (after request 18: input diverged at item 10)
 Settings: same as window 1
 -- request 19 (turn) --
-00:additional_tools/developer (3; hash=bf2e30605ff5dc17):
-        - namespace/functions; hash=fada4a476a3754dd
+00:additional_tools/developer (3; hash=e019c949fc483f83):
+        - namespace/functions; hash=03340277aa23936f
           - custom/exec
           - function/wait
           - function/request_user_input
@@ -497,8 +507,11 @@ Settings: same as window 1
     Check the updated code-review skill.
 15:message/user:
     Continue after removing more skills.
-16:message/developer[3]:
-    [01] <skills_instructions>
+16:message/developer[4]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <skills_instructions>
         ## Host skills
 
         ## Skills
@@ -508,16 +521,16 @@ Settings: same as window 1
         - `r1` = `<SKILLS_ROOT>/.system`
         ### Available skills
         - imagegen: Generate or edit raster images (file: r1/imagegen/SKILL.md)
-        - openai-docs: Use for Codex models/pricing, sc (file: r1/openai-docs/SKILL.md)
+        - openai-docs: API first-timers, Codex/Work Q&A (file: r1/openai-docs/SKILL.md)
         - skill-creator: Create or update a Codex skill w (file: r1/skill-creator/SKILL.md)
-        - skill-installer: Install Codex skills into $C (file: r1/skill-installer/SKILL.md)
+        - skill-installer: Install Codex skills into $A (file: r1/skill-installer/SKILL.md)
         - documentation: Write project documentation. (file: r0/documentation/SKILL.md)
         </skills_instructions>
-    [02] <permissions instructions>
+    [03] <permissions instructions>
         Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `danger-full-access`...ll commands are permitted. Network access is enabled. [hash=c134061cebb94a1b]
         Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.
         </permissions instructions>
-    [03] <collaboration_mode># Collaboration Mode: Default
+    [04] <collaboration_mode># Collaboration Mode: Default
 
         You are now in Default mode. Any previous instructions for other modes (e.g. Plan mode) are no longer active.
 

@@ -36,8 +36,11 @@ pub mod code_mode_host;
 pub mod context_snapshot;
 pub mod exec_server;
 pub mod hooks;
+pub mod network_policy_mcp;
+pub mod oauth;
 pub mod process;
 pub mod responses;
+pub mod runtime_auth;
 pub mod startup;
 pub mod streaming_sse;
 pub mod test_codex;
@@ -291,6 +294,12 @@ pub async fn load_default_config_for_test_with_cloud_config_bundle(
     }
     config.sqlite = sqlite;
     let _ = config.features.disable(Feature::Apps);
+    for feature in [Feature::ToolSuggest, Feature::RecommendedPlugins] {
+        config
+            .features
+            .disable(feature)
+            .expect("test config should allow disabling plugin recommendations");
+    }
     config
 }
 

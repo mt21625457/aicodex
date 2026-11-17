@@ -163,6 +163,10 @@ impl ConfigManager {
         self.loader_overrides.user_config_path(self.codex_home())
     }
 
+    pub(crate) fn loader_overrides(&self) -> &LoaderOverrides {
+        &self.loader_overrides
+    }
+
     pub(crate) fn current_cli_overrides(&self) -> Vec<(String, TomlValue)> {
         self.cli_overrides
             .read()
@@ -430,27 +434,6 @@ impl ConfigManager {
         Ok(CloudStartupConfig { bootstrap, config })
     }
 
-    /// Admits resumed threads and input only on the currently selected provider.
-    pub(crate) async fn check_thread_model_provider_for_input(
-        &self,
-        current: &Config,
-    ) -> std::io::Result<()> {
-        self.check_thread_model_provider(current).await?;
-        let configured = self
-            .load_latest_config(Some(current.cwd.to_path_buf()))
-            .await?;
-        if current.model_provider_id != configured.model_provider_id {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                ModelProviderError::ModelProviderMismatch {
-                    model_provider: current.model_provider_id.clone(),
-                    current_model_provider: configured.model_provider_id,
-                },
-            ));
-        }
-        Ok(())
-    }
-
     /// Installs local policy before cloud access; failed policy loads block traffic while
     /// non-strict startup remains available for configuration repair.
     pub(crate) async fn load_startup_config(
@@ -542,7 +525,7 @@ impl ConfigManager {
         saved_model: Option<&str>,
         explicit_provider_override: bool,
         request_overrides: Option<HashMap<String, serde_json::Value>>,
-        typesafe_overrides: ConfigOverrides,
+        mut typesafe_overrides: ConfigOverrides,
         cwd: Option<PathBuf>,
     ) -> std::io::Result<Config> {
         // Only this released gateway alias migration can change a saved route. Unknown
@@ -565,11 +548,12 @@ impl ConfigManager {
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned)
         });
-        // Resolve the selection before the saved provider is applied as a resume override.
-        let current_provider = self
-            .load_latest_config(typesafe_overrides.cwd.clone().or_else(|| cwd.clone()))
-            .await
-            .map(|config| config.model_provider_id);
+        let explicit_migration = migrating_deepseek_gateway && explicit_provider_override;
+        if let Some(saved) = saved_provider
+            && !explicit_migration
+        {
+            typesafe_overrides.model_provider = Some(saved.to_owned());
+        }
         self.load_with_validation(
             &self.current_cli_overrides(),
             request_overrides,
@@ -578,6 +562,7 @@ impl ConfigManager {
             |config, _overrides, layers| {
                 let requested_provider = requested_provider
                     .as_deref()
+                    .or(saved_provider)
                     .or(config.model_provider.as_deref())
                     .unwrap_or("openai");
                 // Validate the saved route even when a client sends a provider override.
@@ -608,25 +593,14 @@ impl ConfigManager {
                         ));
                     }
                 }
-                let current_provider = current_provider?;
-                for (provider, is_requested) in [
-                    (saved_provider.unwrap_or(requested_provider), false),
-                    (requested_provider, true),
-                ] {
-                    // The existing DeepSeek migration contract permits an explicit configured
-                    // destination. Both routes already passed configuration and policy checks.
-                    if migrating_deepseek_gateway && explicit_provider_override && is_requested {
-                        continue;
-                    }
-                    if provider != current_provider {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            ModelProviderError::ModelProviderMismatch {
-                                model_provider: provider.to_owned(),
-                                current_model_provider: current_provider,
-                            },
-                        ));
-                    }
+                if let Some(saved) = saved_provider
+                    && saved != requested_provider
+                    && !explicit_migration
+                {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("Cannot change this thread's model provider from `{saved}` to `{requested_provider}` on resume."),
+                    ));
                 }
                 Ok(())
             },
@@ -770,7 +744,7 @@ impl ConfigManager {
             cwd,
             &self.current_cli_overrides(),
             codex_config::ConfigLoadOptions {
-                loader_overrides: self.loader_overrides.clone(),
+                loader_overrides: self.loader_overrides().clone(),
                 strict_config: self.strict_config,
                 cloud_config_bundle: policy_load.cloud_config.clone(),
             },

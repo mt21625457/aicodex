@@ -6,6 +6,7 @@ use crate::ModelsManagerConfig;
 use crate::manager::ModelsManager;
 use crate::model_info::model_info_from_slug;
 use crate::model_info::with_config_overrides;
+use codex_protocol::openai_models::ModelOrigin;
 use codex_protocol::openai_models::ModelsResponse;
 
 #[tokio::test]
@@ -34,7 +35,7 @@ async fn sol_missing_catalog_uses_500k_and_preserves_fallback_diagnostic() {
         .await;
     assert_eq!(sol.context_window, Some(500_000));
     assert_eq!(sol.usable_context_window(), Some(475_000));
-    assert!(sol.used_fallback_model_metadata);
+    assert_eq!(sol.origin, ModelOrigin::Synthetic);
 }
 
 #[test]

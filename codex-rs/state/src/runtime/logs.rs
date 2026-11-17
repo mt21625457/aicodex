@@ -26,7 +26,7 @@ impl StateRuntime {
             return Ok(());
         }
 
-        let mut tx = self.logs_pool.begin().await?;
+        let mut tx = self.diagnostic_logs_pool()?.begin().await?;
         let mut builder = QueryBuilder::<Sqlite>::new(
             "INSERT INTO logs (ts, ts_nanos, level, target, feedback_log_body, thread_id, process_uuid, module_path, file, line, estimated_bytes) ",
         );
@@ -94,6 +94,8 @@ impl StateRuntime {
     ///
     /// This runs inside the same transaction as the insert so callers never
     /// observe "inserted but not yet pruned" rows.
+    /// The cumulative byte and row limits use the same window frame so SQLite can
+    /// compute both in one pass. The unique id breaks ties in timestamp order.
     async fn prune_logs_after_insert(
         &self,
         entries: &[LogEntry],
@@ -147,6 +149,7 @@ WHERE id IN (
             ) OVER (
                 PARTITION BY thread_id
                 ORDER BY ts DESC, ts_nanos DESC, id DESC
+                ROWS UNBOUNDED PRECEDING
             ) AS cumulative_bytes,
             ROW_NUMBER() OVER (
                 PARTITION BY thread_id
@@ -229,6 +232,7 @@ WHERE id IN (
             ) OVER (
                 PARTITION BY process_uuid
                 ORDER BY ts DESC, ts_nanos DESC, id DESC
+                ROWS UNBOUNDED PRECEDING
             ) AS cumulative_bytes,
             ROW_NUMBER() OVER (
                 PARTITION BY process_uuid
@@ -295,6 +299,7 @@ WHERE id IN (
             ) OVER (
                 PARTITION BY process_uuid
                 ORDER BY ts DESC, ts_nanos DESC, id DESC
+                ROWS UNBOUNDED PRECEDING
             ) AS cumulative_bytes,
             ROW_NUMBER() OVER (
                 PARTITION BY process_uuid
@@ -338,7 +343,7 @@ WHERE id IN (
 
         let rows = builder
             .build_query_as::<LogRow>()
-            .fetch_all(self.logs_pool.as_ref())
+            .fetch_all(self.diagnostic_logs_pool()?)
             .await?;
         Ok(rows)
     }
@@ -348,7 +353,7 @@ WHERE id IN (
         &self,
         thread_ids: &[&str],
     ) -> anyhow::Result<Vec<u8>> {
-        Self::query_feedback_logs_from_pool(self.logs_pool.as_ref(), thread_ids).await
+        Self::query_feedback_logs_from_pool(self.diagnostic_logs_pool()?, thread_ids).await
     }
 
     /// Read logs from the previous directory without creating or migrating its database.
@@ -479,7 +484,10 @@ WHERE cumulative_estimated_bytes <=
         let mut builder =
             QueryBuilder::<Sqlite>::new("SELECT MAX(id) AS max_id FROM logs WHERE 1 = 1");
         push_log_filters(&mut builder, query);
-        let row = builder.build().fetch_one(self.logs_pool.as_ref()).await?;
+        let row = builder
+            .build()
+            .fetch_one(self.diagnostic_logs_pool()?)
+            .await?;
         let max_id: Option<i64> = row.try_get("max_id")?;
         Ok(max_id.unwrap_or(0))
     }
@@ -746,7 +754,7 @@ mod tests {
             .expect("insert oversized log body");
 
         let row = sqlx::query("SELECT feedback_log_body, estimated_bytes FROM logs")
-            .fetch_one(runtime.logs_pool.as_ref())
+            .fetch_one(runtime.logs_pool.as_deref().expect("test logs pool"))
             .await
             .expect("fetch persisted log row");
         let persisted: String = row.try_get("feedback_log_body").expect("feedback log body");
@@ -823,7 +831,7 @@ mod tests {
             .expect("query migrated logs");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].message.as_deref(), Some("legacy-body"));
-        assert_log_totals(&runtime.logs_pool).await;
+        assert_log_totals(runtime.logs_pool.as_deref().expect("test logs pool")).await;
 
         let migrated_pool = open_db_pool(logs_path.as_path()).await;
         let columns = sqlx::query_scalar::<_, String>("SELECT name FROM pragma_table_info('logs')")
@@ -1104,7 +1112,7 @@ mod tests {
         let retained_bytes: i64 =
             sqlx::query_scalar("SELECT SUM(estimated_bytes) FROM logs WHERE thread_id = ?")
                 .bind("thread-1")
-                .fetch_one(runtime.logs_pool.as_ref())
+                .fetch_one(runtime.logs_pool.as_deref().expect("test logs pool"))
                 .await
                 .expect("sum retained thread bytes");
         assert!(retained_bytes <= 10 * 1024 * 1024);
@@ -1394,6 +1402,8 @@ mod tests {
 
         let mut tx = runtime
             .logs_pool
+            .as_deref()
+            .expect("test logs pool")
             .begin_with("BEGIN IMMEDIATE")
             .await
             .expect("begin write transaction");
@@ -1445,6 +1455,8 @@ mod tests {
 
         let mut tx = runtime
             .logs_pool
+            .as_deref()
+            .expect("test logs pool")
             .begin_with("BEGIN IMMEDIATE")
             .await
             .expect("begin write transaction");
@@ -1978,23 +1990,23 @@ mod tests {
         sqlx::query("INSERT INTO logs(ts, ts_nanos, level, target, estimated_bytes) VALUES(?,0,'INFO','test',10),(?,0,'INFO','test',20),(?,0,'INFO','test',30)")
             .bind(now + 1).bind(now + 2).bind(now + 3)
             .execute(&other).await.unwrap();
-        assert_log_totals(&runtime.logs_pool).await;
+        assert_log_totals(runtime.logs_pool.as_deref().expect("test logs pool")).await;
         sqlx::query("UPDATE logs SET estimated_bytes = estimated_bytes + 5")
             .execute(&other)
             .await
             .unwrap();
-        assert_log_totals(&runtime.logs_pool).await;
+        assert_log_totals(runtime.logs_pool.as_deref().expect("test logs pool")).await;
         let mut tx = other.begin().await.unwrap();
         sqlx::query("DELETE FROM logs")
             .execute(&mut *tx)
             .await
             .unwrap();
         tx.rollback().await.unwrap();
-        assert_log_totals(&runtime.logs_pool).await;
+        assert_log_totals(runtime.logs_pool.as_deref().expect("test logs pool")).await;
         let mut tx = other.begin().await.unwrap();
         prune_global_logs(&mut tx, 60, 2).await.unwrap();
         tx.commit().await.unwrap();
-        assert_log_totals(&runtime.logs_pool).await;
+        assert_log_totals(runtime.logs_pool.as_deref().expect("test logs pool")).await;
         let timestamps: Vec<i64> = sqlx::query_scalar("SELECT ts - ? FROM logs ORDER BY ts DESC")
             .bind(now)
             .fetch_all(&other)
@@ -2005,7 +2017,7 @@ mod tests {
             .execute(&other)
             .await
             .unwrap();
-        assert_log_totals(&runtime.logs_pool).await;
+        assert_log_totals(runtime.logs_pool.as_deref().expect("test logs pool")).await;
         // 查询计划证明正常容量检查只查单行主键，不扫描日志正文表。
         let plan = sqlx::query("EXPLAIN QUERY PLAN SELECT total_bytes,row_count FROM logs_usage_totals WHERE singleton=1").fetch_all(&other).await.unwrap();
         assert!(
@@ -2013,7 +2025,12 @@ mod tests {
                 .all(|row| !row.get::<String, _>("detail").contains("SCAN"))
         );
         other.close().await;
-        runtime.logs_pool.close().await;
+        runtime
+            .logs_pool
+            .as_deref()
+            .expect("test logs pool")
+            .close()
+            .await;
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
 }

@@ -241,6 +241,7 @@ async fn auto_store_remains_pinned_across_session_recovery() -> anyhow::Result<(
             "--ignored",
             "--nocapture",
         ])
+        .env("AICODEX_HOME", codex_home.path())
         .env("CODEX_HOME", codex_home.path())
         .env(CHILD_SERVER_URL_ENV, &base_url)
         .status()

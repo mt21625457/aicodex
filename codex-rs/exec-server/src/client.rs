@@ -2081,7 +2081,6 @@ mod tests {
     use crate::FileSystemSandboxContext;
     use crate::ProcessId;
     use crate::client_api::DEFAULT_REMOTE_EXEC_SERVER_CONNECT_TIMEOUT;
-    #[cfg(not(windows))]
     use crate::client_api::DEFAULT_REMOTE_EXEC_SERVER_INITIALIZE_TIMEOUT;
     use crate::client_api::ExecServerTransportParams;
     use crate::client_api::RemoteExecServerConnectArgs;
@@ -2423,7 +2422,7 @@ mod tests {
                 cwd: None,
             },
             client_name: "stdio-test-client".to_string(),
-            initialize_timeout: Duration::from_secs(1),
+            initialize_timeout: DEFAULT_REMOTE_EXEC_SERVER_INITIALIZE_TIMEOUT,
             resume_session_id: None,
         })
         .await

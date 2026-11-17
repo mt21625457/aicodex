@@ -168,6 +168,7 @@ fn joins_respect_actual_turns_and_intervening_items() {
     );
     turns[0].items[1] = ThreadItem::untimed(ThreadItemPayload::AgentMessage {
         transcript_metadata: None,
+        moderation: None,
         id: "message".to_string(),
         text: "Visible boundary".to_string(),
         phase: None,

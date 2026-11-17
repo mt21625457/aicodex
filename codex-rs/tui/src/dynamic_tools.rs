@@ -5,6 +5,7 @@ use crate::app_event_sender::AppEventSender;
 use codex_app_server_client::AppServerRequestHandle;
 use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::Account;
+use codex_app_server_protocol::AudioReference;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::DynamicToolCallOutputContentItem;
 use codex_app_server_protocol::DynamicToolCallParams;
@@ -350,6 +351,8 @@ async fn execute_inner(
                 request(&handle, |request_id| ClientRequest::ThreadList {
                     request_id,
                     params: ThreadListParams {
+                        include_attached_threads: false,
+                        current_account_only: true,
                         excluded_thread_ids: None,
                         attached_to_thread_id: None,
                         originators: None,
@@ -898,6 +901,7 @@ async fn execute_inner(
                                                 cursor: None,
                                                 limit: Some(20),
                                                 sort_direction: Some(SortDirection::Desc),
+                                                defer_output: None,
                                             },
                                         }
                                     }),
@@ -915,6 +919,7 @@ async fn execute_inner(
                                             .cloned()
                                             .map(|item| ThreadItemEntry {
                                                 turn_id: turn.id.clone(),
+                                                output_deferred: false,
                                                 started_at_ms: item.started_at_ms,
                                                 completed_at_ms: item.completed_at_ms,
                                                 item,
@@ -1290,7 +1295,8 @@ async fn background_turn_program(
             params: ModelListParams {
                 cursor: None,
                 limit: None,
-                include_hidden: Some(true)
+                include_hidden: Some(true),
+                model_provider: None,
             },
         }),
     );
@@ -1389,7 +1395,10 @@ fn turn_summary(turn: &Turn, include_outputs: bool, output_chars: usize) -> Valu
                         ..
                     } => json!({"type": "image", "fileId": file_id}),
                     UserInput::LocalImage { path, .. } => json!({"type": "localImage", "path": path}),
-                    UserInput::Audio { url } => json!({"type": "audio", "url": url}),
+                    UserInput::Audio { audio: AudioReference::Inline { url } } => json!({"type": "audio", "url": url}),
+                    UserInput::Audio {
+                        audio: AudioReference::File { file_id, .. },
+                    } => json!({"type": "audio", "fileId": file_id}),
                     UserInput::LocalAudio { path } => json!({"type": "localAudio", "path": path}),
                     UserInput::Skill { name, path } => json!({"type": "skill", "name": name, "path": path}),
                     UserInput::Mention { name, path } => json!({"type": "mention", "name": name, "path": path}),

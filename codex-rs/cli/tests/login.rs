@@ -30,7 +30,8 @@ use wiremock::matchers::path;
 fn codex_command(codex_home: &Path) -> Result<assert_cmd::Command> {
     let mut cmd = assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("aicodex")?);
     cmd.env("AICODEX_HOME", codex_home);
-    cmd.env("CODEX_HOME", codex_home);
+    cmd.env("AICODEX_HOME", codex_home)
+        .env("CODEX_HOME", codex_home);
     cmd.env_remove("CODEX_SQLITE_HOME");
     Ok(cmd)
 }
@@ -46,6 +47,52 @@ fn write_file_auth_config(codex_home: &Path) -> Result<()> {
 fn read_auth_json(codex_home: &Path) -> Result<Value> {
     let auth_json = std::fs::read_to_string(codex_home.join("auth.json"))?;
     Ok(serde_json::from_str(&auth_json)?)
+}
+
+const SITES_GIT_REQUEST: &str = "capability[]=authtype\nprotocol=https\nhost=chatgpt.com\npath=backend-api/codex/sites/git/fixture.git\n\n";
+
+#[test]
+fn git_credential_advertises_authtype_before_login() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    codex_command(codex_home.path())?
+        .args(["git-credential", "capability"])
+        .assert()
+        .success()
+        .stdout(contains("capability authtype\n"));
+    Ok(())
+}
+
+#[test]
+fn git_credential_reads_only_the_first_record() -> Result<()> {
+    let home = TempDir::new()?;
+    codex_command(home.path())?
+        .args(["git-credential", "get"])
+        .write_stdin(format!(
+            "protocol=https\nhost=chatgpt.com\n\n{SITES_GIT_REQUEST}"
+        ))
+        .assert()
+        .success()
+        .stdout("");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_credential_declines_personal_access_tokens_without_a_lookup() -> Result<()> {
+    let home = TempDir::new()?;
+    write_file_auth_config(home.path())?;
+    let auth_api = MockServer::start().await;
+    codex_command(home.path())?
+        .env_remove(OPENAI_FEDERATION_RULE_ID_ENV_VAR)
+        .env_remove(OPENAI_IDENTITY_TOKEN_FILE_ENV_VAR)
+        .env(CODEX_ACCESS_TOKEN_ENV_VAR, "at-fixture")
+        .env("CODEX_AUTHAPI_BASE_URL", auth_api.uri())
+        .args(["git-credential", "get"])
+        .write_stdin(SITES_GIT_REQUEST)
+        .assert()
+        .success()
+        .stdout("quit=true\n\n");
+    assert!(auth_api.received_requests().await.unwrap().is_empty());
+    Ok(())
 }
 
 #[test]
@@ -157,14 +204,23 @@ fn login_status_validates_configured_workload_identity() -> Result<()> {
     write_file_auth_config(codex_home.path())?;
     let missing_assertion = codex_home.path().join("missing-identity-token");
 
-    codex_command(codex_home.path())?
-        .env_remove(CODEX_ACCESS_TOKEN_ENV_VAR)
-        .env(OPENAI_FEDERATION_RULE_ID_ENV_VAR, "rule-test")
-        .env(OPENAI_IDENTITY_TOKEN_FILE_ENV_VAR, &missing_assertion)
-        .args(["login", "status"])
-        .assert()
-        .failure()
-        .stderr(contains("could not read workload identity assertion file"));
+    for login_method in ["chatgpt", "api"] {
+        let mut command = codex_command(codex_home.path())?;
+        command
+            .env_remove(CODEX_ACCESS_TOKEN_ENV_VAR)
+            .env(OPENAI_IDENTITY_TOKEN_FILE_ENV_VAR, &missing_assertion)
+            .env(OPENAI_FEDERATION_RULE_ID_ENV_VAR, "rule-test")
+            .args([
+                "-c",
+                &format!("forced_login_method=\"{login_method}\""),
+                "login",
+                "status",
+            ]);
+        command
+            .assert()
+            .failure()
+            .stderr(contains("could not read workload identity assertion file"));
+    }
 
     Ok(())
 }

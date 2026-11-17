@@ -82,6 +82,7 @@ async fn emit_user_shell_item_completed(
         .send_event(
             turn_context,
             EventMsg::ItemCompleted(ItemCompletedEvent {
+                content_token_count: None,
                 thread_id: session.thread_id,
                 turn_id: turn_context.sub_id.clone(),
                 item: live_item,
@@ -96,6 +97,7 @@ async fn emit_user_shell_item_completed(
     // history keeps the command's clean output. Appending it after the live event also makes it
     // the final value when paginated histories replay both representations.
     let persisted_event = ItemCompletedEvent {
+        content_token_count: None,
         thread_id: session.thread_id,
         turn_id: turn_context.sub_id.clone(),
         item: TurnItem::CommandExecution(persisted_item),
@@ -457,6 +459,7 @@ async fn send_user_shell_error(session: &Session, turn_context: &TurnContext, me
                 misalignment: None,
                 message: message.to_string(),
                 codex_error_info: None,
+                rejected_audio_file_ids: Vec::new(),
             }),
         )
         .await;

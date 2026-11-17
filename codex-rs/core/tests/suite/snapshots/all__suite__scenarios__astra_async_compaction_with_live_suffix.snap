@@ -1,21 +1,21 @@
 ---
 source: core/tests/suite/scenarios.rs
-assertion_line: 3615
-expression: "context_snapshot::format_context_snapshot(\"Astra compacts a completed launch-notes turn in the background. The user switches to Plan mode while it runs. Adoption restores Default mode at the cutoff, then preserves the Plan update, newer user message, and assistant/tool exchange in their original order.\",\n&entries, &ContextSnapshotOptions::default().rewrite_known_segments(),)"
+assertion_line: 4098
+expression: "context_snapshot::format_context_snapshot(\"Astra compacts a completed launch-notes turn in the background. The user switches to Plan mode and the host changes which budget reminder opts out of full context. Adoption keeps the live suffix and refreshes both reminders after the tool output.\",\n&entries, &ContextSnapshotOptions::default().rewrite_known_segments(),)"
 ---
-Scenario: Astra compacts a completed launch-notes turn in the background. The user switches to Plan mode while it runs. Adoption restores Default mode at the cutoff, then preserves the Plan update, newer user message, and assistant/tool exchange in their original order.
+Scenario: Astra compacts a completed launch-notes turn in the background. The user switches to Plan mode and the host changes which budget reminder opts out of full context. Adoption keeps the live suffix and refreshes both reminders after the tool output.
 
 ## Window 1
 -- request 1 (request) --
-00:additional_tools/developer (3; hash=8fcd3df7f9bdfdc6):
-        - namespace/functions; hash=fada4a476a3754dd
+00:additional_tools/developer (3; hash=e019c949fc483f83):
+        - namespace/functions; hash=03340277aa23936f
           - custom/exec
           - function/wait
           - function/request_user_input
           - function/request_user_input_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=c586fb14818272de
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
@@ -24,12 +24,13 @@ Scenario: Astra compacts a completed launch-notes turn in the background. The us
           - function/wait_agent
 01:message/developer:
     <MODEL_INSTRUCTIONS>
-02:message/developer[3]:
+02:message/developer[4]:
     [01] <context_continuation>
         The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
         </context_continuation>
     [02] <PERMISSIONS_INSTRUCTIONS>
     [03] <COLLABORATION_MODE>
+    [04] install_budget: 400 tokens remain.
 03:message/developer:
     <MULTI_AGENT_ROLE>
 04:message/developer:
@@ -38,23 +39,25 @@ Scenario: Astra compacts a completed launch-notes turn in the background. The us
     <ENVIRONMENT_CONTEXT>
 06:message/user:
     Draft the launch notes.
-07:configuration_update:reasoning={"effort":"low"}
+07:message/developer:
+    cutoff_budget: 400 tokens remain.
+08:configuration_update:reasoning={"effort":"low"}
 -- request 2 (request) --
-08:message/assistant:
+09:message/assistant:
     I drafted the launch notes.
-09:compaction_trigger
+10:compaction_trigger
 
-## Window 2 (after request 2: input diverged at item 09)
+## Window 2 (after request 2: input diverged at item 10)
 -- request 3 (request) --
-00:additional_tools/developer (3; hash=8fcd3df7f9bdfdc6):
-        - namespace/functions; hash=fada4a476a3754dd
+00:additional_tools/developer (3; hash=e019c949fc483f83):
+        - namespace/functions; hash=03340277aa23936f
           - custom/exec
           - function/wait
           - function/request_user_input
           - function/request_user_input_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=c586fb14818272de
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
@@ -63,12 +66,13 @@ Scenario: Astra compacts a completed launch-notes turn in the background. The us
           - function/wait_agent
 01:message/developer:
     <MODEL_INSTRUCTIONS>
-02:message/developer[3]:
+02:message/developer[4]:
     [01] <context_continuation>
         The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
         </context_continuation>
     [02] <PERMISSIONS_INSTRUCTIONS>
     [03] <COLLABORATION_MODE>
+    [04] install_budget: 400 tokens remain.
 03:message/developer:
     <MULTI_AGENT_ROLE>
 04:message/developer:
@@ -77,25 +81,29 @@ Scenario: Astra compacts a completed launch-notes turn in the background. The us
     <ENVIRONMENT_CONTEXT>
 06:message/user:
     Draft the launch notes.
-07:configuration_update:reasoning={"effort":"low"}
-08:message/assistant:
+07:message/developer:
+    cutoff_budget: 400 tokens remain.
+08:configuration_update:reasoning={"effort":"low"}
+09:message/assistant:
     I drafted the launch notes.
-09:message/developer:
-    <COLLABORATION_MODE>
-10:message/user:
+10:message/developer[3]:
+    [01] <COLLABORATION_MODE>
+    [02] cutoff_budget: 350 tokens remain.
+    [03] install_budget: 350 tokens remain.
+11:message/user:
     Check who can finish the notes.
 
 ## Window 3 (after request 3: input diverged at item 02)
 -- request 4 (request) --
-00:additional_tools/developer (3; hash=8fcd3df7f9bdfdc6):
-        - namespace/functions; hash=fada4a476a3754dd
+00:additional_tools/developer (3; hash=e019c949fc483f83):
+        - namespace/functions; hash=03340277aa23936f
           - custom/exec
           - function/wait
           - function/request_user_input
           - function/request_user_input_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=c586fb14818272de
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
@@ -107,23 +115,29 @@ Scenario: Astra compacts a completed launch-notes turn in the background. The us
 02:message/user:
     Draft the launch notes.
 03:compaction:encrypted=true; chars=23; hash=159cfcb231cc70f0
-04:message/developer[3]:
+04:message/developer[4]:
     [01] <context_continuation>
         The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
         </context_continuation>
     [02] <PERMISSIONS_INSTRUCTIONS>
     [03] <COLLABORATION_MODE>
+    [04] install_budget: 400 tokens remain.
 05:message/developer:
     <MULTI_AGENT_ROLE>
 06:message/developer:
     <MULTI_AGENT_MODE>
 07:message/user:
     <ENVIRONMENT_CONTEXT>
-08:message/developer:
-    <COLLABORATION_MODE>
+08:message/developer[3]:
+    [01] <COLLABORATION_MODE>
+    [02] cutoff_budget: 350 tokens remain.
+    [03] install_budget: 350 tokens remain.
 09:message/user:
     Check who can finish the notes.
 10:message/assistant:
     I will check who is available.
 11:function_call/collaboration.list_agents:{}
 12:function_call_output:{"agents":[{"agent_name":"/root","agent_status":"running"}]}
+13:message/developer[2]:
+    [01] cutoff_budget: 325 tokens remain.
+    [02] install_budget: 325 tokens remain.

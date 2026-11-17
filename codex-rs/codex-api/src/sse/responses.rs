@@ -394,6 +394,22 @@ impl ResponsesEventError {
     }
 }
 
+/// 已知输出事件缺失或损坏时必须结束当前流；不能丢掉工具/消息后继续接受完成标记。
+/// 错误只包含固定事件名和分类，不包含可能携带用户内容的 serde 错误或原始 payload。
+fn parse_output_item(
+    value: Option<Value>,
+    event_kind: &'static str,
+) -> std::result::Result<ResponseItem, ResponsesEventError> {
+    let invalid = || {
+        ResponsesEventError::Api(provider_stream_error(
+            ProviderStreamErrorKind::ParseError,
+            format!("invalid or missing item in {event_kind}"),
+        ))
+    };
+    let value = value.ok_or_else(invalid)?;
+    serde_json::from_value(value).map_err(|_| invalid())
+}
+
 pub fn process_responses_event(
     event: ResponsesStreamEvent,
 ) -> std::result::Result<Option<ResponseEvent>, ResponsesEventError> {
@@ -406,12 +422,8 @@ pub fn process_responses_event(
             }
         }
         "response.output_item.done" => {
-            if let Some(item_val) = event.item {
-                if let Ok(item) = serde_json::from_value::<ResponseItem>(item_val) {
-                    return Ok(Some(ResponseEvent::OutputItemDone(item)));
-                }
-                debug!("failed to parse ResponseItem from output_item.done");
-            }
+            let item = parse_output_item(event.item, "response.output_item.done")?;
+            return Ok(Some(ResponseEvent::OutputItemDone(item)));
         }
         "response.output_text.delta" => {
             if let Some(delta) = event.delta {
@@ -497,6 +509,15 @@ pub fn process_responses_event(
                         .map(Into::into);
                     return Err(ResponsesEventError::Api(ApiError::ResponseIncomplete(
                         Box::new(ResponseIncompleteError {
+                            partial_output: response
+                                .and_then(|r| r.get("output")?.as_array())
+                                .into_iter()
+                                .flatten()
+                                .filter(|item| {
+                                    item.get("status").and_then(Value::as_str) == Some("incomplete")
+                                })
+                                .cloned()
+                                .collect(),
                             reason: reason.to_string(),
                             response_id,
                             token_usage,
@@ -535,12 +556,8 @@ pub fn process_responses_event(
             }
         }
         "response.output_item.added" => {
-            if let Some(item_val) = event.item {
-                if let Ok(item) = serde_json::from_value::<ResponseItem>(item_val) {
-                    return Ok(Some(ResponseEvent::OutputItemAdded(item)));
-                }
-                debug!("failed to parse ResponseItem from output_item.added");
-            }
+            let item = parse_output_item(event.item, "response.output_item.added")?;
+            return Ok(Some(ResponseEvent::OutputItemAdded(item)));
         }
         "response.reasoning_summary_part.added" => {
             if let Some(summary_index) = event.summary_index {
@@ -1833,6 +1850,25 @@ mod tests {
                 other => panic!("unexpected event for {code}: {other:?}"),
             }
         }
+    }
+
+    #[tokio::test]
+    async fn incomplete_response_retains_partial_output_on_the_error() {
+        let call = json!({
+            "type": "function_call", "status": "incomplete", "id": "fc_attempt",
+            "call_id": "attempt", "name": "unknown", "arguments": "{}",
+        });
+        let terminal = json!({
+            "type": "response.incomplete",
+            "response": {
+                "id": "resp_1", "incomplete_details": {"reason": "invalid_recipient"},
+                "output": [{"type": "message", "status": "completed"}, call],
+            }
+        });
+        let sse = format!("event: response.incomplete\ndata: {terminal}\n\n");
+        let events = collect_events(&[sse.as_bytes()]).await;
+        assert_matches!(events.as_slice(), [Err(ApiError::ResponseIncomplete(error))]
+            if error.reason == "invalid_recipient" && error.partial_output == [call]);
     }
 
     #[tokio::test]

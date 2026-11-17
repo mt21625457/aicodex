@@ -183,6 +183,7 @@ async fn backend_banner_limit_error_refreshes_again_after_intervening_rolling_ha
     while events.try_recv().is_ok() {}
     app.chat_widget.handle_server_notification(
         ServerNotification::Error(ErrorNotification {
+            recovery: None,
             error: AppServerTurnError {
                 misalignment: None,
                 message: "credits exhausted".into(),

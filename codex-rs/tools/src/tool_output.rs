@@ -1,3 +1,4 @@
+use codex_protocol::models::AudioReference;
 use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
@@ -247,9 +248,7 @@ fn response_input_to_code_mode_result(response: ResponseInputItem) -> JsonValue 
                             detail: detail.or(Some(DEFAULT_IMAGE_DETAIL)),
                         }
                     }
-                    codex_protocol::models::ContentItem::InputAudio { audio_url } => {
-                        FunctionCallOutputContentItem::InputAudio { audio_url }
-                    }
+                    item @ codex_protocol::models::ContentItem::InputAudio { .. } => item.into(),
                 })
                 .collect::<Vec<_>>(),
         ),
@@ -284,11 +283,12 @@ fn content_items_to_code_mode_result(items: &[FunctionCallOutputContentItem]) ->
                     image: ImageReference::File { file_id },
                     ..
                 } if !file_id.trim().is_empty() => Some(file_id.clone()),
-                FunctionCallOutputContentItem::InputAudio { audio_url }
-                    if !audio_url.trim().is_empty() =>
-                {
-                    Some(audio_url.clone())
-                }
+                FunctionCallOutputContentItem::InputAudio {
+                    audio: AudioReference::Inline { audio_url },
+                } if !audio_url.trim().is_empty() => Some(audio_url.clone()),
+                FunctionCallOutputContentItem::InputAudio {
+                    audio: AudioReference::File { file_id },
+                } if !file_id.trim().is_empty() => Some(file_id.clone()),
                 FunctionCallOutputContentItem::InputText { .. }
                 | FunctionCallOutputContentItem::InputImage { .. }
                 | FunctionCallOutputContentItem::InputAudio { .. }

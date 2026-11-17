@@ -167,7 +167,14 @@ pub struct TestAppServer {
 }
 
 pub const DEFAULT_CLIENT_NAME: &str = "codex-app-server-tests";
-pub const DISABLE_PLUGIN_STARTUP_TASKS_ARG: &str = "--disable-plugin-startup-tasks-for-tests";
+const DISABLE_PLUGIN_STARTUP_TASKS_ARG: &str = "--disable-plugin-startup-tasks-for-tests";
+pub const DEFAULT_APP_SERVER_TEST_ARGS: [&str; 5] = [
+    DISABLE_PLUGIN_STARTUP_TASKS_ARG,
+    "-c",
+    "features.tool_suggest=false",
+    "-c",
+    "features.recommended_plugins=false",
+];
 const DISABLE_MANAGED_CONFIG_ENV_VAR: &str = "CODEX_APP_SERVER_DISABLE_MANAGED_CONFIG";
 #[cfg(windows)]
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(25);
@@ -183,7 +190,7 @@ impl TestAppServer {
             environment: TestAppServerEnvironment::Auto,
             program: None,
             env_overrides: Vec::new(),
-            args: vec![DISABLE_PLUGIN_STARTUP_TASKS_ARG.to_string()],
+            args: DEFAULT_APP_SERVER_TEST_ARGS.map(str::to_owned).into(),
             exec_server_delay: None,
             mock_chatgpt_backend: false,
         }
@@ -283,7 +290,8 @@ impl TestAppServer {
         cmd.stderr(Stdio::piped());
         cmd.current_dir(codex_home);
         cmd.env("AICODEX_HOME", codex_home);
-        cmd.env("CODEX_HOME", codex_home);
+        cmd.env("AICODEX_HOME", codex_home)
+            .env("CODEX_HOME", codex_home);
         cmd.env("CODEX_SQLITE_HOME", codex_home);
         // Host and local-executor skills also scan the platform home independently
         // of CODEX_HOME. Keep that discovery inside the fixture by default;
@@ -1658,7 +1666,7 @@ impl TestAppServer {
         .await
     }
 
-    async fn send_jsonrpc_message(&mut self, message: JSONRPCMessage) -> anyhow::Result<()> {
+    pub async fn send_jsonrpc_message(&mut self, message: JSONRPCMessage) -> anyhow::Result<()> {
         eprintln!("writing message to stdin: {message:?}");
         let Some(stdin) = self.stdin.as_mut() else {
             anyhow::bail!("mcp stdin closed");
@@ -1895,6 +1903,44 @@ pub struct TestAppServerBuilder {
     mock_chatgpt_backend: bool,
 }
 
+#[cfg(test)]
+mod home_override_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_home_override_is_paired_with_authoritative_home() {
+        let builder =
+            TestAppServer::builder().with_env_overrides(&[("CODEX_HOME", Some("/fixture/home"))]);
+        assert!(
+            builder
+                .env_overrides
+                .contains(&("AICODEX_HOME".into(), Some("/fixture/home".into()),))
+        );
+        assert!(
+            builder
+                .env_overrides
+                .contains(&("CODEX_HOME".into(), Some("/fixture/home".into()),))
+        );
+    }
+
+    #[test]
+    fn explicit_authoritative_override_is_not_replaced() {
+        let builder = TestAppServer::builder().with_env_overrides(&[
+            ("AICODEX_HOME", Some("/fixture/primary")),
+            ("CODEX_HOME", Some("/fixture/legacy")),
+        ]);
+        assert_eq!(
+            builder
+                .env_overrides
+                .iter()
+                .filter(|(key, _)| key == "AICODEX_HOME")
+                .map(|(_, value)| value.as_deref())
+                .collect::<Vec<_>>(),
+            [Some("/fixture/primary")]
+        );
+    }
+}
+
 enum TestAppServerEnvironment {
     Auto,
     None,
@@ -1942,6 +1988,14 @@ impl TestAppServerBuilder {
     ///
     /// Some values set variables and None values remove inherited variables.
     pub fn with_env_overrides(mut self, env_overrides: &[(&str, Option<&str>)]) -> Self {
+        if !env_overrides.iter().any(|(key, _)| *key == "AICODEX_HOME") {
+            self.env_overrides.extend(
+                env_overrides
+                    .iter()
+                    .filter(|(key, _)| *key == "CODEX_HOME")
+                    .map(|(_, value)| ("AICODEX_HOME".to_string(), value.map(str::to_owned))),
+            );
+        }
         self.env_overrides
             .extend(env_overrides.iter().map(|(key, value)| {
                 (
@@ -1976,7 +2030,8 @@ impl TestAppServerBuilder {
 
     /// Builds a server and completes its standard initialization handshake.
     pub async fn build_initialized(self) -> anyhow::Result<TestAppServer> {
-        self.build_initialized_with_timeout(DEFAULT_REQUEST_TIMEOUT)
+        // The first handshake includes cold subprocess startup on the CI runner.
+        self.build_initialized_with_timeout(Duration::from_secs(60))
             .await
     }
 

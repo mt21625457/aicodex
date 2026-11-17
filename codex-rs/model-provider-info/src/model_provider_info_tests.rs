@@ -1187,3 +1187,42 @@ fn builtin_openai_catalog_accepts_existing_chatgpt_hosts() {
         );
     }
 }
+
+#[test]
+fn cyber_access_program_capability_uses_provider_identity_and_explicit_overrides() {
+    for provider_id in [
+        OPENAI_PROVIDER_ID,
+        "proxy",
+        AMAZON_BEDROCK_PROVIDER_ID,
+        GCP_PROVIDER_ID,
+    ] {
+        for configured in [None, Some(false), Some(true)] {
+            // A custom provider cannot gain the default by copying OpenAI's display name.
+            let config = match configured {
+                Some(enabled) => format!(
+                    "name = \"OpenAI\"\n[capabilities]\ncyber_access_programs = {enabled}\n"
+                ),
+                None => "name = \"OpenAI\"\n".to_owned(),
+            };
+            let provider: ModelProviderInfo = toml::from_str(&config).unwrap();
+            assert_eq!(
+                provider.supports_cyber_access_programs(provider_id),
+                configured.unwrap_or(provider_id == OPENAI_PROVIDER_ID),
+            );
+            let round_trip: ModelProviderInfo =
+                toml::from_str(&toml::to_string(&provider).unwrap()).unwrap();
+            assert_eq!(round_trip, provider);
+        }
+    }
+}
+
+/// 默认值必须让无字节流及时进入错误/重试路径，同时保留用户的显式长等待。
+#[test]
+fn stream_idle_timeout_is_bounded_by_default_and_preserves_explicit_override() {
+    let provider = super::ModelProviderInfo::default();
+    assert_eq!(provider.stream_idle_timeout(), std::time::Duration::from_secs(300));
+    let explicit = super::ModelProviderInfo {
+        stream_idle_timeout_ms: Some(900_000), ..provider
+    };
+    assert_eq!(explicit.stream_idle_timeout(), std::time::Duration::from_secs(900));
+}

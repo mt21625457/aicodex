@@ -32,6 +32,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
+use crate::auth::McpAuthProvider;
 use crate::client_tool_catalog::ClientToolCatalog;
 use crate::codex_apps::normalize_codex_apps_callable_name;
 use crate::codex_apps::normalize_codex_apps_callable_namespace;
@@ -40,6 +41,7 @@ use crate::codex_apps::prepare_openai_file_params_for_model;
 use crate::connection_pool::ConnectionKey;
 use crate::connection_pool::ConnectionSharing;
 use crate::connection_pool::ConnectionSlot;
+use crate::connection_pool::LEASE_CAPABILITY;
 use crate::connection_pool::SharingNegotiation;
 use crate::elicitation::ElicitationRequestManager;
 use crate::executor_environment_http_client::ExecutorEnvironmentHttpClient;
@@ -58,7 +60,6 @@ use crate::tools::ToolInfo;
 use anyhow::Result;
 use anyhow::anyhow;
 use async_channel::Sender;
-use codex_api::SharedAuthProvider;
 use codex_async_utils::CancelErr;
 use codex_async_utils::OrCancelExt;
 use codex_config::McpServerAuth;
@@ -102,7 +103,6 @@ use rmcp::model::Tool as RmcpTool;
 use tokio::sync::watch;
 use tokio::time::Instant as TokioInstant;
 use tokio_util::sync::CancellationToken;
-use tracing::Instrument;
 use tracing::instrument;
 use tracing::warn;
 
@@ -284,7 +284,7 @@ struct ManagedClientStartup {
     tool_catalog_cache_context: Option<McpToolCatalogCacheContext>,
     runtime_context: McpRuntimeContext,
     resolved_environment: std::result::Result<Option<Arc<Environment>>, String>,
-    runtime_auth_provider: Option<SharedAuthProvider>,
+    runtime_auth_provider: Option<McpAuthProvider>,
     client_elicitation_capability: ElicitationCapability,
     client_mcp_extensions: ClientMcpExtensions,
     auth_changes: Option<watch::Receiver<AuthChangeState>>,
@@ -296,7 +296,11 @@ struct ManagedClientStartup {
 }
 
 impl ManagedClientStartup {
-    fn start(&self, sharing_declined: Option<CancellationToken>) -> ManagedClientFuture {
+    fn start(
+        &self,
+        sharing_declined: Option<CancellationToken>,
+        publish_apps: Option<watch::Sender<Option<std::sync::Weak<RmcpClient>>>>,
+    ) -> ManagedClientFuture {
         // A new attempt must not expose capabilities from an earlier connection.
         *self
             .server_capabilities
@@ -377,6 +381,7 @@ impl ManagedClientStartup {
                     client,
                     StartServerTaskParams {
                         sharing_declined,
+                        publish_apps,
                         is_codex_apps_mcp_server,
                         startup_timeout: Some(startup_timeout),
                         tx_event,
@@ -441,8 +446,7 @@ impl ManagedClientStartup {
             outcome
         };
         originator
-            .scope(Box::pin(startup))
-            .in_current_span()
+            .scope(codex_rmcp_client::McpRequestTrace::current().scope(Box::pin(startup)))
             .boxed()
             .shared()
     }
@@ -484,13 +488,15 @@ impl AsyncManagedClient {
         tool_catalog_cache_context: Option<McpToolCatalogCacheContext>,
         runtime_context: McpRuntimeContext,
         resolved_environment: std::result::Result<Option<Arc<Environment>>, String>,
-        runtime_auth_provider: Option<SharedAuthProvider>,
+        runtime_auth_provider: Option<McpAuthProvider>,
         client_elicitation_capability: ElicitationCapability,
         client_mcp_extensions: ClientMcpExtensions,
         auth_changes: Option<watch::Receiver<AuthChangeState>>,
         protocol_mode: McpProtocolMode,
+        defer_startup: bool,
         catalog_item_limit: usize,
         connection_pool: Option<(crate::McpConnectionPool, ConnectionKey)>,
+        publish_apps: Option<watch::Sender<Option<std::sync::Weak<RmcpClient>>>>,
     ) -> Self {
         let is_codex_apps_mcp_server = server_name == CODEX_APPS_MCP_SERVER_NAME;
         let reconnect_server_name = server_name.clone();
@@ -516,6 +522,17 @@ impl AsyncManagedClient {
             .as_ref()
             .and_then(|auth| auth.as_ref().ok())
             .map(|auth| auth.authority.clone());
+        // Startup may publish a legacy catalog after negotiation. Only a dormant chat can
+        // advertise it beforehand, and the pool must never put modern tools in that catalog.
+        let pool_catalog = tool_catalog_cache_context
+            .as_ref()
+            .filter(|_| protocol_mode != McpProtocolMode::DiscoverLocalStdio)
+            .cloned();
+        let advertised_catalog = if defer_startup {
+            tool_catalog_cache_context.clone()
+        } else {
+            pool_catalog.clone()
+        };
         let startup = Arc::new(ManagedClientStartup {
             ema_auth,
             originator: AuthStorageOriginator::current(),
@@ -527,7 +544,7 @@ impl AsyncManagedClient {
             tx_event,
             elicitation_requests,
             codex_apps_tools_cache_context: codex_apps_tools_cache_context.clone(),
-            tool_catalog_cache_context: tool_catalog_cache_context.clone(),
+            tool_catalog_cache_context,
             runtime_context,
             resolved_environment,
             runtime_auth_provider,
@@ -540,10 +557,6 @@ impl AsyncManagedClient {
             startup_complete: Arc::clone(&startup_complete),
             server_capabilities: Arc::clone(&server_capabilities),
         });
-        // A discovery attempt may publish a legacy catalog. It cannot read that catalog
-        // before negotiation or publish a modern joiner's tool list into it.
-        let tool_catalog_cache_context = tool_catalog_cache_context
-            .filter(|_| protocol_mode != McpProtocolMode::DiscoverLocalStdio);
         let (client, connection_slot) = if let Some((pool, key)) = connection_pool {
             let slot = Arc::new(ConnectionSlot::default());
             let connection_slot = Arc::clone(&slot);
@@ -551,19 +564,18 @@ impl AsyncManagedClient {
             let cancel_token = cancel_token.clone();
             let startup_complete = Arc::clone(&startup_complete);
             let server_capabilities = Arc::clone(&server_capabilities);
-            let tool_catalog_cache_context = tool_catalog_cache_context.clone();
             let client = async move {
                 let outcome = pool
                     .connect(
                         slot,
                         key,
                         server_capabilities,
-                        tool_catalog_cache_context,
+                        pool_catalog,
                         cancel_token,
                         |cancellation, sharing_declined| {
                             let mut shared_startup = (*startup).clone();
                             shared_startup.cancel_token = cancellation;
-                            shared_startup.start(sharing_declined)
+                            shared_startup.start(sharing_declined, /*publish_apps*/ None)
                         },
                     )
                     .await
@@ -585,13 +597,13 @@ impl AsyncManagedClient {
             .shared();
             (client, Some(connection_slot))
         } else {
-            (startup.start(/*sharing_declined*/ None), None)
+            (startup.start(/*sharing_declined*/ None, publish_apps), None)
         };
         let startup_reconnect = is_codex_apps_mcp_server.then(|| {
             let startup = Arc::clone(&startup);
             Arc::new(
                 CodexAppsStartupReconnect::new(Arc::new(move || {
-                    startup.start(/*sharing_declined*/ None)
+                    startup.start(/*sharing_declined*/ None, /*publish_apps*/ None)
                 }))
                 .with_startup_status_context(
                     startup_submit_id,
@@ -607,7 +619,7 @@ impl AsyncManagedClient {
             cached_server_info,
             server_capabilities,
             codex_apps_tools_cache_context,
-            tool_catalog_cache_context,
+            tool_catalog_cache_context: advertised_catalog,
             startup_complete,
             startup_reconnect,
             connection_slot,
@@ -1115,6 +1127,7 @@ async fn start_server_task(
 ) -> Result<ManagedClient, StartupOutcomeError> {
     let StartServerTaskParams {
         sharing_declined,
+        publish_apps,
         is_codex_apps_mcp_server,
         startup_timeout,
         tx_event,
@@ -1140,6 +1153,13 @@ async fn start_server_task(
     };
     let mut params =
         mcp_initialize_request_params(client_elicitation_capability, client_mcp_extensions);
+    if sharing_negotiation.is_some() {
+        params
+            .capabilities
+            .extensions
+            .get_or_insert_default()
+            .insert(LEASE_CAPABILITY.to_owned(), Default::default());
+    }
     if auth_changes.is_some() {
         params
             .capabilities
@@ -1168,7 +1188,7 @@ async fn start_server_task(
         && let Some(context) = tool_catalog_cache_context.take()
         && let Some(ticket) = &tool_catalog_fetch_ticket
     {
-        context.invalidate_if_newest(ticket);
+        context.record_modern_stdio_discovery(ticket);
     }
     let connection_sharing = sharing_negotiation
         .map(|negotiation| negotiation.finish(&initialize_result.protocol_version))
@@ -1230,6 +1250,9 @@ async fn start_server_task(
     let fetch_ticket = codex_apps_tools_cache_context
         .as_ref()
         .map(|context| context.begin_fetch(ConnectorRuntimeFetchSource::Startup));
+    if let Some(tx) = &publish_apps {
+        tx.send_replace(Some(Arc::downgrade(&client)));
+    }
     let (tools, meta) = list_tools_for_client_uncached(
         &server_name,
         is_codex_apps_mcp_server,
@@ -1344,7 +1367,8 @@ pub(crate) fn mcp_initialize_request_params(
     }
     let extensions = client_mcp_extensions
         .iter()
-        .filter(|(id, _)| *id != MCP_NETWORK_POLICY_META_CAPABILITY)
+        // Only Core can open and release leases on a pooled connection.
+        .filter(|(id, _)| !matches!(*id, MCP_NETWORK_POLICY_META_CAPABILITY | LEASE_CAPABILITY))
         .filter_map(|(id, settings)| {
             settings
                 .as_object()
@@ -1383,6 +1407,7 @@ fn mcp_server_info_from_implementation(
 }
 
 struct StartServerTaskParams {
+    publish_apps: Option<watch::Sender<Option<std::sync::Weak<RmcpClient>>>>,
     sharing_declined: Option<CancellationToken>,
     server_capabilities: Arc<StdMutex<Option<serde_json::Value>>>,
     is_codex_apps_mcp_server: bool,
@@ -1409,7 +1434,7 @@ pub(crate) async fn make_rmcp_client(
     oauth_refresh_mode: McpOAuthRefreshMode,
     runtime_context: McpRuntimeContext,
     resolved_environment: std::result::Result<Option<Arc<Environment>>, String>,
-    runtime_auth_provider: Option<SharedAuthProvider>,
+    runtime_auth_provider: Option<McpAuthProvider>,
     protocol_mode: McpProtocolMode,
 ) -> Result<RmcpClient, StartupOutcomeError> {
     let config = server.config().clone();
@@ -1515,6 +1540,13 @@ pub(crate) async fn make_rmcp_client(
             bearer_token_env_var,
             http_headers_helper: _,
         } => {
+            let (runtime_auth_provider, runtime_context) = match runtime_auth_provider {
+                Some(provider) => {
+                    let (provider, context) = provider.resolve(runtime_context, &url).await?;
+                    (Some(provider), context)
+                }
+                None => (None, runtime_context),
+            };
             let http_client = runtime_context
                 .http_client_for_server(server.config(), resolved_environment.as_ref())
                 .map_err(|error| StartupOutcomeError::from(anyhow!(error)))?;
@@ -1662,6 +1694,7 @@ mod tests {
                 ),
                 (OPENAI_FORM_EXTENSION_ID.to_string(), serde_json::json!({})),
                 (MCP_APP_UI_EXTENSION_ID.to_string(), app_ui.clone()),
+                (LEASE_CAPABILITY.to_string(), serde_json::json!({})),
             ]),
         );
         assert_eq!(

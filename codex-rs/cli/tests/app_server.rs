@@ -10,9 +10,11 @@ use tempfile::TempDir;
 fn codex_command(codex_home: &Path) -> Result<assert_cmd::Command> {
     let mut cmd = assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("aicodex")?);
     cmd.env("AICODEX_HOME", codex_home);
-    cmd.env("CODEX_HOME", codex_home);
+    cmd.env("AICODEX_HOME", codex_home)
+        .env("CODEX_HOME", codex_home);
     cmd.env_remove("CODEX_SQLITE_HOME");
-    cmd.env("CODEX_HOME", codex_home)
+    cmd.env("AICODEX_HOME", codex_home)
+        .env("CODEX_HOME", codex_home)
         .env_remove("CODEX_ACCESS_TOKEN")
         .env_remove("CODEX_API_KEY")
         .env_remove("OPENAI_API_KEY")
@@ -67,6 +69,8 @@ fn agents_accept_interactive_configuration_overrides() -> Result<()> {
         ["-c", "features.multi_agent_mode=true", "agents"].as_slice(),
         ["--enable", "multi_agent_mode", "agents"].as_slice(),
         ["--yolo", "agents"].as_slice(),
+        ["--no-daemon", "agents"].as_slice(),
+        ["agents", "--no-daemon"].as_slice(),
         ["--search", "agents"].as_slice(),
         ["--model", "gpt-5", "agents"].as_slice(),
         ["--approve-for-me", "agents"].as_slice(),
@@ -74,8 +78,6 @@ fn agents_accept_interactive_configuration_overrides() -> Result<()> {
     ] {
         let mut cmd = codex_command(codex_home.path())?;
         cmd.env("TERM", "xterm-256color").args(args);
-        #[cfg(not(any(unix, windows)))]
-        cmd.args(["--remote", "ws://127.0.0.1:4512"]);
 
         cmd.assert()
             .failure()
@@ -317,6 +319,7 @@ async fn print_startup_config_is_independent_of_a_locked_history_database() -> R
     let binary = codex_utils_cargo_bin::cargo_bin("aicodex")?;
     let mut command = Command::new(&binary);
     command
+        .env("AICODEX_HOME", home.path())
         .env("CODEX_HOME", home.path())
         .env("CODEX_SQLITE_HOME", sqlite.path())
         .env_remove("CODEX_ACCESS_TOKEN")

@@ -273,7 +273,7 @@ async fn api_key_cyber_access_program_requires_only_forwarding_feature() -> Resu
                     Some(TurnError {
                         message: "Cyber access programs are disabled for this API-key session."
                             .to_owned(),
-                        codex_error_info: Some(CodexErrorInfo::Other),
+                        codex_error_info: Some(CodexErrorInfo::BadRequest),
                         additional_details: None,
                         misalignment: None,
                     })

@@ -26,6 +26,7 @@ use codex_protocol::mcp::McpServerInfo;
 use codex_protocol::memory_citation::MemoryCitation as CoreMemoryCitation;
 use codex_protocol::memory_citation::MemoryCitationEntry as CoreMemoryCitationEntry;
 use codex_protocol::models::AdditionalPermissionProfile as CoreAdditionalPermissionProfile;
+use codex_protocol::models::AudioReference;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 use codex_protocol::models::FileSystemPermissions as CoreFileSystemPermissions;
 use codex_protocol::models::ImageDetail;
@@ -491,6 +492,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
         extra: None,
         session_id: "thr_123".to_string(),
         forked_from_id: None,
+        attached_to_thread_id: None,
         parent_thread_id: None,
         preview: String::new(),
         ephemeral: false,
@@ -624,12 +626,18 @@ fn thread_resume_response_round_trips_initial_turns_page() {
     assert_eq!(decoded, response);
 
     let read_response = ThreadReadResponse {
+        effective_agent_team_policy: Some(ThreadAgentTeamPolicy {
+            agents_enabled: true,
+            multi_agent_v2_enabled: true,
+            config_evidence: None,
+        }),
         thread: thread.clone(),
         read_state: Some(ThreadReadState {
             first_unread: Some(ThreadUnreadPosition::ThreadStart),
             revision: "revision_1".to_string(),
         }),
         runtime_lifecycle: Some(ThreadRuntimeLifecycle {
+            recovery: None,
             active_turn_id: Some("turn_active".to_string()),
             active_turn_started_at: Some(42),
             last_terminal_turn_id: Some("turn_terminal".to_string()),
@@ -642,6 +650,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
             "activeTurnId": "turn_active",
             "activeTurnStartedAt": 42,
             "lastTerminalTurnId": "turn_terminal",
+            "recovery": null,
         })
     );
     let decoded = serde_json::from_value::<ThreadReadResponse>(value.clone())
@@ -649,6 +658,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
     assert_eq!(decoded, read_response);
 
     let no_live_lifecycle = ThreadReadResponse {
+        effective_agent_team_policy: None,
         thread: thread.clone(),
         read_state: None,
         runtime_lifecycle: None,
@@ -658,7 +668,15 @@ fn thread_resume_response_round_trips_initial_turns_page() {
         serde_json::Value::Null
     );
 
+    assert_eq!(
+        value["effectiveAgentTeamPolicy"],
+        json!({"agentsEnabled": true, "multiAgentV2Enabled": true})
+    );
     let mut legacy_value = value;
+    legacy_value
+        .as_object_mut()
+        .expect("object")
+        .remove("effectiveAgentTeamPolicy");
     legacy_value
         .as_object_mut()
         .expect("thread read response should be an object")
@@ -667,6 +685,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
         .expect("deserialize legacy thread read response");
     assert_eq!(legacy.thread, thread);
     assert_eq!(legacy.runtime_lifecycle, None);
+    assert_eq!(legacy.effective_agent_team_policy, None);
 }
 
 #[test]
@@ -677,6 +696,7 @@ fn thread_items_list_round_trips() {
         cursor: Some(ThreadItemsListCursor::Opaque("cursor_1".to_string())),
         limit: Some(50),
         sort_direction: Some(SortDirection::Asc),
+        defer_output: None,
     };
 
     assert_eq!(
@@ -718,6 +738,7 @@ fn thread_items_list_round_trips() {
         let response = ThreadItemsListResponse {
             data: vec![ThreadItemEntry {
                 turn_id: "turn_456".to_string(),
+                output_deferred: false,
                 item: ThreadItem {
                     payload: ThreadItemPayload::ContextCompaction {
                         id: "item_1".to_string(),
@@ -757,6 +778,7 @@ fn thread_items_list_round_trips() {
         cursor: None,
         limit: None,
         sort_direction: None,
+        defer_output: None,
     };
 
     assert_eq!(
@@ -2386,6 +2408,7 @@ fn config_granular_approval_policy_is_marked_experimental() {
         forced_chatgpt_workspace_id: None,
         forced_login_method: None,
         web_search: None,
+        client_search_provider: None,
         tools: None,
         instructions: None,
         developer_instructions: None,
@@ -2421,6 +2444,7 @@ fn config_approvals_reviewer_is_marked_experimental() {
         forced_chatgpt_workspace_id: None,
         forced_login_method: None,
         web_search: None,
+        client_search_provider: None,
         tools: None,
         instructions: None,
         developer_instructions: None,
@@ -3400,6 +3424,57 @@ fn network_requirements_serializes_canonical_and_legacy_fields() {
 }
 
 #[test]
+fn audio_references_round_trip_through_core_and_json() {
+    for wire in [
+        json!({"type": "audio", "url": "data:audio/wav;base64,AAA"}),
+        json!({"type": "audio", "fileId": "file_audio"}),
+    ] {
+        let input: UserInput = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(UserInput::from(input.into_core())).unwrap(),
+            wire
+        );
+    }
+    let old_input: UserInput = serde_json::from_value(
+        json!({"type": "audio", "fileId": "file_audio", "durationMs": 1_000}),
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(UserInput::from(old_input.into_core())).unwrap(),
+        json!({"type": "audio", "fileId": "file_audio"})
+    );
+}
+
+#[test]
+fn answer_moderation_exposes_nullable_display_fields() {
+    for (stored, expected) in [
+        (
+            json!({"moderated": false}),
+            json!({"moderated": false, "display": null}),
+        ),
+        (
+            json!({"moderated": true, "display": {
+                "action": "answerHelpline",
+                "checkTrustedContacts": false,
+            }}),
+            json!({"moderated": true, "display": {
+                "action": "answerHelpline",
+                "blockType": null,
+                "cyberTrustedAccess": null,
+                "checkTrustedContacts": false,
+            }}),
+        ),
+    ] {
+        let core: codex_protocol::items::AgentMessageModeration =
+            serde_json::from_value(stored).unwrap();
+        assert_eq!(
+            serde_json::to_value(AgentMessageModeration::from(core)).unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
 fn core_turn_item_into_thread_item_converts_supported_variants() {
     let user_item = TurnItem::UserMessage(UserMessageItem {
         id: "user-1".to_string(),
@@ -3420,7 +3495,14 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
                 detail: Some(ImageDetail::Original),
             },
             CoreUserInput::Audio {
-                audio_url: "data:audio/wav;base64,AAA".to_string(),
+                audio: AudioReference::Inline {
+                    audio_url: "data:audio/wav;base64,AAA".to_string(),
+                },
+            },
+            CoreUserInput::Audio {
+                audio: AudioReference::File {
+                    file_id: "file_audio".into(),
+                },
             },
             CoreUserInput::LocalAudio {
                 path: PathBuf::from("local/audio.mp3"),
@@ -3457,7 +3539,14 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
                     detail: Some(ImageDetail::Original),
                 },
                 UserInput::Audio {
-                    url: "data:audio/wav;base64,AAA".to_string(),
+                    audio: crate::AudioReference::Inline {
+                        url: "data:audio/wav;base64,AAA".to_string()
+                    }
+                },
+                UserInput::Audio {
+                    audio: crate::AudioReference::File {
+                        file_id: "file_audio".into(),
+                    }
                 },
                 UserInput::LocalAudio {
                     path: PathBuf::from("local/audio.mp3"),
@@ -3476,6 +3565,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
     );
 
     let agent_item = TurnItem::AgentMessage(AgentMessageItem {
+        moderation: None,
         id: "agent-1".to_string(),
         content: vec![
             AgentMessageContent::Text {
@@ -3491,9 +3581,17 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         questions: None,
     });
 
+    let agent_payload = ThreadItemPayload::from(agent_item);
     assert_eq!(
-        ThreadItemPayload::from(agent_item),
+        serde_json::to_value(&agent_payload)
+            .unwrap()
+            .get("moderation"),
+        Some(&serde_json::Value::Null),
+    );
+    assert_eq!(
+        agent_payload,
         ThreadItemPayload::AgentMessage {
+            moderation: None,
             id: "agent-1".to_string(),
             text: "Hello world".to_string(),
             phase: None,
@@ -3505,6 +3603,10 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
     );
 
     let agent_item_with_phase = TurnItem::AgentMessage(AgentMessageItem {
+        moderation: Some(codex_protocol::items::AgentMessageModeration {
+            moderated: true,
+            display: None,
+        }),
         id: "agent-2".to_string(),
         content: vec![AgentMessageContent::Text {
             text: "final".to_string(),
@@ -3526,6 +3628,10 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
     assert_eq!(
         ThreadItemPayload::from(agent_item_with_phase),
         ThreadItemPayload::AgentMessage {
+            moderation: Some(AgentMessageModeration {
+                moderated: true,
+                display: None
+            }),
             id: "agent-2".to_string(),
             text: "final".to_string(),
             phase: Some(MessagePhase::FinalAnswer),
@@ -3545,6 +3651,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
     );
 
     let async_item = ThreadItemPayload::from(TurnItem::AgentMessage(AgentMessageItem {
+        moderation: None,
         id: "async-1".to_string(),
         content: vec![AgentMessageContent::Text {
             text: "Which?".to_string(),
@@ -3562,6 +3669,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         json!({
             "type": "agentMessage", "id": "async-1", "text": "Which?", "phase": "final_answer",
             "transcriptMetadata": null,
+            "moderation": null,
             "memoryCitation": null, "delivery": "async", "questions": [{"title": "Which?", "options": null}]
         })
     );
@@ -4117,11 +4225,15 @@ fn user_input_into_core_preserves_media_fields() {
 
     assert_eq!(
         UserInput::Audio {
-            url: "data:audio/wav;base64,AAA".to_string(),
+            audio: crate::AudioReference::Inline {
+                url: "data:audio/wav;base64,AAA".to_string()
+            }
         }
         .into_core(),
         CoreUserInput::Audio {
-            audio_url: "data:audio/wav;base64,AAA".to_string(),
+            audio: AudioReference::Inline {
+                audio_url: "data:audio/wav;base64,AAA".to_string()
+            }
         }
     );
 
@@ -5076,6 +5188,10 @@ fn core_error_info_converts_to_camel_case() {
             json!("policyCapacityUnavailable"),
         ),
         (CoreCodexErrorInfo::CyberPolicy, json!("cyberPolicy")),
+        (
+            CoreCodexErrorInfo::InferenceHookDenied,
+            json!("inferenceHookDenied"),
+        ),
         (CoreCodexErrorInfo::BioPolicy, json!("other")),
         (CoreCodexErrorInfo::InvalidPrompt, json!("other")),
         (
@@ -5087,9 +5203,11 @@ fn core_error_info_converts_to_camel_case() {
             json!("rateLimitExceeded"),
         ),
     ] {
+        let converted = CodexErrorInfo::from(core);
+        assert_eq!(serde_json::to_value(&converted).unwrap(), expected);
         assert_eq!(
-            serde_json::to_value(CodexErrorInfo::from(core)).unwrap(),
-            expected
+            serde_json::from_value::<CodexErrorInfo>(expected).unwrap(),
+            converted
         );
     }
 }
@@ -5791,4 +5909,34 @@ fn feedback_paths_preserve_native_wire_spelling_before_host_validation() {
             path
         );
     }
+}
+
+#[test]
+fn compaction_error_preserves_typed_context_and_accepts_older_events() {
+    use codex_protocol::compaction_error::CompactionErrorContext;
+    use codex_protocol::compaction_error::CompactionTimeoutKind;
+    let error = CodexErrorInfo::from(
+        codex_protocol::protocol::CodexErrorInfo::CompactionTimeout {
+            context: Some(CompactionErrorContext {
+                kind: CompactionTimeoutKind::RetryBudget,
+                attempt: Some(2),
+                stage: Some("awaiting_summary".into()),
+                elapsed_ms: Some(200000),
+                idle_ms: Some(20),
+                remaining_ms: Some(100000),
+                last_error_category: Some("stream".into()),
+            }),
+        },
+    );
+    let value = serde_json::to_value(&error).expect("serialize compaction");
+    assert_eq!(
+        value["compactionTimeout"]["context"]["kind"],
+        "retry_budget"
+    );
+    assert_eq!(value["compactionTimeout"]["context"]["elapsedMs"], 200000);
+    let restored: CodexErrorInfo = serde_json::from_value(value).expect("read new event");
+    assert_eq!(restored, error);
+    let old: CodexErrorInfo =
+        serde_json::from_value(json!({"compactionTimeout": {}})).expect("read older event");
+    assert_eq!(old, CodexErrorInfo::CompactionTimeout { context: None });
 }

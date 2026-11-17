@@ -1,8 +1,7 @@
 //! Structured transcript evidence shared by synchronous and asynchronous Guardian.
 //!
 //! Entry kinds preserve source attribution for consumer-specific retention and
-//! rendering. Sync entries remain complete until request preparation; async collection
-//! keeps user, approval, and reasoning evidence complete and caps other entries.
+//! rendering. Both consumers keep originals until request preparation applies caps.
 //! Original sizes remain available for accounting.
 
 /// Semantic role of one parent-conversation transcript entry.
@@ -45,7 +44,7 @@ impl ConversationTranscriptEntryKind {
 #[derive(Clone, PartialEq)]
 pub enum TranscriptContent {
     Text(String),
-    /// Original scheduler input, compressed only during synchronous preparation.
+    /// Original scheduler input, compressed only during request preparation.
     ScheduledMessage(ScheduledTranscriptMessage),
     /// Host-attributed text prepared by the profile, rendered at delivery.
     Record(crate::TranscriptRecord),
@@ -68,7 +67,7 @@ impl std::fmt::Debug for TranscriptContent {
 pub struct ConversationTranscriptEntry {
     /// Semantic role used for consumer-specific retention and truncation.
     pub kind: ConversationTranscriptEntryKind,
-    /// Complete authorization/reasoning evidence, or other text bounded by per-entry limits.
+    /// Original captured evidence, or content bounded during preparation.
     pub content: TranscriptContent,
     /// Size before truncation, retained for omission and truncation accounting.
     pub original_bytes: usize,

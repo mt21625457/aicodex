@@ -325,6 +325,7 @@ async fn replayed_errors_do_not_start_live_billing_refreshes() {
         ));
 
         let notification = ServerNotification::Error(ErrorNotification {
+            recovery: None,
             error: TurnError {
                 misalignment: None,
                 message: "the replayed turn failed".to_string(),

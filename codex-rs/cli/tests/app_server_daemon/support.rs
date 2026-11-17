@@ -44,6 +44,7 @@ impl TestDaemon {
             // Translate the fixture before timed daemon capability and readiness checks.
             ensure!(
                 Command::new(&managed)
+                    .env("AICODEX_HOME", home.path())
                     .env("CODEX_HOME", home.path())
                     .arg("--version")
                     .output()?
@@ -74,7 +75,9 @@ impl TestDaemon {
 
     pub(super) fn command(&self) -> Command {
         let mut command = Command::new(&self.codex);
-        command.env("CODEX_HOME", self.home.path());
+        command
+            .env("AICODEX_HOME", self.home.path())
+            .env("CODEX_HOME", self.home.path());
         command
     }
 

@@ -569,6 +569,21 @@ def test_initialize_metadata_parses_user_agent_shape() -> None:
     assert parsed.serverInfo.version == "1.2.3"
 
 
+def test_initialize_response_preserves_runtime_home_and_platform_metadata() -> None:
+    """Initialize metadata should retain the current app-server response fields."""
+    payload = InitializeResponse.model_validate(
+        {
+            "userAgent": "aicodex/0.169.0",
+            "codexHome": "/tmp/codex-home",
+            "platformFamily": "unix",
+            "platformOs": "macos",
+        }
+    )
+    assert payload.codexHome == "/tmp/codex-home"
+    assert payload.platformFamily == "unix"
+    assert payload.platformOs == "macos"
+
+
 def test_initialize_metadata_requires_non_empty_information() -> None:
     """Initialize metadata should fail when the runtime gives no identity signal."""
     try:

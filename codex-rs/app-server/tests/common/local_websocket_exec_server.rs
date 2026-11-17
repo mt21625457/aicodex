@@ -34,7 +34,9 @@ impl LocalWebsocketExecServer {
         command.stdout(Stdio::piped());
         command.stderr(Stdio::inherit());
         command.current_dir(codex_home);
-        command.env("CODEX_HOME", codex_home);
+        command
+            .env("AICODEX_HOME", codex_home)
+            .env("CODEX_HOME", codex_home);
         command.env("HOME", codex_home);
         command.env("USERPROFILE", codex_home);
         // Mirror the app-server fixture home while preserving explicit overrides.

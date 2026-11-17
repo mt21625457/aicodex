@@ -108,6 +108,7 @@ fn updater_reexec_preserves_paths_and_recovers_deleted_working_directory() {
             .env("CODEX_TEST_UPDATER_STATE", &state)
             .env("CODEX_TEST_UPDATER_OUTPUT", &output)
             .env("CODEX_TEST_UPDATER_DELETE_CWD", delete_cwd.to_string())
+            .env("AICODEX_HOME", format!("../{home_name}"))
             .env("CODEX_HOME", format!("../{home_name}"))
             .env("CODEX_SQLITE_HOME", " sqlite ")
             .env("AWS_CONFIG_FILE", "~/config")
@@ -839,6 +840,12 @@ async fn readiness_waits_for_a_slow_managed_daemon() {
     backend.start().await.unwrap();
 
     tokio::time::pause();
+    // The process is alive but has no listening socket throughout the first deadline.
+    let error = daemon.wait_until_ready().await.unwrap_err();
+    assert_eq!(
+        crate::telemetry::StartError::from(error).failure_reason(),
+        "readiness_timeout"
+    );
     let (ready, listener) = tokio::join!(daemon.wait_until_ready(), async {
         // Model a cold start that takes longer than the old Linux readiness deadline.
         tokio::time::sleep(Duration::from_secs(15)).await;

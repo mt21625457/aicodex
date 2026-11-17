@@ -14,6 +14,7 @@ fn uninstall_help_and_invalid_arguments_preserve_user_data() -> Result<()> {
 
     let mut command = assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("aicodex")?);
     command
+        .env("AICODEX_HOME", home.path())
         .env("CODEX_HOME", home.path())
         .args(["sandbox", "uninstall", "--help"])
         .assert()
@@ -21,6 +22,7 @@ fn uninstall_help_and_invalid_arguments_preserve_user_data() -> Result<()> {
 
     let mut command = assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("aicodex")?);
     command
+        .env("AICODEX_HOME", home.path())
         .env("CODEX_HOME", home.path())
         .args(["sandbox", "uninstall", "unexpected"])
         .assert()

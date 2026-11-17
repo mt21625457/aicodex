@@ -373,6 +373,7 @@ mod tests {
         )));
         items.push(RolloutItem::EventMsg(EventMsg::AgentMessage(
             AgentMessageEvent {
+                moderation: None,
                 message: "large answer 汉字\n".repeat(8192),
                 phase: None,
                 memory_citation: None,
@@ -448,6 +449,7 @@ mod tests {
                 ..Default::default()
             })),
             RolloutItem::EventMsg(EventMsg::AgentMessage(AgentMessageEvent {
+                moderation: None,
                 message: "first answer".to_string(),
                 phase: None,
                 memory_citation: None,

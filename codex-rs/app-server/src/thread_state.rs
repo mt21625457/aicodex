@@ -98,6 +98,12 @@ pub(crate) enum ThreadListenerCommand {
     },
 }
 
+/// Retained until core resolves or withdraws the prompt, even if the client replies first.
+pub(crate) struct PendingNetworkApproval {
+    pub(crate) request_id: RequestId,
+    pub(crate) permission_guard: crate::thread_status::ThreadWatchActiveGuard,
+}
+
 /// Per-conversation accumulation of the latest states e.g. error message while a turn runs.
 #[derive(Default, Clone)]
 pub(crate) struct TurnSummary {
@@ -124,9 +130,11 @@ impl TurnSummary {
 pub(crate) struct ThreadState {
     goal_resume_lock: Arc<Mutex<()>>,
     pub(crate) pending_interrupts: PendingInterruptQueue,
+    pub(crate) network_approvals: HashMap<String, PendingNetworkApproval>,
     pub(crate) turn_summary: TurnSummary,
     pub(crate) declined_command_executions: HashSet<(String, String)>,
     pub(crate) last_terminal_turn_id: Option<String>,
+    recovery: Option<codex_protocol::stream_recovery::StreamRecovery>,
     /// Lets an internal runtime replacement wait until the old listener has processed Core's
     /// `ShutdownComplete` event before that listener is superseded.
     pub(crate) shutdown_drain: Option<watch::Receiver<bool>>,
@@ -138,6 +146,7 @@ pub(crate) struct ThreadState {
     current_turn_history: ThreadHistoryBuilder,
     transcript_metadata_by_item: HashMap<(String, String), TranscriptMetadata>,
     history_mode: ThreadHistoryMode,
+    evict_superseded_agent_text: bool,
     listener_thread: Option<Weak<CodexThread>>,
     watch_registration: WatchRegistration,
 }
@@ -180,6 +189,8 @@ impl ThreadState {
         self.listener_generation = self.listener_generation.wrapping_add(1);
         self.last_thread_settings = Some(thread_settings_baseline);
         self.history_mode = history_mode;
+        self.evict_superseded_agent_text =
+            history_mode == ThreadHistoryMode::Paginated && conversation.rollout_path().is_some();
         let (listener_command_tx, listener_command_rx) = mpsc::unbounded_channel();
         self.listener_command_tx = Some(listener_command_tx);
         self.listener_thread = Some(Arc::downgrade(conversation));
@@ -194,6 +205,7 @@ impl ThreadState {
         self.shutdown_drain = None;
         self.listener_command_tx = None;
         self.current_turn_history.reset();
+        self.recovery = None;
         self.transcript_metadata_by_item.clear();
         self.listener_thread = None;
         self.watch_registration = WatchRegistration::default();
@@ -218,6 +230,7 @@ impl ThreadState {
         // 但不会复制长回答、图片及工具输出等正文。
         let active_turn = self.active_turn_metadata_snapshot();
         ThreadRuntimeLifecycle {
+            recovery: active_turn.as_ref().and(self.recovery.clone()),
             active_turn_id: active_turn.as_ref().map(|turn| turn.turn_id.clone()),
             active_turn_started_at: active_turn.and_then(|turn| turn.started_at),
             last_terminal_turn_id: self.last_terminal_turn_id.clone(),
@@ -258,8 +271,12 @@ impl ThreadState {
     }
 
     pub(crate) fn track_current_turn_event(&mut self, event_turn_id: &str, event: &EventMsg) {
+        self.track_recovery(event_turn_id, event);
         if let EventMsg::TurnStarted(payload) = event {
-            self.turn_summary.started_at = payload.started_at;
+            self.turn_summary = TurnSummary {
+                started_at: payload.started_at,
+                ..Default::default()
+            };
         }
         if let EventMsg::ItemCompleted(payload) = event
             && let CoreTurnItem::AgentMessage(item) = &payload.item
@@ -272,9 +289,13 @@ impl ThreadState {
         }
         // 只处理本次真正变动的 item。delta/usage 等不修改历史的事件不再复制整段 turn。
         // 保留旧逻辑的两个归属范围，也保留已完成 turn 的缓存，供晚到 completion 使用。
-        let changes = self
-            .current_turn_history
-            .handle_event_with_changes_for_history_mode(event, self.history_mode);
+        let changes = if self.evict_superseded_agent_text {
+            self.current_turn_history
+                .handle_live_paginated_event_with_changes(event)
+        } else {
+            self.current_turn_history
+                .handle_event_with_changes_for_history_mode(event, self.history_mode)
+        };
         let metadata_turn_id = transcript_metadata_turn_id(event);
         for change in changes.changed_items {
             if change.turn_id != event_turn_id && metadata_turn_id != Some(change.turn_id.as_str())
@@ -295,6 +316,43 @@ impl ThreadState {
             if !self.current_turn_history.has_active_turn() {
                 self.current_turn_history.reset();
             }
+        }
+    }
+
+    /// 与历史事件共用监听器顺序；旧轮事件不能清除新轮的恢复状态。
+    fn track_recovery(&mut self, turn_id: &str, event: &EventMsg) {
+        if matches!(event, EventMsg::TurnStarted(_)) {
+            self.recovery = None;
+            return;
+        }
+        if self.active_turn_id() != Some(turn_id) {
+            return;
+        }
+        match event {
+            EventMsg::StreamError(error) => self.recovery = error.recovery.clone(),
+            // 未结束的参数进度来自模型流；finished 也用于错误清理，不能证明恢复。
+            EventMsg::ToolInputProgress(progress) if !progress.finished => {
+                self.recovery = None;
+            }
+            // 工具可在模型断流后并发完成；它们不能证明 provider 已恢复。
+            EventMsg::ItemStarted(codex_protocol::protocol::ItemStartedEvent { item, .. })
+            | EventMsg::ItemCompleted(codex_protocol::protocol::ItemCompletedEvent {
+                item, ..
+            }) if matches!(
+                item,
+                CoreTurnItem::AgentMessage(_) | CoreTurnItem::Reasoning(_) | CoreTurnItem::Plan(_)
+            ) =>
+            {
+                self.recovery = None;
+            }
+            EventMsg::AgentMessageContentDelta(_)
+            | EventMsg::ReasoningContentDelta(_)
+            | EventMsg::ReasoningRawContentDelta(_)
+            | EventMsg::PlanDelta(_)
+            | EventMsg::TurnAborted(_)
+            | EventMsg::TurnComplete(_)
+            | EventMsg::Error(_) => self.recovery = None,
+            _ => {}
         }
     }
 
@@ -433,6 +491,7 @@ mod tests {
             assert_eq!(
                 state.runtime_lifecycle_snapshot(),
                 ThreadRuntimeLifecycle {
+                    recovery: None,
                     active_turn_id: full.as_ref().map(|turn| turn.id.clone()),
                     active_turn_started_at: full.and_then(|turn| turn.started_at),
                     last_terminal_turn_id: state.last_terminal_turn_id.clone(),
@@ -451,6 +510,7 @@ mod tests {
                 collaboration_mode_kind: Default::default(),
             }),
             EventMsg::AgentMessage(AgentMessageEvent {
+                moderation: None,
                 message: "large answer 汉字\n".repeat(8192),
                 questions: None,
                 phase: None,
@@ -517,6 +577,7 @@ mod tests {
         assert_eq!(
             state.runtime_lifecycle_snapshot(),
             ThreadRuntimeLifecycle {
+                recovery: None,
                 active_turn_id: Some("turn-1".to_string()),
                 active_turn_started_at: Some(42),
                 last_terminal_turn_id: None,
@@ -525,6 +586,7 @@ mod tests {
         state.track_current_turn_event(
             "turn-1",
             &EventMsg::AgentMessage(AgentMessageEvent {
+                moderation: None,
                 message: "I'll run that.".to_string(),
                 questions: None,
                 phase: None,
@@ -562,6 +624,7 @@ mod tests {
         assert_eq!(
             state.runtime_lifecycle_snapshot(),
             ThreadRuntimeLifecycle {
+                recovery: None,
                 active_turn_id: None,
                 active_turn_started_at: None,
                 last_terminal_turn_id: Some("turn-1".to_string()),
@@ -628,6 +691,7 @@ mod tests {
         // 多个带较大正文的 item、重复更新和终止后的晚到完成覆盖缓存与顺序。
         for index in 0..40 {
             events.push(EventMsg::AgentMessage(AgentMessageEvent {
+                moderation: None,
                 message: format!("{index}:{}", "正文".repeat(1000)),
                 questions: None,
                 phase: None,
@@ -657,6 +721,7 @@ mod tests {
         }));
         events.push(EventMsg::ItemCompleted(
             codex_protocol::protocol::ItemCompletedEvent {
+                content_token_count: None,
                 thread_id,
                 turn_id: "turn-1".into(),
                 item: TurnItem::CommandExecution(command_execution_item(
@@ -720,6 +785,7 @@ mod tests {
     fn thread_settings(model: &str) -> ThreadSettings {
         ThreadSettings {
             disabled_plugin_ids: Vec::new(),
+            environments: Some(Vec::new()),
             cwd: AbsolutePathBuf::from_absolute_path("/tmp").expect("absolute path"),
             approval_policy: AskForApproval::OnRequest,
             approvals_reviewer: ApprovalsReviewer::User,
@@ -1171,3 +1237,7 @@ impl ThreadStateManager {
             .map(|thread_entry| thread_entry.has_connections_watcher.subscribe())
     }
 }
+
+#[cfg(test)]
+#[path = "thread_recovery_tests.rs"]
+mod recovery_tests;

@@ -84,6 +84,7 @@ async fn isolated_test_home(test_name: &str) -> anyhow::Result<Option<PathBuf>> 
             .args(["--exact", &test_name, "--nocapture"])
             .kill_on_drop(true)
             .env(CHILD, &test_name)
+            .env("AICODEX_HOME", home.path())
             .env("CODEX_HOME", home.path())
             .env("NO_PROXY", "127.0.0.1,localhost")
             .env("no_proxy", "127.0.0.1,localhost")

@@ -372,6 +372,12 @@ fn map_http_error_classifies_provider_codes() {
             true,
         ),
         (400, "model_not_found", ModelNotFound, false),
+        (
+            400,
+            "budget_reached",
+            CodexErrorInfo::SessionBudgetExceeded,
+            false,
+        ),
         (403, "model_not_found", ModelNotFound, false),
         (404, "model_not_found", ModelNotFound, false),
         (
@@ -520,6 +526,12 @@ fn map_api_error_preserves_typed_errors() {
     let message = "This request was rejected.";
     for (error, expected_info) in [
         (
+            ApiError::InferenceHookDenied {
+                message: message.to_string(),
+            },
+            CodexErrorInfo::InferenceHookDenied,
+        ),
+        (
             ApiError::BioPolicy {
                 message: message.to_string(),
             },
@@ -541,16 +553,30 @@ fn map_api_error_preserves_typed_errors() {
 
 #[test]
 fn map_api_error_maps_http_and_wrapped_websocket_typed_errors() {
-    for (code, expected_info, fallback) in [
+    for (status, code, expected_info, fallback) in [
         (
+            http::StatusCode::BAD_REQUEST,
+            "content_policy_violation",
+            CodexErrorInfo::InvalidPrompt,
+            "The input was rejected by the content policy.",
+        ),
+        (
+            http::StatusCode::BAD_REQUEST,
             "bio_policy",
             CodexErrorInfo::BioPolicy,
             "This content was flagged for possible biological risk.",
         ),
         (
+            http::StatusCode::BAD_REQUEST,
             "invalid_prompt",
             CodexErrorInfo::InvalidPrompt,
             "Invalid request.",
+        ),
+        (
+            http::StatusCode::FORBIDDEN,
+            "inference_hook_denied",
+            CodexErrorInfo::InferenceHookDenied,
+            "Your workspace inference hook blocked this request.",
         ),
     ] {
         for wrapped in [false, true] {
@@ -569,11 +595,11 @@ fn map_api_error_maps_http_and_wrapped_websocket_typed_errors() {
                 }
                 if wrapped {
                     body["type"] = serde_json::json!("error");
-                    body["status"] = serde_json::json!(400);
+                    body["status"] = serde_json::json!(status.as_u16());
                 }
                 let err = map_api_error(ApiError::Transport(TransportError::Http {
                     retry_after: None,
-                    status: http::StatusCode::BAD_REQUEST,
+                    status,
                     url: None,
                     headers: None,
                     body: Some(body.to_string()),
@@ -1024,6 +1050,59 @@ fn map_api_error_ignores_unparseable_rate_limit_reached_type_headers() {
 }
 
 #[test]
+fn workspace_403_classification_preserves_terminal_client_errors() {
+    use http::StatusCode;
+    let provider = r#"{"error":{"code":"invalid_workspace_selected"}}"#;
+    let detail = r#"{"detail":{"code":"invalid_workspace_selected"}}"#;
+    let access_denied = r#"{"detail":{"code":"codex_workspace_access_denied"}}"#;
+    let other = r#"{"detail":{"code":"route_rate_limited"}}"#;
+    let workspace_header =
+        http::HeaderValue::from_str(&base64::engine::general_purpose::STANDARD.encode(provider))
+            .unwrap();
+    for (status, body, with_header, terminal) in [
+        (StatusCode::FORBIDDEN, detail, false, true),
+        (StatusCode::FORBIDDEN, access_denied, false, true),
+        (StatusCode::SERVICE_UNAVAILABLE, access_denied, false, false),
+        (StatusCode::FORBIDDEN, provider, false, true),
+        (StatusCode::FORBIDDEN, "", true, true),
+        (StatusCode::FORBIDDEN, "", false, false),
+        (
+            StatusCode::FORBIDDEN,
+            "invalid_workspace_selected",
+            false,
+            false,
+        ),
+        (StatusCode::FORBIDDEN, other, true, false),
+        (StatusCode::UNAUTHORIZED, detail, true, false),
+    ] {
+        let mut headers = HeaderMap::new();
+        headers.insert(REQUEST_ID_HEADER, http::HeaderValue::from_static("req-403"));
+        if with_header {
+            headers.insert(X_ERROR_JSON_HEADER, workspace_header.clone());
+        }
+        let err = map_api_error(ApiError::Transport(TransportError::Http {
+            status,
+            headers: Some(headers),
+            body: Some(body.to_owned()),
+            url: None,
+            retry_after: None,
+        }));
+        assert_eq!(
+            matches!(err.details(), CodexErrorDetails::WorkspaceAccessDenied(_)),
+            terminal,
+            "{err}"
+        );
+        assert_eq!(
+            err.retry_delay(/*retry_count*/ 1).is_none(),
+            status.is_client_error(),
+            "{err}"
+        );
+        assert_eq!(err.http_status_code_value(), Some(status.as_u16()));
+        assert!(err.to_string().contains("req-403"));
+    }
+}
+
+#[test]
 fn map_api_error_extracts_identity_auth_details_from_headers() {
     let mut headers = HeaderMap::new();
     headers.insert(REQUEST_ID_HEADER, http::HeaderValue::from_static("req-401"));
@@ -1205,4 +1284,57 @@ fn structured_model_error_takes_precedence_over_media_message() {
     }));
     assert_eq!(err.to_codex_protocol_error(), CodexErrorInfo::ModelNotFound);
     assert!(err.retry_delay(/*retry_count*/ 1).is_none());
+}
+#[test]
+fn runtime_auth_denials_stop_retries_without_losing_http_diagnostics() {
+    for (status, code, retryable) in [
+        (403, "runtime_assertion_invalid", false),
+        (403, "runtime_instance_paused", false),
+        (403, "runtime_instance_revoked", false),
+        (401, "invalid_agent_instance_assertion", false),
+        (503, "runtime_verification_unavailable", true),
+        (503, "agent_instance_authentication_unavailable", true),
+        (401, "token_expired", false),
+        (403, "ordinary_policy_denial", false),
+    ] {
+        for in_header in [false, true] {
+            let status = http::StatusCode::from_u16(status).unwrap();
+            let details = serde_json::json!({"error": {"code": code}}).to_string();
+            let mut headers = http::HeaderMap::from_iter([(
+                "x-request-id".parse().unwrap(),
+                "request-runtime".parse().unwrap(),
+            )]);
+            let body = if in_header {
+                headers.insert(
+                    X_ERROR_JSON_HEADER,
+                    base64::engine::general_purpose::STANDARD
+                        .encode(details)
+                        .parse()
+                        .unwrap(),
+                );
+                r#"{"detail":"Unauthorized"}"#.to_owned()
+            } else {
+                details
+            };
+            let error = map_api_error(ApiError::Transport(TransportError::Http {
+                status,
+                retry_after: None,
+                url: Some("https://api.openai.com/v1/responses".into()),
+                headers: Some(headers),
+                body: Some(body.clone()),
+            }));
+            assert_eq!(
+                error.retry_delay(/*retry_count*/ 1).is_some(),
+                retryable,
+                "{code}, in_header={in_header}"
+            );
+            let CodexErrorDetails::UnexpectedStatus(details) = error.details() else {
+                panic!("missing HTTP diagnostics: {error:?}");
+            };
+            assert_eq!(
+                (&details.body, details.status, details.request_id.as_deref()),
+                (&body, status, Some("request-runtime"))
+            );
+        }
+    }
 }

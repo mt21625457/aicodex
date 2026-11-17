@@ -136,6 +136,7 @@ async fn cyber_policy_response_emits_typed_error_notification_v2() -> Result<()>
     assert_eq!(
         error,
         ErrorNotification {
+            recovery: None,
             error: codex_app_server_protocol::TurnError {
                 misalignment: None,
                 message: CYBER_POLICY_MESSAGE.to_string(),

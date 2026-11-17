@@ -1,6 +1,8 @@
 pub mod account;
 mod agent_path;
 pub mod auth;
+mod context_window_id;
+mod item_id_generator;
 mod response_item_id;
 mod response_usage;
 mod sanitized_git_url;
@@ -8,6 +10,10 @@ mod session_id;
 mod thread_id;
 mod tool_name;
 pub use agent_path::AgentPath;
+pub use context_window_id::ContextWindowId;
+pub use item_id_generator::ItemIdGenerator;
+#[cfg(test)]
+use item_id_generator::uuid_v7_item_id_generator_for_test;
 pub use permission_profile_intersection::PermissionIntersectionError;
 pub use permission_profile_intersection::intersect_effective_permission_profiles;
 pub use response_item_id::ResponseItemId;
@@ -21,6 +27,7 @@ pub use tool_name::ToolName;
 pub mod approvals;
 pub mod capabilities;
 mod codex_error_info;
+pub mod compaction_error;
 pub mod config_types;
 mod guardian_transcript;
 pub use guardian_transcript::TranscriptFormat;
@@ -58,3 +65,5 @@ pub mod shell_environment;
 pub mod tool_input_progress;
 pub mod turn_input;
 pub mod user_input;
+
+pub mod stream_recovery;

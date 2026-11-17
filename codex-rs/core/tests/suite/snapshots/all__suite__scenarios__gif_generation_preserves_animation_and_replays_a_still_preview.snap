@@ -1,0 +1,52 @@
+---
+source: core/tests/suite/scenarios.rs
+assertion_line: 559
+expression: "context_snapshot::format_request_history_snapshot(\"GIF generation exposes animation controls and guidance, preserves the animated artifact, and replays a still preview through a follow-up turn.\",\n&requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
+---
+Scenario: GIF generation exposes animation controls and guidance, preserves the animated artifact, and replays a still preview through a follow-up turn.
+
+## Window 1
+Settings:
+  include: ["reasoning.encrypted_content"]
+  model: "gpt-5.4"
+  parallel_tool_calls: false
+  prompt_cache_key: "<PROMPT_CACHE_KEY 1>"
+  reasoning: {"context":"all_turns","effort":"medium"}
+  store: false
+  stream: true
+  text: {"verbosity":"low"}
+  tool_choice: "auto"
+-- request 1 (turn) --
+00:additional_tools/developer (3; hash=8a45640139fa19b1):
+        - namespace/functions; hash=106dd1b983efd2f7
+          - function/exec_command
+          - function/write_stdin
+          - function/request_user_input
+          - custom/apply_patch
+          - function/view_image
+        - namespace/image_gen: Tools in the image_gen namespace.; hash=7f9a214246396279
+          - function/imagegen
+        - tool_search: # Tool discovery  Searches over deferred tool metadata with BM25 and exposes matching tools for t...; args=[limit, query]; hash=0b1310f523e8d5fb
+01:message/developer:
+    <MODEL_INSTRUCTIONS>
+02:message/developer[3]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <PERMISSIONS_INSTRUCTIONS>
+    [03] <tools>
+        Deferred tool namespaces:
+        - multi_agent_v1: Tools for spawning and managing sub-agents.
+        </tools>
+03:message/user:
+    <ENVIRONMENT_CONTEXT>
+04:message/user:
+    Generate a two-frame GIF of a pixel alternating red and blue.
+-- request 2 (turn) --
+05:function_call/image_gen.imagegen:{"gif":{"frame_count":2,"frame_duration_ms":200},"prompt":"A pixel alternating between red and blue."}
+06:function_call_output:<input_image>
+-- request 3 (turn) --
+07:message/assistant:
+    Here is the two-frame GIF.
+08:message/user:
+    How long does each frame last?

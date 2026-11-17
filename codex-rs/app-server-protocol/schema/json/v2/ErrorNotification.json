@@ -27,6 +27,39 @@
         },
         {
           "additionalProperties": false,
+          "description": "压缩预算耗尽；旧记录可不含诊断。",
+          "properties": {
+            "compactionTimeout": {
+              "properties": {
+                "context": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/CompactionErrorContext"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "compactionTimeout"
+          ],
+          "title": "CompactionTimeoutCodexErrorInfo",
+          "type": "object"
+        },
+        {
+          "description": "The workspace's inference hook explicitly denied this request.",
+          "enum": [
+            "inferenceHookDenied"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
           "properties": {
             "httpConnectionFailed": {
               "properties": {
@@ -151,6 +184,70 @@
       ],
       "description": "This translation layer make sure that we expose codex error code in camel case.\n\nWhen an upstream HTTP status is available (for example, from the Responses API or a provider), it is forwarded in `httpStatusCode` on the relevant `codexErrorInfo` variant."
     },
+    "CompactionErrorContext": {
+      "properties": {
+        "attempt": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "elapsedMs": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "idleMs": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/definitions/CompactionTimeoutKind"
+        },
+        "lastErrorCategory": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "remainingMs": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "stage": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "CompactionTimeoutKind": {
+      "enum": [
+        "idle",
+        "total",
+        "retry_budget",
+        "unknown"
+      ],
+      "type": "string"
+    },
     "MisalignmentErrorDetails": {
       "properties": {
         "detailedExplanation": {
@@ -206,6 +303,49 @@
       ],
       "type": "string"
     },
+    "StreamRecovery": {
+      "additionalProperties": true,
+      "properties": {
+        "attempt": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "budgetDeadlineMs": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "maxAttempts": {
+          "description": "连接恢复由时间预算限制，不能伪造次数上限。",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "reason": {
+          "description": "开放字符串保留未来原因；客户端仅显示认识的原因，不改变控制流。",
+          "type": "string"
+        },
+        "requestId": {
+          "description": "本地生成的请求标识，不是可续接的 provider response id。",
+          "type": "string"
+        },
+        "retryAtMs": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "attempt",
+        "budgetDeadlineMs",
+        "reason",
+        "requestId",
+        "retryAtMs"
+      ],
+      "type": "object"
+    },
     "TurnError": {
       "properties": {
         "additionalDetails": {
@@ -250,6 +390,17 @@
   "properties": {
     "error": {
       "$ref": "#/definitions/TurnError"
+    },
+    "recovery": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/StreamRecovery"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "引擎的恢复证据；旧服务端缺失时不得从错误正文推断执行控制。"
     },
     "threadId": {
       "type": "string"

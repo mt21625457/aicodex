@@ -10,8 +10,7 @@ env:
 jobs:
   build-windows-binaries:
     name: Build Windows binaries - ${{ matrix.runner }} - ${{ matrix.target }} - ${{ matrix.bundle }} - ${{ matrix.build-system }}
-    # Parallel Bazel artifacts are advisory while Cargo remains the release path.
-    continue-on-error: ${{ matrix.build-system == 'bazel' }}
+    # Release Cargo artifacts only while Bazel releases are disabled.
     runs-on: ${{ matrix.runs_on }}
     environment:
       name: bazel
@@ -31,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        build-system: [cargo, bazel]
+        build-system: [cargo] # Bazel releases are disabled while the BuildBuddy key is revoked.
         target:
           - x86_64-pc-windows-msvc
           - aarch64-pc-windows-msvc
@@ -101,7 +100,7 @@ jobs:
           Write-Host "Disk usage:"
           Get-PSDrive -PSProvider FileSystem | Format-Table -AutoSize Name, @{Name='Size(GB)';Expression={[math]::Round(($_.Used + $_.Free) / 1GB, 1)}}, @{Name='Free(GB)';Expression={[math]::Round($_.Free / 1GB, 1)}}
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8 # 1.99.1
         with:
           targets: ${{ matrix.build-system == 'cargo' && matrix.target || '' }}
 
@@ -126,8 +125,6 @@ jobs:
       - name: Build Bazel release binaries and symbols
         if: ${{ matrix.build-system == 'bazel' }}
         uses: ./.github/actions/build-bazel-release
-        env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         with:
           target: ${{ matrix.target }}
           bundle: ${{ matrix.bundle }}
@@ -254,7 +251,7 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
           VOICE_ARCH: ${{ matrix.arch }}
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          # Use local Bazel while BuildBuddy credentials are unavailable.
         run: |
           (cd codex-rs && cargo update --workspace)
           python .github/scripts/watch_voice_bazel.py "$(cygpath -w "$BASH")" ./.github/scripts/run-bazel-ci.sh \
@@ -264,8 +261,7 @@ jobs:
             -- \
             test --config=release \
             --platforms=//:local_windows_msvc \
-            --extra_toolchains=@local_config_cc//:cc-toolchain-x64_windows,@local_config_cc//:cc-toolchain-arm64_windows,//third_party/voice:windows_pkg_config_toolchain,//third_party/voice:windows_cmake_toolchain \
-            --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0 \
+            --extra_toolchains=//third_party/voice:windows_pkg_config_toolchain,//third_party/voice:windows_cmake_toolchain \
             --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1 \
             --inject_repository="voice_windows_tools=$VOICE_WINDOWS_BAZEL_REPOSITORY" \
             --//third_party/voice:windows_installed_tools=@voice_windows_tools//:tools \
@@ -310,7 +306,6 @@ jobs:
     needs:
       - build-windows-binaries
     name: Build Windows symbols - ${{ matrix.target }} - ${{ matrix.build-system }}
-    continue-on-error: ${{ matrix.build-system == 'bazel' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -324,7 +319,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        build-system: [cargo, bazel]
+        build-system: [cargo] # Bazel releases are disabled while the BuildBuddy key is revoked.
         target:
           - aarch64-pc-windows-msvc
           - x86_64-pc-windows-msvc
@@ -371,7 +366,6 @@ jobs:
       - build-windows-binaries
       - build-windows-voice
     name: Build - ${{ matrix.runner }} - ${{ matrix.target }} - ${{ matrix.build-system }}
-    continue-on-error: ${{ matrix.build-system == 'bazel' }}
     runs-on: ${{ matrix.runs_on }}
     environment:
       name: azure-artifact-signing
@@ -389,7 +383,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        build-system: [cargo, bazel]
+        build-system: [cargo] # Bazel releases are disabled while the BuildBuddy key is revoked.
         target:
           - x86_64-pc-windows-msvc
           - aarch64-pc-windows-msvc

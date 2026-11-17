@@ -7,7 +7,12 @@
 | 编号 | 问题 | 状态 | 影响范围 |
 | --- | --- | --- | --- |
 | [CORE-001](CORE-001-reserved-wait-schema-history.md) | 保留等待工具 schema 漂移、旧会话升级后仍失败、流内参数错误被重试 | 源码及运行验证通过；用户安装验收待完成 | 工具定义、历史请求、SSE、错误协议 |
-| [CORE-002](CORE-002-atomic-update-deprecation.md) | Rust 1.99 原子更新 API 弃用警告 | 编译及聚焦测试通过 | 诊断计数、直接工具调用计数 |
+| [CORE-002](CORE-002-compaction-recovery-budget.md) | 压缩恢复预算与诊断 | 本地聚焦通过，安装与真实链路待验收 | 压缩、重试、错误协议 |
+| [CORE-003](CORE-003-atomic-update-deprecation.md) | Rust 1.99 原子更新 API 弃用警告 | 编译及聚焦测试通过 | 诊断计数、直接工具调用计数 |
+| [CORE-004](CORE-004-sccache-cached-probe-failure.md) | Cargo 复用 sccache 编译器探测失败 | 本机对照越过原错误，完整构建待验收 | 构建环境、编译器信息缓存 |
+| [CORE-005](CORE-005-build-diagnostic-noise.md) | sccache 调试日志重放与 TUI 宏警告 | Python 回归通过，Rust 编译交由用户 | 构建输出、TUI 宏调用 |
+| [CORE-006](CORE-006-upstream-0169-merge-compatibility.md) | 0.169.0 合并接口兼容与 SDK 测试隔离 | 当前修复先提交；完整验收未通过，测试停止 | 会话路由、认证、压缩、协议与测试 |
+| [CORE-007](CORE-007-stream-recovery-visibility.md) | 首次断流提示缺失、恢复预算与默认流超时 | 源码及聚焦 55 项通过，安装待验收 | 默认 provider、Responses 重试 |
 
 ## 记录和关闭要求
 

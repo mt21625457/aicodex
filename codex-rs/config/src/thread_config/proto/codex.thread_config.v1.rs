@@ -91,6 +91,13 @@ pub struct ModelProvider {
     pub location: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag = "24")]
     pub credential_file: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, optional, tag = "25")]
+    pub capabilities: ::core::option::Option<ModelProviderCapabilities>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ModelProviderCapabilities {
+    #[prost(bool, optional, tag = "1")]
+    pub cyber_access_programs: ::core::option::Option<bool>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct StringMap {

@@ -15,6 +15,7 @@ fn completed_turn(duration_ms: Option<i64>, completed_at: Option<i64>) -> AppSer
         items: vec![ThreadItem::untimed(
             AppServerThreadItemPayload::AgentMessage {
                 transcript_metadata: None,
+                moderation: None,
                 id: "answer-1".to_string(),
                 text: "The change is ready.".to_string(),
                 phase: Some(MessagePhase::FinalAnswer),

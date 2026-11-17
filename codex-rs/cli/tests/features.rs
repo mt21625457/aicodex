@@ -22,7 +22,8 @@ use wiremock::matchers::path;
 fn codex_command(codex_home: &Path) -> Result<assert_cmd::Command> {
     let mut cmd = assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("aicodex")?);
     cmd.env("AICODEX_HOME", codex_home);
-    cmd.env("CODEX_HOME", codex_home);
+    cmd.env("AICODEX_HOME", codex_home)
+        .env("CODEX_HOME", codex_home);
     cmd.env_remove("CODEX_SQLITE_HOME");
     Ok(cmd)
 }
@@ -402,10 +403,8 @@ fn remote_start_allows_network_access_overrides_before_requiring_terminal() -> R
 }
 
 #[test]
-fn no_daemon_rejects_agents_and_explicit_remote_targets() -> Result<()> {
+fn no_daemon_rejects_queue_and_explicit_remote_targets() -> Result<()> {
     for args in [
-        "--no-daemon agents",
-        "agents --no-daemon",
         "--no-daemon queue --thread example --message hello",
         "--no-daemon --remote ws://localhost:9999 agents",
         "--no-daemon --remote ws://localhost:9999",
@@ -418,9 +417,7 @@ fn no_daemon_rejects_agents_and_explicit_remote_targets() -> Result<()> {
     ] {
         let args = args.split_whitespace().collect::<Vec<_>>();
         let home = TempDir::new()?;
-        let expected = if args.contains(&"agents") {
-            "--no-daemon cannot be used with codex agents."
-        } else if args.contains(&"queue") && !args.contains(&"--remote") {
+        let expected = if args.contains(&"queue") && !args.contains(&"--remote") {
             "--no-daemon cannot be used with codex queue."
         } else {
             "--no-daemon cannot be used with --remote."

@@ -793,19 +793,38 @@ fn permanent_http_rejections_do_not_retry_but_transient_statuses_do() {
 }
 
 #[test]
-fn compaction_timeout_is_terminal_and_has_a_structured_stream_error() {
+fn compaction_timeout_is_terminal_and_has_its_own_classification() {
     let error = super::CodexErr::CompactionTimeout;
     assert!(error.retry_delay(1).is_none());
     assert_eq!(
         error.to_codex_protocol_error(),
-        crate::protocol::CodexErrorInfo::ResponseStreamConnectionFailed {
-            http_status_code: None
-        }
+        crate::protocol::CodexErrorInfo::CompactionTimeout { context: None }
     );
     assert!(
         error
             .to_error_event(None)
             .message
             .contains("original conversation history is preserved")
+    );
+}
+
+#[test]
+fn compaction_classification_reads_legacy_and_future_details() {
+    use crate::protocol::CodexErrorInfo;
+    let old: CodexErrorInfo = serde_json::from_str(r#"{"compaction_timeout":{}}"#).unwrap();
+    assert_eq!(old, CodexErrorInfo::CompactionTimeout { context: None });
+    let newer: CodexErrorInfo = serde_json::from_str(
+        r#"{"compaction_timeout":{"context":{"kind":"future_kind","newField":true}}}"#,
+    )
+    .unwrap();
+    let CodexErrorInfo::CompactionTimeout {
+        context: Some(context),
+    } = newer
+    else {
+        panic!("expected compaction")
+    };
+    assert_eq!(
+        context.kind,
+        crate::compaction_error::CompactionTimeoutKind::Unknown
     );
 }

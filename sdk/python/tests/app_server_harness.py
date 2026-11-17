@@ -227,19 +227,28 @@ class AppServerHarness:
         shutil.rmtree(self.workspace, ignore_errors=True)
 
     def app_server_config(self) -> CodexConfig:
-        """Prefer the CI binary, then a local release build, then the installed runtime."""
+        """只使用明确的被测二进制；隔离配置读取、认证写入及宿主 API Key。"""
         binary_name = "aicodex.exe" if os.name == "nt" else "aicodex"
         release_binary = (
             Path(__file__).resolve().parents[3] / "codex-rs/target/release" / binary_name
         )
         codex_bin = os.environ.get("CODEX_EXEC_PATH")
+        if codex_bin is not None and not codex_bin.strip():
+            raise ValueError("CODEX_EXEC_PATH must not be empty")
         if codex_bin is None and release_binary.is_file():
             codex_bin = str(release_binary)
+        if codex_bin is None:
+            raise FileNotFoundError("Build the checkout runtime or set CODEX_EXEC_PATH explicitly")
         return CodexConfig(
             codex_bin=codex_bin,
             cwd=str(self.workspace),
             env={
+                # AICodex 优先读取 AICODEX_HOME；只覆盖兼容名会继承宿主认证目录。
+                "AICODEX_HOME": str(self.codex_home),
                 "CODEX_HOME": str(self.codex_home),
+                # 数据库根可独立于认证根覆盖；同样必须绑定到本用例目录。
+                "CODEX_SQLITE_HOME": str(self.codex_home),
+                "OPENAI_API_KEY": "",
                 "CODEX_APP_SERVER_DISABLE_MANAGED_CONFIG": "1",
                 "RUST_LOG": "warn",
             },

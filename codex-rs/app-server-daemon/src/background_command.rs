@@ -13,9 +13,15 @@ pub(crate) fn set_working_directory(command: &mut Command, state_dir: &Path) -> 
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
         Err(err) => return Err(err.into()),
     };
-    if let Ok(value) = std::env::var("CODEX_HOME")
-        && !value.is_empty()
-    {
+    let configured_home = std::env::var("AICODEX_HOME")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            std::env::var("CODEX_HOME")
+                .ok()
+                .filter(|value| !value.is_empty())
+        });
+    if let Some(value) = configured_home {
         let home = codex_utils_home_dir::find_codex_home()?;
         // Remove parent components without discarding a valid configured symlink alias.
         let absolute = std::path::absolute(value)?;
@@ -28,7 +34,9 @@ pub(crate) fn set_working_directory(command: &mut Command, state_dir: &Path) -> 
             // The home resolver ignores non-Unicode env values; keep the valid original alias.
             absolute.as_path()
         };
-        command.env("CODEX_HOME", preserved);
+        command
+            .env("AICODEX_HOME", preserved)
+            .env("CODEX_HOME", preserved);
     }
     // Preserve process-scoped paths before changing cwd; CA names match CUSTOM_CA_ENV_KEYS.
     for name in [

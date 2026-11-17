@@ -33,6 +33,7 @@ fn error_notification(
     error: AppServerTurnError,
 ) -> ServerNotification {
     ServerNotification::Error(codex_app_server_protocol::ErrorNotification {
+        recovery: None,
         thread_id: thread_id.to_string(),
         turn_id: turn_id.into(),
         error,
@@ -252,7 +253,7 @@ async fn misalignment_continuation_requires_current_review_and_submits_once() ->
                 runtime_workspace_roots: (!server_owned)
                     .then(|| config.permissions.user_visible_workspace_roots().to_vec()),
                 approval_policy: (!server_owned).then_some(AskForApproval::OnRequest),
-                approvals_reviewer: (!server_owned).then(|| config.approvals_reviewer.into()),
+                approvals_reviewer: None,
                 sandbox_policy: (!server_owned && !preserve)
                     .then(|| config.legacy_sandbox_policy().into()),
                 cyber_access_program: rollout_enabled.then_some(if daybreak {

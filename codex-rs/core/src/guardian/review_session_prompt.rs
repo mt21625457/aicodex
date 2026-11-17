@@ -4,8 +4,10 @@
 use codex_guardian_reviewer::GuardianPromptItems;
 use codex_protocol::models::ImageDetail;
 use codex_protocol::models::ImageReference;
+use codex_protocol::openai_models::CatalogModel;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::openai_models::ModelOrigin;
 use codex_tools::normalize_output_image_detail;
 use std::borrow::Cow;
 use tracing::warn;
@@ -23,7 +25,7 @@ use crate::image_preparation::unified_image_budget_enabled;
 pub(super) async fn build_guardian_prompt_items(
     params: &GuardianReviewSessionParams,
     reviewer: &GuardianReviewSession,
-    model_info: &ModelInfo,
+    model_info: &CatalogModel,
     reviewer_history: &ContextManager,
     history: GuardianTranscriptHistory<'_>,
     mode: GuardianPromptMode,
@@ -49,7 +51,7 @@ pub(super) async fn build_guardian_prompt_items(
             / 100
     });
     let context_window =
-        context_window.filter(|limit| *limit > 0 && !model_info.used_fallback_model_metadata);
+        context_window.filter(|limit| *limit > 0 && model_info.origin != ModelOrigin::Synthetic);
     let image_mode = if unified_image_budget_enabled(&params.spawn_config.features, model_info) {
         ImagePreparationMode::UnifiedBudget
     } else {
@@ -76,6 +78,7 @@ pub(super) async fn build_guardian_prompt_items(
         &collected.session_id,
         collected.node_repl_evidence_sequence,
         codex_guardian_context::SyncPreparation {
+            budgeting: params.spawn_config.guardian_context_budgeting(),
             reviewer_history: reviewer_history.annotated_items(),
             context_window,
             history_tokens,

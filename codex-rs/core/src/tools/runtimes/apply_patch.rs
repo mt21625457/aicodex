@@ -204,7 +204,7 @@ impl ToolRuntime<ApplyPatchRequest, ApplyPatchRuntimeOutput> for ApplyPatchRunti
     }
 
     fn uses_executor_managed_process_sandbox(&self, req: &ApplyPatchRequest) -> bool {
-        req.turn_environment.environment.is_remote()
+        req.turn_environment.environment().is_remote()
     }
 
     fn sandbox_cwd<'a>(&self, req: &'a ApplyPatchRequest) -> Option<&'a PathUri> {
@@ -218,7 +218,7 @@ impl ToolRuntime<ApplyPatchRequest, ApplyPatchRuntimeOutput> for ApplyPatchRunti
         ctx: &ToolCtx,
     ) -> Result<ApplyPatchRuntimeOutput, ToolError> {
         let started_at = Instant::now();
-        let fs = req.turn_environment.environment.get_filesystem();
+        let fs = req.turn_environment.environment().get_filesystem();
         let sandbox = ApplyPatchRuntime::file_system_sandbox_context_for_attempt(req, attempt);
         let lock_paths = canonical_lock_paths(fs.as_ref(), &req.file_paths, sandbox.as_ref()).await;
         let _mutation_guards = ctx
@@ -350,7 +350,7 @@ impl ToolRuntime<ConditionalWriteRequest, ApplyPatchRuntimeOutput> for ApplyPatc
     }
 
     fn uses_executor_managed_process_sandbox(&self, req: &ConditionalWriteRequest) -> bool {
-        req.turn_environment.environment.is_remote()
+        req.turn_environment.environment().is_remote()
     }
 
     fn sandbox_cwd<'a>(&self, req: &'a ConditionalWriteRequest) -> Option<&'a PathUri> {
@@ -364,7 +364,7 @@ impl ToolRuntime<ConditionalWriteRequest, ApplyPatchRuntimeOutput> for ApplyPatc
         ctx: &ToolCtx,
     ) -> Result<ApplyPatchRuntimeOutput, ToolError> {
         let started_at = Instant::now();
-        let file_system = req.turn_environment.environment.get_filesystem();
+        let file_system = req.turn_environment.environment().get_filesystem();
         let _mutation_guard = ctx
             .step_context
             .turn

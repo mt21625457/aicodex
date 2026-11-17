@@ -105,7 +105,7 @@ fn create_thread_params(thread_id: ThreadId) -> CreateThreadParams {
         history_mode: ThreadHistoryMode::Legacy,
         history_base: None,
         subagent_history_start_ordinal: None,
-        initial_window_id: "window-1".to_string(),
+        initial_window_id: codex_protocol::ContextWindowId::new_uuid_v7(),
         metadata: ThreadPersistenceMetadata {
             cwd: Some(std::env::current_dir().expect("current dir")),
             model_provider: "test-provider".to_string(),
