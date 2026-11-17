@@ -33,7 +33,7 @@ impl Gauge {
         // ignore-reason: 零值时 checked_sub 返回 None，Err 仅表示无需减值，并非运行故障。
         let _ = self
             .value
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 value.checked_sub(1)
             });
     }

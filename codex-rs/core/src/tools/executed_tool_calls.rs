@@ -369,10 +369,10 @@ impl ExecutedToolCalls {
     fn reserve_direct_call(&self) -> Option<DirectCallPermit> {
         let recording = Arc::downgrade(&self.lock_state().as_ref()?.recording);
         self.pending_direct_calls
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |pending| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |pending| {
                 (pending < MAX_PENDING_EXECUTED_TOOL_CALLS).then_some(pending + 1)
             })
-            .ok()?;
+            .ok()?; // ignore-reason: Err 仅表示已达预留上限，转换为 None 向调用方报告拒绝预留，并非运行故障。
         Some(DirectCallPermit {
             recording,
             pending_direct_calls: Arc::clone(&self.pending_direct_calls),
