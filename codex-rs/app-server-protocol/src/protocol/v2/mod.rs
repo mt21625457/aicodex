@@ -93,3 +93,6 @@ pub use windows_sandbox::*;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod recovery_tests;

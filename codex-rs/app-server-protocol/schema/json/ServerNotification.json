@@ -1435,6 +1435,17 @@
         "error": {
           "$ref": "#/definitions/TurnError"
         },
+        "recovery": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StreamRecovery"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "引擎的恢复证据；旧服务端缺失时不得从错误正文推断执行控制。"
+        },
         "threadId": {
           "type": "string"
         },
@@ -4245,6 +4256,49 @@
         "remainingPercent",
         "resetsAt",
         "used"
+      ],
+      "type": "object"
+    },
+    "StreamRecovery": {
+      "additionalProperties": true,
+      "properties": {
+        "attempt": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "budgetDeadlineMs": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "maxAttempts": {
+          "description": "连接恢复由时间预算限制，不能伪造次数上限。",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "reason": {
+          "description": "开放字符串保留未来原因；客户端仅显示认识的原因，不改变控制流。",
+          "type": "string"
+        },
+        "requestId": {
+          "description": "本地生成的请求标识，不是可续接的 provider response id。",
+          "type": "string"
+        },
+        "retryAtMs": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "attempt",
+        "budgetDeadlineMs",
+        "reason",
+        "requestId",
+        "retryAtMs"
       ],
       "type": "object"
     },

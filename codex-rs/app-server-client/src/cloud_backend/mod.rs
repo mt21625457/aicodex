@@ -358,6 +358,7 @@ fn send_notification(
 
 fn cloud_error(id: &str, message: &str) -> protocol::ErrorNotification {
     protocol::ErrorNotification {
+        recovery: None,
         thread_id: id.to_owned(),
         turn_id: String::new(),
         will_retry: false,

@@ -5315,6 +5315,29 @@ class SpendControlLimitSnapshot(BaseModel):
     used: str
 
 
+class StreamRecovery(BaseModel):
+    model_config = ConfigDict(
+        extra="allow",
+        populate_by_name=True,
+    )
+    attempt: Annotated[int, Field(ge=0)]
+    budget_deadline_ms: Annotated[int, Field(alias="budgetDeadlineMs")]
+    max_attempts: Annotated[
+        int | None,
+        Field(alias="maxAttempts", description="连接恢复由时间预算限制，不能伪造次数上限。", ge=0),
+    ] = None
+    reason: Annotated[
+        str, Field(description="开放字符串保留未来原因；客户端仅显示认识的原因，不改变控制流。")
+    ]
+    request_id: Annotated[
+        str,
+        Field(
+            alias="requestId", description="本地生成的请求标识，不是可续接的 provider response id。"
+        ),
+    ]
+    retry_at_ms: Annotated[int, Field(alias="retryAtMs")]
+
+
 class StrictReviewRequiredNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -6615,6 +6638,10 @@ class ThreadRuntimeLifecycle(BaseModel):
             alias="lastTerminalTurnId",
             description="Identifier of the latest terminal turn observed by the live thread listener.",
         ),
+    ] = None
+    recovery: Annotated[
+        StreamRecovery | None,
+        Field(description="仅当前活跃轮的恢复证据；有真实内容进展或终态后清除，旧服务器可以缺失。"),
     ] = None
 
 
@@ -12977,6 +13004,10 @@ class ErrorNotification(BaseModel):
         populate_by_name=True,
     )
     error: TurnError
+    recovery: Annotated[
+        StreamRecovery | None,
+        Field(description="引擎的恢复证据；旧服务端缺失时不得从错误正文推断执行控制。"),
+    ] = None
     thread_id: Annotated[str, Field(alias="threadId")]
     turn_id: Annotated[str, Field(alias="turnId")]
     will_retry: Annotated[bool, Field(alias="willRetry")]

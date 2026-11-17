@@ -207,6 +207,7 @@ async fn compaction_retry_status_returns_to_compacting() {
     chat.handle_server_notification(compaction_started("compact-1"), /*replay_kind*/ None);
     chat.handle_server_notification(
         ServerNotification::Error(ErrorNotification {
+            recovery: None,
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
             will_retry: true,

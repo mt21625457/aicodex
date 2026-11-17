@@ -6082,17 +6082,20 @@ impl Session {
         self.ensure_rollout_materialized(persist_context).await;
     }
 
+    /// 发布恢复通知；证据可缺失以兼容旧压缩路径，不改变轮次终态。
     pub(crate) async fn notify_stream_error(
         &self,
         turn_context: &TurnContext,
         message: impl Into<String>,
         codex_error: CodexErr,
+        recovery: Option<codex_protocol::stream_recovery::StreamRecovery>,
     ) {
         let additional_details = codex_error.to_string();
         let codex_error_info = CodexErrorInfo::ResponseStreamDisconnected {
             http_status_code: codex_error.http_status_code_value(),
         };
         let event = EventMsg::StreamError(StreamErrorEvent {
+            recovery,
             message: message.into(),
             codex_error_info: Some(codex_error_info),
             additional_details: Some(additional_details),

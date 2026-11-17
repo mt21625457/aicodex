@@ -33,6 +33,7 @@ fn error_notification(
     error: AppServerTurnError,
 ) -> ServerNotification {
     ServerNotification::Error(codex_app_server_protocol::ErrorNotification {
+        recovery: None,
         thread_id: thread_id.to_string(),
         turn_id: turn_id.into(),
         error,

@@ -4250,6 +4250,10 @@ pub struct ThreadRolledBackEvent {
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct StreamErrorEvent {
+    /// 可选以兼容旧 rollout；缺失不表示重试已经完成。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub recovery: Option<crate::stream_recovery::StreamRecovery>,
     pub message: String,
     #[serde(default)]
     pub codex_error_info: Option<CodexErrorInfo>,

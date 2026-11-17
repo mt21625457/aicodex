@@ -60,6 +60,10 @@ pub struct StrictReviewRequiredNotification {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ErrorNotification {
+    /// 引擎的恢复证据；旧服务端缺失时不得从错误正文推断执行控制。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub recovery: Option<codex_protocol::stream_recovery::StreamRecovery>,
     pub error: TurnError,
     // Set to true if the error is transient and the app-server process will automatically retry.
     // If true, this will not interrupt a turn.

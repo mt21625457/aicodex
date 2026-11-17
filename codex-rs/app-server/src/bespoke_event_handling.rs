@@ -1097,8 +1097,7 @@ pub(crate) async fn apply_bespoke_event_handling(
             .await;
         }
         EventMsg::StreamError(ev) => {
-            // We don't need to update the turn summary store for stream errors as they are intermediate error states for retries,
-            // but we notify the client.
+            // 瞬时恢复不写入终态错误；ThreadState 已按监听器顺序保存可查询的恢复证据。
             let turn_error = TurnError {
                 misalignment: None,
                 message: ev.message,
@@ -1107,6 +1106,7 @@ pub(crate) async fn apply_bespoke_event_handling(
             };
             outgoing
                 .send_server_notification(ServerNotification::Error(ErrorNotification {
+                    recovery: ev.recovery,
                     error: turn_error,
                     will_retry: true,
                     thread_id: conversation_id.to_string(),
@@ -1763,6 +1763,7 @@ async fn handle_error_notification(
     handle_error(conversation_id, error.clone(), thread_state).await;
     outgoing
         .send_server_notification(ServerNotification::Error(ErrorNotification {
+            recovery: None,
             error,
             will_retry: false,
             thread_id: conversation_id.to_string(),

@@ -1820,6 +1820,9 @@ pub struct ThreadReadParams {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadRuntimeLifecycle {
+    /// 仅当前活跃轮的恢复证据；有真实内容进展或终态后清除，旧服务器可以缺失。
+    #[serde(default)]
+    pub recovery: Option<codex_protocol::stream_recovery::StreamRecovery>,
     /// Identifier of the currently active turn, when app-server has one.
     pub active_turn_id: Option<String>,
     /// Unix timestamp (in seconds) when the active turn started, if known.

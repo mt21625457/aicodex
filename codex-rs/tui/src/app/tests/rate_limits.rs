@@ -91,6 +91,7 @@ fn render_status_output(
 fn deliver_usage_limit_error(app: &mut App) {
     app.chat_widget.handle_server_notification(
         ServerNotification::Error(ErrorNotification {
+            recovery: None,
             error: AppServerTurnError {
                 misalignment: None,
                 message: "Usage limit reached.".to_string(),

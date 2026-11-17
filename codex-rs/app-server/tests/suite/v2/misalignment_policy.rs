@@ -219,6 +219,7 @@ async fn assert_policy_violation_completes_turn_with_typed_terminal_error(
     assert_eq!(
         error,
         ErrorNotification {
+            recovery: None,
             error: TurnError {
                 misalignment: expected_misalignment.clone(),
                 message: MESSAGE.to_string(),

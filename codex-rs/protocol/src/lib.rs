@@ -65,3 +65,5 @@ pub mod shell_environment;
 pub mod tool_input_progress;
 pub mod turn_input;
 pub mod user_input;
+
+pub mod stream_recovery;

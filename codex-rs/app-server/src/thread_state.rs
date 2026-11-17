@@ -134,6 +134,7 @@ pub(crate) struct ThreadState {
     pub(crate) turn_summary: TurnSummary,
     pub(crate) declined_command_executions: HashSet<(String, String)>,
     pub(crate) last_terminal_turn_id: Option<String>,
+    recovery: Option<codex_protocol::stream_recovery::StreamRecovery>,
     /// Lets an internal runtime replacement wait until the old listener has processed Core's
     /// `ShutdownComplete` event before that listener is superseded.
     pub(crate) shutdown_drain: Option<watch::Receiver<bool>>,
@@ -204,6 +205,7 @@ impl ThreadState {
         self.shutdown_drain = None;
         self.listener_command_tx = None;
         self.current_turn_history.reset();
+        self.recovery = None;
         self.transcript_metadata_by_item.clear();
         self.listener_thread = None;
         self.watch_registration = WatchRegistration::default();
@@ -228,6 +230,7 @@ impl ThreadState {
         // 但不会复制长回答、图片及工具输出等正文。
         let active_turn = self.active_turn_metadata_snapshot();
         ThreadRuntimeLifecycle {
+            recovery: active_turn.as_ref().and(self.recovery.clone()),
             active_turn_id: active_turn.as_ref().map(|turn| turn.turn_id.clone()),
             active_turn_started_at: active_turn.and_then(|turn| turn.started_at),
             last_terminal_turn_id: self.last_terminal_turn_id.clone(),
@@ -268,6 +271,7 @@ impl ThreadState {
     }
 
     pub(crate) fn track_current_turn_event(&mut self, event_turn_id: &str, event: &EventMsg) {
+        self.track_recovery(event_turn_id, event);
         if let EventMsg::TurnStarted(payload) = event {
             self.turn_summary = TurnSummary {
                 started_at: payload.started_at,
@@ -312,6 +316,39 @@ impl ThreadState {
             if !self.current_turn_history.has_active_turn() {
                 self.current_turn_history.reset();
             }
+        }
+    }
+
+    /// 与历史事件共用监听器顺序；旧轮事件不能清除新轮的恢复状态。
+    fn track_recovery(&mut self, turn_id: &str, event: &EventMsg) {
+        if matches!(event, EventMsg::TurnStarted(_)) {
+            self.recovery = None;
+            return;
+        }
+        if self.active_turn_id() != Some(turn_id) {
+            return;
+        }
+        match event {
+            EventMsg::StreamError(error) => self.recovery = error.recovery.clone(),
+            // 工具可在模型断流后并发完成；它们不能证明 provider 已恢复。
+            EventMsg::ItemStarted(codex_protocol::protocol::ItemStartedEvent { item, .. })
+            | EventMsg::ItemCompleted(codex_protocol::protocol::ItemCompletedEvent {
+                item, ..
+            }) if matches!(
+                item,
+                CoreTurnItem::AgentMessage(_) | CoreTurnItem::Reasoning(_) | CoreTurnItem::Plan(_)
+            ) =>
+            {
+                self.recovery = None;
+            }
+            EventMsg::AgentMessageContentDelta(_)
+            | EventMsg::ReasoningContentDelta(_)
+            | EventMsg::ReasoningRawContentDelta(_)
+            | EventMsg::PlanDelta(_)
+            | EventMsg::TurnAborted(_)
+            | EventMsg::TurnComplete(_)
+            | EventMsg::Error(_) => self.recovery = None,
+            _ => {}
         }
     }
 
@@ -450,6 +487,7 @@ mod tests {
             assert_eq!(
                 state.runtime_lifecycle_snapshot(),
                 ThreadRuntimeLifecycle {
+                    recovery: None,
                     active_turn_id: full.as_ref().map(|turn| turn.id.clone()),
                     active_turn_started_at: full.and_then(|turn| turn.started_at),
                     last_terminal_turn_id: state.last_terminal_turn_id.clone(),
@@ -535,6 +573,7 @@ mod tests {
         assert_eq!(
             state.runtime_lifecycle_snapshot(),
             ThreadRuntimeLifecycle {
+                recovery: None,
                 active_turn_id: Some("turn-1".to_string()),
                 active_turn_started_at: Some(42),
                 last_terminal_turn_id: None,
@@ -581,6 +620,7 @@ mod tests {
         assert_eq!(
             state.runtime_lifecycle_snapshot(),
             ThreadRuntimeLifecycle {
+                recovery: None,
                 active_turn_id: None,
                 active_turn_started_at: None,
                 last_terminal_turn_id: Some("turn-1".to_string()),
@@ -1193,3 +1233,7 @@ impl ThreadStateManager {
             .map(|thread_entry| thread_entry.has_connections_watcher.subscribe())
     }
 }
+
+#[cfg(test)]
+#[path = "thread_recovery_tests.rs"]
+mod recovery_tests;

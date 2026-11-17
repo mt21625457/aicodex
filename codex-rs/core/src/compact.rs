@@ -442,6 +442,7 @@ async fn run_compact_task_inner_impl(
                     turn_context.as_ref(),
                     format!("Reconnecting... {retries}/{max_retries}"),
                     e,
+                    None,
                 )
                 .await;
                 watchdog

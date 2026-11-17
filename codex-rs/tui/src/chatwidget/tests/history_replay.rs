@@ -1244,6 +1244,7 @@ async fn replayed_retryable_app_server_error_keeps_turn_running() {
 
     chat.handle_server_notification(
         ServerNotification::Error(ErrorNotification {
+            recovery: None,
             error: AppServerTurnError {
                 misalignment: None,
                 message: "Reconnecting... 1/5".to_string(),

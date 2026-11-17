@@ -847,6 +847,7 @@ async fn misalignment_buffered_replay_preserves_input_after_continuation() {
     let events = [
         turn_started_notification(thread_id, "failed-turn"),
         ServerNotification::Error(codex_app_server_protocol::ErrorNotification {
+            recovery: None,
             thread_id: thread_id.to_string(),
             turn_id: "failed-turn".to_string(),
             error,
@@ -912,6 +913,7 @@ async fn misalignment_replay_blocks_when_turn_start_was_evicted() {
         (
             previous_turn.clone(),
             ServerNotification::Error(codex_app_server_protocol::ErrorNotification {
+                recovery: None,
                 thread_id: thread_id.to_string(),
                 turn_id: "new-turn".into(),
                 error: error.clone(),
@@ -929,6 +931,7 @@ async fn misalignment_replay_blocks_when_turn_start_was_evicted() {
         (
             failed_turn,
             ServerNotification::Error(codex_app_server_protocol::ErrorNotification {
+                recovery: None,
                 thread_id: thread_id.to_string(),
                 turn_id: "settings-update".into(),
                 error: AppServerTurnError {

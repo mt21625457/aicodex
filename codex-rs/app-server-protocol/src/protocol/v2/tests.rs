@@ -637,6 +637,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
             revision: "revision_1".to_string(),
         }),
         runtime_lifecycle: Some(ThreadRuntimeLifecycle {
+            recovery: None,
             active_turn_id: Some("turn_active".to_string()),
             active_turn_started_at: Some(42),
             last_terminal_turn_id: Some("turn_terminal".to_string()),
@@ -649,6 +650,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
             "activeTurnId": "turn_active",
             "activeTurnStartedAt": 42,
             "lastTerminalTurnId": "turn_terminal",
+            "recovery": null,
         })
     );
     let decoded = serde_json::from_value::<ThreadReadResponse>(value.clone())

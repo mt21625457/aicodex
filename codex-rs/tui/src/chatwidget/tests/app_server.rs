@@ -1685,6 +1685,7 @@ async fn live_app_server_failed_turn_does_not_duplicate_error_history() {
 
     chat.handle_server_notification(
         ServerNotification::Error(ErrorNotification {
+            recovery: None,
             error: AppServerTurnError {
                 misalignment: None,
                 message: "permission denied".to_string(),
@@ -1908,6 +1909,7 @@ async fn live_app_server_stream_recovery_restores_previous_status_header() {
 
     chat.handle_server_notification(
         ServerNotification::Error(ErrorNotification {
+            recovery: None,
             error: AppServerTurnError {
                 misalignment: None,
                 message: "Reconnecting... 2/5".to_string(),
@@ -2016,6 +2018,7 @@ async fn live_app_server_server_overloaded_error_renders_error() {
 
         chat.handle_server_notification(
             ServerNotification::Error(ErrorNotification {
+                recovery: None,
                 error: AppServerTurnError {
                     misalignment: None,
                     message: message.to_string(),
@@ -2068,6 +2071,7 @@ async fn live_app_server_cyber_policy_error_renders_dedicated_notice() {
 
     chat.handle_server_notification(
         ServerNotification::Error(ErrorNotification {
+            recovery: None,
             error: AppServerTurnError {
                 misalignment: None,
                 message: "server fallback message".to_string(),

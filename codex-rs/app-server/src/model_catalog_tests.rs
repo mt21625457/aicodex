@@ -38,7 +38,7 @@ fn catalog_with_models(
             initial_provider: config.model_provider.clone(),
             initial_models: models,
             fallback: codex_models_manager::manager::ModelCatalogSettings::disk(
-                config.codex_home.clone(),
+                config.codex_home.to_path_buf(),
             ),
         }),
     );

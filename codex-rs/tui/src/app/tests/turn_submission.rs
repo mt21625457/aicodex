@@ -368,6 +368,7 @@ async fn misalignment_policy_in_parent_stops_active_side_conversation() -> Resul
     app.enqueue_thread_notification(
         parent_thread_id,
         ServerNotification::Error(ErrorNotification {
+            recovery: None,
             error: AppServerTurnError {
                 misalignment: None,
                 message: "misalignment policy violation".to_string(),

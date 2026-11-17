@@ -1758,6 +1758,7 @@ fn turn_failure_prefers_structured_error_message() {
     let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
 
     let error = processor.collect_thread_events(ServerNotification::Error(ErrorNotification {
+        recovery: None,
         error: TurnError {
             misalignment: None,
             message: "backend failed".to_string(),

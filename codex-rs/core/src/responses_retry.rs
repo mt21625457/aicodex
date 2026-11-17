@@ -31,6 +31,7 @@ pub(crate) enum ResponsesStreamRequest {
 }
 
 pub(crate) struct ResponsesStreamRetryState {
+    request_id: String,
     recovery_started_at: Option<Instant>,
     retries: u64,
     connection_retries: u64,
@@ -40,6 +41,7 @@ pub(crate) struct ResponsesStreamRetryState {
 impl Default for ResponsesStreamRetryState {
     fn default() -> Self {
         Self {
+            request_id: uuid::Uuid::new_v4().to_string(),
             recovery_started_at: None,
             retries: 0,
             connection_retries: 0,
@@ -49,6 +51,28 @@ impl Default for ResponsesStreamRetryState {
 }
 
 impl ResponsesStreamRetryState {
+    /// 展示时刻从同一单调时钟快照投影；客户端时钟不会影响引擎退避和预算。
+    fn recovery_status(
+        &self,
+        attempt: u64,
+        max_attempts: Option<u64>,
+        retry_at: Instant,
+        deadline: Instant,
+        reason: &str,
+    ) -> codex_protocol::stream_recovery::StreamRecovery {
+        let now = Instant::now();
+        let wall = chrono::Utc::now().timestamp_millis();
+        codex_protocol::stream_recovery::StreamRecovery {
+            request_id: self.request_id.clone(),
+            attempt,
+            max_attempts,
+            retry_at_ms: wall + retry_at.saturating_duration_since(now).as_millis() as i64,
+            budget_deadline_ms: wall + deadline.saturating_duration_since(now).as_millis() as i64,
+            reason: reason.to_string(),
+            extra: Default::default(),
+        }
+    }
+
     /// 连接退避和服务端建议都必须满足；通知交付耗时算入同一个绝对期限。
     fn connection_retry_at(&self, advice: Option<RetryAfter>) -> Instant {
         let local = Instant::now() + self.connection_retry_delay;
@@ -123,28 +147,16 @@ pub(crate) async fn handle_response_stream_error(
         && !turn_context.session_source.is_internal()
         && !turn_context.provider.info().is_amazon_bedrock()
     {
-        let retry_at = retry_state.connection_retry_at(retry_after);
-        let retry_delay = retry_at.saturating_duration_since(Instant::now());
-        if retry_at >= deadline {
-            record_exhausted_retry(sess, turn_context, retry_after);
-            return Err(err);
-        }
-        warn!(
-            turn_id = %turn_context.sub_id,
-            error = %err,
-            ?retry_delay,
-            "stream connection failed; waiting to retry"
-        );
-        sess.notify_stream_error(turn_context, "Reconnecting... waiting for network", err)
-            .await;
-        retry_state.connection_retries = retry_state.connection_retries.saturating_add(1);
-        codex_client::record_retry!(retry_state.connection_retries, retry_delay, operation);
-        tokio::time::sleep_until(retry_at).await;
-        retry_state.connection_retry_delay = retry_state
-            .connection_retry_delay
-            .saturating_mul(2)
-            .min(MAX_CONNECTION_RETRY_DELAY);
-        return Ok(());
+        return retry_connection(
+            retry_state,
+            sess,
+            turn_context,
+            err,
+            retry_after,
+            deadline,
+            operation,
+        )
+        .await;
     }
 
     if retry_state.retries >= max_retries
@@ -153,35 +165,48 @@ pub(crate) async fn handle_response_stream_error(
             turn_context.model_info(),
         )
     {
-        // 切换传输仍属于恢复，必须通知状态栏；累计次数与时间预算不能重置。
-        warn!(
-            turn_id = %turn_context.sub_id,
-            error = %err,
-            "Falling back from WebSockets to HTTPS transport"
-        );
-        sess.notify_stream_error(turn_context, "Reconnecting... switching transport", err)
-            .await;
-        // 先发布恢复状态，再遵守服务器等待时限，避免等待期间继续显示普通 Working。
-        if let Some(retry_after) = retry_after {
-            tokio::time::sleep_until(retry_after.deadline()).await;
-        }
-        return Ok(());
+        return retry_after_transport_switch(
+            retry_state,
+            sess,
+            turn_context,
+            err,
+            retry_after,
+            deadline,
+        )
+        .await;
     }
 
     if retry_state.retries < max_retries {
         retry_state.retries = retry_count;
         log_retry(request, turn_context, &err, retry_count, max_retries, delay);
 
+        let retry_at = retry_after
+            .map(RetryAfter::deadline)
+            .unwrap_or_else(|| Instant::now() + delay);
+        let reason = if err.http_status_code_value() == Some(429)
+            || matches!(err.details(), CodexErrorDetails::RateLimitExceeded(_))
+        {
+            "rate_limit"
+        } else if matches!(
+            err.details(),
+            CodexErrorDetails::Timeout | CodexErrorDetails::RequestTimeout
+        ) {
+            "timeout"
+        } else {
+            "connection"
+        };
+        let recovery =
+            retry_state.recovery_status(retry_count, Some(max_retries), retry_at, deadline, reason);
         // 首次断流也必须可见；使用错误生命周期事件，不添加额外横幅或重发轮次。
         sess.notify_stream_error(
             turn_context,
             format!("Reconnecting... {retry_count}/{max_retries}"),
             err,
+            Some(recovery),
         )
         .await;
         // Use one clock sample so local backoff telemetry retains the selected delay.
         let now = Instant::now();
-        let retry_at = retry_after.map(RetryAfter::deadline).unwrap_or(now + delay);
         let delay = retry_at.saturating_duration_since(now);
         codex_client::record_retry!(retry_count, delay, operation);
         tokio::time::sleep_until(retry_at).await;
@@ -190,6 +215,90 @@ pub(crate) async fn handle_response_stream_error(
 
     record_exhausted_retry(sess, turn_context, retry_after);
     Err(err)
+}
+
+/// 切换仅更换传输，不重新分配次数或时间预算。
+async fn retry_after_transport_switch(
+    retry_state: &ResponsesStreamRetryState,
+    sess: &Session,
+    turn_context: &TurnContext,
+    err: CodexErr,
+    retry_after: Option<RetryAfter>,
+    deadline: Instant,
+) -> Result<(), CodexErr> {
+    // 切换传输仍属于恢复，必须通知状态栏；累计次数与时间预算不能重置。
+    warn!(
+        turn_id = %turn_context.sub_id,
+        error = %err,
+        "Falling back from WebSockets to HTTPS transport"
+    );
+    let recovery = retry_state.recovery_status(
+        retry_state.retries.saturating_add(1),
+        None,
+        retry_after
+            .map(RetryAfter::deadline)
+            .unwrap_or_else(Instant::now),
+        deadline,
+        "transport",
+    );
+    sess.notify_stream_error(
+        turn_context,
+        "Reconnecting... switching transport",
+        err,
+        Some(recovery),
+    )
+    .await;
+    // 先发布恢复状态，再遵守服务器等待时限，避免等待期间继续显示普通 Working。
+    if let Some(retry_after) = retry_after {
+        tokio::time::sleep_until(retry_after.deadline()).await;
+    }
+    Ok(())
+}
+
+/// 连接恢复只受既定时间预算约束，通知和等待共用同一绝对重试时刻。
+async fn retry_connection(
+    retry_state: &mut ResponsesStreamRetryState,
+    sess: &Session,
+    turn_context: &TurnContext,
+    err: CodexErr,
+    retry_after: Option<RetryAfter>,
+    deadline: Instant,
+    operation: RetryOperation,
+) -> Result<(), CodexErr> {
+    let retry_at = retry_state.connection_retry_at(retry_after);
+    let retry_delay = retry_at.saturating_duration_since(Instant::now());
+    if retry_at >= deadline {
+        record_exhausted_retry(sess, turn_context, retry_after);
+        return Err(err);
+    }
+    warn!(
+        turn_id = %turn_context.sub_id,
+        error = %err,
+        ?retry_delay,
+        "stream connection failed; waiting to retry"
+    );
+    let recovery = retry_state.recovery_status(
+        retry_state.connection_retries.saturating_add(1),
+        None,
+        retry_at,
+        deadline,
+        "connection",
+    );
+    sess.notify_stream_error(
+        turn_context,
+        "Reconnecting... waiting for network",
+        err,
+        Some(recovery),
+    )
+    .await;
+    retry_state.connection_retries = retry_state.connection_retries.saturating_add(1);
+    codex_client::record_retry!(retry_state.connection_retries, retry_delay, operation);
+    tokio::time::sleep_until(retry_at).await;
+    retry_state.connection_retry_delay = retry_state
+        .connection_retry_delay
+        .saturating_mul(2)
+        .min(MAX_CONNECTION_RETRY_DELAY);
+    Ok(())
 }
 
 /// 所有预算耗尽路径都保留服务端建议，避免上层恢复提前重发。

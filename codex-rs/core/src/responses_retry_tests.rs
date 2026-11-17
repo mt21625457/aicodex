@@ -157,3 +157,26 @@ async fn connection_retry_honors_server_advice_without_shortening_local_backoff(
         now + Duration::from_secs(5)
     );
 }
+
+#[tokio::test]
+async fn recovery_metadata_preserves_request_identity_and_reports_real_deadlines() {
+    let state = ResponsesStreamRetryState::default();
+    let now = Instant::now();
+    let status = state.recovery_status(
+        2,
+        Some(4),
+        now + Duration::from_secs(10),
+        now + Duration::from_secs(60),
+        "connection",
+    );
+    assert_eq!(status.attempt, 2);
+    assert_eq!(status.max_attempts, Some(4));
+    assert!((49_999..=50_001).contains(&(status.budget_deadline_ms - status.retry_at_ms)));
+    let switched = state.recovery_status(5, None, now, now + Duration::from_secs(60), "transport");
+    assert_eq!(switched.request_id, status.request_id);
+    assert_eq!(switched.max_attempts, None);
+    assert_ne!(
+        ResponsesStreamRetryState::default().request_id,
+        status.request_id
+    );
+}
