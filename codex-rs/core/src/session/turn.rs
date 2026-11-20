@@ -12,6 +12,7 @@ use crate::client::ModelClientSession;
 use crate::client::SamplingOptions;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
+use crate::client_common::SamplingEvent;
 use crate::client_common::SamplingStream;
 use crate::compact::AutoCompactionDisabled;
 use crate::compact::run_inline_auto_compact_task;
@@ -3564,9 +3565,9 @@ async fn try_run_sampling_request(
             Err(_) => break Err(CodexErr::TurnAborted),
         };
 
-        let event = SamplingStream::accept_for_turn(event, &cancellation_token);
+        let event = accept_turn_sampling_event(event, &cancellation_token);
         let stream_closed = event.is_none();
-        let crate::client_common::SamplingEvent { event, hook_output } = match event {
+        let SamplingEvent { event, hook_output } = match event {
             Some(event) => event,
             None if stream.consumer_dropped.is_cancelled() => {
                 break Ok(SamplingRequestResult {
@@ -4339,6 +4340,20 @@ async fn try_run_sampling_request(
     }
 
     outcome
+}
+
+fn accept_turn_sampling_event(
+    event: Option<SamplingEvent>,
+    cancellation: &CancellationToken,
+) -> Option<SamplingEvent> {
+    // The provider already reported spending. Record it before returning the interruption.
+    if event.as_ref().is_some_and(|item| {
+        matches!(&item.event, Err(error)
+            if matches!(error.details(), CodexErrorDetails::ResponseIncomplete(_)))
+    }) {
+        return event;
+    }
+    SamplingStream::accept_for_turn(event, cancellation)
 }
 
 pub(crate) fn get_last_assistant_message_from_turn<'a>(

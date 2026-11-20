@@ -1720,6 +1720,59 @@ mod tests {
         }
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn websocket_non_http_errors_preserve_structured_errors_and_retry_advice() {
+        for (kind, status) in [
+            ("error", None),
+            ("error", Some(200)),
+            ("response.error", None),
+        ] {
+            let headers = json!({"retry-after": "10"});
+            let expected_retry_after = RetryAfter::from_delay(Duration::from_secs(10));
+            let rate_limit = json!({
+                "type": kind,
+                "status": status,
+                "error": {
+                    "type": "rate_limit_error",
+                    "code": "rate_limit_exceeded",
+                    "message": "Slow down",
+                    "headers": headers,
+                },
+            });
+            assert!(matches!(
+                map_websocket_provider_error(Some(kind), &rate_limit.to_string()),
+                Some(ApiError::RateLimitExceeded { message, retry_after })
+                    if message == "Slow down" && retry_after == expected_retry_after
+            ));
+
+            let capacity = json!({
+                "type": kind,
+                "status": status,
+                "headers": headers,
+                "error": {"code": "policy_capacity_unavailable"},
+            });
+            assert!(matches!(
+                map_websocket_provider_error(Some(kind), &capacity.to_string()),
+                Some(ApiError::PolicyCapacityUnavailable { retry_after })
+                    if retry_after == expected_retry_after
+            ));
+
+            let quota = json!({
+                "type": kind,
+                "status": status,
+                "error": {"code": "insufficient_quota"},
+            });
+            let error = map_websocket_provider_error(Some(kind), &quota.to_string())
+                .expect("structured quota error");
+            assert!(matches!(error, ApiError::QuotaExceeded));
+            assert!(
+                crate::api_bridge::map_api_error(error)
+                    .retry_delay(1)
+                    .is_none()
+            );
+        }
+    }
+
     #[test]
     fn merge_request_headers_matches_http_precedence() {
         let mut provider_headers = HeaderMap::new();

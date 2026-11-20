@@ -26,15 +26,11 @@ struct Error {
 
 pub(super) fn parse_failed_response(response: Option<Value>) -> ApiError {
     let error = response.as_ref().and_then(|response| response.get("error"));
-    let retry_after_header = error
-        .and_then(|error| error.get("headers"))
-        .and_then(Value::as_object)
-        .and_then(|headers| RetryAfter::from_headers(&json_headers_to_http_headers(headers)));
-    if let Some(error) = parse_terminal_provider_error(error, /*status*/ None) {
+    let retry_after_header = stream_retry_after(error, /*envelope_headers*/ None);
+    if let Some(error) = classify_stream_error(error, retry_after_header) {
         return error;
     }
-    let Some(error) = error.and_then(|error| serde_json::from_value::<Error>(error.clone()).ok())
-    else {
+    let Some(error) = error.and_then(|error| Error::deserialize(error).ok()) else {
         let message = "response.failed event received".to_string();
         return match retry_after_header {
             Some(_) => ApiError::Retryable {
@@ -45,34 +41,39 @@ pub(super) fn parse_failed_response(response: Option<Value>) -> ApiError {
         };
     };
 
-    if !matches!(
-        error.code.as_deref(),
-        Some(
-            "context_length_exceeded"
-                | "insufficient_quota"
-                | "credit_balance_exhausted"
-                | "organization_spend_limit_exceeded"
-                | "project_spend_limit_exceeded"
-                | "usage_not_included"
-                | "cyber_policy"
-                | "bio_policy"
-                | "misalignment_policy_violation"
-                | "policy_capacity_unavailable"
-                | "server_is_overloaded"
-                | "rate_limit_exceeded"
-                | "slow_down"
-        )
-    ) && let Some(kind) = ProviderMediaErrorKind::classify(
-        /*status*/ None,
-        error.message.as_deref().unwrap_or_default(),
-    ) {
-        return ApiError::ProviderMedia {
-            kind,
-            message: error.message.unwrap_or_default(),
-        };
+    let message = error.message.unwrap_or_default();
+    if let Some(kind) = ProviderMediaErrorKind::classify(/*status*/ None, &message) {
+        return ApiError::ProviderMedia { kind, message };
     }
+    ApiError::Retryable {
+        message,
+        retry_after: retry_after_header,
+    }
+}
 
-    match error.code.as_deref() {
+pub(super) fn stream_retry_after(
+    error: Option<&Value>,
+    envelope_headers: Option<&Value>,
+) -> Option<RetryAfter> {
+    [
+        error.and_then(|error| error.get("headers")),
+        envelope_headers,
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(Value::as_object)
+    .find_map(|headers| RetryAfter::from_headers(&json_headers_to_http_headers(headers)))
+}
+
+pub(super) fn classify_stream_error(
+    error: Option<&Value>,
+    retry_after_header: Option<RetryAfter>,
+) -> Option<ApiError> {
+    if let Some(error) = parse_terminal_provider_error(error, /*status*/ None) {
+        return Some(error);
+    }
+    let error = Error::deserialize(error?).ok()?;
+    let error = match error.code.as_deref() {
         Some(
             "insufficient_quota"
             | "credit_balance_exhausted"
@@ -106,11 +107,15 @@ pub(super) fn parse_failed_response(response: Option<Value>) -> ApiError {
                 }),
             }
         }
-        Some("invalid_prompt") => ApiError::InvalidPrompt {
-            message: error
+        Some("invalid_prompt") => {
+            let message = error
                 .message
-                .unwrap_or_else(|| "Invalid request.".to_string()),
-        },
+                .unwrap_or_else(|| "Invalid request.".to_string());
+            match ProviderMediaErrorKind::classify(/*status*/ None, &message) {
+                Some(kind) => ApiError::ProviderMedia { kind, message },
+                None => ApiError::InvalidPrompt { message },
+            }
+        }
         Some("policy_capacity_unavailable") => ApiError::PolicyCapacityUnavailable {
             retry_after: retry_after_header,
         },
@@ -125,11 +130,9 @@ pub(super) fn parse_failed_response(response: Option<Value>) -> ApiError {
                 retry_after,
             }
         }
-        _ => ApiError::Retryable {
-            message: error.message.unwrap_or_default(),
-            retry_after: retry_after_header,
-        },
-    }
+        _ => return None,
+    };
+    Some(error)
 }
 
 fn try_parse_retry_delay(err: &Error) -> Option<Duration> {

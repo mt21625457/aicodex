@@ -11966,6 +11966,28 @@ class AgentMessageModeration(BaseModel):
         try:
             return {**data, "display": AgentMessageDisplay.model_validate(data["display"])}
         except ValidationError:
+            display = data["display"]
+            if (
+                isinstance(display, dict)
+                and display.keys()
+                <= {"action", "checkTrustedContacts", "blockType", "cyberTrustedAccess"}
+                and display.get("action") == "answerHelpline"
+                and display.get("blockType") is None
+                and display.get("cyberTrustedAccess") is None
+                and (
+                    display.get("checkTrustedContacts") is None
+                    or isinstance(display["checkTrustedContacts"], bool)
+                )
+            ):
+                canonical = {
+                    "version": 1,
+                    "mode": "show",
+                    "annotation": {"kind": "wellbeingHelpline", "subject": "answer"},
+                    "trustedContacts": (
+                        "skip" if display.get("checkTrustedContacts") is False else "check"
+                    ),
+                }
+                return {**data, "display": AgentMessageDisplay.model_validate(canonical)}
             return {**data, "moderated": True, "display": None}
 
     model_config = ConfigDict(

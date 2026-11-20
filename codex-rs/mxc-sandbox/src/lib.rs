@@ -22,7 +22,7 @@ use codex_network_proxy::ManagedNetworkSandboxContext;
 use codex_protocol::models::PermissionProfile;
 use codex_utils_absolute_path::AbsolutePathBuf;
 #[cfg(windows)]
-use codex_utils_absolute_path::AbsolutePathBufGuard;
+use codex_utils_home_dir::find_codex_home;
 use codex_windows_sandbox::environment_transport;
 use serde::Deserialize;
 use serde::Serialize;
@@ -94,15 +94,9 @@ pub fn create_command_args(args: CreateMxcCommandArgsParams<'_>) -> Result<Vec<S
         },
         env,
     )?;
-    // The workload environment can omit or override the host's CODEX_HOME.
+    // The workload environment can omit or override the executor's home settings.
     #[cfg(windows)]
-    let codex_home = match std::env::var("CODEX_HOME").as_deref() {
-        Ok(home) if !home.is_empty() => std::fs::canonicalize(home)
-            .ok()
-            .filter(|home| home.is_dir()),
-        _ => AbsolutePathBufGuard::home_directory().map(|home| home.join(".codex")),
-    }
-    .and_then(|home| AbsolutePathBuf::from_absolute_path(home).ok());
+    let codex_home = find_codex_home().ok();
     #[cfg(not(windows))]
     let codex_home: Option<AbsolutePathBuf> = None;
     Ok(std::iter::once(CODEX_WINDOWS_MXC_ARG1)

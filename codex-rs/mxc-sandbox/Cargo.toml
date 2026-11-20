@@ -27,6 +27,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
+codex-utils-home-dir = { workspace = true }
 flatbuffers = { workspace = true }
 # 1.2.4 imports OneCore_apiset, which the GNU Windows toolchain does not ship.
 tracelogging = "=1.2.3"

@@ -350,100 +350,62 @@ async fn resume_lookup_model_providers_filters_only_last_lookup() {
     assert_eq!(resume_lookup_model_providers(&config, &named_args), None);
 }
 
-#[test]
-fn turn_items_for_thread_returns_matching_turn_items() {
-    let thread = AppServerThread {
-        environments: None,
-        id: "thread-1".to_string(),
-        extra: None,
-        session_id: "thread-1".to_string(),
-        forked_from_id: None,
-        attached_to_thread_id: None,
-        parent_thread_id: None,
-        preview: String::new(),
-        ephemeral: false,
-        section: None,
-        section_entered_at: None,
-        project_id: None,
-        daybreak_enabled: None,
-        history_mode: Default::default(),
-        model_provider: "openai".to_string(),
-        model_id: None,
-        wire_api: None,
-        effort: None,
-        model: None,
-        reasoning_effort: None,
-        created_at: 0,
-        updated_at: 0,
-        recency_at: Some(0),
-        status: codex_app_server_protocol::ThreadStatus::Idle,
-        path: None,
-        cwd: test_path_buf("/tmp/project").abs(),
-        cli_version: "0.0.0-test".to_string(),
-        originator: None,
-        source: codex_app_server_protocol::SessionSource::Exec,
-        can_accept_direct_input: None,
-        thread_source: None,
-        agent_nickname: None,
-        agent_role: None,
-        git_info: None,
-        name: None,
-        turns: vec![
-            codex_app_server_protocol::Turn {
-                id: "turn-1".to_string(),
-                root_turn_id: None,
-                items_view: codex_app_server_protocol::TurnItemsView::Full,
-                items: vec![ThreadItem::untimed(
-                    AppServerThreadItemPayload::AgentMessage {
-                        transcript_metadata: None,
-                        moderation: None,
-                        id: "msg-1".to_string(),
-                        text: "hello".to_string(),
-                        phase: None,
-                        memory_citation: None,
-                        delivery: None,
-                        questions: None,
-                    },
-                )],
-                status: codex_app_server_protocol::TurnStatus::Completed,
-                error: None,
-                started_at: None,
-                completed_at: None,
-                duration_ms: None,
-            },
-            codex_app_server_protocol::Turn {
-                id: "turn-2".to_string(),
-                root_turn_id: None,
-                items_view: codex_app_server_protocol::TurnItemsView::Full,
-                items: vec![ThreadItem::untimed(AppServerThreadItemPayload::Plan {
-                    id: "plan-1".to_string(),
-                    text: "ship it".to_string(),
-                })],
-                status: codex_app_server_protocol::TurnStatus::Completed,
-                error: None,
-                started_at: None,
-                completed_at: None,
-                duration_ms: None,
-            },
-        ],
-    };
-
-    assert_eq!(
-        turn_items_for_thread(&thread, "turn-1"),
-        Some(vec![ThreadItem::untimed(
+#[tokio::test]
+async fn legacy_completion_backfill_finds_completed_turn_after_newer_turn() {
+    let completed_turn = codex_app_server_protocol::Turn {
+        id: "finished-turn".to_string(),
+        root_turn_id: None,
+        items_view: TurnItemsView::Full,
+        items: vec![ThreadItem::untimed(
             AppServerThreadItemPayload::AgentMessage {
                 transcript_metadata: None,
                 moderation: None,
-                id: "msg-1".to_string(),
-                text: "hello".to_string(),
+                id: "answer".to_string(),
+                text: "answer from the requested turn".to_string(),
                 phase: None,
                 memory_citation: None,
                 delivery: None,
                 questions: None,
-            }
-        )])
-    );
-    assert_eq!(turn_items_for_thread(&thread, "missing-turn"), None);
+            },
+        )],
+        status: codex_app_server_protocol::TurnStatus::Completed,
+        error: None,
+        started_at: None,
+        completed_at: None,
+        duration_ms: None,
+    };
+    let newer_turn = codex_app_server_protocol::Turn {
+        id: "newer-turn".to_string(),
+        items: Vec::new(),
+        status: codex_app_server_protocol::TurnStatus::InProgress,
+        ..completed_turn.clone()
+    };
+    let mut requests = Vec::new();
+    let turn = find_legacy_completed_turn("thread-1", "finished-turn", async |params| {
+        assert_eq!(params.thread_id, "thread-1");
+        assert_eq!(params.items_view, Some(TurnItemsView::Full));
+        assert_eq!(params.sort_direction, Some(SortDirection::Desc));
+        let page = match params.cursor.as_deref() {
+            None => ThreadTurnsListResponse {
+                data: vec![newer_turn.clone()],
+                next_cursor: Some("older-page".to_string()),
+                backwards_cursor: None,
+            },
+            Some("older-page") => ThreadTurnsListResponse {
+                data: vec![completed_turn.clone()],
+                next_cursor: None,
+                backwards_cursor: None,
+            },
+            cursor => panic!("unexpected cursor: {cursor:?}"),
+        };
+        requests.push(params.cursor);
+        Ok(page)
+    })
+    .await
+    .expect("backfill succeeds");
+
+    assert_eq!(requests, vec![None, Some("older-page".to_string())]);
+    assert_eq!(turn, Some(completed_turn));
 }
 
 #[test]

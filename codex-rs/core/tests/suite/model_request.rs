@@ -575,8 +575,10 @@ async fn model_request_gates_websocket_output_but_not_warmup() -> Result<()> {
 }
 
 /// The same final answer carries the targeted public flag on completion and in legacy history.
+#[test_case::test_case(false; "versioned_display")]
+#[test_case::test_case(true; "legacy_display")]
 #[tokio::test]
-async fn final_answer_carries_its_moderation_decision() -> Result<()> {
+async fn final_answer_carries_its_moderation_decision(legacy_display: bool) -> Result<()> {
     use core_test_support::wait_for_event_match;
     let server = responses::start_mock_server().await;
     let mut answer = responses::ev_assistant_message("msg-42", "Answer");
@@ -585,12 +587,17 @@ async fn final_answer_carries_its_moderation_decision() -> Result<()> {
         "version": 1, "mode": "show", "trustedContacts": "skip",
         "annotation": {"kind": "wellbeingHelpline", "subject": "answer"}
     });
+    let wire_display = if legacy_display {
+        json!({"action": "answerHelpline", "checkTrustedContacts": false})
+    } else {
+        display.clone()
+    };
     responses::mount_sse_once(
         &server,
         responses::sse(vec![
             responses::ev_response_created("resp-1"),
             json!({"type":"response.metadata","metadata":{"openai_chatgpt_moderation_metadata":{
-                "final_answer_moderation":{"item_id":"msg-42","moderated":true,"display":display},
+                "final_answer_moderation":{"item_id":"msg-42","moderated":true,"display":wire_display},
                 "generation":{"private":"classifier details"}
             }}}),
             answer,

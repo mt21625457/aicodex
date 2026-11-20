@@ -4097,10 +4097,52 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
 }
 
 #[test]
+fn legacy_answer_helpline_is_preserved_with_a_versioned_display() {
+    for (legacy, contacts) in [
+        (json!({"action": "answerHelpline"}), "check"),
+        (
+            json!({"action": "answerHelpline", "checkTrustedContacts": true}),
+            "check",
+        ),
+        (
+            json!({
+                "action": "answerHelpline", "checkTrustedContacts": false,
+                "blockType": null, "cyberTrustedAccess": null,
+            }),
+            "skip",
+        ),
+    ] {
+        let stored = json!({"moderated": true, "display": legacy});
+        let core: TurnItem = serde_json::from_value(json!({
+            "type": "AgentMessage", "id": "answer-1", "content": [],
+            "moderation": stored,
+        }))
+        .unwrap();
+        let expected = json!({"moderated": true, "display": {
+            "version": 1, "mode": "show", "trustedContacts": contacts,
+            "annotation": {"kind": "wellbeingHelpline", "subject": "answer"},
+        }});
+        let projected = serde_json::to_value(ThreadItemPayload::from(core)).unwrap();
+        assert_eq!(projected["moderation"], expected);
+        let mut old_api_item = projected;
+        old_api_item["moderation"] = stored;
+        let decoded: ThreadItem = serde_json::from_value(old_api_item).unwrap();
+        assert_eq!(
+            serde_json::to_value(decoded).unwrap()["moderation"],
+            expected
+        );
+    }
+}
+
+#[test]
 fn unsupported_answer_display_leaves_the_answer_restricted() {
     for display in [
         json!({"version": 2, "mode": "show", "trustedContacts": "skip"}),
         json!({"version": 1, "mode": "unknown"}),
+        json!({"action": "unknown"}),
+        json!({"version": 2, "mode": "show", "action": "answerHelpline"}),
+        json!({"action": "answerHelpline", "blockType": "protection"}),
+        json!({"action": "answerHelpline", "checkTrustedContacts": 0}),
     ] {
         let parsed: AgentMessageModeration =
             serde_json::from_value(json!({"moderated": false, "display": display})).unwrap();

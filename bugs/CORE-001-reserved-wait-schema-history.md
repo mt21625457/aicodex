@@ -114,3 +114,5 @@ WebSocket 的错误帧可能没有 HTTP 状态，或在连接成功后携带 `st
 责任入口为 `codex-api/src/endpoint/responses_websocket.rs` 与 `codex-api/src/sse/responses.rs`。新增 `websocket_invalid_request_without_error_status_is_terminal`，覆盖无状态的 `error`、状态为 200 的 `error` 和无状态的 `response.error`。既有 SSE 终态、专用错误分类及历史请求兼容回归仍适用。
 
 本机 `cargo test --locked --offline -p codex-api` 通过 288 项单元测试和 36 项集成测试，包含新增 WebSocket 回归、既有 SSE 参数拒绝和专用分类回归。这个结果覆盖本机源码、合成流事件与本机模拟服务。
+
+合并提交复审将 `response.failed`、SSE 独立错误帧和无失败 HTTP 状态的 WebSocket 错误帧接入同一结构化分类。新增 `websocket_non_http_errors_preserve_structured_errors_and_retry_advice` 覆盖限流、容量和额度耗尽。复审构件通过 API 单测 289 项，核心 `wait_` 52 项和 `client_` 41 项。真实网关和安装后验收仍待执行。

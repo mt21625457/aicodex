@@ -74,6 +74,45 @@ fn grok_only_customizes_sampling_retry_budget() {
     assert_eq!(sampling_stream_max_retries_for_model("gpt-5.5", 5), 5);
 }
 
+#[test]
+fn cancellation_preserves_already_received_incomplete_sampling_usage() {
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let usage = TokenUsage {
+        input_tokens: 10,
+        output_tokens: 2,
+        total_tokens: 12,
+        ..Default::default()
+    };
+    let event = Err(CodexErr::new(CodexErrorDetails::ResponseIncomplete(
+        Box::new(codex_protocol::error::ResponseIncompleteError {
+            reason: "max_output_tokens".to_string(),
+            response_id: Some("response".to_string()),
+            token_usage: Some(usage.clone()),
+            partial_output: Vec::new(),
+        }),
+    )))
+    .into();
+    let retained = accept_turn_sampling_event(Some(event), &cancellation)
+        .expect("terminal error")
+        .event
+        .expect_err("incomplete response");
+    let CodexErrorDetails::ResponseIncomplete(retained) = retained.details() else {
+        panic!("expected the provider's incomplete response");
+    };
+    assert_eq!(retained.token_usage.as_ref(), Some(&usage));
+
+    let ordinary = Ok(ResponseEvent::OutputItemDone(assistant_output_text(
+        "late output",
+    )))
+    .into();
+    let stopped = accept_turn_sampling_event(Some(ordinary), &cancellation)
+        .expect("terminal error")
+        .event
+        .expect_err("aborted response");
+    assert!(matches!(stopped.details(), CodexErrorDetails::TurnAborted));
+}
+
 #[tokio::test]
 async fn plan_mode_uses_contributed_turn_item_for_last_agent_message() {
     let (mut session, turn_context) = crate::session::tests::make_session_and_context().await;

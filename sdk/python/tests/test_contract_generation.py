@@ -176,3 +176,45 @@ def test_answer_display_is_read_in_thread_history_and_notifications():
     ).item.root.moderation
     assert moderated.moderated is True
     assert moderated.display is None
+
+
+@pytest.mark.parametrize(
+    ("legacy_display", "expected_contacts"),
+    [
+        ({"action": "answerHelpline"}, "check"),
+        ({"action": "answerHelpline", "checkTrustedContacts": True}, "check"),
+        ({"action": "answerHelpline", "checkTrustedContacts": False, "blockType": None}, "skip"),
+        ({"action": "unknown"}, None),
+        ({"action": "answerHelpline", "mode": "show", "version": 2}, None),
+        ({"action": "answerHelpline", "blockType": "protection"}, None),
+        ({"action": "answerHelpline", "checkTrustedContacts": 0}, None),
+    ],
+)
+def test_legacy_answer_display_remains_readable(legacy_display, expected_contacts):
+    from openai_codex.generated.v2_all import ItemCompletedNotification
+
+    event = ItemCompletedNotification.model_validate(
+        {
+            "threadId": "t",
+            "turnId": "u",
+            "completedAtMs": 1,
+            "item": {
+                "id": "a",
+                "type": "agentMessage",
+                "text": "answer",
+                "moderation": {"moderated": False, "display": legacy_display},
+            },
+        }
+    )
+    moderation = event.item.root.moderation
+    if expected_contacts is None:
+        assert moderation.moderated is True
+        assert moderation.display is None
+    else:
+        assert moderation.moderated is False
+        assert moderation.display.model_dump(mode="json", by_alias=True, exclude_none=True) == {
+            "version": 1,
+            "mode": "show",
+            "trustedContacts": expected_contacts,
+            "annotation": {"kind": "wellbeingHelpline", "subject": "answer"},
+        }

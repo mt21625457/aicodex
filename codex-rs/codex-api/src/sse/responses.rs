@@ -1,4 +1,6 @@
+use super::responses_error::classify_stream_error;
 use super::responses_error::parse_failed_response;
+use super::responses_error::stream_retry_after;
 use crate::common::ReasoningRemovalReason;
 use crate::common::ResponseEvent;
 use crate::common::ResponseStream;
@@ -7,7 +9,6 @@ use crate::common::SafetyBufferingTreatment;
 use crate::error::ApiError;
 use crate::error::ProviderMediaErrorKind;
 use crate::error::ProviderStreamErrorKind;
-use crate::error::parse_terminal_provider_error;
 use crate::guardian_assessment::parse_guardian_assessment;
 use crate::rate_limits::parse_all_rate_limits;
 use crate::safety_buffering::treatment_from_headers;
@@ -439,10 +440,10 @@ pub fn process_responses_event(
     event: ResponsesStreamEvent,
 ) -> std::result::Result<Option<ResponseEvent>, ResponsesEventError> {
     match event.kind.as_str() {
-        "error" => {
-            if let Some(error) =
-                parse_terminal_provider_error(event.error.as_ref(), /*status*/ None)
-            {
+        "error" | "response.error" => {
+            let error = event.error.as_ref();
+            let retry_after = stream_retry_after(error, event.headers.as_ref());
+            if let Some(error) = classify_stream_error(error, retry_after) {
                 return Err(ResponsesEventError::Api(error));
             }
         }
@@ -757,13 +758,13 @@ async fn process_sse_with_treatment(
     }
 }
 
-fn provider_error_or_retryable(message: String, delay: Option<Duration>) -> ApiError {
+fn provider_error_or_retryable(message: String, retry_after: Option<RetryAfter>) -> ApiError {
     if let Some(kind) = ProviderMediaErrorKind::classify(/*status*/ None, &message) {
         ApiError::ProviderMedia { kind, message }
     } else {
         ApiError::Retryable {
             message,
-            retry_after: delay.and_then(RetryAfter::from_delay),
+            retry_after,
         }
     }
 }
@@ -823,7 +824,9 @@ pub(crate) fn provider_stream_error_from_data(data: &str) -> Option<ApiError> {
         return None;
     }
 
-    if let Some(error) = parse_terminal_provider_error(value.get("error"), /*status*/ None) {
+    let error = value.get("error");
+    let retry_after = stream_retry_after(error, value.get("headers"));
+    if let Some(error) = classify_stream_error(error, retry_after) {
         return Some(error);
     }
 
@@ -847,7 +850,7 @@ pub(crate) fn provider_stream_error_from_data(data: &str) -> Option<ApiError> {
     let message = code
         .filter(|code| !code.is_empty())
         .map_or_else(|| message.to_string(), |code| format!("{code}: {message}"));
-    Some(provider_error_or_retryable(message, /*delay*/ None))
+    Some(provider_error_or_retryable(message, retry_after))
 }
 
 fn provider_stream_error(kind: ProviderStreamErrorKind, message: impl Into<String>) -> ApiError {

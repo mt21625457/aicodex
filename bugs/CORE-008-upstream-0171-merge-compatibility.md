@@ -21,3 +21,13 @@
 - 全工作区 nextest 主跑执行 25,629 项，25,567 通过、62 失败、80 跳过。按测试名纳入全部 62 项失败及相邻回归后重新构建，聚焦矩阵执行 748 项，746 通过。守护进程启动夹具在矩阵中超时，使用同一构件单独复跑通过。V8 ABI 防护仍失败。
 - V8 `reads_typed_array_contents_with_the_compiled_binding_size` 使用校验过 SHA-256 的 152.2.0 macOS ARM64 沙箱发布资产，在合并前 `dev` 上复现同样的失败，两个父提交锁定同一资产。原生库存储 1 至 64 字节的数组为内联，Rust 绑定声明的上限为 0。防护断言在读取内容前失败。Bazel 源码替代构建停在外部依赖解析，未进入编译。发布验收需要匹配的静态库和 Rust 绑定重新运行该用例。
 - 真实服务、签名发布、安装后和非本机平台属于单独的验收边界。
+
+## 合并提交复审
+
+审核以 `5449d525d2` 为基线，核对 `cd64bbce5d` 两个父提交和重演合并得到的差异。修订提交可用 `git log -- bugs/CORE-008-upstream-0171-merge-compatibility.md` 定位。
+
+- WebSocket 无 HTTP 状态或携带成功状态的流内错误，使用与 SSE 共用的结构化分类，保留限流、容量不足、额度耗尽及 `Retry-After` 语义。回归入口为 `websocket_non_http_errors_preserve_structured_errors_and_retry_advice`。
+- 普通回合取消时，已从流中取到的 `ResponseIncomplete` 仍进入用量记账路径，其他迟到事件继续走取消处理。回归入口为 `cancellation_preserves_already_received_incomplete_sampling_usage`。
+- `exec` 补读已完成回合时按回合 ID 继续翻页，避免共享线程中后续回合占据第一页而丢失终态输出。回归入口为 `legacy_completion_backfill_finds_completed_turn_after_newer_turn`。
+- Windows MXC 诊断使用共享的 home 解析逻辑。Windows 执行器和严格配置测试的子进程同时设置 `AICODEX_HOME` 与 `CODEX_HOME`，避免继承的产品 home 优先级覆盖临时夹具。
+- Rust 历史投影和 Python SDK 将已知的旧 `answerHelpline` 展示指令转换为版本 1 表示。未知格式继续按受限展示处理。回归覆盖旧记录、当前协议、模拟流和 SDK 解码。

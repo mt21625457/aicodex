@@ -130,6 +130,44 @@ pub(super) struct StoredModeration {
     display: Option<Value>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LegacyAnswerDisplay {
+    action: LegacyAnswerDisplayAction,
+    check_trusted_contacts: Option<bool>,
+    block_type: Option<String>,
+    cyber_trusted_access: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum LegacyAnswerDisplayAction {
+    AnswerHelpline,
+}
+
+fn read_legacy_display(value: Value) -> Option<AgentMessageDisplay> {
+    let LegacyAnswerDisplay {
+        action: LegacyAnswerDisplayAction::AnswerHelpline,
+        check_trusted_contacts,
+        block_type: None,
+        cyber_trusted_access: None,
+    } = serde_json::from_value(value).ok()?
+    else {
+        return None;
+    };
+    Some(AgentMessageDisplay::Show {
+        version: AgentMessageDisplayVersion,
+        annotation: Some(AnswerAnnotation::WellbeingHelpline {
+            subject: HelplineSubject::Answer,
+        }),
+        trusted_contacts: if check_trusted_contacts == Some(false) {
+            TrustedContacts::Skip
+        } else {
+            TrustedContacts::Check
+        },
+    })
+}
+
 impl From<StoredModeration> for AgentMessageModeration {
     fn from(stored: StoredModeration) -> Self {
         let Some(value) = stored.display else {
@@ -138,7 +176,9 @@ impl From<StoredModeration> for AgentMessageModeration {
                 display: None,
             };
         };
-        let display = serde_json::from_value(value).ok();
+        let display = AgentMessageDisplay::deserialize(&value)
+            .ok()
+            .or_else(|| read_legacy_display(value));
         Self {
             moderated: stored.moderated || display.is_none(),
             display,

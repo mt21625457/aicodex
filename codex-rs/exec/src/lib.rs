@@ -1886,7 +1886,7 @@ async fn maybe_backfill_turn_completed_items(
     notification: &mut ServerNotification,
 ) {
     // In-process delivery may drop non-terminal item notifications under backpressure while still
-    // guaranteeing `turn/completed`. Fetch the latest full turn so human/json output can recover
+    // guaranteeing `turn/completed`. Fetch the completed turn so human/json output can recover
     // the final message and reconcile any still-running items before shutdown. Avoid `thread/read`
     // here because it also replays restored token usage for clients requesting turn history.
     if !should_backfill_turn_completed_items(thread_ephemeral, notification) {
@@ -1955,33 +1955,26 @@ async fn maybe_backfill_turn_completed_items(
         return;
     }
 
-    let response = send_request_with_response::<ThreadTurnsListResponse>(
-        client,
-        ClientRequest::ThreadTurnsList {
-            request_id: request_ids.next(),
-            params: ThreadTurnsListParams {
-                thread_id: payload.thread_id.clone(),
-                cursor: None,
-                limit: Some(1),
-                sort_direction: Some(SortDirection::Desc),
-                items_view: Some(TurnItemsView::Full),
-            },
-        },
-        "thread/turns/list",
-    )
-    .await;
+    let response =
+        find_legacy_completed_turn(&payload.thread_id, &payload.turn.id, async |params| {
+            send_request_with_response::<ThreadTurnsListResponse>(
+                client,
+                ClientRequest::ThreadTurnsList {
+                    request_id: request_ids.next(),
+                    params,
+                },
+                "thread/turns/list",
+            )
+            .await
+        })
+        .await;
 
     match response {
-        Ok(response) => {
-            if let Some(turn) = response
-                .data
-                .into_iter()
-                .find(|turn| turn.id == payload.turn.id)
-            {
-                payload.turn.items = turn.items;
-                payload.turn.items_view = turn.items_view;
-            }
+        Ok(Some(turn)) => {
+            payload.turn.items = turn.items;
+            payload.turn.items_view = turn.items_view;
         }
+        Ok(None) => warn!("completed turn was not found while backfilling turn items"),
         Err(err) => {
             warn!(
                 "thread/turns/list failed while backfilling turn items for turn completion: {err}"
@@ -2003,16 +1996,34 @@ fn should_backfill_turn_completed_items(
     !thread_ephemeral && payload.turn.items_view != codex_app_server_protocol::TurnItemsView::Full
 }
 
-#[cfg(test)]
-fn turn_items_for_thread(
-    thread: &AppServerThread,
+async fn find_legacy_completed_turn(
+    thread_id: &str,
     turn_id: &str,
-) -> Option<Vec<codex_app_server_protocol::ThreadItem>> {
-    thread
-        .turns
-        .iter()
-        .find(|turn| turn.id == turn_id)
-        .map(|turn| turn.items.clone())
+    mut list_turns: impl AsyncFnMut(ThreadTurnsListParams) -> Result<ThreadTurnsListResponse, String>,
+) -> Result<Option<codex_app_server_protocol::Turn>, String> {
+    // Another client can start a turn before this client backfills the previous completion.
+    let mut cursor = None;
+    let mut seen_cursors = HashSet::new();
+    loop {
+        let page = list_turns(ThreadTurnsListParams {
+            thread_id: thread_id.to_string(),
+            limit: cursor.is_none().then_some(1),
+            cursor,
+            sort_direction: Some(SortDirection::Desc),
+            items_view: Some(TurnItemsView::Full),
+        })
+        .await?;
+        if let Some(turn) = page.data.into_iter().find(|turn| turn.id == turn_id) {
+            return Ok(Some(turn));
+        }
+        let Some(next) = page.next_cursor else {
+            return Ok(None);
+        };
+        if !seen_cursors.insert(next.clone()) {
+            return Err("thread/turns/list returned a repeated cursor".to_string());
+        }
+        cursor = Some(next);
+    }
 }
 
 fn all_thread_source_kinds() -> Vec<ThreadSourceKind> {
