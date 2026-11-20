@@ -11,6 +11,8 @@ use codex_api::SharedAuthProvider;
 use codex_api::TransportError;
 use codex_features::RuntimeAuthMode;
 use codex_login::AuthManager;
+use codex_login::AuthManagerConfig;
+use codex_login::AuthManagerInitializationError;
 use codex_login::CodexAuth;
 use codex_login::WorkspaceRoutingRequest;
 use codex_login::default_client::ClientRedirectPolicy;
@@ -23,6 +25,7 @@ use codex_models_manager::manager::StaticModelsManager;
 use codex_protocol::account::ProviderAccount;
 use codex_protocol::auth::RefreshTokenFailedError;
 use codex_protocol::error::CodexErr;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_runtime_agent_instance::RuntimeAuthManager;
 
@@ -218,6 +221,9 @@ pub trait ModelProvider: fmt::Debug + Send + Sync {
     fn map_api_error(&self, error: ApiError) -> CodexErr {
         codex_api::map_api_error(error)
     }
+
+    /// Normalizes a completed output item before it enters model history.
+    fn normalize_completed_output_item(&self, _item: &mut ResponseItem) {}
 
     /// Returns provider configuration adapted for the API client.
     fn api_provider(&self) -> ModelProviderFuture<'_, codex_protocol::error::Result<Provider>> {
@@ -442,6 +448,16 @@ pub fn create_model_provider(
     auth_manager: Option<Arc<AuthManager>>,
 ) -> SharedModelProvider {
     create_model_provider_with_runtime(provider_info, auth_manager, /*runtime_auth*/ None)
+}
+
+/// Creates a model provider using the local login settings.
+pub async fn create_model_provider_from_local_config(
+    provider_info: ModelProviderInfo,
+    config: &impl AuthManagerConfig,
+) -> Result<SharedModelProvider, AuthManagerInitializationError> {
+    let credentials =
+        AuthManager::shared_from_config(config, /*enable_codex_api_key_env*/ false).await?;
+    Ok(create_model_provider(provider_info, Some(credentials)))
 }
 
 pub(crate) fn create_model_provider_with_runtime(
