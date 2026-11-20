@@ -118,6 +118,7 @@ impl SamplingExecution {
                 // idle failures that the legacy Stream variant already retried.
                 | ApiError::StreamFailure { .. }
                 | ApiError::StreamIdleTimeout { .. }
+                | ApiError::WebsocketMessageTooLarge
                 | ApiError::ContentFilter
                 | ApiError::ServerOverloaded { .. }
                 | ApiError::PolicyCapacityUnavailable { .. }

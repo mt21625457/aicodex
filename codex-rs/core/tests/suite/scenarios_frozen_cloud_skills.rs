@@ -87,23 +87,12 @@ async fn frozen_cloud_skills_with_named_executor_request_history() -> Result<()>
         })
         .build(&server)
         .await?;
-    // Discovery v2 scans the executor user's .agents/skills independently of CODEX_HOME.
-    // Keep this fixture independent of skills installed in the developer's real home.
-    let executor_home = tempfile::tempdir()?;
-    let executor = core_test_support::exec_server::ExecServerProcess::start_with_version_and_env(
-        "0.164.0",
-        &[
-            (
-                "HOME",
-                executor_home.path().to_str().expect("UTF-8 test home"),
-            ),
-            (
-                "USERPROFILE",
-                executor_home.path().to_str().expect("UTF-8 test home"),
-            ),
-        ],
-    )
-    .await?;
+    test.codex
+        .refresh_cloud_plugins()
+        .await
+        .expect("explicit startup discovery");
+    let executor =
+        core_test_support::exec_server::ExecServerProcess::start_with_version("0.164.0").await?;
     test.thread_manager
         .environment_manager()
         .upsert_environment(

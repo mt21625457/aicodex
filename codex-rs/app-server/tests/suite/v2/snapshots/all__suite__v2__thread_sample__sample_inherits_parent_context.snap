@@ -16,8 +16,8 @@ Settings:
   stream: true
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=bf13940dee826ebd):
-        - namespace/functions; hash=028af59ad835936d
+00:additional_tools/developer (3; hash=d982d5b71a0fd12b):
+        - namespace/functions; hash=1fab54c1d0f991da
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
@@ -33,13 +33,16 @@ Settings:
           - function/send_input
           - function/spawn_agent
           - function/wait_agent
-        - namespace/web: Tools in the web namespace.; hash=0037b1ed8d50fab5
+        - namespace/web: Tools in the web namespace.; hash=93e3986880c024a6
           - function/run
 01:message/developer:
     Retain these base instructions.
-02:message/developer[4]:
+02:message/developer[5]:
     [01] Retain this system policy context.
-    [02] <skills_instructions>
+    [02] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [03] <skills_instructions>
         ## Skills
         A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list ...ed into an absolute path using the skill roots table. [hash=ca27c3957f42502b]
         ### Skill roots
@@ -48,13 +51,13 @@ Settings:
         - imagegen: Generate or edit raster images when the task benefits from AI-created bitmap visuals such as...ctly in HTML/CSS/canvas. (file: r0/imagegen/SKILL.md) [hash=dcbada3f7f876b5c]
         - openai-docs: API first-timers, Codex/Work Q&A. If the user already has an OpenAI API integration, skip...upplied text or data. (file: r0/openai-docs/SKILL.md) [hash=3bcb1206044c9862]
         - skill-creator: Create or update a Codex skill with appropriately scoped instructions and any needed supporting resources. (file: r0/skill-creator/SKILL.md)
-        - skill-installer: Install Codex skills into $CODEX_HOME/skills from a curated list or a GitHub repo pat...g private repos). (file: r0/skill-installer/SKILL.md) [hash=d3eb4395bd8e52c5]
+        - skill-installer: Install Codex skills into $AICODEX_HOME/skills from a curated list or a GitHub repo p...g private repos). (file: r0/skill-installer/SKILL.md) [hash=58f9a96a14144773]
         </skills_instructions>
-    [03] <permissions instructions>
+    [04] <permissions instructions>
         Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The san... permits reading files. Network access is restricted. [hash=be7da4425f89053c]
         Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.
         </permissions instructions>
-    [04] <collaboration_mode>Keep the parent's planning instructions.</collaboration_mode>
+    [05] <collaboration_mode>Keep the parent's planning instructions.</collaboration_mode>
 03:message/user:
     <environment_context>
       <cwd><CWD></cwd>
@@ -77,8 +80,8 @@ Settings:
 ## Window 2 (after request 2: input repeated)
 Settings: same as window 1
 -- request 3 (turn) --
-00:additional_tools/developer (3; hash=bf13940dee826ebd):
-        - namespace/functions; hash=028af59ad835936d
+00:additional_tools/developer (3; hash=d982d5b71a0fd12b):
+        - namespace/functions; hash=1fab54c1d0f991da
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
@@ -94,13 +97,16 @@ Settings: same as window 1
           - function/send_input
           - function/spawn_agent
           - function/wait_agent
-        - namespace/web: Tools in the web namespace.; hash=0037b1ed8d50fab5
+        - namespace/web: Tools in the web namespace.; hash=93e3986880c024a6
           - function/run
 01:message/developer:
     Retain these base instructions.
-02:message/developer[4]:
+02:message/developer[5]:
     [01] Retain this system policy context.
-    [02] <skills_instructions>
+    [02] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [03] <skills_instructions>
         ## Skills
         A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list ...ed into an absolute path using the skill roots table. [hash=ca27c3957f42502b]
         ### Skill roots
@@ -109,13 +115,13 @@ Settings: same as window 1
         - imagegen: Generate or edit raster images when the task benefits from AI-created bitmap visuals such as...ctly in HTML/CSS/canvas. (file: r0/imagegen/SKILL.md) [hash=dcbada3f7f876b5c]
         - openai-docs: API first-timers, Codex/Work Q&A. If the user already has an OpenAI API integration, skip...upplied text or data. (file: r0/openai-docs/SKILL.md) [hash=3bcb1206044c9862]
         - skill-creator: Create or update a Codex skill with appropriately scoped instructions and any needed supporting resources. (file: r0/skill-creator/SKILL.md)
-        - skill-installer: Install Codex skills into $CODEX_HOME/skills from a curated list or a GitHub repo pat...g private repos). (file: r0/skill-installer/SKILL.md) [hash=d3eb4395bd8e52c5]
+        - skill-installer: Install Codex skills into $AICODEX_HOME/skills from a curated list or a GitHub repo p...g private repos). (file: r0/skill-installer/SKILL.md) [hash=58f9a96a14144773]
         </skills_instructions>
-    [03] <permissions instructions>
+    [04] <permissions instructions>
         Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The san... permits reading files. Network access is restricted. [hash=be7da4425f89053c]
         Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.
         </permissions instructions>
-    [04] <collaboration_mode>Keep the parent's planning instructions.</collaboration_mode>
+    [05] <collaboration_mode>Keep the parent's planning instructions.</collaboration_mode>
 03:message/user:
     <environment_context>
       <cwd><CWD></cwd>
@@ -137,8 +143,8 @@ Settings: same as window 1
 ## Window 3 (after request 3: input repeated)
 Settings: same as window 1
 -- request 4 (turn) --
-00:additional_tools/developer (3; hash=bf13940dee826ebd):
-        - namespace/functions; hash=028af59ad835936d
+00:additional_tools/developer (3; hash=d982d5b71a0fd12b):
+        - namespace/functions; hash=1fab54c1d0f991da
           - function/exec_command
           - function/write_stdin
           - function/request_user_input
@@ -154,13 +160,16 @@ Settings: same as window 1
           - function/send_input
           - function/spawn_agent
           - function/wait_agent
-        - namespace/web: Tools in the web namespace.; hash=0037b1ed8d50fab5
+        - namespace/web: Tools in the web namespace.; hash=93e3986880c024a6
           - function/run
 01:message/developer:
     Retain these base instructions.
-02:message/developer[4]:
+02:message/developer[5]:
     [01] Retain this system policy context.
-    [02] <skills_instructions>
+    [02] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [03] <skills_instructions>
         ## Skills
         A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list ...ed into an absolute path using the skill roots table. [hash=ca27c3957f42502b]
         ### Skill roots
@@ -169,13 +178,13 @@ Settings: same as window 1
         - imagegen: Generate or edit raster images when the task benefits from AI-created bitmap visuals such as...ctly in HTML/CSS/canvas. (file: r0/imagegen/SKILL.md) [hash=dcbada3f7f876b5c]
         - openai-docs: API first-timers, Codex/Work Q&A. If the user already has an OpenAI API integration, skip...upplied text or data. (file: r0/openai-docs/SKILL.md) [hash=3bcb1206044c9862]
         - skill-creator: Create or update a Codex skill with appropriately scoped instructions and any needed supporting resources. (file: r0/skill-creator/SKILL.md)
-        - skill-installer: Install Codex skills into $CODEX_HOME/skills from a curated list or a GitHub repo pat...g private repos). (file: r0/skill-installer/SKILL.md) [hash=d3eb4395bd8e52c5]
+        - skill-installer: Install Codex skills into $AICODEX_HOME/skills from a curated list or a GitHub repo p...g private repos). (file: r0/skill-installer/SKILL.md) [hash=58f9a96a14144773]
         </skills_instructions>
-    [03] <permissions instructions>
+    [04] <permissions instructions>
         Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The san... permits reading files. Network access is restricted. [hash=be7da4425f89053c]
         Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.
         </permissions instructions>
-    [04] <collaboration_mode>Keep the parent's planning instructions.</collaboration_mode>
+    [05] <collaboration_mode>Keep the parent's planning instructions.</collaboration_mode>
 03:message/user:
     <environment_context>
       <cwd><CWD></cwd>

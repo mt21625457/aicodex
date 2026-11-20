@@ -314,6 +314,32 @@ fn map_api_error_preserves_server_do_not_retry_header() {
     assert!(err.retry_delay(/*retry_count*/ 1).is_none());
 }
 
+#[tokio::test(start_paused = true)]
+async fn server_do_not_retry_header_applies_to_classified_capacity_errors() {
+    let mut headers = HeaderMap::new();
+    headers.insert("x-should-retry", http::HeaderValue::from_static("false"));
+    let retry_after = RetryAfter::from_delay(std::time::Duration::from_secs(3));
+    for (code, expected) in [
+        (
+            "policy_capacity_unavailable",
+            CodexErrorInfo::PolicyCapacityUnavailable,
+        ),
+        ("server_is_overloaded", CodexErrorInfo::ServerOverloaded),
+        ("slow_down", CodexErrorInfo::RateLimitExceeded),
+    ] {
+        let err = map_api_error(ApiError::Transport(TransportError::Http {
+            retry_after,
+            status: http::StatusCode::SERVICE_UNAVAILABLE,
+            url: None,
+            headers: Some(headers.clone()),
+            body: Some(serde_json::json!({"error": {"code": code}}).to_string()),
+        }));
+        assert_eq!(err.to_codex_protocol_error(), expected);
+        assert_eq!(err.retry_after(), retry_after);
+        assert!(err.retry_delay(/*retry_count*/ 1).is_none());
+    }
+}
+
 #[test]
 fn map_api_error_makes_malformed_provider_responses_non_retryable() {
     let err = map_api_error(ApiError::MalformedResponse {

@@ -580,6 +580,15 @@ pub(super) async fn spawn_websocket_server_with_args(
     listen_url: &str,
     extra_args: &[String],
 ) -> Result<(Child, SocketAddr)> {
+    spawn_websocket_server_with_env(codex_home, listen_url, extra_args, &[]).await
+}
+
+pub(super) async fn spawn_websocket_server_with_env(
+    codex_home: &Path,
+    listen_url: &str,
+    extra_args: &[String],
+    env_overrides: &[(&str, &std::ffi::OsStr)],
+) -> Result<(Child, SocketAddr)> {
     let program = codex_utils_cargo_bin::cargo_bin("codex-app-server")
         .context("should find app-server binary")?;
     let mut cmd = Command::new(program);
@@ -598,6 +607,9 @@ pub(super) async fn spawn_websocket_server_with_args(
         codex_app_server_transport::DAEMON_SHUTDOWN_FILE_ENV,
         codex_home.join("daemon.shutdown"),
     );
+    for (key, value) in env_overrides {
+        cmd.env(key, value);
+    }
 
     let mut process = cmd
         .kill_on_drop(true)

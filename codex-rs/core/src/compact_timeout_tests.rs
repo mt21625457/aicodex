@@ -55,10 +55,14 @@ async fn failed_compaction_preserves_original_history(mode: &str) -> anyhow::Res
         .record_conversation_items(&turn, turn.model_info(), &items)
         .await;
     let before = session.clone_history().await;
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let step = session
+        .capture_step_context(Arc::clone(&turn), &cancellation)
+        .await?;
     let mut client = session.services.model_client.new_session();
     let metadata = session
         .compaction_responses_metadata(
-            &turn,
+            &step,
             CompactionTurnMetadata::new(
                 CompactionTrigger::Auto,
                 CompactionReason::ContextLimit,
@@ -67,19 +71,23 @@ async fn failed_compaction_preserves_original_history(mode: &str) -> anyhow::Res
             ),
         )
         .await;
-    let prompt = Prompt {
+    let prompt = Arc::new(Prompt {
         input: items,
         ..Default::default()
-    };
+    });
     let mut watchdog = if mode == "timeout" {
         crate::compaction_watchdog::CompactionWatchdog::almost_expired()
     } else {
         // incomplete验证服务端终态，不让200ms测试截止与本机调度竞争。
         crate::compaction_watchdog::CompactionWatchdog::new()
     };
+    let mut sampling = crate::hook_runtime::sampling::SamplingRequest::new(
+        codex_hooks::SamplingKind::ForegroundCompaction,
+    );
     let request = drain_to_completed(
+        &mut sampling,
         &session,
-        &turn,
+        &step,
         &mut client,
         &metadata,
         &prompt,

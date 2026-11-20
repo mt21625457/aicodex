@@ -90,6 +90,7 @@ pub enum CodexErrorInfo {
     /// The workspace's inference hook explicitly denied this request.
     InferenceHookDenied,
     CyberPolicy,
+    BioPolicy,
     MisalignmentPolicyViolation,
     TooManyDenials,
     HttpConnectionFailed {
@@ -173,7 +174,7 @@ impl From<CoreCodexErrorInfo> for CodexErrorInfo {
             }
             CoreCodexErrorInfo::CyberPolicy => CodexErrorInfo::CyberPolicy,
             CoreCodexErrorInfo::InferenceHookDenied => CodexErrorInfo::InferenceHookDenied,
-            CoreCodexErrorInfo::BioPolicy => CodexErrorInfo::Other,
+            CoreCodexErrorInfo::BioPolicy => CodexErrorInfo::BioPolicy,
             CoreCodexErrorInfo::MisalignmentPolicyViolation => {
                 CodexErrorInfo::MisalignmentPolicyViolation
             }

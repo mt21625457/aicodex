@@ -12,7 +12,6 @@ use super::X_CODEX_PARENT_THREAD_ID_HEADER;
 use super::X_CODEX_TURN_METADATA_HEADER;
 use super::X_CODEX_WINDOW_ID_HEADER;
 use super::X_OPENAI_SUBAGENT_HEADER;
-use super::prepare_response_items_for_request;
 use crate::AttestationContext;
 use crate::AttestationProvider;
 use crate::GenerateAttestationFuture;
@@ -79,6 +78,7 @@ use codex_protocol_test_support::uuid_v7_item_id_generator_for_test;
 use codex_rollout_trace::ExecutionStatus;
 use codex_rollout_trace::InferenceTraceAttempt;
 use codex_rollout_trace::InferenceTraceContext;
+use codex_rollout_trace::RawPayloadKind;
 use codex_rollout_trace::RawTraceEventPayload;
 use codex_rollout_trace::RolloutTrace;
 use codex_rollout_trace::TraceWriter;
@@ -1025,7 +1025,7 @@ fn websocket_incremental_reuse_tracks_raw_result_metadata() -> anyhow::Result<()
         )?;
 
         let mut session = client.new_session();
-        session.websocket_session.last_request = Some(previous);
+        session.websocket_session.last_request = Some(Arc::new(previous));
         let (sender, receiver) = tokio::sync::oneshot::channel();
         sender
             .send(super::LastResponse {
@@ -1076,7 +1076,7 @@ fn websocket_continuation_reports_unavailable_response_state() {
         )
         .expect("build continuation request");
     let mut session = client.new_session();
-    session.websocket_session.last_request = Some(request.clone());
+    session.websocket_session.last_request = Some(Arc::new(request.clone()));
     assert_eq!(
         session.prepare_websocket_request(&request).err(),
         Some(NonIncrementalReason::NoPreviousResponse),
@@ -1136,7 +1136,7 @@ fn websocket_continuation_rejects_unstored_compatible_provider() {
         .expect("build compatible request");
     assert!(!request.store);
     let mut session = client.new_session();
-    session.websocket_session.last_request = Some(request.clone());
+    session.websocket_session.last_request = Some(Arc::new(request.clone()));
     let (sender, receiver) = tokio::sync::oneshot::channel();
     sender
         .send(super::LastResponse {
@@ -1191,7 +1191,7 @@ fn incremental_request_preserves_reasoning_normalization_and_output_limit_guard(
     );
     request.input = vec![previous_reasoning];
     let mut session = client.new_session();
-    session.websocket_session.last_request = Some(request.clone());
+    session.websocket_session.last_request = Some(Arc::new(request.clone()));
     request.input = vec![current_reasoning];
     let response = super::LastResponse {
         response_id: "response".to_string(),
@@ -1238,14 +1238,14 @@ async fn responses_http_preserves_raw_tool_metadata_for_openai_custom_endpoint()
     let output = output_with_tool_result_metadata(ToolResultMetadata::new(&json!({
         "private": "raw-result-metadata",
     })));
-    let prompt = Prompt {
+    let prompt = Arc::new(Prompt {
         input: vec![output.clone()],
         base_instructions: BaseInstructions {
             text: String::new(),
             ..Default::default()
         },
         ..Default::default()
-    };
+    });
     let responses_metadata = test_responses_metadata_for_client(
         &client,
         /*turn_id*/ None,
@@ -1406,7 +1406,7 @@ fn websocket_continuation_reset_reason_survives_failed_reconnect_and_turn_bounda
             )
             .expect("build continuation request");
         let mut session = client.new_session();
-        session.websocket_session.last_request = Some(request);
+        session.websocket_session.last_request = Some(Arc::new(request));
         session.websocket_session.reset(Some(reason));
         session.websocket_session.reset(/*reason*/ None);
         session.websocket_session.reset(Some(later_reason));
@@ -1608,21 +1608,29 @@ fn started_inference_attempt(temp: &TempDir) -> anyhow::Result<InferenceTraceAtt
     })?;
 
     let inference_trace = InferenceTraceContext::enabled(
-        writer,
+        Arc::clone(&writer),
         "thread-root".to_string(),
         "turn-1".to_string(),
         "gpt-test".to_string(),
         "test-provider".to_string(),
     );
     let attempt = inference_trace.start_attempt();
-    attempt.record_started(&json!({
+    let request = json!({
         "model": "gpt-test",
         "input": [{
             "type": "message",
             "role": "user",
             "content": [{"type": "input_text", "text": "hello"}]
         }],
-    }));
+    });
+    attempt.record_started(
+        serde_json::to_vec(&request)?,
+        Arc::new(request),
+        Vec::new(),
+        || Ok(None),
+    );
+    // Cancellation tests can start replaying as soon as this helper returns.
+    writer.flush()?;
     Ok(attempt)
 }
 
@@ -1634,6 +1642,44 @@ fn reasoning_item(id: &str) -> ResponseItem {
         encrypted_content: Some("encrypted-reasoning".to_string()),
         internal_chat_message_metadata_passthrough: None,
     }
+}
+
+fn prepare_response_items_for_request(
+    input: &mut Vec<ResponseItem>,
+    store: bool,
+    model: &str,
+) -> codex_protocol::error::Result<()> {
+    super::prepare_response_items_for_request(input, store, model, |_| ())
+}
+
+#[test]
+fn retained_item_inspection_uses_wire_offsets_before_stripping_ids() {
+    let items = serde_json::json!([
+        {"type":"reasoning", "id":"rs_old", "summary":[]},
+        {"type":"function_call_output", "id":"opaque-output", "call_id":"call_test", "output":"ok"}
+    ]);
+    let mut input: Vec<ResponseItem> = serde_json::from_value(items).unwrap();
+    let retained_ids = super::prepare_response_items_for_request(
+        &mut input,
+        /*store*/ false,
+        "gpt-5.5",
+        |input| {
+            input
+                .iter()
+                .map(|item| item.id().cloned())
+                .collect::<Vec<_>>()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        retained_ids,
+        [Some(ResponseItemId::from_server(
+            "opaque-output".to_string()
+        ))]
+    );
+    assert_eq!(input.len(), 1);
+    assert!(input[0].id().is_none());
 }
 
 #[test]
@@ -2003,6 +2049,15 @@ async fn replay_until_cancelled(temp: &TempDir) -> anyhow::Result<RolloutTrace> 
             .next()
             .expect("inference should be reduced");
         if inference.execution.status == ExecutionStatus::Cancelled {
+            // Cancellation publishes one partial response. Prepared prompts can index shared child records.
+            assert_eq!(
+                rollout
+                    .raw_payloads
+                    .values()
+                    .filter(|p| p.kind == RawPayloadKind::InferenceResponse)
+                    .count(),
+                1
+            );
             return Ok(rollout);
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -2340,10 +2395,11 @@ async fn untraced_http_stream_releases_completed_output_before_response_ends() {
         InferenceTraceAttempt::disabled(),
         &test_model_client(SessionSource::Cli).state,
         /*last_response_tx*/ None,
+        super::ResponseDelivery::default(),
     );
 
     assert!(matches!(
-        stream.next().await,
+        stream.next().await.map(|item| item.event),
         Some(Ok(ResponseEvent::OutputItemDone(_)))
     ));
     assert_eq!(payload.strong_count(), 0);
@@ -2382,8 +2438,9 @@ async fn incomplete_response_traces_attempted_call_without_streaming_it() -> any
             attempt,
             &test_model_client(SessionSource::Cli).state,
             /*last_response_tx*/ None,
+            super::ResponseDelivery::default(),
         );
-        assert!(matches!(stream.next().await, Some(Err(_))));
+        assert!(stream.next().await.is_some_and(|item| item.event.is_err()));
         assert!(stream.next().await.is_none());
 
         let rollout = replay_bundle(temp.path())?;
@@ -2427,12 +2484,14 @@ async fn dropped_response_stream_traces_cancelled_partial_output() -> anyhow::Re
         attempt,
         &test_model_client(SessionSource::Cli).state,
         /*last_response_tx*/ None,
+        super::ResponseDelivery::default(),
     );
 
     let observed = stream
         .next()
         .await
-        .expect("mapped stream should yield output item")?;
+        .expect("mapped stream should yield output item")
+        .event?;
     assert!(matches!(observed, ResponseEvent::OutputItemDone(_)));
 
     // Dropping the consumer is how turn interruption/preemption stops polling
@@ -2456,7 +2515,6 @@ async fn dropped_response_stream_traces_cancelled_partial_output() -> anyhow::Re
         rollout.threads["thread-root"].conversation_item_ids,
         inference.request_item_ids
     );
-    assert_eq!(rollout.raw_payloads.len(), 2);
 
     Ok(())
 }
@@ -2474,6 +2532,7 @@ async fn response_stream_records_last_model_feedback_ids() {
             response_id: "resp-123".to_string(),
             token_usage: None,
             usage_metadata: None,
+            reasoning_removals: None,
             end_turn: Some(true),
             provider_stop_reason: None,
         }),
@@ -2485,6 +2544,7 @@ async fn response_stream_records_last_model_feedback_ids() {
         InferenceTraceAttempt::disabled(),
         &test_model_client(SessionSource::Cli).state,
         /*last_response_tx*/ None,
+        super::ResponseDelivery::default(),
     );
 
     while stream.next().await.is_some() {}
@@ -2709,6 +2769,7 @@ async fn dropped_backpressured_response_stream_traces_cancelled_partial_output()
         attempt,
         &test_model_client(SessionSource::Cli).state,
         /*last_response_tx*/ None,
+        super::ResponseDelivery::default(),
     );
 
     // Fill the mapper channel with non-terminal events, then yield one output
@@ -2727,7 +2788,6 @@ async fn dropped_backpressured_response_stream_traces_cancelled_partial_output()
 
     assert_eq!(inference.execution.status, ExecutionStatus::Cancelled);
     assert_eq!(inference.response_item_ids.len(), 1);
-    assert_eq!(rollout.raw_payloads.len(), 2);
 
     Ok(())
 }
@@ -2915,12 +2975,12 @@ async fn websocket_handshake_omits_attestation_for_chatgpt_codex_responses(
 enum RealtimeCredentialChange {
     None,
     AccountBeforeConnect,
-    TokenDuringAttestation,
+    TokenBeforeSideband,
 }
 
 #[test_case::test_case(RealtimeCredentialChange::None; "same account")]
 #[test_case::test_case(RealtimeCredentialChange::AccountBeforeConnect; "account changed before connection")]
-#[test_case::test_case(RealtimeCredentialChange::TokenDuringAttestation; "token changed before sideband setup")]
+#[test_case::test_case(RealtimeCredentialChange::TokenBeforeSideband; "token changed before sideband setup")]
 #[tokio::test]
 async fn realtime_call_preserves_captured_account_binding(change: RealtimeCredentialChange) {
     use codex_http_client::DestinationPolicy;
@@ -2930,35 +2990,8 @@ async fn realtime_call_preserves_captured_account_binding(change: RealtimeCreden
     use codex_login::AuthRouteConfig;
     use codex_login::auth::login_with_chatgpt_auth_tokens;
 
-    #[derive(Debug)]
-    struct RefreshDuringAttestation {
-        credentials: Arc<AuthManager>,
-        home: std::path::PathBuf,
-        token: String,
-        calls: Arc<AtomicUsize>,
-    }
-
-    impl AttestationProvider for RefreshDuringAttestation {
-        fn header_for_request(
-            &self,
-            _context: AttestationContext,
-        ) -> GenerateAttestationFuture<'_> {
-            Box::pin(async move {
-                login_with_chatgpt_auth_tokens(
-                    &self.home,
-                    &self.token,
-                    "workspace-a",
-                    /*chatgpt_plan_type*/ None,
-                )
-                .unwrap();
-                self.credentials.reload().await;
-                self.calls.fetch_add(1, Ordering::Relaxed);
-                None
-            })
-        }
-    }
-
     let account_changed = change == RealtimeCredentialChange::AccountBeforeConnect;
+    let token_changed = change == RealtimeCredentialChange::TokenBeforeSideband;
     let home = TempDir::new().unwrap();
     let controller = NetworkPolicyController::default();
     let policy = controller.policy();
@@ -3020,7 +3053,7 @@ async fn realtime_call_preserves_captured_account_binding(change: RealtimeCreden
                 .insert_header("location", "/v1/realtime/calls/rtc_bound")
                 .set_body_string("answer-sdp"),
         )
-        .expect(usize::from(!account_changed) as u64)
+        .expect(usize::from(!account_changed && !token_changed) as u64)
         .mount(&server)
         .await;
     let info = ModelProviderInfo::create_openai_provider(Some(format!("{}/v1", server.uri())));
@@ -3031,22 +3064,59 @@ async fn realtime_call_preserves_captured_account_binding(change: RealtimeCreden
     Arc::get_mut(&mut model_client.state).unwrap().provider =
         create_model_provider(info, Some(Arc::clone(&credentials)));
     model_client.http_client_factory = factory;
-    let refreshes = Arc::new(AtomicUsize::new(0));
-    let refreshed_token = token("workspace-a", "refreshed");
-    if change == RealtimeCredentialChange::TokenDuringAttestation {
-        let state = Arc::get_mut(&mut model_client.state).unwrap();
-        state.include_attestation = true;
-        state.attestation_provider = Some(Arc::new(RefreshDuringAttestation {
-            credentials: Arc::clone(&credentials),
-            home: home.path().to_path_buf(),
-            token: refreshed_token.clone(),
-            calls: Arc::clone(&refreshes),
-        }));
-    }
     let context = codex_model_provider::ProviderAuthContext {
         credentials,
         runtime_auth: None,
     };
+    if token_changed {
+        // Exercise a refresh between the two captures without invoking disabled attestation.
+        let setup = model_client
+            .realtime_client_setup(
+                &context,
+                captured_factory,
+                Some(&api_provider.base_url),
+                Some(&api_provider.headers),
+                /*call_setup*/ None,
+            )
+            .await
+            .unwrap();
+        let refreshed_token = token("workspace-a", "refreshed");
+        login_with_chatgpt_auth_tokens(
+            home.path(),
+            &refreshed_token,
+            "workspace-a",
+            /*chatgpt_plan_type*/ None,
+        )
+        .unwrap();
+        context.credentials.reload().await;
+        assert_eq!(
+            context
+                .credentials
+                .auth_cached()
+                .unwrap()
+                .get_token()
+                .unwrap(),
+            refreshed_token,
+        );
+
+        let sideband = model_client
+            .realtime_client_setup(
+                &context,
+                setup.http_client_factory.clone(),
+                Some(&api_provider.base_url),
+                Some(&api_provider.headers),
+                Some(&setup),
+            )
+            .await
+            .unwrap();
+        let headers = sideband
+            .api_auth
+            .apply_auth_headers(sideband.api_provider.headers)
+            .await
+            .unwrap();
+        assert_eq!(headers["authorization"], format!("Bearer {access_token}"));
+        return;
+    }
     let result = model_client
         .create_realtime_call_with_headers(
             "offer-sdp".into(),
@@ -3059,7 +3129,7 @@ async fn realtime_call_preserves_captured_account_binding(change: RealtimeCreden
                 event_parser: codex_api::RealtimeEventParser::V1,
                 session_mode: codex_api::RealtimeSessionMode::Conversational,
                 output_modality: codex_protocol::protocol::RealtimeOutputModality::Audio,
-                voice: codex_protocol::protocol::RealtimeVoice::Cove,
+                voice: Some(codex_protocol::protocol::RealtimeVoice::Cove),
             },
             http::HeaderMap::new(),
             Some(api_provider),
@@ -3076,18 +3146,6 @@ async fn realtime_call_preserves_captured_account_binding(change: RealtimeCreden
         assert!(server.received_requests().await.unwrap().is_empty());
     } else {
         let call = result.unwrap();
-        if change == RealtimeCredentialChange::TokenDuringAttestation {
-            assert_eq!(refreshes.load(Ordering::Relaxed), 1);
-            assert_eq!(
-                context
-                    .credentials
-                    .auth_cached()
-                    .unwrap()
-                    .get_token()
-                    .unwrap(),
-                refreshed_token
-            );
-        }
         assert_eq!(call.call_id, "rtc_bound");
         assert_eq!(call.sdp, "answer-sdp");
         let requests = server.received_requests().await.unwrap();
@@ -3392,7 +3450,7 @@ async fn realtime_custom_call_keeps_selected_key_for_openai_sideband(mode: Runti
                 event_parser: codex_api::RealtimeEventParser::V1,
                 session_mode: codex_api::RealtimeSessionMode::Conversational,
                 output_modality: codex_protocol::protocol::RealtimeOutputModality::Audio,
-                voice: codex_protocol::protocol::RealtimeVoice::Cove,
+                voice: Some(codex_protocol::protocol::RealtimeVoice::Cove),
             },
             http::HeaderMap::new(),
             Some(call_provider),
@@ -3520,24 +3578,26 @@ async fn intercepted_output_reaches_trace_and_websocket_bookkeeping() -> anyhow:
             response_id: "response".into(),
             token_usage: None,
             usage_metadata: None,
+            reasoning_removals: None,
             end_turn: None,
         }))
         .await?;
     drop(tx_event);
     let (last_response_tx, last_response_rx) = tokio::sync::oneshot::channel();
-    let mut stream = super::map_response_stream(
-        codex_api::ResponseStream {
+    let mut stream = super::OpenedModelResponse {
+        stream: codex_api::ResponseStream {
             routing_affinity: None,
             rx_event,
             upstream_request_id: None,
             interrupt: None,
         },
-        test_session_telemetry(),
-        attempt,
-        &test_model_client(SessionSource::Cli).state,
-        vec![Box::new(ReplaceOutput)],
-        Some(last_response_tx),
-    );
+        telemetry: test_session_telemetry(),
+        trace: attempt,
+        client: Arc::clone(&test_model_client(SessionSource::Cli).state),
+        interceptors: vec![Box::new(ReplaceOutput)],
+        continuation: Some(last_response_tx),
+    }
+    .into_raw_stream()?;
     let mut delivered = Vec::new();
     while let Some(event) = stream.next().await {
         if let ResponseEvent::OutputItemDone(item) = event? {
@@ -3552,8 +3612,9 @@ async fn intercepted_output_reaches_trace_and_websocket_bookkeeping() -> anyhow:
         .values()
         .find(|payload| payload.kind == codex_rollout_trace::RawPayloadKind::InferenceResponse)
         .expect("response trace payload");
-    let recorded: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(temp.path().join(&payload.path))?)?;
+    let recorded: serde_json::Value = serde_json::from_slice(
+        codex_rollout_trace::PayloadReader::new(temp.path()).read(payload)?,
+    )?;
     assert_eq!(recorded["output_items"], serde_json::to_value(&delivered)?);
     Ok(())
 }

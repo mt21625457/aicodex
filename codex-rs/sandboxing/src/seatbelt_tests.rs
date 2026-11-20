@@ -1957,28 +1957,28 @@ fn create_seatbelt_args_with_read_only_git_and_codex_subpaths() {
             "-DWRITABLE_ROOT_0_EXCLUDED_0={}",
             cwd.canonicalize()
                 .expect("canonicalize cwd")
-                .join(".codex")
+                .join(".git")
                 .display()
         ),
         format!(
             "-DWRITABLE_ROOT_0_EXCLUDED_1={}",
             cwd.canonicalize()
                 .expect("canonicalize cwd")
-                .join(".aicodex")
+                .join(".agents")
                 .display()
         ),
         format!(
             "-DWRITABLE_ROOT_0_EXCLUDED_2={}",
             cwd.canonicalize()
                 .expect("canonicalize cwd")
-                .join(".git")
+                .join(".codex")
                 .display()
         ),
         format!(
             "-DWRITABLE_ROOT_0_EXCLUDED_3={}",
             cwd.canonicalize()
                 .expect("canonicalize cwd")
-                .join(".agents")
+                .join(".aicodex")
                 .display()
         ),
         format!(
@@ -2036,7 +2036,7 @@ fn create_seatbelt_args_with_read_only_git_and_codex_subpaths() {
     assert!(
         !output.status.success(),
         "command to write {} should fail under seatbelt",
-        &config_toml.display()
+        config_toml.display()
     );
     assert_seatbelt_denied(&output.stderr, &config_toml);
 
@@ -2080,7 +2080,7 @@ fn create_seatbelt_args_with_read_only_git_and_codex_subpaths() {
     assert!(
         !output.status.success(),
         "command to write {} should fail under seatbelt",
-        &pre_commit_hook.display()
+        pre_commit_hook.display()
     );
     assert_seatbelt_denied(&output.stderr, &pre_commit_hook);
 
@@ -2124,7 +2124,7 @@ fn create_seatbelt_args_with_read_only_git_and_codex_subpaths() {
     assert!(
         output.status.success(),
         "command to write {} should succeed under seatbelt",
-        &allowed_file.display()
+        allowed_file.display()
     );
     assert_eq!(
         "this is allowed\n",
@@ -3127,38 +3127,17 @@ fn create_seatbelt_args_for_cwd_as_git_repo() {
         args.contains(&expected_root),
         "missing {expected_root}: {args:#?}"
     );
-    let expected_dot_git = format!(
-        "-DWRITABLE_ROOT_0_EXCLUDED_0={}",
-        dot_git_canonical.to_string_lossy()
-    );
-    assert!(
-        args.contains(&expected_dot_git),
-        "missing {expected_dot_git}: {args:#?}"
-    );
-    let expected_dot_codex = format!(
-        "-DWRITABLE_ROOT_0_EXCLUDED_1={}",
-        dot_codex_canonical.to_string_lossy()
-    );
-    assert!(
-        args.contains(&expected_dot_codex),
-        "missing {expected_dot_codex}: {args:#?}"
-    );
-    let expected_dot_aicodex = format!(
-        "-DWRITABLE_ROOT_0_EXCLUDED_2={}",
-        vulnerable_root_canonical.join(".aicodex").display()
-    );
-    assert!(
-        args.contains(&expected_dot_aicodex),
-        "missing {expected_dot_aicodex}: {args:#?}"
-    );
-    let expected_dot_agents = format!(
-        "-DWRITABLE_ROOT_0_EXCLUDED_3={}",
-        dot_agents_canonical.to_string_lossy()
-    );
-    assert!(
-        args.contains(&expected_dot_agents),
-        "missing {expected_dot_agents}: {args:#?}"
-    );
+    let expected_exclusions = [
+        dot_git_canonical.clone(),
+        dot_agents_canonical.clone(),
+        dot_codex_canonical.clone(),
+        vulnerable_root_canonical.join(".aicodex"),
+        vulnerable_root_canonical.join(".aws"),
+    ];
+    for (index, path) in expected_exclusions.iter().enumerate() {
+        let expected = format!("-DWRITABLE_ROOT_0_EXCLUDED_{index}={}", path.display());
+        assert!(args.contains(&expected), "missing {expected}: {args:#?}");
+    }
     let expected_slash_tmp = format!("-DWRITABLE_ROOT_1={}", slash_tmp.to_string_lossy());
     assert!(
         args.contains(&expected_slash_tmp),

@@ -64,7 +64,7 @@ async fn codex_home_symlink_opt_out_uses_loaded_user_config() -> anyhow::Result<
             "*** Begin Patch\n*** Add File: {}/patch.txt\n+patched\n*** End Patch",
             visualizations.display()
         );
-        let server = responses::start_mock_server().await;
+        let server = responses::start_sse_server().await;
         let should_run = enabled && !ignore_user_config;
         let mock = responses::mount_sse_sequence(
             &server,

@@ -1,16 +1,17 @@
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::ThreadHistoryMode;
+use codex_state::ThreadMetadata;
 use serde::Deserialize;
 use serde::Serialize;
 use sqlx::Row;
 
 use super::super::LocalThreadStore;
-use super::super::rollout_lineage::RolloutLineage;
+use super::super::rollout_lineage::LineageWalk;
 use super::segment_paging::page_item_rows;
 use super::segment_paging::page_turn_rows;
 use super::segment_paging::validate_page_size;
 use super::sqlite_integer;
-use super::turn_lookup::find_source_turn;
+use super::turn_lookup::find_turn;
 use crate::ItemPage;
 use crate::ListItemsParams;
 use crate::ListTurnsParams;
@@ -103,7 +104,7 @@ pub(in crate::local) async fn list_turns(
     store: &LocalThreadStore,
     params: ListTurnsParams,
 ) -> ThreadStoreResult<TurnPage> {
-    validate_thread_for_paginated_reads(
+    let metadata = validate_thread_for_paginated_reads(
         store,
         params.thread_id,
         params.include_archived,
@@ -111,14 +112,30 @@ pub(in crate::local) async fn list_turns(
     )
     .await?;
     validate_page_size(params.page_size)?;
-    let lineage = store
-        .resolve_rollout_lineage_for_history_page(params.thread_id)
-        .await?;
+    if params.cursor.is_none()
+        && metadata.archived_at.is_none()
+        && let Some((path, meta)) =
+            super::super::live_writer::unpersisted_session_meta(store, params.thread_id).await
+        && path == metadata.rollout_path
+        && meta.id == params.thread_id
+        && meta.history_mode == ThreadHistoryMode::Paginated
+        && meta.history_base.is_none()
+        && meta.forked_from_id.is_none()
+        && meta.parent_thread_id.is_none()
+    {
+        // Live settings can create an index row before a root thread has any durable turns.
+        return Ok(TurnPage {
+            turns: Vec::new(),
+            next_cursor: None,
+            backwards_cursor: None,
+        });
+    }
     let pool = store.thread_history_db().await?;
+    let mut lineage = LineageWalk::for_history_page(store, params.thread_id);
     let page = page_turn_rows(
         pool,
         params.thread_id,
-        &lineage,
+        &mut lineage,
         params.cursor.as_deref(),
         params.page_size,
         params.sort_direction,
@@ -136,7 +153,7 @@ pub(in crate::local) async fn list_turns(
             {
                 // Synthetic fork-boundary rows are interrupted without local summary IDs.
                 // Load their summary from the earliest visible source turn.
-                load_inherited_summary_items(pool, &lineage, &turn).await?
+                load_inherited_summary_items(pool, &mut lineage, &turn).await?
             }
             StoredTurnItemsView::Summary => turn.summary_items,
         };
@@ -188,11 +205,9 @@ pub(in crate::local) async fn list_items(
         params.sort_direction = crate::SortDirection::Asc;
     }
     validate_page_size(params.page_size)?;
-    let lineage = store
-        .resolve_rollout_lineage_for_history_page(params.thread_id)
-        .await?;
     let pool = store.thread_history_db().await?;
-    let page = page_item_rows(pool, &lineage, &params).await?;
+    let mut lineage = LineageWalk::for_history_page(store, params.thread_id);
+    let page = page_item_rows(pool, &mut lineage, &params).await?;
 
     Ok(ItemPage {
         items: page.rows.into_iter().map(|row| row.item).collect(),
@@ -206,7 +221,7 @@ pub(super) async fn validate_thread_for_paginated_reads(
     thread_id: ThreadId,
     include_archived: bool,
     operation: &'static str,
-) -> ThreadStoreResult<()> {
+) -> ThreadStoreResult<ThreadMetadata> {
     let Some(state_db) = store.state_db().await else {
         return Err(ThreadStoreError::Unsupported { operation });
     };
@@ -227,18 +242,18 @@ pub(super) async fn validate_thread_for_paginated_reads(
     }
     match metadata.history_mode {
         ThreadHistoryMode::Legacy => Err(ThreadStoreError::Unsupported { operation }),
-        ThreadHistoryMode::Paginated => Ok(()),
+        ThreadHistoryMode::Paginated => Ok(metadata),
     }
 }
 
 async fn load_inherited_summary_items(
     pool: &sqlx::SqlitePool,
-    lineage: &RolloutLineage,
+    lineage: &mut LineageWalk<'_>,
     turn: &StoredTurnRow,
 ) -> ThreadStoreResult<Vec<StoredThreadItem>> {
-    let source = find_source_turn(pool, lineage, turn.turn_id.as_str()).await?;
+    let lineage = lineage.resolve_all().await?;
+    let source = find_turn(pool, lineage.iter().rev(), turn.turn_id.as_str()).await?;
     let Some(segment) = lineage
-        .segments()
         .iter()
         .find(|segment| segment.rollout_id() == source.rollout_id)
     else {

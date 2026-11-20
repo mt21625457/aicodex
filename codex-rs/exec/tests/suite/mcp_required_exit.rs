@@ -24,7 +24,7 @@ async fn exits_non_zero_when_required_mcp_server_fails_to_initialize() -> anyhow
     fs::create_dir(project.join(".git"))?;
     fs::write(project.join(".git/HEAD"), "ref: refs/heads/main\n")?;
 
-    let server = responses::start_mock_server().await;
+    let server = responses::start_sse_server().await;
     responses::mount_sse_once(&server, responses::sse_completed("resp_1")).await;
     let run = |args: &[&str]| {
         test.cmd_with_server(&server)

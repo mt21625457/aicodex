@@ -1,20 +1,21 @@
 ---
 source: core/tests/suite/scenarios_retained_tool_outputs.rs
+assertion_line: 141
 expression: "context_snapshot::format_request_history_snapshot(if enabled\n{\n    \"Retained thread instructions stop emergency tool-output trimming. Compaction keeps whole outputs within the shared 64K retention budget, dropping oversized task details and older instructions. A cold resume preserves the latest instruction unchanged.\"\n} else\n{\n    \"With retention disabled, the client can still send retain=true. Tool outputs use ordinary emergency trimming and are not retained after compaction and cold resume.\"\n}, &requests, &ContextSnapshotOptions::default().rewrite_known_segments(),)"
 ---
 Scenario: Retained thread instructions stop emergency tool-output trimming. Compaction keeps whole outputs within the shared 64K retention budget, dropping oversized task details and older instructions. A cold resume preserves the latest instruction unchanged.
 
 ## Window 1
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=e019c949fc483f83):
-        - namespace/functions; hash=03340277aa23936f
+00:additional_tools/developer (3; hash=0e136a1acff63b9d):
+        - namespace/functions; hash=81846de5bc4e7474
           - custom/exec
           - function/wait
           - function/request_user_input
           - function/request_user_input_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c5d736685ad3d6e
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
@@ -51,15 +52,15 @@ Scenario: Retained thread instructions stop emergency tool-output trimming. Comp
 
 ## Window 2 (after request 4: input diverged at item 06)
 -- request 5 (turn) --
-00:additional_tools/developer (3; hash=e019c949fc483f83):
-        - namespace/functions; hash=03340277aa23936f
+00:additional_tools/developer (3; hash=0e136a1acff63b9d):
+        - namespace/functions; hash=81846de5bc4e7474
           - custom/exec
           - function/wait
           - function/request_user_input
           - function/request_user_input_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c5d736685ad3d6e
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents

@@ -103,7 +103,7 @@ async fn worktree_start_and_fork_use_host_pool_and_preserve_legacy_resume() -> a
         responses::ev_assistant_message("message_1", "done"),
         responses::ev_completed("response_1"),
     ]);
-    let server = responses::start_mock_server().await;
+    let server = responses::start_sse_server().await;
     let seed_mock = responses::mount_sse_once(&server, body.clone()).await;
     let legacy_id = started_thread(
         test.cmd_with_server(&server)
@@ -138,7 +138,7 @@ async fn worktree_start_and_fork_use_host_pool_and_preserve_legacy_resume() -> a
         (true, vec!["--cd".to_owned(), extra.display().to_string()]),
     ] {
         let explicit_cd = overrides.first().is_some_and(|arg| arg == "--cd");
-        let server = responses::start_mock_server().await;
+        let server = responses::start_sse_server().await;
         let observed_owner = Arc::new(Mutex::<Option<String>>::default());
         let captured_owner = Arc::clone(&observed_owner);
         let observed_manager = manager.clone();
@@ -222,7 +222,7 @@ async fn worktree_start_and_fork_use_host_pool_and_preserve_legacy_resume() -> a
         known_roots.push(checkout.root);
     }
 
-    let server = responses::start_mock_server().await;
+    let server = responses::start_sse_server().await;
     let resume_mock = responses::mount_sse_once(&server, body).await;
     let resumed_id = started_thread(
         test.cmd_with_server(&server)

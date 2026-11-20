@@ -10,7 +10,7 @@ use core_test_support::test_codex_exec::test_codex_exec;
 async fn accepts_add_dir_flag() -> anyhow::Result<()> {
     let test = test_codex_exec();
 
-    let server = responses::start_mock_server().await;
+    let server = responses::start_sse_server().await;
     let body = responses::sse(vec![
         responses::ev_response_created("response_1"),
         responses::ev_assistant_message("response_1", "Task completed"),
@@ -42,7 +42,7 @@ async fn accepts_add_dir_flag() -> anyhow::Result<()> {
 async fn accepts_multiple_add_dir_flags() -> anyhow::Result<()> {
     let test = test_codex_exec();
 
-    let server = responses::start_mock_server().await;
+    let server = responses::start_sse_server().await;
     let body = responses::sse(vec![
         responses::ev_response_created("response_1"),
         responses::ev_assistant_message("response_1", "Multiple directories accepted"),

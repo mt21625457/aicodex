@@ -60,6 +60,7 @@ async fn fixture(archived: bool) -> (TempDir, LocalThreadStore) {
 
 fn params(archived: bool, db_only: bool) -> ListThreadsParams {
     ListThreadsParams {
+        included_thread_ids: None,
         page_size: 1,
         cursor: None,
         sort_key: ThreadSortKey::CreatedAt,

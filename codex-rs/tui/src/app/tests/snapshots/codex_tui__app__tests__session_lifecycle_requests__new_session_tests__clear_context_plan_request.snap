@@ -8,11 +8,14 @@ Scenario: Clear context and implement the approved plan in a fresh thread.
 -- request 1 (request) --
 00:message/developer:
     Help the user.
-01:message/developer[4]:
-    [01] <SKILLS_INSTRUCTIONS>
-    [02] <PERMISSIONS_INSTRUCTIONS>
-    [03] <COLLABORATION_MODE>
-    [04] <tools>
+01:message/developer[5]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <SKILLS_INSTRUCTIONS>
+    [03] <PERMISSIONS_INSTRUCTIONS>
+    [04] <COLLABORATION_MODE>
+    [05] <tools>
         Deferred tool namespaces:
         - codex_tui: Manage Codex tasks available through the connected app server.
         </tools>

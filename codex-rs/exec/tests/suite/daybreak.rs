@@ -73,7 +73,7 @@ async fn exec_resolves_daybreak_for_api_keys_and_allows_an_off_override() -> any
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exec_rejects_daybreak_for_non_openai_provider() -> anyhow::Result<()> {
     let test = test_codex_exec();
-    let server = responses::start_mock_server().await;
+    let server = responses::start_sse_server().await;
     std::fs::write(
         test.home_path().join("config.toml"),
         "daybreak = true\nfeatures.cli_daybreak = true\n",
@@ -162,7 +162,7 @@ async fn exec_custom_provider_daybreak_uses_capability() -> anyhow::Result<()> {
 async fn configured_daybreak_exec() -> anyhow::Result<(TestCodexExecBuilder, wiremock::MockServer)>
 {
     let test = test_codex_exec();
-    let server = responses::start_mock_server().await;
+    let server = responses::start_sse_server().await;
     let token = concat!(
         "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.",
         "eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9wbGFuX3R5cGUiOiJlbnRlcnByaXNlIiwiY2hhdGdwdF9hY2NvdW50X2lkIjoid29ya3NwYWNlIn19.",

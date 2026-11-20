@@ -8,7 +8,7 @@ async fn run_exec_with_config(config_toml: &str, extra_args: &[&str]) -> anyhow:
     let test = test_codex_exec();
     std::fs::write(test.home_path().join("config.toml"), config_toml)?;
 
-    let server = responses::start_mock_server().await;
+    let server = responses::start_sse_server().await;
     let body = responses::sse(vec![
         responses::ev_response_created("response_1"),
         responses::ev_assistant_message("response_1", "done"),

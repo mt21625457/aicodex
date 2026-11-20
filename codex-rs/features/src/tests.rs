@@ -355,6 +355,8 @@ max_recent_non_user_entries = 12
     assert_eq!(
         features.guardianv2,
         Some(FeatureToml::Config(crate::GuardianV2ConfigToml {
+            async_elastic_budgeting: None,
+            async_elastic_sections: None,
             sync_elastic_budgeting: None,
             sync_elastic_sections: None,
             transcript_mode: None,
@@ -596,9 +598,11 @@ fn codex_hooks_is_legacy_alias_for_hooks() {
 }
 
 #[test]
-fn multi_agent_is_stable_and_enabled_by_default() {
-    assert_eq!(Feature::Collab.stage(), Stage::Stable);
-    assert_eq!(Feature::Collab.default_enabled(), true);
+fn legacy_multi_agent_stays_enabled_while_v2_is_opt_in() {
+    assert_eq!(Feature::Collab.stage(), Stage::Deprecated);
+    assert!(Feature::Collab.default_enabled());
+    assert_eq!(Feature::MultiAgentV2.stage(), Stage::Stable);
+    assert!(!Feature::MultiAgentV2.default_enabled());
 }
 
 #[test]
@@ -885,6 +889,7 @@ non_code_mode_only = true
             hide_spawn_agent_metadata: Some(true),
             expose_spawn_agent_model_overrides: Some(true),
             wait_agent_enabled: Some(false),
+            interrupt_at_item_boundary: None,
             disable_native_tools: Some(true),
             disable_direct_message: Some(true),
             message_board_in_memory: Some(true),

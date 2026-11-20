@@ -90,12 +90,23 @@ pub fn into_persisted_rollout_items(
     items: Vec<RolloutItem>,
     history_mode: ThreadHistoryMode,
 ) -> Vec<RolloutItem> {
+    into_persisted_rollout_items_with_mode(items, history_mode, EventPersistenceMode::Limited)
+}
+
+/// Return the owned rollout items for the requested event detail level.
+pub fn into_persisted_rollout_items_with_mode(
+    items: Vec<RolloutItem>,
+    history_mode: ThreadHistoryMode,
+    event_mode: EventPersistenceMode,
+) -> Vec<RolloutItem> {
     items
         .into_iter()
-        .filter_map(|item| match persisted_rollout_item(&item, history_mode) {
-            Some(Cow::Borrowed(_)) => Some(item),
-            Some(Cow::Owned(item)) => Some(item),
-            None => None,
+        .filter_map(|item| {
+            match persisted_rollout_item_with_mode(&item, history_mode, event_mode) {
+                Some(Cow::Borrowed(_)) => Some(item),
+                Some(Cow::Owned(item)) => Some(item),
+                None => None,
+            }
         })
         .collect()
 }

@@ -30,16 +30,14 @@ use wiremock::http::Method;
 use wiremock::matchers::method;
 use wiremock::matchers::path_regex;
 
+#[path = "websocket_fallback_close.rs"]
+mod close_code;
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn websocket_fallback_switches_to_http_on_upgrade_required_connect() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let server = responses::start_mock_server().await;
-    Mock::given(method("GET"))
-        .and(path_regex(".*/responses$"))
-        .respond_with(ResponseTemplate::new(426))
-        .mount(&server)
-        .await;
+    let server = responses::start_sse_server().await;
 
     let response_mock = mount_sse_once(
         &server,
@@ -138,9 +136,10 @@ async fn websocket_fallback_switches_to_http_after_retries_exhausted() -> Result
 #[test_case::test_case(true, Some("codex_workspace_access_denied"), 3, 0; "workspace permission denied on websocket")]
 #[test_case::test_case(true, Some("access_program_not_enabled"), 3, 0; "access program denial on websocket")]
 #[test_case::test_case(false, Some("access_program_not_enabled"), 0, 2; "access program denial on http")]
-#[test_case::test_case(true, None, 3, 4; "bare websocket and http denials")]
+#[test_case::test_case(true, None, 3, 0; "bare websocket denial")]
+#[test_case::test_case(false, None, 0, 2; "bare http denial")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn forbidden_responses_retry_only_without_an_explicit_access_denial(
+async fn forbidden_responses_do_not_retry(
     supports_websockets: bool,
     code: Option<&str>,
     expected_upgrades: u64,
@@ -180,7 +179,7 @@ async fn forbidden_responses_retry_only_without_an_explicit_access_denial(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn websocket_fallback_hides_first_websocket_retry_stream_error() -> Result<()> {
+async fn websocket_fallback_reports_every_retry_and_transport_switch() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
@@ -261,12 +260,14 @@ async fn websocket_fallback_hides_first_websocket_retry_stream_error() -> Result
         }
     }
 
-    let expected_stream_errors = if cfg!(debug_assertions) {
-        vec!["Reconnecting... 1/2", "Reconnecting... 2/2"]
-    } else {
-        vec!["Reconnecting... 2/2"]
-    };
-    assert_eq!(stream_error_messages, expected_stream_errors);
+    assert_eq!(
+        stream_error_messages,
+        [
+            "Reconnecting... 1/2",
+            "Reconnecting... 2/2",
+            "Reconnecting... switching transport",
+        ],
+    );
     assert_eq!(
         transport_fallback_warnings,
         Vec::<String>::new(),

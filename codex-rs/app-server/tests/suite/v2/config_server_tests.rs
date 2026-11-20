@@ -1,6 +1,6 @@
 //! Exercises required HTTPS policy through real app-server startup and session RPCs.
 
-use super::https_mock::tls_listener;
+use super::https_mock::https_mock_server;
 use anyhow::Result;
 use app_test_support::TestAppServer;
 use codex_app_server_protocol::LoginAccountResponse;
@@ -15,11 +15,9 @@ use codex_config::test_support::CloudConfigBundleFixture;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
 use pretty_assertions::assert_eq;
-use std::path::Path;
 use std::path::PathBuf;
 use tempfile::TempDir;
 use tempfile::tempdir;
-use tokio::net::TcpStream;
 use tokio_util::task::AbortOnDropHandle;
 use wiremock::Mock;
 use wiremock::MockServer;
@@ -64,9 +62,7 @@ async fn config_server_settings_survive_openai_login_and_logout() -> Result<()> 
     let started = app.start_thread(ThreadStartParams::default()).await?;
     setup
         .assert_turn_uses_managed_instructions(&mut app, &started.thread.id)
-        .await?;
-    app.shutdown_gracefully().await?;
-    Ok(())
+        .await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -314,25 +310,4 @@ async fn stdin_token_startup(
     );
     assert!(!home.path().join("auth.json").exists());
     Ok(())
-}
-
-async fn https_mock_server(
-    home: &Path,
-    policy: &MockServer,
-) -> Result<(String, PathBuf, AbortOnDropHandle<()>)> {
-    let (listener, acceptor, ca_path) = tls_listener(home).await?;
-    let origin_url = format!("https://{}", listener.local_addr()?);
-    let origin = *policy.address();
-    let tls = AbortOnDropHandle::new(tokio::spawn(async move {
-        while let Ok((stream, _)) = listener.accept().await {
-            let acceptor = acceptor.clone();
-            tokio::spawn(async move {
-                let mut stream = acceptor.accept(stream).await?;
-                let mut upstream = TcpStream::connect(origin).await?;
-                tokio::io::copy_bidirectional(&mut stream, &mut upstream).await?;
-                Ok::<_, std::io::Error>(())
-            });
-        }
-    }));
-    Ok((origin_url, ca_path, tls))
 }

@@ -30,6 +30,19 @@ pub(crate) enum ResponsesStreamRequest {
     RemoteCompactionV2,
 }
 
+/// A new generation cannot repair a terminal provider response or settle the
+/// previous attempt's bill. Preserve these outcomes across transport retries,
+/// same-turn steering, and compaction's fallback to another model.
+pub(crate) fn is_terminal_sampling_outcome(error: &CodexErr) -> bool {
+    matches!(
+        error.details(),
+        CodexErrorDetails::ResponseIncomplete(_)
+            | CodexErrorDetails::UsageAccountingFailed(_)
+            | CodexErrorDetails::SessionBudgetExceeded
+            | CodexErrorDetails::InferenceHookDenied { .. }
+    )
+}
+
 pub(crate) struct ResponsesStreamRetryState {
     request_id: String,
     recovery_started_at: Option<Instant>,
@@ -74,8 +87,8 @@ impl ResponsesStreamRetryState {
     }
 
     /// 连接退避和服务端建议都必须满足；通知交付耗时算入同一个绝对期限。
-    fn connection_retry_at(&self, advice: Option<RetryAfter>) -> Instant {
-        let local = Instant::now() + self.connection_retry_delay;
+    fn connection_retry_at(&self, now: Instant, advice: Option<RetryAfter>) -> Instant {
+        let local = now + self.connection_retry_delay;
         advice
             .map(RetryAfter::deadline)
             .map_or(local, |remote| remote.max(local))
@@ -159,12 +172,13 @@ pub(crate) async fn handle_response_stream_error(
         .await;
     }
 
-    if retry_state.retries >= max_retries
+    let requires_http_fallback = err.requires_http_fallback();
+    let switched = (requires_http_fallback || retry_state.retries >= max_retries)
         && client_session.try_switch_fallback_transport(
             &turn_context.session_telemetry,
             turn_context.model_info(),
-        )
-    {
+        );
+    if switched || requires_http_fallback {
         return retry_after_transport_switch(
             retry_state,
             sess,
@@ -265,8 +279,9 @@ async fn retry_connection(
     deadline: Instant,
     operation: RetryOperation,
 ) -> Result<(), CodexErr> {
-    let retry_at = retry_state.connection_retry_at(retry_after);
-    let retry_delay = retry_at.saturating_duration_since(Instant::now());
+    let now = Instant::now();
+    let retry_at = retry_state.connection_retry_at(now, retry_after);
+    let retry_delay = retry_at.saturating_duration_since(now);
     if retry_at >= deadline {
         record_exhausted_retry(sess, turn_context, retry_after);
         return Err(err);

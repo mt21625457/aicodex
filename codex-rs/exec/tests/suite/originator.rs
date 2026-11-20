@@ -12,7 +12,7 @@ use wiremock::matchers::header;
 async fn send_codex_exec_originator() -> anyhow::Result<()> {
     let test = test_codex_exec();
 
-    let server = responses::start_mock_server().await;
+    let server = responses::start_sse_server().await;
     let body = responses::sse(vec![
         responses::ev_response_created("response_1"),
         responses::ev_assistant_message("response_1", "Hello, world!"),
@@ -34,7 +34,7 @@ async fn send_codex_exec_originator() -> anyhow::Result<()> {
 async fn supports_originator_override() -> anyhow::Result<()> {
     let test = test_codex_exec();
 
-    let server = responses::start_mock_server().await;
+    let server = responses::start_sse_server().await;
     let body = responses::sse(vec![
         responses::ev_response_created("response_1"),
         responses::ev_assistant_message("response_1", "Hello, world!"),

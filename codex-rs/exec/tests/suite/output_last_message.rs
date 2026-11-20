@@ -10,7 +10,7 @@ use pretty_assertions::assert_eq;
 async fn human_output_to_redirected_stdout_prints_one_answer() -> anyhow::Result<()> {
     core_test_support::skip_if_no_network!(Ok(()));
     let test = test_codex_exec();
-    let server = responses::start_mock_server().await;
+    let server = responses::start_sse_server().await;
     let command = test.cmd_with_server(&server);
     let saved = test.cwd_path().join("stdout");
     for alias in ["/dev/stdout", "/dev/fd/1", "/proc/self/fd/1"] {
@@ -56,7 +56,7 @@ async fn sandbox_link_cannot_redirect_this_or_the_next_invocation() -> anyhow::R
         let attack = format!(
             "if (printf forbidden > {quoted_target}) 2>/dev/null; then exit 1; fi; ln -sfn -- {quoted_target} codex-output.md"
         );
-        let server = responses::start_mock_server().await;
+        let server = responses::start_sse_server().await;
         let args = serde_json::json!({"cmd": attack, "shell": "/bin/sh", "login": false, "yield_time_ms": 10_000});
         responses::mount_function_call_agent_response(
             &server,

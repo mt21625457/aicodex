@@ -56,10 +56,17 @@ impl ExecServerProcess {
         let bin = package.join("bin");
         std::fs::create_dir_all(&bin)?;
         let executable = bin.join(format!("aicodex{}", std::env::consts::EXE_SUFFIX));
-        codex_utils_cargo_bin::copy_executable(
-            &codex_utils_cargo_bin::cargo_bin("aicodex")?,
-            &executable,
-        )?;
+        let source = codex_utils_cargo_bin::cargo_bin("aicodex")?;
+        // On macOS an independently copied debug binary can time out before printing its
+        // listener address. Reuse the built inode when the fixture lives on the same volume.
+        if !cfg!(target_os = "macos")
+            || source
+                .canonicalize()
+                .and_then(|source| std::fs::hard_link(source, &executable))
+                .is_err()
+        {
+            codex_utils_cargo_bin::copy_executable(&source, &executable)?;
+        }
         std::fs::write(
             package.join("codex-package.json"),
             serde_json::to_vec(&serde_json::json!({"version": version}))?,

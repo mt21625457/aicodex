@@ -23,7 +23,7 @@ async fn exec_hook_trust_bypass_runs_session_start_hook() -> anyhow::Result<()> 
         }))?,
     )?;
 
-    let server = responses::start_mock_server().await;
+    let server = responses::start_sse_server().await;
     let body = responses::sse(vec![
         responses::ev_response_created("response_1"),
         responses::ev_assistant_message("response_1", "done"),

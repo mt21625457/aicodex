@@ -1,4 +1,4 @@
-// Run with CODEX_TEST_BINARY=/absolute/path/to/codex node --test codex-cli/tests/exit-status.test.mjs.
+// Run with CODEX_TEST_BINARY=/absolute/path/to/aicodex node --test codex-cli/tests/exit-status.test.mjs.
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
@@ -15,6 +15,50 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import test from "node:test";
 
+async function installWrapper(directory, executable) {
+  const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
+  const target = `${arch}-${process.platform === "darwin" ? "apple-darwin" : "unknown-linux-musl"}`;
+  const bin = path.join(directory, "vendor", target, "bin");
+  await mkdir(bin, { recursive: true });
+  await symlink(executable, path.join(bin, "aicodex"));
+  await mkdir(path.join(directory, "bin"));
+  await writeFile(path.join(directory, "package.json"), '{"type":"module"}');
+  const wrapper = path.join(directory, "bin", "aicodex.js");
+  await copyFile(new URL("../bin/aicodex.js", import.meta.url), wrapper);
+  return wrapper;
+}
+
+test(
+  "the npm spawn fallback forwards a second SIGTERM to a running child",
+  { skip: process.platform === "win32" },
+  async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "codex-npm-signal-"));
+    try {
+      const wrapper = await installWrapper(directory, process.execPath);
+      const preload = path.join(directory, "fallback.cjs");
+      await writeFile(preload, "process.execve = undefined;");
+      const child = spawn(process.execPath, [
+        "--require",
+        preload,
+        wrapper,
+        "-e",
+        `let signals = 0;
+         process.on("SIGTERM", () => {
+           if (++signals === 2) process.exit(17);
+           console.log("received first SIGTERM");
+         });
+         setTimeout(() => process.exit(1), 5000);
+         console.log("ready");`,
+      ]);
+      const acknowledgements = createInterface({ input: child.stdout });
+      acknowledgements.on("line", () => child.kill("SIGTERM"));
+      assert.deepEqual(await once(child, "exit"), [17, null]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
 test(
   "the npm wrapper preserves numeric exits and child signals",
   {
@@ -23,30 +67,24 @@ test(
   async () => {
     assert.ok(
       process.env.CODEX_TEST_BINARY,
-      "Set CODEX_TEST_BINARY to a built Codex binary",
+      "Set CODEX_TEST_BINARY to a built AICodex binary",
     );
     const directory = await mkdtemp(path.join(tmpdir(), "codex-npm-exit-"));
     let child;
     let killTimer;
     try {
-      const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
-      const target = `${arch}-${process.platform === "darwin" ? "apple-darwin" : "unknown-linux-musl"}`;
-      const bin = path.join(directory, "vendor", target, "bin");
-      const home = path.join(directory, "home");
-      await mkdir(bin, { recursive: true });
-      await mkdir(home);
-      await mkdir(path.join(directory, "bin"));
-      await writeFile(
-        path.join(directory, "package.json"),
-        '{"type":"module"}',
-      );
-      const wrapper = path.join(directory, "bin", "aicodex.js");
-      await copyFile(new URL("../bin/aicodex.js", import.meta.url), wrapper);
-      await symlink(
+      const wrapper = await installWrapper(
+        directory,
         path.resolve(process.env.CODEX_TEST_BINARY),
-        path.join(bin, "aicodex"),
       );
-      const env = { ...process.env, CODEX_HOME: home, CODEX_SQLITE_HOME: home };
+      const home = path.join(directory, "home");
+      await mkdir(home);
+      const env = {
+        ...process.env,
+        AICODEX_HOME: home,
+        CODEX_HOME: home,
+        CODEX_SQLITE_HOME: home,
+      };
 
       // A normal CLI argument error must retain its numeric exit status.
       const invalid = spawnSync(

@@ -48,6 +48,7 @@ pub(crate) use image_protocol::PetImageUnsupportedReason;
 #[cfg(not(test))]
 pub(crate) use image_protocol::detect_pet_image_support;
 pub(crate) use image_protocol::kitty_delete_image;
+pub(crate) use image_protocol::kitty_move_image;
 pub(crate) use image_protocol::kitty_transmit_png_file_with_id;
 pub(crate) use image_protocol::kitty_transmit_png_with_id;
 pub(crate) use picker::PET_PICKER_VIEW_ID;
@@ -369,7 +370,7 @@ mod tests {
         assert!(output.contains("a=d,d=I,i=49374,q=2;"));
         assert!(output.contains("\x1b[4;3H"));
         assert!(output.contains("a=T,t=f,f=100,c=4,r=2,q=2,i=49374,C=1;"));
-        assert!(!output.contains("cG5n"));
+        assert!(!output.contains(";cG5n\x1b\\"));
         assert!(output.contains("\x1b8"));
     }
 

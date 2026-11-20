@@ -31,3 +31,15 @@ app-server 同步转发 error 通知，并由有序 ThreadState 保存当前轮�
 已知 output_item.added/done 的 item 损坏或缺失返回 MalformedResponse。复用现有非重试分类，错误不包含原始 payload；HTTP 和 WebSocket 共享该处理。未知扩展 item 不被拒绝。
 
 新增回归：responses_item_tests、thread_state::recovery_tests、stream_recovery::tests，以及 responses_retry::tests 的身份与截止时间校验。全内核、安装版和真实 provider 验收仍未覆盖。旧本地压缩 retry 通知保留 recovery 缺失的兼容路径。
+
+## 0.171.0 合并回归
+
+API 桥接层此前在提前返回 HTTP 503 专用错误时跳过了 `x-should-retry: false`。重试禁令现在在错误分类后统一生效，保留容量不足、服务端过载和限速分类，以及已经捕获的 `Retry-After` 截止时间。上游 WebSocket 消息大小错误触发 HTTP 回退时也复用同一重试策略，显式关闭重试同时禁用回退。
+
+回归入口为 `server_do_not_retry_header_applies_to_classified_capacity_errors`（codex-api）和 `disabling_retry_also_disables_websocket_http_fallback`（codex-protocol）。
+
+本机 codex-api 单元测试 288 项、集成测试 36 项和 codex-protocol 单元测试 381 项全部通过，包含 503 重试禁令、WebSocket 回退禁令和畸形输出回归。
+
+连接恢复使用同一次单调时钟采样计算绝对等待时刻和计划延迟，避免遥测将 5 秒退避截断为 4,999 毫秒。集成回归覆盖首次和第二次恢复的递增计数。WebSocket 升级拒绝回归覆盖首次 HTTP 请求成功与首次 HTTP 请求返回过载两种结果，两者均要求等待两次服务端建议，并验证传输切换沿用累计流重试次数。
+
+工作区 Nextest 复跑中，`responses_retry::tests` 8 项及 `suite::retry_after` 42 项全部通过。

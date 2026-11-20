@@ -21,7 +21,7 @@ async fn exec_includes_output_schema_in_request() -> anyhow::Result<()> {
     std::fs::write(&schema_path, serde_json::to_vec_pretty(&schema_contents)?)?;
     let expected_schema: Value = schema_contents;
 
-    let server = responses::start_mock_server().await;
+    let server = responses::start_sse_server().await;
     let body = responses::sse(vec![
         responses::ev_response_created("resp1"),
         responses::ev_assistant_message("m1", "fixture hello"),

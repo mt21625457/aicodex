@@ -89,6 +89,21 @@ fn disabling_retry_preserves_error_details() {
     assert!(err.retry_delay(/*retry_count*/ 1).is_none());
 }
 
+#[test]
+fn disabling_retry_also_disables_websocket_http_fallback() {
+    let err = CodexErr::new(CodexErrorDetails::WebsocketMessageTooLarge);
+    assert!(err.requires_http_fallback());
+    assert!(err.retry_delay(/*retry_count*/ 1).is_some());
+
+    let err = err.without_retry();
+    assert!(!err.requires_http_fallback());
+    assert!(err.retry_delay(/*retry_count*/ 1).is_none());
+    assert!(matches!(
+        err.details(),
+        CodexErrorDetails::WebsocketMessageTooLarge
+    ));
+}
+
 /// Retryable errors prefer server advice and otherwise back off by attempt; advice does not
 /// make a terminal error retryable.
 #[test]

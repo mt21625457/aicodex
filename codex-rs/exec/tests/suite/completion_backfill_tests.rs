@@ -20,7 +20,7 @@ fn body_contains(request: &wiremock::Request, text: &str) -> bool {
 async fn ignores_unrelated_turn_completion_before_backfilling_primary_turn() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let server = responses::start_mock_server().await;
+    let server = responses::start_sse_server().await;
     let spawn_args = json!({
         "message": CHILD_PROMPT,
         "task_name": "worker",
@@ -165,7 +165,7 @@ async fn ignores_unrelated_turn_completion_before_backfilling_primary_turn() -> 
 async fn failed_fork_recovers_only_its_own_turn() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let server = responses::start_mock_server().await;
+    let server = responses::start_sse_server().await;
     let test = test_codex_exec();
     let last_message = test.cwd_path().join("last-message");
     let mut events = vec![responses::ev_response_created("parent")];

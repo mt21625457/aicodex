@@ -351,11 +351,14 @@ async fn injected_agent_message_interrupting_sampling_survives_mid_turn_compacti
         responses::strip_metadata_from_json(serde_json::to_value([message])?)
     );
     let entries = requests.iter().map(SnapshotEntry::body).collect::<Vec<_>>();
-    insta::assert_snapshot!(context_snapshot::format_context_snapshot(
-        "An injected agent message that interrupts sampling is included in the first request after mid-turn compaction.",
-        &entries,
-        &ContextSnapshotOptions::default().rewrite_known_segments(),
-    ));
+    insta::assert_snapshot!(
+        "injected_agent_message_interrupting_sampling_survives_mid_turn_compaction",
+        context_snapshot::format_context_snapshot(
+            "An injected agent message that interrupts sampling is included in the first request after mid-turn compaction.",
+            &entries,
+            &ContextSnapshotOptions::default().rewrite_known_segments(),
+        )
+    );
     server.shutdown().await;
     Ok(())
 }

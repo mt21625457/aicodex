@@ -1,8 +1,9 @@
 //! 按监听器真实顺序验证快照，状态查询不能把后台恢复伪装成已完成。
 use super::ThreadState;
-use codex_protocol::protocol::{
-    AgentMessageContentDeltaEvent, EventMsg, StreamErrorEvent, TurnStartedEvent,
-};
+use codex_protocol::protocol::AgentMessageContentDeltaEvent;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::StreamErrorEvent;
+use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::stream_recovery::StreamRecovery;
 
 fn start(turn: &str) -> EventMsg {
@@ -73,7 +74,8 @@ fn replacement_and_listener_shutdown_clear_recovery() {
 
 #[test]
 fn concurrent_tool_completion_does_not_claim_provider_recovered() {
-    use codex_protocol::items::{FunctionCallOutputItem, TurnItem};
+    use codex_protocol::items::FunctionCallOutputItem;
+    use codex_protocol::items::TurnItem;
     use codex_protocol::models::FunctionCallOutputBody;
     use codex_protocol::protocol::ItemCompletedEvent;
     let mut state = ThreadState::default();

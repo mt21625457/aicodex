@@ -129,6 +129,8 @@ pub enum ApiError {
         kind: ProviderMediaErrorKind,
         message: String,
     },
+    #[error("websocket request exceeds the peer's message size limit")]
+    WebsocketMessageTooLarge,
     #[error("stream error: Incomplete response returned, reason: content_filter")]
     ContentFilter,
     #[error(transparent)]

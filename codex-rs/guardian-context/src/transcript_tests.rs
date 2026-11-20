@@ -82,6 +82,133 @@ fn inherited_manual_approval_filters_all_supported_text_variants() {
 }
 
 #[test]
+fn enclosing_call_is_matched_by_id_even_when_wrapper_arguments_match() {
+    let arguments = r#"{"code":"await checkout()"}"#;
+    let history = ["earlier", "enclosing", "later"]
+        .map(|id| {
+            serde_json::from_value::<ResponseItem>(serde_json::json!({
+                "type": "function_call", "name": "js", "call_id": id, "arguments": arguments,
+            }))
+            .unwrap()
+        })
+        .to_vec();
+    let config = transcript_config();
+    assert_eq!(
+        super::collect_transcript_for_review(
+            &history,
+            &config,
+            /*proposed_call_id*/ None,
+            /*enclosing_invocation_id*/ Some("enclosing"),
+            /*is_selected_exec_output*/ None,
+        ),
+        [
+            ConversationTranscriptEntryKind::ToolCall("tool js call".into()),
+            ConversationTranscriptEntryKind::EnclosingToolCall("tool js call".into()),
+            ConversationTranscriptEntryKind::ToolCall("tool js call".into()),
+        ]
+        .map(|kind| entry(kind, arguments))
+    );
+}
+
+#[test]
+fn budget_drops_the_enclosing_call_and_its_label_together() {
+    let arguments = serde_json::json!({ "code": "await checkout();".repeat(160) }).to_string();
+    let other_arguments = r#"{"code":"await inspect()"}"#;
+    let action = r#"{"tool_name":"submit_order","arguments":{}}"#;
+    let collected = crate::CollectedContext {
+        sections: vec![
+            ContextSection::ConversationTranscript {
+                items: vec![
+                    entry(
+                        ConversationTranscriptEntryKind::EnclosingToolCall("tool js call".into()),
+                        &arguments,
+                    ),
+                    entry(
+                        ConversationTranscriptEntryKind::ToolCall("tool js call".into()),
+                        other_arguments,
+                    ),
+                ],
+            },
+            ContextSection::PlannedAction(crate::PlannedAction {
+                kind: crate::PlannedActionKind::Nested {
+                    json: action.into(),
+                    enclosing_invocation_id: "verified".into(),
+                    enclosing_call: None,
+                },
+                reason: None,
+                tool_descriptions: None,
+            }),
+        ],
+    };
+    let profile = crate::ContextProfile::synchronous();
+    let parent_line = "Enclosing call for this review:";
+    let omission = "Evidence omitted.";
+    for (budgeting, max_input_tokens, elastic_entry_limit, includes_parent) in [
+        (crate::ContextBudgeting::Fixed, 400, None, false),
+        (crate::ContextBudgeting::Elastic, 400, None, false),
+        (crate::ContextBudgeting::Elastic, 4_000, Some(128), false),
+        (crate::ContextBudgeting::Elastic, 4_000, None, true),
+    ] {
+        let budget = crate::RequestBudget {
+            max_input_tokens,
+            existing_context_tokens: 0,
+        };
+        let context = crate::prepare_context(
+            std::borrow::Cow::Borrowed(&collected),
+            &profile,
+            /*entry_number_offset*/ 1,
+            crate::ContextPresentation::SyncDelta {
+                session_id: "review",
+            },
+            budgeting,
+            &[],
+        )
+        .unwrap();
+        let selected = match budgeting {
+            crate::ContextBudgeting::Fixed => {
+                context.enforce_budget(budget, omission.into(), crate::HistoryTruncation::Preserve)
+            }
+            crate::ContextBudgeting::Elastic => {
+                let mut config = crate::ElasticBudgetConfig::default();
+                if let Some(limit) = elastic_entry_limit {
+                    config.sections.insert(
+                        crate::ElasticSection::PlannedAction,
+                        crate::ElasticSectionLimits::new(limit, limit).unwrap(),
+                    );
+                }
+                let config = crate::budget::tests::complete_minimum_budget(config);
+                context
+                    .prepare_elastic_entries(&config)
+                    .unwrap()
+                    .enforce_budget(budget, omission.into())
+            }
+        }
+        .unwrap();
+        let text = selected
+            .into_messages()
+            .into_iter()
+            .filter_map(|item| match item {
+                ResponseItem::Message { content, .. } => Some(content),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|content| match content {
+                ContentItem::InputText { text } => Some(text),
+                _ => None,
+            })
+            .collect::<String>();
+        assert!(text.contains(other_arguments), "{budgeting:?}: {text}");
+        assert!(text.contains(action), "{budgeting:?}: {text}");
+        assert_eq!(text.contains(parent_line), includes_parent, "{budgeting:?}");
+        assert_eq!(
+            text.contains("await checkout()"),
+            includes_parent,
+            "{budgeting:?}"
+        );
+    }
+}
+
+#[test]
 fn heartbeat_references_preserve_positions_changes_and_human_messages() {
     let make = |time: &str, instructions: &str, kind: &str| {
         serde_json::from_value::<ResponseItem>(serde_json::json!({
@@ -326,6 +453,7 @@ fn registered_transcript_filters_roles_and_preserves_node_repl_tool_attribution(
             target: ContextTarget::Async,
             history: &history,
             transcript: &config,
+            is_selected_exec_output: None,
             root_conversation: &[],
             root_conversation_candidates: None,
             trusted_user_answers: &[],
@@ -416,6 +544,7 @@ fn excluded_tool_calls_still_attribute_included_results() {
             target: ContextTarget::Async,
             history: &history,
             transcript: &config,
+            is_selected_exec_output: None,
             root_conversation: &[],
             root_conversation_candidates: None,
             trusted_user_answers: &[],
@@ -435,6 +564,42 @@ fn excluded_tool_calls_still_attribute_included_results() {
             ConversationTranscriptEntryKind::ToolOutput("tool read_file result".to_string()),
             "file contents"
         )]
+    );
+}
+
+#[test]
+fn missing_exec_call_preserves_recorder_verified_output() {
+    let outputs = ["verified", "unknown"].map(|call_id| ResponseItem::CustomToolCallOutput {
+        id: None,
+        call_id: call_id.to_owned(),
+        name: None,
+        output: FunctionCallOutputPayload::from_text("saved instructions".to_owned()),
+        internal_chat_message_metadata_passthrough: None,
+    });
+    let is_verified = |output: &ResponseItem| matches!(output, ResponseItem::CustomToolCallOutput { call_id, .. } if call_id == "verified");
+    let ordinary = entry(
+        ConversationTranscriptEntryKind::ToolOutput("tool result".into()),
+        "saved instructions",
+    );
+    assert_eq!(
+        collect_transcript(&outputs, &transcript_config()),
+        vec![ordinary.clone(), ordinary.clone()]
+    );
+    assert_eq!(
+        super::collect_transcript_for_review(
+            &outputs,
+            &transcript_config(),
+            /*proposed_call_id*/ None,
+            /*enclosing_invocation_id*/ None,
+            Some(&is_verified)
+        ),
+        vec![
+            entry(
+                ConversationTranscriptEntryKind::SelectedExecOutput,
+                "saved instructions"
+            ),
+            ordinary,
+        ]
     );
 }
 
@@ -531,6 +696,7 @@ fn outputs_with_call_ids_or_explicit_names_are_retained() {
                     target,
                     history: &history,
                     transcript: &config,
+                    is_selected_exec_output: None,
                     root_conversation: &[],
                     root_conversation_candidates: None,
                     trusted_user_answers: &[],
@@ -592,6 +758,7 @@ fn reused_registry_applies_current_history_sources_and_preserves_originals() {
                 target,
                 history: &history,
                 transcript: &config,
+                is_selected_exec_output: None,
                 root_conversation: &[],
                 root_conversation_candidates: None,
                 trusted_user_answers: &[],
@@ -641,6 +808,7 @@ fn reused_registry_applies_current_history_sources_and_preserves_originals() {
                 target: ContextTarget::Async,
                 history: &history,
                 transcript: &config,
+                is_selected_exec_output: None,
                 root_conversation: &[],
                 root_conversation_candidates: None,
                 trusted_user_answers: &[],

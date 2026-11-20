@@ -701,6 +701,7 @@ async fn metrics_exporters_respect_analytics_preferences() -> Result<()> {
         trace_exporter: codex_otel::OtelExporter::None,
         metrics_exporter: codex_otel::OtelExporter::Statsig,
         runtime_metrics: false,
+        headers_helper: None,
         span_attributes: Default::default(),
         tracestate: Default::default(),
     })

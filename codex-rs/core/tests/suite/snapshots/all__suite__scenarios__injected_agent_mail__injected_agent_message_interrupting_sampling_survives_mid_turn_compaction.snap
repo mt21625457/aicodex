@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_injected_agent_mail.rs
+assertion_line: 354
 expression: "context_snapshot::format_context_snapshot(\"An injected agent message that interrupts sampling is included in the first request after mid-turn compaction.\",\n&entries, &ContextSnapshotOptions::default().rewrite_known_segments(),)"
 ---
 Scenario: An injected agent message that interrupts sampling is included in the first request after mid-turn compaction.
@@ -24,8 +25,11 @@ Scenario: An injected agent message that interrupts sampling is included in the 
     - Do not use python scripts to attempt to output larger chunks of a file.
 
 
-01:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+01:message/developer[2]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 02:message/user:
     <ENVIRONMENT_CONTEXT>
 03:message/user:
@@ -51,8 +55,11 @@ Scenario: An injected agent message that interrupts sampling is included in the 
     - Do not use python scripts to attempt to output larger chunks of a file.
 
 
-01:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+01:message/developer[2]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 02:message/user:
     <ENVIRONMENT_CONTEXT>
 03:message/user:
@@ -81,8 +88,11 @@ Scenario: An injected agent message that interrupts sampling is included in the 
     - Do not use python scripts to attempt to output larger chunks of a file.
 
 
-01:message/developer:
-    <PERMISSIONS_INSTRUCTIONS>
+01:message/developer[2]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <PERMISSIONS_INSTRUCTIONS>
 02:message/user:
     <ENVIRONMENT_CONTEXT>
 03:message/user:

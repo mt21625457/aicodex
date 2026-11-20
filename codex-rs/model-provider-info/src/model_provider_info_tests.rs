@@ -1220,9 +1220,16 @@ fn cyber_access_program_capability_uses_provider_identity_and_explicit_overrides
 #[test]
 fn stream_idle_timeout_is_bounded_by_default_and_preserves_explicit_override() {
     let provider = super::ModelProviderInfo::default();
-    assert_eq!(provider.stream_idle_timeout(), std::time::Duration::from_secs(300));
+    assert_eq!(
+        provider.stream_idle_timeout(),
+        std::time::Duration::from_secs(300)
+    );
     let explicit = super::ModelProviderInfo {
-        stream_idle_timeout_ms: Some(900_000), ..provider
+        stream_idle_timeout_ms: Some(900_000),
+        ..provider
     };
-    assert_eq!(explicit.stream_idle_timeout(), std::time::Duration::from_secs(900));
+    assert_eq!(
+        explicit.stream_idle_timeout(),
+        std::time::Duration::from_secs(900)
+    );
 }

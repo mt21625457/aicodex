@@ -57,6 +57,7 @@ def test_harness_rejects_empty_binary_override(tmp_path, monkeypatch) -> None:
 
 def test_harness_isolates_both_runtime_home_names(tmp_path, monkeypatch) -> None:
     """Mock app-server tests must not inherit either runtime home from the host."""
+    monkeypatch.setenv("CODEX_EXEC_PATH", str(tmp_path / "unused-runtime"))
     monkeypatch.setenv("AICODEX_HOME", str(tmp_path / "unrelated-home"))
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "another-unrelated-home"))
     with AppServerHarness(tmp_path) as harness:

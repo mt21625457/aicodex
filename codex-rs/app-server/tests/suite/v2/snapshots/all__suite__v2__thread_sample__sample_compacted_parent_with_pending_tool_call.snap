@@ -8,9 +8,12 @@ Scenario: A child samples a compacted parent while a tool call is pending. The p
 -- request 1 (request; Parent starts) --
 00:message/developer:
     Help the user with their task.
-01:message/developer[2]:
-    [01] <SKILLS_INSTRUCTIONS>
-    [02] <PERMISSIONS_INSTRUCTIONS>
+01:message/developer[3]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <SKILLS_INSTRUCTIONS>
+    [03] <PERMISSIONS_INSTRUCTIONS>
 02:message/user:
     <ENVIRONMENT_CONTEXT>
 03:message/user:
@@ -20,9 +23,12 @@ Scenario: A child samples a compacted parent while a tool call is pending. The p
 -- request 2 (request; Parent compacts) --
 00:message/developer:
     Help the user with their task.
-01:message/developer[2]:
-    [01] <SKILLS_INSTRUCTIONS>
-    [02] <PERMISSIONS_INSTRUCTIONS>
+01:message/developer[3]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <SKILLS_INSTRUCTIONS>
+    [03] <PERMISSIONS_INSTRUCTIONS>
 02:message/user:
     <ENVIRONMENT_CONTEXT>
 03:message/user:
@@ -36,9 +42,12 @@ Scenario: A child samples a compacted parent while a tool call is pending. The p
 -- request 3 (request; Parent requests a tool) --
 00:message/developer:
     Help the user with their task.
-01:message/developer[2]:
-    [01] <SKILLS_INSTRUCTIONS>
-    [02] <PERMISSIONS_INSTRUCTIONS>
+01:message/developer[3]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <SKILLS_INSTRUCTIONS>
+    [03] <PERMISSIONS_INSTRUCTIONS>
 02:message/user:
     <ENVIRONMENT_CONTEXT>
 03:message/user:
@@ -60,9 +69,12 @@ Scenario: A child samples a compacted parent while a tool call is pending. The p
 -- request 5 (request; Parent receives the tool result) --
 00:message/developer:
     Help the user with their task.
-01:message/developer[2]:
-    [01] <SKILLS_INSTRUCTIONS>
-    [02] <PERMISSIONS_INSTRUCTIONS>
+01:message/developer[3]:
+    [01] <context_continuation>
+        The runtime manages context compaction or rollover. Context-window capacity is not a task deadline or th...real failures accurately instead of claiming success. [hash=1eca8308a77806e2]
+        </context_continuation>
+    [02] <SKILLS_INSTRUCTIONS>
+    [03] <PERMISSIONS_INSTRUCTIONS>
 02:message/user:
     <ENVIRONMENT_CONTEXT>
 03:message/user:

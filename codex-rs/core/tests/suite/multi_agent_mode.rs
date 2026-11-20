@@ -30,6 +30,7 @@ use test_case::test_case;
 
 const NO_SPAWN_TEXT: &str = "Any earlier instruction enabling proactive multi-agent delegation no longer applies. Do not spawn sub-agents unless the user or applicable AGENTS.md/skill instructions explicitly ask for sub-agents, delegation, or parallel agent work.";
 const PROACTIVE_TEXT: &str = "Proactive multi-agent delegation is active.";
+const HOSTED_SKILL_GUIDANCE: &str = "Before calling any multi-agent tool, read the full multi-agent skill using its listed package locator. Skip the read only if the full skill text is already in your current context. If the read fails, make note of the blocker.";
 const CUSTOM_MODE_HINT_TEXT: &str = "Use the configured delegation policy.";
 const UPDATED_CUSTOM_MODE_HINT_TEXT: &str = "Use the updated delegation policy.";
 const CATALOG_MODE_HINT_TEXT: &str = "Use the model catalog delegation policy.";
@@ -247,14 +248,18 @@ async fn mode_hints_override_reasoning_effort(
                 && value.pointer("/payload/full").and_then(Value::as_bool) == Some(true)
         })
         .and_then(|value| value.pointer("/payload/state/multi_agent_mode"));
-    assert_eq!(
-        initial_world_state_mode,
-        Some(&json!({
-            "mode": {"custom": expected_hint},
-            "usage_hint_hash": "77b72c45a2e2f65e31467b2ddeb5f0333a755e8f"
-        }))
-    );
     let hosted_default = disable_native_tools && matches!(source, ModeHintSource::CatalogHint);
+    let initial_hint = if hosted_default {
+        format!("\n{NO_SPAWN_TEXT}\n\n{HOSTED_SKILL_GUIDANCE}\n")
+    } else {
+        expected_hint.to_owned()
+    };
+    let mut expected_world_state_mode = json!({"mode": {"custom": initial_hint}});
+    if !disable_native_tools {
+        expected_world_state_mode["usage_hint_hash"] =
+            json!("77b72c45a2e2f65e31467b2ddeb5f0333a755e8f");
+    }
+    assert_eq!(initial_world_state_mode, Some(&expected_world_state_mode));
     for (index, texts) in [&first_texts, &second_texts].into_iter().enumerate() {
         let proactive = usize::from(hosted_default && index == 1);
         assert_eq!(

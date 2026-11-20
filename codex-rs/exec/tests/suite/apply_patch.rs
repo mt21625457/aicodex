@@ -9,7 +9,7 @@ use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_exec_command_call_with_args;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
-use core_test_support::responses::start_mock_server;
+use core_test_support::responses::start_sse_server;
 use pretty_assertions::assert_eq;
 use std::fs;
 use std::process::Command;
@@ -78,7 +78,7 @@ async fn test_apply_patch_tool() -> anyhow::Result<()> {
         ]),
         sse(vec![ev_completed("request_2")]),
     ];
-    let server = start_mock_server().await;
+    let server = start_sse_server().await;
     mount_sse_sequence(&server, response_streams).await;
 
     test.cmd_with_server(&server)
@@ -132,7 +132,7 @@ async fn human_output_prints_unchanged_turn_diff_once() -> anyhow::Result<()> {
         .success();
 
     // Replay the reported single edit, unrelated command, and final response.
-    let server = start_mock_server().await;
+    let server = start_sse_server().await;
     let mock = mount_sse_sequence(
         &server,
         vec![
@@ -242,7 +242,7 @@ shell_snapshot_v2 = false
         test.cwd_path().join("patch.sh"),
         "if cat \"$HOME/outside-workspace.txt\" >/dev/null 2>&1; then exit 99; fi\napply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: patched.txt\n+through the nested alias\n*** End Patch\nPATCH\n",
     )?;
-    let server = start_mock_server().await;
+    let server = start_sse_server().await;
     let mock = mount_sse_sequence(
         &server,
         vec![
@@ -329,7 +329,7 @@ async fn test_apply_patch_freeform_tool() -> anyhow::Result<()> {
         ]),
         sse(vec![ev_completed("request_2")]),
     ];
-    let server = start_mock_server().await;
+    let server = start_sse_server().await;
     mount_sse_sequence(&server, response_streams).await;
 
     test.cmd_with_server(&server)
@@ -420,7 +420,7 @@ async fn shutdown_flushes_completed_turn_and_file_diff() -> anyhow::Result<()> {
         AuthKeyringBackendKind::default(),
     )?;
 
-    let server = start_mock_server().await;
+    let server = start_sse_server().await;
     let deliveries = Arc::new(AtomicUsize::new(0));
     let completed_deliveries = Arc::clone(&deliveries);
     Mock::given(method("POST"))

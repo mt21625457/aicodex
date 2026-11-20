@@ -50,6 +50,7 @@ pub(super) fn sampler_failure_reason(error: &LunaSamplerError) -> &'static str {
             ApiError::StreamFailure { .. } => "stream_failure",
             ApiError::StreamIdleTimeout { .. } => "stream_idle_timeout",
             ApiError::ProviderMedia { .. } => "provider_media_error",
+            ApiError::WebsocketMessageTooLarge => "websocket_message_too_large",
             ApiError::ResponseIncomplete(_) => "incomplete_response",
             ApiError::ContextWindowExceeded => "context_window_exceeded",
             ApiError::QuotaExceeded => "quota_exceeded",

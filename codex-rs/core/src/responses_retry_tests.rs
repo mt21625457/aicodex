@@ -148,12 +148,12 @@ async fn connection_retry_honors_server_advice_without_shortening_local_backoff(
     let now = Instant::now();
     let later = RetryAfter::from_delay(Duration::from_secs(30));
     assert_eq!(
-        state.connection_retry_at(later),
+        state.connection_retry_at(now, later),
         now + Duration::from_secs(30)
     );
     let earlier = RetryAfter::from_delay(Duration::from_secs(1));
     assert_eq!(
-        state.connection_retry_at(earlier),
+        state.connection_retry_at(now, earlier),
         now + Duration::from_secs(5)
     );
 }

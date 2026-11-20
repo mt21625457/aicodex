@@ -86,7 +86,7 @@ async fn cloud_list_respects_the_credential_store_and_trusted_destinations() -> 
         ])
         .assert()
         .failure()
-        .stderr(contains("Not signed in. Please run 'codex login'"));
+        .stderr(contains("Not signed in. Please run 'aicodex login'"));
     assert!(server.received_requests().await.unwrap().is_empty());
 
     // Staging must reach explicit PAT authentication. Reject the synthetic PAT locally so

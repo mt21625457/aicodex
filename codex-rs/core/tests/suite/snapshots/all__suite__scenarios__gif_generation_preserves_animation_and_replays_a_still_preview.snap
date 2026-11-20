@@ -1,6 +1,6 @@
 ---
 source: core/tests/suite/scenarios.rs
-assertion_line: 559
+assertion_line: 583
 expression: "context_snapshot::format_request_history_snapshot(\"GIF generation exposes animation controls and guidance, preserves the animated artifact, and replays a still preview through a follow-up turn.\",\n&requests,\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
 ---
 Scenario: GIF generation exposes animation controls and guidance, preserves the animated artifact, and replays a still preview through a follow-up turn.
@@ -17,8 +17,8 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=8a45640139fa19b1):
-        - namespace/functions; hash=106dd1b983efd2f7
+00:additional_tools/developer (3; hash=c0043444d8c24d5c):
+        - namespace/functions; hash=aca887ef399aebba
           - function/exec_command
           - function/write_stdin
           - function/request_user_input

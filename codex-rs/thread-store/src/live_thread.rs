@@ -8,7 +8,9 @@ use codex_protocol::protocol::ThreadMemoryMode;
 use codex_rollout::EventPersistenceMode;
 use codex_rollout::RolloutItem;
 use codex_rollout::RolloutPersistenceTelemetry;
+use codex_rollout::is_persisted_rollout_item_with_mode;
 use codex_rollout::measure_and_filter_rollout_items_with_mode;
+use codex_rollout::persisted_rollout_item;
 use codex_rollout::persisted_rollout_items_with_mode;
 use tokio::sync::Mutex;
 use tracing::warn;
@@ -169,12 +171,10 @@ impl LiveThread {
         inherited_model_context: &[RolloutItem],
         guard: &mut LiveThreadInitGuard,
     ) -> ThreadStoreResult<Self> {
-        let persisted_prefix_item_count = persisted_rollout_items_with_mode(
-            inherited_model_context,
-            params.history_mode,
-            EventPersistenceMode::Limited,
-        )
-        .len();
+        let persisted_prefix_item_count = inherited_model_context
+            .iter()
+            .filter(|item| persisted_rollout_item(item, params.history_mode).is_some())
+            .count();
         params.subagent_history_start_ordinal = Some(
             u64::try_from(persisted_prefix_item_count)
                 .map_err(|_| ThreadStoreError::Internal {
@@ -187,7 +187,7 @@ impl LiveThread {
         );
         let live_thread = guard.acquire(Self::create(thread_store, params)).await?;
         live_thread
-            .persist_appended_items(inherited_model_context)
+            .persist_appended_items(inherited_model_context, EventPersistenceMode::Limited)
             .await?;
         Ok(live_thread)
     }
@@ -251,8 +251,11 @@ impl LiveThread {
         mode: EventPersistenceMode,
     ) -> ThreadStoreResult<()> {
         let items = self
-            .persist_appended_items_with_persistence_mode(raw_items, mode)
-            .await?;
+            .persist_appended_items(raw_items, mode)
+            .await?
+            .unwrap_or_else(|| {
+                persisted_rollout_items_with_mode(raw_items, self.history_mode, mode)
+            });
         if items.is_empty() {
             return Ok(());
         }
@@ -277,39 +280,33 @@ impl LiveThread {
         Ok(())
     }
 
+    /// Returns the filtered items when telemetry has already collected them.
     async fn persist_appended_items(
         &self,
         raw_items: &[RolloutItem],
-    ) -> ThreadStoreResult<Vec<RolloutItem>> {
-        self.persist_appended_items_with_persistence_mode(raw_items, EventPersistenceMode::Limited)
-            .await
-    }
-
-    async fn persist_appended_items_with_persistence_mode(
-        &self,
-        raw_items: &[RolloutItem],
         mode: EventPersistenceMode,
-    ) -> ThreadStoreResult<Vec<RolloutItem>> {
+    ) -> ThreadStoreResult<Option<Vec<RolloutItem>>> {
         // Empty appends are intentionally ignored rather than represented as zero-sized batches.
         if raw_items.is_empty() {
-            return Ok(Vec::new());
+            return Ok(Some(Vec::new()));
         }
-        let (items, measurement) = if self.persistence_telemetry.is_enabled() {
-            let (items, measurement) =
-                measure_and_filter_rollout_items_with_mode(raw_items, self.history_mode, mode);
-            (items, Some(measurement))
-        } else {
-            (
-                persisted_rollout_items_with_mode(raw_items, self.history_mode, mode),
-                None,
-            )
-        };
-        if items.is_empty() {
-            if let Some(measurement) = measurement.as_ref() {
+        let measured = self.persistence_telemetry.is_enabled().then(|| {
+            measure_and_filter_rollout_items_with_mode(raw_items, self.history_mode, mode)
+        });
+        let should_append = measured.as_ref().map_or_else(
+            || {
+                raw_items
+                    .iter()
+                    .any(|item| is_persisted_rollout_item_with_mode(item, self.history_mode, mode))
+            },
+            |(items, _)| !items.is_empty(),
+        );
+        if !should_append {
+            if let Some((_, measurement)) = &measured {
                 self.persistence_telemetry
                     .record_batch(raw_items, measurement);
             }
-            return Ok(Vec::new());
+            return Ok(Some(Vec::new()));
         }
         self.thread_store
             .append_items_with_persistence_mode(
@@ -320,11 +317,11 @@ impl LiveThread {
                 mode,
             )
             .await?;
-        if let Some(measurement) = measurement.as_ref() {
+        Ok(measured.map(|(items, measurement)| {
             self.persistence_telemetry
-                .record_batch(raw_items, measurement);
-        }
-        Ok(items)
+                .record_batch(raw_items, &measurement);
+            items
+        }))
     }
 
     pub async fn persist(&self, context: PersistContext) -> ThreadStoreResult<()> {

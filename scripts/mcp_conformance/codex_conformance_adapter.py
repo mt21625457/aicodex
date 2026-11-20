@@ -725,12 +725,15 @@ def run_adapter(server_url: str) -> dict[str, object]:
     error: str | None = None
 
     try:
-        if scenario.startswith("auth/"):
-            config_path = codex_home / "config.toml"
-            config_path.write_text(
-                'mcp_oauth_credentials_store = "file"\n',
-                encoding="utf-8",
-            )
+        uses_oauth = scenario.startswith("auth/")
+        oauth_config = 'mcp_oauth_credentials_store = "file"\n\n' if uses_oauth else ""
+        # These scenarios use a directly registered loopback MCP server.
+        # Marketplace synchronization adds unrelated network work at startup.
+        (codex_home / "config.toml").write_text(
+            oauth_config + "[features]\nplugins = false\n",
+            encoding="utf-8",
+        )
+        if uses_oauth:
             steps.append(
                 Step(
                     "oauth_store_configuration",
@@ -774,7 +777,7 @@ def run_adapter(server_url: str) -> dict[str, object]:
         ):
             env[PRE_REGISTERED_CLIENT_SECRET_ENV_VAR] = oauth_client_secret
             oauth_client_secret_env_var = PRE_REGISTERED_CLIENT_SECRET_ENV_VAR
-        if scenario.startswith("auth/"):
+        if uses_oauth:
             _write_auth_registration(
                 codex_home / "config.toml",
                 server_url=server_url,
@@ -898,7 +901,7 @@ def run_adapter(server_url: str) -> dict[str, object]:
                 if not enabled:
                     raise AdapterFailure("could not enable the modern MCP feature")
 
-            if scenario.startswith("auth/"):
+            if uses_oauth:
                 client_registration = _client_registration_override(
                     scenario,
                     require_automatic_auth=require_automatic_auth,

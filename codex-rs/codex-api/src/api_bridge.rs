@@ -23,6 +23,11 @@ use serde::Deserialize;
 use serde_json::Value;
 
 pub fn map_api_error(err: ApiError) -> CodexErr {
+    let retry_disabled = matches!(
+        &err,
+        ApiError::Transport(TransportError::Http { headers: Some(headers), .. })
+            if server_disables_retry(headers)
+    );
     let retry_after = match &err {
         ApiError::Retryable { retry_after, .. }
         | ApiError::RateLimitExceeded { retry_after, .. }
@@ -36,6 +41,7 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
         | ApiError::StreamIdleTimeout { .. }
         | ApiError::ProviderMedia { .. }
         | ApiError::Stream(_)
+        | ApiError::WebsocketMessageTooLarge
         | ApiError::ContentFilter
         | ApiError::ResponseIncomplete(_)
         | ApiError::ContextWindowExceeded
@@ -56,6 +62,11 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
         | ApiError::MisalignmentPolicyViolation { .. } => None,
     };
     let error = map_api_error_details(err);
+    let error = if retry_disabled {
+        error.without_retry()
+    } else {
+        error
+    };
     match retry_after {
         Some(retry_after) => error.with_retry_after(retry_after),
         None => error,
@@ -119,6 +130,9 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
             CodexErr::new(CodexErrorDetails::RateLimitExceeded(message))
         }
         ApiError::Stream(msg) => CodexErr::Stream(msg),
+        ApiError::WebsocketMessageTooLarge => {
+            CodexErr::new(CodexErrorDetails::WebsocketMessageTooLarge)
+        }
         ApiError::ContentFilter => CodexErr::new(CodexErrorDetails::ContentFilter),
         ApiError::ResponseIncomplete(incomplete) => {
             CodexErr::new(CodexErrorDetails::ResponseIncomplete(incomplete))
@@ -190,7 +204,6 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                 ..
             } => {
                 let body_text = body.unwrap_or_default();
-                let retry_disabled = headers.as_ref().is_some_and(server_disables_retry);
                 if let Some(error) = http_quota_error(status, &body_text) {
                     return error;
                 }
@@ -248,7 +261,7 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                     });
                 }
 
-                let error = if status == http::StatusCode::BAD_REQUEST {
+                if status == http::StatusCode::BAD_REQUEST {
                     if is_context_window_http_error(status, &body_text) {
                         CodexErr::ContextWindowExceeded
                     } else if let Some(error) = provider_error
@@ -358,11 +371,6 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                         }
                         _ => CodexErr::UnexpectedStatus(response),
                     }
-                };
-                if retry_disabled {
-                    error.without_retry()
-                } else {
-                    error
                 }
             }
             TransportError::RetryLimit => CodexErr::RetryLimit(RetryLimitReachedError {

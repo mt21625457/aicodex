@@ -7,6 +7,7 @@ fn completed() -> ResponseEvent {
         response_id: "sample".to_string(),
         token_usage: None,
         usage_metadata: None,
+        reasoning_removals: None,
         end_turn: Some(true),
         provider_stop_reason: None,
     }

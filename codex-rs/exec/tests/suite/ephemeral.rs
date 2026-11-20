@@ -5,7 +5,6 @@ use core_test_support::responses;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex_exec::test_codex_exec;
 use walkdir::WalkDir;
-use wiremock::MockServer;
 
 fn exec_sse_response() -> String {
     responses::sse(vec![
@@ -34,7 +33,7 @@ async fn persists_rollout_file_by_default() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
 
     let test = test_codex_exec();
-    let server = MockServer::start().await;
+    let server = responses::start_sse_server().await;
     let _response_mock = responses::mount_sse_once(&server, exec_sse_response()).await;
 
     test.cmd_with_server(&server)
@@ -52,7 +51,7 @@ async fn does_not_persist_rollout_file_in_ephemeral_mode() -> anyhow::Result<()>
     skip_if_no_network!(Ok(()));
 
     let test = test_codex_exec();
-    let server = MockServer::start().await;
+    let server = responses::start_sse_server().await;
     let _response_mock = responses::mount_sse_once(&server, exec_sse_response()).await;
 
     test.cmd_with_server(&server)

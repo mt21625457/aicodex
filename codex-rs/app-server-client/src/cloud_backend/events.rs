@@ -3,6 +3,7 @@
 use codex_app_server_protocol as protocol;
 use codex_cloud_client as cloud;
 use codex_protocol::models::ImageDetail;
+use codex_protocol::models::MessagePhase;
 use color_eyre::eyre::Result;
 use color_eyre::eyre::bail;
 
@@ -144,13 +145,18 @@ pub(super) fn item_summary(item: cloud::ItemSummary) -> Option<protocol::ThreadI
         cloud::ItemSummary::AgentMessage {
             id,
             text,
+            phase,
             questions,
         } => protocol::ThreadItemPayload::AgentMessage {
             transcript_metadata: None,
             moderation: None,
             id,
             text,
-            phase: None,
+            phase: phase.map(|phase| match phase {
+                cloud::AgentMessagePhase::Commentary => MessagePhase::Commentary,
+                cloud::AgentMessagePhase::FinalAnswer => MessagePhase::FinalAnswer,
+                cloud::AgentMessagePhase::PartialAnswer => MessagePhase::PartialAnswer,
+            }),
             memory_citation: None,
             delivery: None,
             questions: questions.map(|questions| {

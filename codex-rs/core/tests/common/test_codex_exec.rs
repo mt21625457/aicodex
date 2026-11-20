@@ -15,6 +15,8 @@ impl TestCodexExecBuilder {
                 .expect("should find binary for codex-exec"),
         );
         cmd.current_dir(self.cwd.path())
+            // A suite can run many CLI processes. Each only needs a small runtime.
+            .env("TOKIO_WORKER_THREADS", "2")
             .env("CODEX_HOME", self.home.path())
             .env("AICODEX_HOME", self.home.path())
             .env("NO_PROXY", "127.0.0.1,localhost,::1")
@@ -27,10 +29,7 @@ impl TestCodexExecBuilder {
         let mut cmd = self.cmd();
         let base = format!("{}/v1", server.uri());
         cmd.arg("-c")
-            .arg(format!("openai_base_url={}", toml_string_literal(&base)))
-            // This helper serves HTTP SSE fixtures, not a WebSocket endpoint.
-            .arg("-c")
-            .arg("model_providers.openai.supports_websockets=false");
+            .arg(format!("openai_base_url={}", toml_string_literal(&base)));
         cmd
     }
 

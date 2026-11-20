@@ -12,7 +12,7 @@ async fn exits_non_zero_when_server_reports_error() -> anyhow::Result<()> {
 
     // Mock a simple Responses API SSE stream that immediately reports a
     // `response.failed` event with an error message.
-    let server = responses::start_mock_server().await;
+    let server = responses::start_sse_server().await;
     let body = responses::sse(vec![serde_json::json!({
         "type": "response.failed",
         "response": {

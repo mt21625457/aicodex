@@ -85,6 +85,7 @@ pub fn telemetry_api_error_message(error: &ApiError) -> String {
         ApiError::StreamFailure { kind, .. } => format!("provider stream error {kind}"),
         ApiError::StreamIdleTimeout { .. } => "provider stream idle timeout".to_string(),
         ApiError::ProviderMedia { kind, .. } => format!("provider media error {kind}"),
+        ApiError::WebsocketMessageTooLarge => error.to_string(),
         ApiError::ContentFilter => {
             "Incomplete response returned, reason: content_filter".to_string()
         }

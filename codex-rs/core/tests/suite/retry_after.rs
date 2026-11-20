@@ -1804,10 +1804,12 @@ async fn websocket_failed_event_uses_header_over_plaintext_retry_after() -> Resu
     Ok(())
 }
 
-/// Advised WebSocket failures reach HTTP after the existing retry budget. HTTP
-/// recovery uses its own retry budget and honors the preceding advice deadlines.
+/// Advised WebSocket failures reach HTTP after the existing stream retry budget.
+/// The switch honors server advice and does not replenish the stream retry budget.
+#[test_case::test_case(false; "http_fallback_succeeds")]
+#[test_case::test_case(true; "http_overload_does_not_reset_stream_retry_budget")]
 #[tokio::test(flavor = "current_thread")]
-async fn websocket_upgrade_rejection_uses_retry_after() -> Result<()> {
+async fn websocket_upgrade_rejection_uses_retry_after(http_overloaded: bool) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
@@ -1827,22 +1829,17 @@ async fn websocket_upgrade_rejection_uses_retry_after() -> Result<()> {
         )
         .mount(&server)
         .await;
-    let http_overload = ResponseTemplate::new(/*s*/ 503)
-        .insert_header("Retry-After", "0")
-        .set_body_json(json!({ "error": { "code": "server_is_overloaded" } }));
-    let response_mock = responses::mount_response_sequence(
-        &server,
-        vec![
-            http_overload,
-            ResponseTemplate::new(/*s*/ 200)
-                .insert_header("content-type", "text/event-stream")
-                .set_body_string(responses::sse(vec![
-                    responses::ev_response_created("recovered"),
-                    responses::ev_completed("recovered"),
-                ])),
-        ],
-    )
-    .await;
+    let http_response = if http_overloaded {
+        ResponseTemplate::new(/*s*/ 503)
+            .insert_header("Retry-After", "0")
+            .set_body_json(json!({ "error": { "code": "server_is_overloaded" } }))
+    } else {
+        responses::sse_response(responses::sse(vec![
+            responses::ev_response_created("recovered"),
+            responses::ev_completed("recovered"),
+        ]))
+    };
+    let response_mock = responses::mount_response_sequence(&server, vec![http_response]).await;
     let test = test_codex()
         .with_config(|config| {
             config.model_catalog = Some(bundled_models_response().expect("bundled models"));
@@ -1862,7 +1859,16 @@ async fn websocket_upgrade_rejection_uses_retry_after() -> Result<()> {
     drop(prewarm_rejection);
     let start = Instant::now();
     submit_user_input(&test, "retry the rejected websocket upgrade").await?;
-    wait_for_turn_completion(&test).await;
+    if http_overloaded {
+        assert_terminal_failure(
+            &test,
+            CodexErrorInfo::ServerOverloaded,
+            /*expected_retries*/ 2,
+        )
+        .await?;
+    } else {
+        wait_for_turn_completion(&test).await;
+    }
 
     // Both WebSocket advice deadlines apply, including the one before transport fallback.
     assert!(start.elapsed() >= Duration::from_secs(2));
@@ -1872,8 +1878,8 @@ async fn websocket_upgrade_rejection_uses_retry_after() -> Result<()> {
         .filter(|request| request.url.path() == "/v1/responses")
         .map(|request| request.method.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(methods, vec!["GET", "GET", "GET", "POST", "POST"]);
-    assert_eq!(response_mock.requests().len(), 2);
+    assert_eq!(methods, vec!["GET", "GET", "GET", "POST"]);
+    assert_eq!(response_mock.requests().len(), 1);
     Ok(())
 }
 

@@ -8,7 +8,7 @@ use predicates::str::contains;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exec_appends_piped_stdin_to_prompt_argument() -> anyhow::Result<()> {
     let test = test_codex_exec();
-    let server = responses::start_mock_server().await;
+    let server = responses::start_sse_server().await;
     let body = responses::sse(vec![
         responses::ev_response_created("resp1"),
         responses::ev_assistant_message("m1", "fixture hello"),
@@ -42,7 +42,7 @@ async fn exec_appends_piped_stdin_to_prompt_argument() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exec_ignores_empty_piped_stdin_when_prompt_argument_is_present() -> anyhow::Result<()> {
     let test = test_codex_exec();
-    let server = responses::start_mock_server().await;
+    let server = responses::start_sse_server().await;
     let body = responses::sse(vec![
         responses::ev_response_created("resp1"),
         responses::ev_assistant_message("m1", "fixture hello"),
@@ -75,7 +75,7 @@ async fn exec_ignores_empty_piped_stdin_when_prompt_argument_is_present() -> any
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exec_dash_prompt_reads_stdin_as_the_prompt() -> anyhow::Result<()> {
     let test = test_codex_exec();
-    let server = responses::start_mock_server().await;
+    let server = responses::start_sse_server().await;
     let body = responses::sse(vec![
         responses::ev_response_created("resp1"),
         responses::ev_assistant_message("m1", "fixture hello"),
@@ -109,7 +109,7 @@ async fn exec_dash_prompt_reads_stdin_as_the_prompt() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exec_without_prompt_argument_reads_piped_stdin_as_the_prompt() -> anyhow::Result<()> {
     let test = test_codex_exec();
-    let server = responses::start_mock_server().await;
+    let server = responses::start_sse_server().await;
     let body = responses::sse(vec![
         responses::ev_response_created("resp1"),
         responses::ev_assistant_message("m1", "fixture hello"),

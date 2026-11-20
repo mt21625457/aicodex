@@ -409,6 +409,17 @@ def test_app_server_runs_code_mode_through_python_sdk(
     else:
         command = "command -v rg && rg --version"
     exec_arguments = {"cmd": command, "login": False, "yield_time_ms": 10_000}
+    code = f"""
+let result = await tools.exec_command({json.dumps(exec_arguments)});
+let output = result.output;
+for (let polls = 0; result.session_id !== undefined && polls < 5; polls++) {{
+    result = await tools.write_stdin({{
+        session_id: result.session_id, chars: "", yield_time_ms: 5000,
+    }});
+    output += result.output;
+}}
+text(JSON.stringify({{ ...result, output }}));
+"""
     responses_server.enqueue_sse(
         sse(
             [
@@ -419,10 +430,7 @@ def test_app_server_runs_code_mode_through_python_sdk(
                         "type": "custom_tool_call",
                         "call_id": "package-smoke",
                         "name": "exec",
-                        "input": (
-                            "text(JSON.stringify(await tools.exec_command("
-                            f"{json.dumps(exec_arguments)})))"
-                        ),
+                        "input": code,
                     },
                 },
                 ev_completed("code-mode"),
@@ -452,7 +460,7 @@ def test_app_server_runs_code_mode_through_python_sdk(
         )
     execution = json.loads(output)
     execution_output = execution["output"]
-    assert execution["exit_code"] == 0, execution_output
+    assert execution.get("exit_code") == 0, execution
     assert "ripgrep" in execution_output, execution_output
 
     # Each entrypoint must execute the ripgrep bundled in its own package.

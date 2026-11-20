@@ -106,3 +106,11 @@ inference hook、预算和单录音错误分类。无效 access program 属于�
 稳定/实验产物已重新生成并通过一致性测试。完整工作区及新旧会话运行验收
 仍在进行，见 [CORE-006](CORE-006-upstream-0169-merge-compatibility.md)；
 当前修复随合并提交保存；未打包、未安装，不以当前结果宣称全部验收完成。
+
+## 0.171.0 合并回归
+
+WebSocket 的错误帧可能没有 HTTP 状态，或在连接成功后携带 `status: 200`。此前只有带非成功状态的错误帧或带少数连接错误码的帧进入错误映射，其余帧可能被通用事件处理忽略。现在保留原有非成功状态及连接错误映射，并用 SSE 共用的流内错误分类处理其余错误帧。带 `type: invalid_request_error` 和 `code: null` 的保留工具参数拒绝应直接返回 `badRequest`，保留服务端原因，阻止后续完成事件覆盖失败。
+
+责任入口为 `codex-api/src/endpoint/responses_websocket.rs` 与 `codex-api/src/sse/responses.rs`。新增 `websocket_invalid_request_without_error_status_is_terminal`，覆盖无状态的 `error`、状态为 200 的 `error` 和无状态的 `response.error`。既有 SSE 终态、专用错误分类及历史请求兼容回归仍适用。
+
+本机 `cargo test --locked --offline -p codex-api` 通过 288 项单元测试和 36 项集成测试，包含新增 WebSocket 回归、既有 SSE 参数拒绝和专用分类回归。这个结果覆盖本机源码、合成流事件与本机模拟服务。

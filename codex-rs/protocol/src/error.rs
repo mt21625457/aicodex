@@ -83,6 +83,13 @@ pub struct CodexErr {
     compaction_context: Option<crate::compaction_error::CompactionErrorContext>,
 }
 
+enum RetryPolicy {
+    Never,
+    ServerDirected,
+    Backoff,
+    FallBackToHttp,
+}
+
 /// A terminal response that stopped before the model finished, with any reported usage.
 /// Content-filter retries and explicit interruptions have separate handling.
 #[derive(derive_more::Debug, Error, PartialEq, Eq)]
@@ -116,6 +123,9 @@ pub enum CodexErrorDetails {
     /// The Session loop treats this as a transient error and will automatically retry the turn.
     #[error("stream disconnected before completion: {0}")]
     Stream(String),
+    /// The peer's WebSocket message size limit requires sending this request over HTTP.
+    #[error("websocket request exceeds the peer's message size limit")]
+    WebsocketMessageTooLarge,
     /// A response stopped by the content filter. Sampling retries need developer guidance.
     #[error(
         "stream disconnected before completion: Incomplete response returned, reason: content_filter"
@@ -248,6 +258,9 @@ pub enum CodexErrorDetails {
     GatewayLoginRequired(String),
     #[error("Fatal error: {0}")]
     Fatal(String),
+    /// The provider attempt ended. Retrying inference cannot settle its bill.
+    #[error("{0}")]
+    UsageAccountingFailed(String),
     // -----------------------------------------------------------------
     // Automatic conversions for common external error types
     // -----------------------------------------------------------------
@@ -426,6 +439,7 @@ impl CodexErr {
         UnsupportedOperation(message: String),
         RefreshTokenFailed(error: RefreshTokenFailedError),
         Fatal(message: String),
+        UsageAccountingFailed(message: String),
         Io(error: io::Error),
         Json(error: serde_json::Error),
         #[cfg(target_os = "linux")]
@@ -454,13 +468,29 @@ impl CodexErr {
         &self.details
     }
 
+    /// Whether retrying this request requires switching from WebSocket to HTTP.
+    pub fn requires_http_fallback(&self) -> bool {
+        matches!(self.retry_policy(), RetryPolicy::FallBackToHttp)
+    }
+
     /// Returns the delay before the given retry attempt, or `None` for a terminal error.
     ///
     /// The first retry is attempt one. Retryable errors use server advice when available and
     /// otherwise use exponential backoff with jitter. Callers enforce their own retry budgets.
     pub fn retry_delay(&self, retry_count: u64) -> Option<Duration> {
+        match self.retry_policy() {
+            RetryPolicy::Never => None,
+            RetryPolicy::ServerDirected => self.server_retry_delay(),
+            RetryPolicy::Backoff | RetryPolicy::FallBackToHttp => Some(
+                self.server_retry_delay()
+                    .unwrap_or_else(|| backoff(retry_count)),
+            ),
+        }
+    }
+
+    fn retry_policy(&self) -> RetryPolicy {
         if self.retry_disabled {
-            return None;
+            return RetryPolicy::Never;
         }
         match self.details() {
             CodexErrorDetails::UnexpectedStatus(error)
@@ -470,7 +500,7 @@ impl CodexErr {
                     error.identity_error_code.as_deref(),
                 ) =>
             {
-                None
+                RetryPolicy::Never
             }
             CodexErrorDetails::TurnAborted
             | CodexErrorDetails::SessionBudgetExceeded
@@ -478,6 +508,7 @@ impl CodexErr {
             | CodexErrorDetails::Interrupted
             | CodexErrorDetails::EnvVar(_)
             | CodexErrorDetails::Fatal(_)
+            | CodexErrorDetails::UsageAccountingFailed(_)
             | CodexErrorDetails::UsageNotIncluded
             | CodexErrorDetails::QuotaExceeded
             | CodexErrorDetails::InvalidImageRequest()
@@ -506,18 +537,19 @@ impl CodexErr {
             | CodexErrorDetails::BioPolicy { .. }
             | CodexErrorDetails::WorkspaceAccessDenied(_)
             | CodexErrorDetails::AccessProgramNotEnabled(_)
-            | CodexErrorDetails::MisalignmentPolicyViolation { .. } => None,
+            | CodexErrorDetails::MisalignmentPolicyViolation { .. } => RetryPolicy::Never,
             // 身份、权限、余额和无效请求等 4xx 需要外部修复；服务端延迟建议
             // 也不能把它们变成可重试错误。408/429 仍使用现有临时错误策略。
             CodexErrorDetails::UnexpectedStatus(error)
                 if error.status.is_client_error()
                     && !matches!(error.status.as_u16(), 408 | 429) =>
             {
-                None
+                RetryPolicy::Never
             }
             CodexErrorDetails::ServerOverloaded
             | CodexErrorDetails::PolicyCapacityUnavailable
-            | CodexErrorDetails::RetryLimit(_) => self.server_retry_delay(),
+            | CodexErrorDetails::RetryLimit(_) => RetryPolicy::ServerDirected,
+            CodexErrorDetails::WebsocketMessageTooLarge => RetryPolicy::FallBackToHttp,
             CodexErrorDetails::Stream(..)
             | CodexErrorDetails::ContentFilter
             | CodexErrorDetails::RateLimitExceeded(_)
@@ -530,12 +562,11 @@ impl CodexErr {
             | CodexErrorDetails::InternalAgentDied
             | CodexErrorDetails::Io(_)
             | CodexErrorDetails::Json(_)
-            | CodexErrorDetails::TokioJoin(_) => Some(
-                self.server_retry_delay()
-                    .unwrap_or_else(|| backoff(retry_count)),
-            ),
+            | CodexErrorDetails::TokioJoin(_) => RetryPolicy::Backoff,
             #[cfg(target_os = "linux")]
-            CodexErrorDetails::LandlockRuleset(_) | CodexErrorDetails::LandlockPathFd(_) => None,
+            CodexErrorDetails::LandlockRuleset(_) | CodexErrorDetails::LandlockPathFd(_) => {
+                RetryPolicy::Never
+            }
         }
     }
 

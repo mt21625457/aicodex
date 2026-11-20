@@ -45,15 +45,19 @@ class BuildStorageConfigTest(unittest.TestCase):
             rf"toolchains\.toolchain\([\s\S]*?version = \"{re.escape(version)}\"",
         )
         lock = json.loads((ROOT / "MODULE.bazel.lock").read_text())
-        locked_text = json.dumps(lock)
-        self.assertIn(f"rustc-{version}-aarch64-apple-darwin.tar.xz", locked_text)
-        self.assertNotIn("rustc-1.95.0-", locked_text)
+        toolchains = lock["facts"][
+            "@@rules_rs+//rs/toolchains:module_extension.bzl%toolchains"
+        ]
+        self.assertIn(f"rustc-{version}-aarch64-apple-darwin.tar.zst", toolchains)
+        self.assertFalse(any(name.startswith("rustc-1.95.0-") for name in toolchains))
         actions = list((ROOT / ".github/workflows").glob("*.yml"))
         actions += list((ROOT / ".github/actions").glob("*/action.yml"))
         stable_pins = 0
         for path in actions:
             for line in path.read_text().splitlines():
-                match = re.search(r"dtolnay/rust-toolchain@(\w+) # (\d+\.\d+\.\d+)", line)
+                match = re.search(
+                    r"dtolnay/rust-toolchain@(\w+) # (\d+\.\d+\.\d+)", line
+                )
                 if match:
                     stable_pins += 1
                     with self.subTest(path=path, line=line):

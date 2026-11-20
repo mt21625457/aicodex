@@ -72,6 +72,7 @@ use super::analytics::assert_basic_thread_initialized_event;
 use super::analytics::mount_analytics_capture;
 use super::analytics::thread_initialized_event;
 use super::analytics::wait_for_analytics_payload;
+use super::https_mock::https_mock_server;
 
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
@@ -121,7 +122,7 @@ model = "gpt-5.4-mini"
         })
         .await?;
 
-    assert_eq!(response.model, "openai.gpt-6.1-sol");
+    assert_eq!(response.model, "openai.gpt-6.2-sol");
     Ok(())
 }
 
@@ -252,6 +253,8 @@ async fn thread_start_provider_model_fallback_uses_bedrock_static_catalog() -> R
     .await?;
     for model in [
         "openai.gpt-6.1-sol",
+        "openai.gpt-6.2-astra",
+        "openai.gpt-6.2-sol",
         "openai.gpt-6.1-terra",
         "openai.gpt-6-sol",
         "openai.gpt-6-luna",
@@ -281,7 +284,7 @@ async fn thread_start_provider_model_fallback_uses_bedrock_static_catalog() -> R
             supported_with_fallback.model,
             unsupported_without_fallback.model,
         ],
-        vec!["openai.gpt-6.1-sol", "openai.gpt-5.5", "gpt-5.4-mini"]
+        vec!["openai.gpt-6.2-sol", "openai.gpt-5.5", "gpt-5.4-mini"]
     );
     Ok(())
 }
@@ -302,6 +305,10 @@ async fn thread_start_bedrock_runtime_prefers_global_cross_region_models() -> Re
     for model in [
         "global.openai.gpt-6.1-sol",
         "us.openai.gpt-6.1-sol",
+        "global.openai.gpt-6.2-astra",
+        "us.openai.gpt-6.2-astra",
+        "global.openai.gpt-6.2-sol",
+        "us.openai.gpt-6.2-sol",
         "global.openai.gpt-6.1-terra",
         "us.openai.gpt-6.1-terra",
         "global.openai.gpt-6-sol",
@@ -323,7 +330,7 @@ async fn thread_start_bedrock_runtime_prefers_global_cross_region_models() -> Re
         /*allow_provider_model_fallback*/ true,
     )
     .await?;
-    assert_eq!(response.model, "global.openai.gpt-6.1-sol");
+    assert_eq!(response.model, "global.openai.gpt-6.2-sol");
 
     Ok(())
 }
@@ -688,6 +695,7 @@ stream_max_retries = 0
         .send_thread_list_request(ThreadListParams {
             current_account_only: false,
             include_attached_threads: false,
+            included_thread_ids: None,
             excluded_thread_ids: None,
             originators: None,
             cursor: None,
@@ -1563,6 +1571,7 @@ async fn thread_start_emits_mcp_server_status_updated_notifications() -> Result<
         McpServerStatusUpdatedNotification {
             thread_id: Some(start_response.thread.id.clone()),
             name: "optional_broken".to_string(),
+            environment_id: None,
             status: McpServerStartupState::Starting,
             error: None,
             failure_reason: None,
@@ -1700,8 +1709,10 @@ async fn config_requests_surface_cloud_config_bundle_load_errors(
         codex_home.path().join("requirements.toml"),
         "[application.network.domains]\n\"127.0.0.1\" = \"allow\"\n",
     )?;
+    let (origin, ca_path, _tls) = https_mock_server(codex_home.path(), &server).await?;
+    let ca_path = ca_path.to_string_lossy();
     let model_server = create_mock_responses_server_repeating_assistant("Done").await;
-    let chatgpt_base_url = format!("{}/backend-api", server.uri());
+    let chatgpt_base_url = format!("{origin}/backend-api");
     create_config_toml_with_chatgpt_base_url(
         codex_home.path(),
         &model_server.uri(),
@@ -1718,11 +1729,13 @@ async fn config_requests_surface_cloud_config_bundle_load_errors(
         AuthCredentialsStoreMode::File,
     )?;
 
-    let refresh_token_url = format!("{}/oauth/token", server.uri());
+    let refresh_token_url = format!("{origin}/oauth/token");
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
         .with_env_overrides(&[
             ("OPENAI_API_KEY", None),
+            ("CODEX_CA_CERTIFICATE", Some(ca_path.as_ref())),
+            ("NO_PROXY", Some("127.0.0.1,localhost")),
             (
                 REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR,
                 Some(refresh_token_url.as_str()),
@@ -1891,6 +1904,7 @@ required = true
         .request(|request_id| ClientRequest::McpServerStatusList {
             request_id,
             params: ListMcpServerStatusParams {
+                environment_id: None,
                 server_name: None,
                 cursor: None,
                 limit: None,

@@ -16,7 +16,7 @@ async fn cyber_access_program_is_selected_per_turn() -> anyhow::Result<()> {
         test.home_path().join("config.toml"),
         "[features]\napi_key_cyber_access_programs = true\napi_key_model_discovery = true\n",
     )?;
-    let server = responses::start_mock_server().await;
+    let server = responses::start_sse_server().await;
     let response_mock = responses::mount_sse_sequence(
         &server,
         (0..4)
