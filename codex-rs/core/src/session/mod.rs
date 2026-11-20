@@ -5784,6 +5784,18 @@ impl Session {
         incomplete: &ResponseIncompleteError,
         charge: crate::client_common::SamplingCharge,
     ) {
+        if charge.incomplete_provider_usage_recorded {
+            let _ = self
+                .record_rollout_budget_usage(
+                    &turn_context.sub_id,
+                    &crate::client_common::SamplingUsage {
+                        provider: None,
+                        charge,
+                    },
+                )
+                .await;
+            return;
+        }
         if let Some(response_id) = &incomplete.response_id {
             self.record_response_token_usage(
                 turn_context,

@@ -385,6 +385,8 @@ pub(crate) enum ChargePosting {
 pub(crate) struct SamplingCharge {
     pub(crate) hooks: codex_hooks::ModelRequestHookOutcome,
     pub(crate) posting: ChargePosting,
+    /// Foreground incomplete responses can post provider spending before a synchronous hook.
+    pub(crate) incomplete_provider_usage_recorded: bool,
 }
 
 /// Core consumes a terminal event and its hook output together. Other readers
@@ -432,6 +434,8 @@ pub(crate) struct SamplingStream {
     pub(crate) consumer_dropped: CancellationToken,
     /// Once settlement begins, a steer waits for its terminal accounting decision.
     pub(crate) settlement_started: Arc<std::sync::atomic::AtomicBool>,
+    /// A failed response's spending was recorded before a synchronous post-hook.
+    pub(crate) incomplete_provider_usage_recorded: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl SamplingStream {

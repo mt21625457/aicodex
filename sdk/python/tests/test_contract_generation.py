@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import os
 import runpy
 import shutil
@@ -176,6 +177,43 @@ def test_answer_display_is_read_in_thread_history_and_notifications():
     ).item.root.moderation
     assert moderated.moderated is True
     assert moderated.display is None
+
+
+@pytest.mark.parametrize("version", [True, 1.0])
+def test_answer_display_requires_an_integer_wire_version(version):
+    from openai_codex.generated.v2_all import AgentMessageModeration
+
+    moderation = AgentMessageModeration.model_validate_json(
+        json.dumps(
+            {
+                "moderated": False,
+                "display": {"mode": "show", "version": version, "trustedContacts": "skip"},
+            }
+        )
+    )
+
+    assert moderation.moderated is True
+    assert moderation.display is None
+
+
+@pytest.mark.parametrize("trusted_access", [False, True, None, "true", 1])
+def test_answer_display_requires_a_boolean_trusted_access(trusted_access):
+    from openai_codex.generated.v2_all import AgentMessageModeration
+
+    display = {
+        "mode": "block",
+        "version": 1,
+        "reason": {"kind": "cyber", "trustedAccess": trusted_access},
+    }
+    moderation = AgentMessageModeration.model_validate_json(
+        json.dumps({"moderated": False, "display": display})
+    )
+
+    if trusted_access is None or type(trusted_access) is bool:
+        assert moderation.display.model_dump(mode="json", by_alias=True) == display
+    else:
+        assert moderation.moderated is True
+        assert moderation.display is None
 
 
 @pytest.mark.parametrize(

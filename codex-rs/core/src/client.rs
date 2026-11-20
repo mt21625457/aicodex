@@ -3316,9 +3316,12 @@ impl OpenedModelResponse {
         mut self,
         attempt: &mut Option<crate::hook_runtime::sampling::SamplingAttempt>,
         sampling_turn: Option<Arc<TurnContext>>,
-        settlement: Option<(Arc<crate::session::session::Session>, Arc<TurnContext>)>,
+        settlement: Option<(
+            Arc<crate::session::session::Session>,
+            Arc<crate::session::step_context::StepContext>,
+        )>,
     ) -> Result<SamplingStream> {
-        let delivery = ResponseDelivery::new(attempt, settlement);
+        let delivery = ResponseDelivery::new(attempt, settlement, sampling_turn.is_some());
         let routing_affinity = self.stream.routing_affinity.take();
         let request_id = self.stream.upstream_request_id.take();
         let interrupt = self.stream.interrupt.take();
@@ -3371,6 +3374,8 @@ where
     let consumer_dropped = CancellationToken::new();
     let consumer_dropped_for_stream = consumer_dropped.clone();
     let settlement_started = Arc::clone(&delivery.settlement_started);
+    let incomplete_provider_usage_recorded =
+        Arc::clone(&delivery.incomplete_provider_usage_recorded);
     let provider = Arc::clone(&client.provider);
     let item_id_generator = Arc::clone(&client.item_id_generator);
 
@@ -3545,6 +3550,7 @@ where
         interrupt: None,
         consumer_dropped: consumer_dropped_for_stream,
         settlement_started,
+        incomplete_provider_usage_recorded,
     }
 }
 

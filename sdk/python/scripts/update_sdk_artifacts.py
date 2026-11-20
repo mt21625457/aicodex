@@ -631,6 +631,14 @@ def _add_answer_display_fallback(out_path: Path) -> None:
     header = "class AgentMessageModeration(BaseModel):"
     if source.count(header) != 1:
         raise RuntimeError("Generated SDK is missing a unique AgentMessageModeration class")
+    # Match Rust's optional wire boolean without accepting numbers or strings.
+    source, changes = re.subn(
+        r"""(trusted_access: Annotated\[bool \| None, Field\(alias=(["'])trustedAccess\2)(\)\])""",
+        r"\1, strict=True\3",
+        source,
+    )
+    if changes != 1:
+        raise RuntimeError("Generated SDK is missing a unique trustedAccess boolean field")
     source = source.replace(
         "from pydantic import ", "from pydantic import ValidationError, model_validator, ", 1
     )
@@ -640,10 +648,13 @@ def _add_answer_display_fallback(out_path: Path) -> None:
     def _read_display(cls, data: Any) -> Any:
         if not isinstance(data, dict) or "moderated" not in data or data.get("display") is None:
             return data
+        display = data["display"]
+        # Literal[1] treats True and 1.0 as 1, but the wire version is an integer.
+        if isinstance(display, dict) and "version" in display and type(display["version"]) is not int:
+            return {**data, "moderated": True, "display": None}
         try:
-            return {**data, "display": AgentMessageDisplay.model_validate(data["display"])}
+            return {**data, "display": AgentMessageDisplay.model_validate(display)}
         except ValidationError:
-            display = data["display"]
             if (
                 isinstance(display, dict)
                 and display.keys()

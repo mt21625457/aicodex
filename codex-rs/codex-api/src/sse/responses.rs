@@ -826,7 +826,13 @@ pub(crate) fn provider_stream_error_from_data(data: &str) -> Option<ApiError> {
 
     let error = value.get("error");
     let retry_after = stream_retry_after(error, value.get("headers"));
-    if let Some(error) = classify_stream_error(error, retry_after) {
+    let is_flat = error.is_none_or(Value::is_null);
+    let error_details = if is_flat && event_type.is_some() {
+        Some(&value)
+    } else {
+        error
+    };
+    if let Some(error) = classify_stream_error(error_details, retry_after) {
         return Some(error);
     }
 
@@ -841,7 +847,7 @@ pub(crate) fn provider_stream_error_from_data(data: &str) -> Option<ApiError> {
         Some(Value::String(message)) => {
             (value.get("code").and_then(Value::as_str), message.as_str())
         }
-        _ if event_type == Some("response.error") => (
+        _ if event_type == Some("response.error") || (event_type == Some("error") && is_flat) => (
             value.get("code").and_then(Value::as_str),
             value.get("message").and_then(Value::as_str)?,
         ),

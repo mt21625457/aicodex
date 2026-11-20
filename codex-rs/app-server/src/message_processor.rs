@@ -135,7 +135,7 @@ fn reject_obsolete_request_fields(request: &JSONRPCRequest) -> Result<(), JSONRP
 fn reject_removed_permission_profile(request: &JSONRPCRequest) -> Result<(), JSONRPCErrorError> {
     if matches!(
         request.method.as_str(),
-        "thread/start" | "thread/resume" | "thread/fork" | "turn/start"
+        "thread/start" | "thread/resume" | "thread/fork" | "turn/start" | "turn/startIfIdle"
     ) && request
         .params
         .as_ref()
@@ -1067,6 +1067,7 @@ impl MessageProcessor {
             ClientRequest::ThreadSample { .. }
             | ClientRequest::ThreadGuardianReview { .. }
             | ClientRequest::TurnStart { .. }
+            | ClientRequest::TurnStartIfIdle { .. }
             | ClientRequest::TurnSteer { .. }
             | ClientRequest::ReviewStart { .. }
             | ClientRequest::ThreadCompactStart { .. }
@@ -1207,6 +1208,7 @@ impl MessageProcessor {
             connection_id,
             request_id: codex_request.id().clone(),
         };
+        let start_if_idle = matches!(codex_request, ClientRequest::TurnStartIfIdle { .. });
         let result: Result<Option<ClientResponsePayload>, JSONRPCErrorError> = match codex_request {
             ClientRequest::Initialize { .. } => {
                 panic!("Initialize should be handled before initialized request dispatch");
@@ -1833,13 +1835,18 @@ impl MessageProcessor {
                     .mock_experimental_method(params)
                     .await
             }
-            ClientRequest::TurnStart { params, .. } => {
+            ClientRequest::TurnStart { params, .. }
+            | ClientRequest::TurnStartIfIdle {
+                params: codex_app_server_protocol::TurnStartIfIdleParams { start: params },
+                ..
+            } => {
                 self.turn_processor
                     .turn_start(
                         request_id.clone(),
                         params,
                         app_server_client_name.clone(),
                         client_version.clone(),
+                        start_if_idle,
                     )
                     .await
             }

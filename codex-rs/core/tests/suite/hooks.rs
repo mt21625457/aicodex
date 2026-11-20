@@ -6285,7 +6285,8 @@ enum ToolDispatchCase {
     AsyncHook,
     AfterComplete,
     SyncHook,
-    InterruptedHook,
+    InterruptedHook { incomplete: bool },
+    IncompleteHook,
     ExhaustedHook,
     OverflowHook(AgentRuntimeOwnership),
 }
@@ -6294,7 +6295,9 @@ enum ToolDispatchCase {
 #[test_case::test_case(ToolDispatchCase::AsyncHook; "an observer does not hold the tool")]
 #[test_case::test_case(ToolDispatchCase::AfterComplete; "buffered text and tools wait for completion")]
 #[test_case::test_case(ToolDispatchCase::SyncHook; "streaming text and tools do not wait for synchronous pricing")]
-#[test_case::test_case(ToolDispatchCase::InterruptedHook; "interrupt discards the held response and its charge")]
+#[test_case::test_case(ToolDispatchCase::InterruptedHook { incomplete: false }; "interrupt discards the held response and its charge")]
+#[test_case::test_case(ToolDispatchCase::InterruptedHook { incomplete: true }; "interrupt preserves incomplete response provider spending")]
+#[test_case::test_case(ToolDispatchCase::IncompleteHook; "incomplete response charges provider and synchronous hook once")]
 #[test_case::test_case(ToolDispatchCase::ExhaustedHook; "the response bill blocks its own tool")]
 #[test_case::test_case(ToolDispatchCase::OverflowHook(AgentRuntimeOwnership::Host); "the host receives an overflow lower bound and keeps its policy")]
 #[test_case::test_case(ToolDispatchCase::OverflowHook(AgentRuntimeOwnership::Controller); "a native overflow closes even the largest allowance")]
@@ -6305,26 +6308,31 @@ async fn model_request_post_hook_orders_tool_dispatch(case: ToolDispatchCase) ->
     use ToolDispatchCase::AsyncHook;
     use ToolDispatchCase::Eager;
     use ToolDispatchCase::ExhaustedHook;
+    use ToolDispatchCase::IncompleteHook;
     use ToolDispatchCase::InterruptedHook;
     use ToolDispatchCase::OverflowHook;
     use ToolDispatchCase::SyncHook;
     const MARKER: &str = "tool-dispatched";
     const STREAMED: &str = "Still streaming.";
 
+    let interrupted_hook = matches!(case, InterruptedHook { .. });
+    let incomplete = matches!(case, InterruptedHook { incomplete: true } | IncompleteHook);
     let buffered = matches!(
         case,
-        AfterComplete | InterruptedHook | ExhaustedHook | OverflowHook(_)
+        AfterComplete | InterruptedHook { .. } | IncompleteHook | ExhaustedHook | OverflowHook(_)
     );
     let hook_async = match case {
         Eager | AfterComplete => None,
         AsyncHook => Some(true),
-        SyncHook | InterruptedHook | ExhaustedHook | OverflowHook(_) => Some(false),
+        SyncHook | InterruptedHook { .. } | IncompleteHook | ExhaustedHook | OverflowHook(_) => {
+            Some(false)
+        }
     };
     // The native controls both spend 98 of 100. Only the successful +3 price
     // crosses the limit; the failed sibling's reported 999 never counts.
     let price_tools: &[&str] = match case {
         SyncHook => &["failed"],
-        InterruptedHook | ExhaustedHook => &["price", "failed"],
+        InterruptedHook { .. } | IncompleteHook | ExhaustedHook => &["price", "failed"],
         OverflowHook(_) => &["price", "second_price"],
         _ => &[],
     };
@@ -6346,7 +6354,7 @@ async fn model_request_post_hook_orders_tool_dispatch(case: ToolDispatchCase) ->
             } else {
                 // Turn B must report its own 3, not the interrupted first response's 31.
                 let units =
-                    if case == InterruptedHook && params["arguments"]["response_id"] != "second" {
+                    if interrupted_hook && params["arguments"]["response_id"] != "second" {
                         31
                     } else {
                         3
@@ -6362,6 +6370,10 @@ async fn model_request_post_hook_orders_tool_dispatch(case: ToolDispatchCase) ->
         .map(|server| format!("{}/repl", server.uri()));
     let (finish_stream, gate) = oneshot::channel();
     let mut completed = ev_completed_with_tokens("first", /*total_tokens*/ 42);
+    if incomplete {
+        completed["type"] = json!("response.incomplete");
+        completed["response"]["incomplete_details"] = json!({"reason": "max_output_tokens"});
+    }
     completed["response"]["usage"]["codex_rollout_budget_units"] =
         json!(if matches!(case, SyncHook | ExhaustedHook) {
             98
@@ -6391,7 +6403,7 @@ async fn model_request_post_hook_orders_tool_dispatch(case: ToolDispatchCase) ->
             body: sse_event(completed),
         },
     ];
-    let second_bill = if case == InterruptedHook {
+    let second_bill = if interrupted_hook {
         let mut completed = ev_completed_with_tokens("second", /*total_tokens*/ 7);
         completed["response"]["usage"]["codex_rollout_budget_units"] = json!(7);
         completed
@@ -6453,7 +6465,7 @@ async fn model_request_post_hook_orders_tool_dispatch(case: ToolDispatchCase) ->
         });
     if matches!(
         case,
-        InterruptedHook | OverflowHook(AgentRuntimeOwnership::Host)
+        InterruptedHook { .. } | IncompleteHook | OverflowHook(AgentRuntimeOwnership::Host)
     ) {
         let mut extensions = codex_extension_api::ExtensionRegistryBuilder::new();
         extensions.thread_lifecycle_contributor(accounting.clone());
@@ -6505,7 +6517,7 @@ async fn model_request_post_hook_orders_tool_dispatch(case: ToolDispatchCase) ->
             "the completed response is still waiting for its synchronous hook"
         );
     }
-    if case == InterruptedHook {
+    if interrupted_hook {
         let started = wait_for_event_match(&test.codex, |event| match event {
             EventMsg::HookStarted(started)
                 if started.run.event_name == HookEventName::PostModelRequest
@@ -6539,6 +6551,18 @@ async fn model_request_post_hook_orders_tool_dispatch(case: ToolDispatchCase) ->
             stopped.run.status_message.as_deref(),
             Some("Hook cancelled because the turn was interrupted"),
         );
+        if incomplete {
+            test.codex.ensure_rollout_materialized().await;
+            let history = test.codex.load_history(/*include_archived*/ false).await?;
+            let restored_total = history.items.iter().rev().find_map(|item| match item {
+                RolloutItem::EventMsg(EventMsg::TokenCount(count)) => count
+                    .info
+                    .as_ref()
+                    .map(|info| info.total_token_usage.total_tokens),
+                _ => None,
+            });
+            assert_eq!(restored_total, Some(42));
+        }
         // Start and finish B before releasing A's hook gate. A's unread
         // response must never publish its output or charge either turn.
         let codex_core::TurnInputSubmission::Started { turn_id, .. } = test
@@ -6572,8 +6596,36 @@ async fn model_request_post_hook_orders_tool_dispatch(case: ToolDispatchCase) ->
             }
         }));
         let reports = accounting.reports.lock().expect("usage reports");
-        let [bill] = reports.as_slice() else {
-            anyhow::bail!("expected only B's bill: {reports:?}");
+        let bill = if incomplete {
+            let [first_bill, second_bill] = reports.as_slice() else {
+                anyhow::bail!("expected the incomplete spend and B's bill: {reports:?}");
+            };
+            assert_eq!(
+                Some(first_bill.turn_id.as_str()),
+                started.turn_id.as_deref()
+            );
+            assert_eq!(
+                first_bill.usage.as_ref().map(|usage| usage.total_tokens),
+                Some(42)
+            );
+            assert_eq!(first_bill.additional_budget_units, 0.0);
+            assert_eq!(
+                history
+                    .items
+                    .iter()
+                    .filter(|item| matches!(item,
+                        RolloutItem::TokenUsageRecord(record)
+                            if record.response_id == "first" && record.usage.total_tokens == 42
+                    ))
+                    .count(),
+                1,
+            );
+            second_bill
+        } else {
+            let [bill] = reports.as_slice() else {
+                anyhow::bail!("expected only B's bill: {reports:?}");
+            };
+            bill
         };
         assert_eq!(bill.turn_id, turn_id);
         assert_eq!(
@@ -6592,6 +6644,27 @@ async fn model_request_post_hook_orders_tool_dispatch(case: ToolDispatchCase) ->
         _ => None,
     })
     .await;
+    if case == IncompleteHook {
+        assert!(
+            done.error
+                .is_some_and(|error| error.message.contains("max_output_tokens"))
+        );
+        assert!(!marker.exists());
+        let reports = accounting.reports.lock().expect("usage reports");
+        let [provider, hook] = reports.as_slice() else {
+            anyhow::bail!("expected provider and hook contributions: {reports:?}");
+        };
+        assert_eq!(provider.turn_id, done.turn_id);
+        assert_eq!(
+            provider.usage.as_ref().map(|usage| usage.total_tokens),
+            Some(42)
+        );
+        assert_eq!(provider.additional_budget_units, 0.0);
+        assert_eq!(hook.turn_id, done.turn_id);
+        assert_eq!(hook.usage, None);
+        assert_eq!(hook.additional_budget_units, 3.0);
+        return Ok(());
+    }
     if let OverflowHook(owner) = case {
         assert!(
             done.error

@@ -1045,6 +1045,7 @@ mod tests {
             interrupt: None,
             consumer_dropped: CancellationToken::new(),
             settlement_started: Default::default(),
+            incomplete_provider_usage_recorded: Default::default(),
         }
     }
 

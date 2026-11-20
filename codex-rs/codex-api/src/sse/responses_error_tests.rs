@@ -1,9 +1,11 @@
 //! Regression coverage for retry advice carried by failed Responses events.
 
+use super::parse_responses_stream_event;
 use super::process_responses_event;
 use super::spawn_response_stream;
 use crate::api_bridge::map_api_error;
 use crate::common::ResponseEvent;
+use crate::error::ApiError;
 use bytes::Bytes;
 use codex_client::StreamResponse;
 use codex_http_client::RetryAfter;
@@ -24,6 +26,8 @@ async fn invalid_tool_schema_is_terminal_even_when_sse_has_started() {
     for failure in [
         json!({"type": "error", "error": error}),
         json!({"type": "response.error", "error": error}),
+        json!({"type": "error", "code": "invalid_request_error", "param": "tools", "message": message}),
+        json!({"type": "response.error", "error": null, "code": "invalid_request_error", "message": message}),
         json!({"error": error}),
         json!({"type": "response.failed", "response": {"error": error}}),
     ] {
@@ -53,6 +57,21 @@ async fn invalid_tool_schema_is_terminal_even_when_sse_has_started() {
         assert_eq!(error.retry_delay(1), None);
         assert!(error.to_string().contains(message));
         assert!(stream.next().await.is_none());
+    }
+}
+
+#[test]
+fn flat_sse_error_with_unknown_code_reports_the_provider_message() {
+    for kind in ["error", "response.error"] {
+        let wire = json!({
+            "type": kind,
+            "code": "server_error",
+            "message": "Provider failed."
+        });
+        assert!(matches!(
+            parse_responses_stream_event(&wire.to_string()),
+            Err(ApiError::Retryable { message, .. }) if message == "server_error: Provider failed."
+        ));
     }
 }
 

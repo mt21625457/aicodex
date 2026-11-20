@@ -31,3 +31,14 @@
 - `exec` 补读已完成回合时按回合 ID 继续翻页，避免共享线程中后续回合占据第一页而丢失终态输出。回归入口为 `legacy_completion_backfill_finds_completed_turn_after_newer_turn`。
 - Windows MXC 诊断使用共享的 home 解析逻辑。Windows 执行器和严格配置测试的子进程同时设置 `AICODEX_HOME` 与 `CODEX_HOME`，避免继承的产品 home 优先级覆盖临时夹具。
 - Rust 历史投影和 Python SDK 将已知的旧 `answerHelpline` 展示指令转换为版本 1 表示。未知格式继续按受限展示处理。回归覆盖旧记录、当前协议、模拟流和 SDK 解码。
+
+第二轮复审补齐以下边界。
+
+- SSE 和 WebSocket 也识别顶层 `error` 与 `response.error`，保留已知错误分类以及未知错误的服务端消息，后续完成帧不能覆盖失败。
+- 普通回合收到 `ResponseIncomplete` 后，提供方用量在等待同步 `PostModelRequest` 前记账。后置 Hook 若完成，其计价单独入账。取消继续由所属回合持久化 `TokenCount`，恢复时可读到累计用量。`model_request_post_hook_orders_tool_dispatch` 覆盖取消和正常返回。
+- 远程 `exec` 通过实验接口 `turn/startIfIdle` 原子启动回合。忙碌线程拒绝该输入，常规 `turn/start` 继续支持向活动回合追加输入。远端服务需要支持此接口。
+- Python SDK 按协议校验展示指令的整数版本号和布尔 `trustedAccess`，类型不符时保持受限状态。
+
+上游移除了 app-server 实验接口 `currentTime/read`。通过 app-server 启动或恢复会话时，已有配置若显式设置 `features.current_time_reminder.clock_source = "external"`，会因为缺少外部时钟提供方而报错。使用系统时钟的配置可将该项改为 `"system"`。依赖自定义时钟的宿主需要提供新的 `TimeProvider` 集成。app-server 用例 `external_time_without_native_provider_fails_thread_start` 验证新会话的显式报错行为。
+
+本机复审通过 API 326 项、公开协议 344 项（另有 1 项生成入口按设计忽略）、核心模拟集成 12 项和 Python SDK 323 项（另有 38 项真实服务用例未启用）。App-server 聚焦回归通过，包含空闲启动、忙碌拒绝、常规回合追加输入、历史分页、严格配置及外部时钟报错。实验协议产物已重新生成并通过一致性检查，稳定协议产物无差异。核心工具用例在外层沙箱内 4 项等待命令产物超时，基线构件也可出现相同超时。最终构件在外层沙箱之外使用隔离临时目录复跑 12 项，全部通过。

@@ -4293,6 +4293,7 @@ async fn try_run_sampling_request(
             let _ = interrupt.send(codex_api::ResponseInterrupt::Cancel { deadline });
         }
     }
+    let incomplete_provider_usage_recorded = Arc::clone(&stream.incomplete_provider_usage_recorded);
     drop(stream);
     drop(sampling_span);
     drop(sampling_timing_guard);
@@ -4332,6 +4333,8 @@ async fn try_run_sampling_request(
             completed_responses_token_usage.as_ref(),
         )
         .await;
+    }
+    if should_emit_token_count || incomplete_provider_usage_recorded.load(Ordering::Acquire) {
         sess.send_token_count_event(&turn_context).await;
     }
 

@@ -67,7 +67,7 @@ impl SamplingRequest {
             SamplingKind::Sampling => Some(Arc::clone(&step.turn)),
             SamplingKind::ForegroundCompaction | SamplingKind::BackgroundCompaction => None,
         };
-        let settlement = Some((Arc::clone(session), Arc::clone(&step.turn)));
+        let settlement = Some((Arc::clone(session), Arc::clone(step)));
         let hooks = hooks_for_model_request(session, step);
         let pre_mode = hooks.execution_mode_for_event(HookEventName::PreModelRequest);
         let post_mode = hooks.execution_mode_for_event(HookEventName::PostModelRequest);

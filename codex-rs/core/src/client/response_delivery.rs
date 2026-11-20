@@ -2,8 +2,11 @@
 
 use crate::client_common::ChargePosting;
 use crate::client_common::ResponseEvent;
+use crate::client_common::SamplingCharge;
 use crate::client_common::SamplingEvent;
 use crate::hook_runtime::sampling::SamplingAttempt;
+use crate::session::session::Session;
+use crate::session::step_context::StepContext;
 use codex_api::ApiError;
 use codex_hooks::ModelRequestHookEvent;
 use codex_protocol::error::CodexErr;
@@ -21,25 +24,24 @@ pub(super) struct ResponseDelivery {
     attempt: Option<SamplingAttempt>,
     held: Vec<ResponseEvent>,
     pub(super) settlement_started: Arc<AtomicBool>,
-    settlement: Option<(
-        Arc<crate::session::session::Session>,
-        Arc<crate::session::turn_context::TurnContext>,
-    )>,
+    pub(super) incomplete_provider_usage_recorded: Arc<AtomicBool>,
+    settlement: Option<(Arc<Session>, Arc<StepContext>)>,
+    ordinary_sampling: bool,
 }
 
 impl ResponseDelivery {
     pub(super) fn new(
         attempt: &mut Option<SamplingAttempt>,
-        settlement: Option<(
-            Arc<crate::session::session::Session>,
-            Arc<crate::session::turn_context::TurnContext>,
-        )>,
+        settlement: Option<(Arc<Session>, Arc<StepContext>)>,
+        ordinary_sampling: bool,
     ) -> Self {
         Self {
             attempt: attempt.take(),
             held: Vec::new(),
             settlement_started: Default::default(),
+            incomplete_provider_usage_recorded: Default::default(),
             settlement,
+            ordinary_sampling,
         }
     }
 
@@ -54,8 +56,8 @@ impl ResponseDelivery {
         !matches!(
             item,
             ResponseEvent::Completed { .. } | ResponseEvent::SafetyBuffering(_)
-        ) && self.settlement.as_ref().is_some_and(|(_, turn)| {
-            turn.config.response_process_mode
+        ) && self.settlement.as_ref().is_some_and(|(_, step)| {
+            step.turn.config.response_process_mode
                 == codex_config::config_toml::ResponseProcessMode::AfterCompleteResponse
         })
     }
@@ -89,7 +91,27 @@ impl ResponseDelivery {
             let owner = attempt.owner_cancellation.clone();
             attempt.start_post_hooks(report).map(|hooks| (owner, hooks))
         });
+        let mut incomplete_provider_usage_recorded = false;
         let hook_output = if let Some((owner, hooks)) = hooks {
+            if self.ordinary_sampling
+                && let Some((session, step)) = &self.settlement
+                && let Err(error) = &event
+                && let CodexErrorDetails::ResponseIncomplete(incomplete) = error.details()
+                && incomplete.token_usage.is_some()
+            {
+                // An interrupt can cancel the hook after the provider has reported a bill.
+                session
+                    .record_incomplete_response_usage(
+                        &step.turn,
+                        &step.settings,
+                        incomplete,
+                        SamplingCharge::default(),
+                    )
+                    .await;
+                incomplete_provider_usage_recorded = true;
+                self.incomplete_provider_usage_recorded
+                    .store(true, Ordering::Release);
+            }
             tokio::select! {
                 biased;
                 () = tx.closed() => return false,
@@ -102,8 +124,9 @@ impl ResponseDelivery {
         self.attempt = None;
         let terminal = SamplingEvent {
             event,
-            hook_output: crate::client_common::SamplingCharge {
+            hook_output: SamplingCharge {
                 hooks: hook_output,
+                incomplete_provider_usage_recorded,
                 ..Default::default()
             },
         };
@@ -124,7 +147,7 @@ impl ResponseDelivery {
         {
             self.settlement_started.store(true, Ordering::Release);
         }
-        if let Some((session, turn)) = &self.settlement
+        if let Some((session, step)) = &self.settlement
             && let Ok(ResponseEvent::Completed { token_usage, .. }) = &terminal.event
         {
             let mut usage = crate::client_common::SamplingUsage {
@@ -132,7 +155,7 @@ impl ResponseDelivery {
                 charge: std::mem::take(&mut terminal.hook_output),
             };
             usage.charge.posting = match session
-                .record_rollout_budget_usage(&turn.sub_id, &usage)
+                .record_rollout_budget_usage(&step.turn.sub_id, &usage)
                 .await
             {
                 Ok(()) => ChargePosting::Posted,

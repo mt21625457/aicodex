@@ -323,6 +323,20 @@ pub struct TurnStartResponse {
     pub turn: Turn,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[ts(export_to = "v2/")]
+pub struct TurnStartIfIdleParams {
+    #[serde(flatten)]
+    pub start: TurnStartParams,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct TurnStartIfIdleResponse {
+    pub turn: Turn,
+}
+
 #[derive(
     Serialize, Deserialize, Debug, Default, Clone, PartialEq, JsonSchema, TS, ExperimentalApi,
 )]

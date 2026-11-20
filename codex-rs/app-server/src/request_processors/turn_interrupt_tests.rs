@@ -170,6 +170,7 @@ async fn interrupt_reply_waits_for_the_requested_turn(queued: bool) -> anyhow::R
                 turn,
                 /*app_server_client_name*/ None,
                 /*app_server_client_version*/ None,
+                /*start_if_idle*/ false,
             )
             .await
             .expect("start turn")

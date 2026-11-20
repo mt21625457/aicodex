@@ -4,6 +4,8 @@ use super::*;
 use codex_app_server_client::RemoteAppServerClient;
 use codex_app_server_client::RemoteAppServerConnectArgs;
 use codex_app_server_client::RemoteAppServerEndpoint;
+use codex_app_server_protocol::TurnStartIfIdleParams;
+use codex_app_server_protocol::TurnStartIfIdleResponse;
 
 pub(super) async fn run(cli: Cli, endpoint: RemoteAppServerEndpoint) -> anyhow::Result<()> {
     anyhow::ensure!(
@@ -102,35 +104,30 @@ pub(super) async fn run(cli: Cli, endpoint: RemoteAppServerEndpoint) -> anyhow::
             .await?
             .thread
     };
-    anyhow::ensure!(
-        !matches!(
-            thread.status,
-            codex_app_server_protocol::ThreadStatus::Active { .. }
-        ),
-        "remote thread already has an active turn"
-    );
-    processor.print_thread_started(&thread.id);
     let (interrupt_tx, interrupt_rx) = mpsc::unbounded_channel();
     tokio::spawn(async move {
         if tokio::signal::ctrl_c().await.is_ok() {
             let _ = interrupt_tx.send(());
         }
     });
-    let response: TurnStartResponse = client
-        .request_typed(ClientRequest::TurnStart {
+    let response: TurnStartIfIdleResponse = client
+        .request_typed(ClientRequest::TurnStartIfIdle {
             request_id: ids.next(),
-            params: TurnStartParams {
-                thread_id: thread.id.clone(),
-                turn_trigger: Some("exec".into()),
-                input: vec![codex_app_server_protocol::UserInput::Text {
-                    text: prompt,
-                    text_elements: Vec::new(),
-                }],
-                approval_policy: Some(codex_app_server_protocol::AskForApproval::Never),
-                ..Default::default()
+            params: TurnStartIfIdleParams {
+                start: TurnStartParams {
+                    thread_id: thread.id.clone(),
+                    turn_trigger: Some("exec".into()),
+                    input: vec![codex_app_server_protocol::UserInput::Text {
+                        text: prompt,
+                        text_elements: Vec::new(),
+                    }],
+                    approval_policy: Some(codex_app_server_protocol::AskForApproval::Never),
+                    ..Default::default()
+                },
             },
         })
         .await?;
+    processor.print_thread_started(&thread.id);
     finish_turn(
         client,
         ids,

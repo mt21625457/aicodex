@@ -1744,6 +1744,18 @@ mod tests {
                 Some(ApiError::RateLimitExceeded { message, retry_after })
                     if message == "Slow down" && retry_after == expected_retry_after
             ));
+            let flat_rate_limit = json!({
+                "type": kind,
+                "status": status,
+                "headers": headers,
+                "code": "rate_limit_exceeded",
+                "message": "Slow down",
+            });
+            assert!(matches!(
+                map_websocket_provider_error(Some(kind), &flat_rate_limit.to_string()),
+                Some(ApiError::RateLimitExceeded { message, retry_after })
+                    if message == "Slow down" && retry_after == expected_retry_after
+            ));
 
             let capacity = json!({
                 "type": kind,
@@ -1770,6 +1782,36 @@ mod tests {
                     .retry_delay(1)
                     .is_none()
             );
+            let flat_quota = json!({
+                "type": kind,
+                "status": status,
+                "code": "insufficient_quota",
+                "message": "Quota exhausted",
+            });
+            assert!(matches!(
+                map_websocket_provider_error(Some(kind), &flat_quota.to_string()),
+                Some(ApiError::QuotaExceeded)
+            ));
+            let flat_invalid_request = json!({
+                "type": kind,
+                "status": status,
+                "code": "invalid_request_error",
+                "message": "Invalid request fixture.",
+            });
+            assert!(matches!(
+                map_websocket_provider_error(Some(kind), &flat_invalid_request.to_string()),
+                Some(ApiError::InvalidRequest { message }) if message == "Invalid request fixture."
+            ));
+            let unknown_error = json!({
+                "type": kind,
+                "status": status,
+                "code": "server_error",
+                "message": "Provider failed.",
+            });
+            assert!(matches!(
+                map_websocket_provider_error(Some(kind), &unknown_error.to_string()),
+                Some(ApiError::Retryable { message, .. }) if message == "server_error: Provider failed."
+            ));
         }
     }
 

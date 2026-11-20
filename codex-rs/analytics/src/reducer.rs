@@ -1371,7 +1371,11 @@ impl AnalyticsReducer {
         request: ClientRequest,
     ) {
         match request {
-            ClientRequest::TurnStart { params, .. } => {
+            ClientRequest::TurnStart { params, .. }
+            | ClientRequest::TurnStartIfIdle {
+                params: codex_app_server_protocol::TurnStartIfIdleParams { start: params },
+                ..
+            } => {
                 self.requests.insert(
                     (connection_id, request_id),
                     RequestState::TurnStart(PendingTurnStartState {
@@ -1726,9 +1730,13 @@ impl AnalyticsReducer {
             }
             ClientResponse::TurnStart {
                 request_id,
-                response,
+                response: codex_app_server_protocol::TurnStartResponse { turn },
+            }
+            | ClientResponse::TurnStartIfIdle {
+                request_id,
+                response: codex_app_server_protocol::TurnStartIfIdleResponse { turn },
             } => {
-                let turn_id = response.turn.id;
+                let turn_id = turn.id;
                 let Some(RequestState::TurnStart(pending_request)) =
                     self.requests.remove(&(connection_id, request_id))
                 else {

@@ -116,3 +116,5 @@ WebSocket 的错误帧可能没有 HTTP 状态，或在连接成功后携带 `st
 本机 `cargo test --locked --offline -p codex-api` 通过 288 项单元测试和 36 项集成测试，包含新增 WebSocket 回归、既有 SSE 参数拒绝和专用分类回归。这个结果覆盖本机源码、合成流事件与本机模拟服务。
 
 合并提交复审将 `response.failed`、SSE 独立错误帧和无失败 HTTP 状态的 WebSocket 错误帧接入同一结构化分类。新增 `websocket_non_http_errors_preserve_structured_errors_and_retry_advice` 覆盖限流、容量和额度耗尽。复审构件通过 API 单测 289 项，核心 `wait_` 52 项和 `client_` 41 项。真实网关和安装后验收仍待执行。
+
+第二轮补齐顶层 `error` 和 `response.error` 错误帧。新增和扩展的模拟测试覆盖已知错误、未知错误的服务端消息及紧随失败的完成帧。`cargo test -p codex-api --locked --offline --tests` 通过 290 项单测和 36 项集成测试。

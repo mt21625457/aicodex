@@ -615,7 +615,9 @@ impl AnalyticsEventsClient {
         }
         if !matches!(
             request,
-            ClientRequest::TurnStart { .. } | ClientRequest::TurnSteer { .. }
+            ClientRequest::TurnStart { .. }
+                | ClientRequest::TurnStartIfIdle { .. }
+                | ClientRequest::TurnSteer { .. }
         ) {
             return;
         }
@@ -869,6 +871,7 @@ impl AnalyticsEventsClient {
                 | ClientResponsePayload::ThreadResume(_)
                 | ClientResponsePayload::ThreadFork(_)
                 | ClientResponsePayload::TurnStart(_)
+                | ClientResponsePayload::TurnStartIfIdle(_)
                 | ClientResponsePayload::TurnSteer(_)
                 | ClientResponsePayload::TurnInterrupt(_)
         ) {

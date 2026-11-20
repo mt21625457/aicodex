@@ -799,7 +799,7 @@ async fn grok_goal_budget_limit_stops_before_another_model_follow_up() -> Result
 }
 
 #[tokio::test]
-async fn turn_start_steers_active_turn_and_returns_active_turn_id() -> Result<()> {
+async fn turn_start_if_idle_rejects_active_turn_but_turn_start_still_steers() -> Result<()> {
     let (release_response, response_gate) = oneshot::channel();
     let (server, _completions) = start_streaming_sse_server(vec![
         vec![
@@ -846,21 +846,23 @@ async fn turn_start_steers_active_turn_and_returns_active_turn_id() -> Result<()
             ..Default::default()
         })
         .await?;
-    let TurnStartResponse { turn: active_turn } = mcp
-        .request(|request_id| ClientRequest::TurnStart {
+    let codex_app_server_protocol::TurnStartIfIdleResponse { turn: active_turn } = mcp
+        .request(|request_id| ClientRequest::TurnStartIfIdle {
             request_id,
-            params: TurnStartParams {
-                thread_id: thread.id.clone(),
-                client_user_message_id: None,
-                input: vec![V2UserInput::Text {
-                    text: "start".to_string(),
-                    text_elements: Vec::new(),
-                }],
-                turn_trigger: Some("goal".to_string()),
-                parent_turn_id: Some("initiating-turn".to_string()),
-                root_turn_id: Some("causal-root".to_string()),
-                cyber_access_program: Some(CyberAccessProgram::DaybreakBlue),
-                ..Default::default()
+            params: codex_app_server_protocol::TurnStartIfIdleParams {
+                start: TurnStartParams {
+                    thread_id: thread.id.clone(),
+                    client_user_message_id: None,
+                    input: vec![V2UserInput::Text {
+                        text: "start".to_string(),
+                        text_elements: Vec::new(),
+                    }],
+                    turn_trigger: Some("goal".to_string()),
+                    parent_turn_id: Some("initiating-turn".to_string()),
+                    root_turn_id: Some("causal-root".to_string()),
+                    cyber_access_program: Some(CyberAccessProgram::DaybreakBlue),
+                    ..Default::default()
+                },
             },
         })
         .await?;
@@ -873,6 +875,27 @@ async fn turn_start_steers_active_turn_and_returns_active_turn_id() -> Result<()
         server.wait_for_request_count(/*count*/ 1),
     )
     .await?;
+
+    let rejected_prompt = "idle-only prompt must never steer";
+    let rejected_request = mcp
+        .send_request(
+            "turn/startIfIdle",
+            Some(json!({
+                "threadId": thread.id,
+                "input": [{"type": "text", "text": rejected_prompt, "textElements": []}]
+            })),
+        )
+        .await?;
+    let error = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(rejected_request)),
+    )
+    .await??;
+    assert_eq!(error.error.code, INVALID_REQUEST_ERROR_CODE);
+    assert_eq!(
+        error.error.message,
+        "thread already has an active or pending turn"
+    );
 
     let updated: ThreadMetadataUpdateResponse = mcp
         .request(|request_id| ClientRequest::ThreadMetadataUpdate {
@@ -924,6 +947,7 @@ async fn turn_start_steers_active_turn_and_returns_active_turn_id() -> Result<()
     let requests = server.requests().await;
     assert_eq!(requests.len(), 2);
     for request in requests {
+        assert!(!String::from_utf8_lossy(&request).contains(rejected_prompt));
         let body: Value = serde_json::from_slice(&request)?;
         assert_eq!(body["access_programs"], json!({"cyber": "daybreak_blue"}));
         let turn_metadata: Value = serde_json::from_str(

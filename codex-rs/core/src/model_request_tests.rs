@@ -35,6 +35,7 @@ async fn interceptors_forward_before_completion_in_order_and_cancel_upstream() {
                 interrupt: None,
                 consumer_dropped,
                 settlement_started: Default::default(),
+                incomplete_provider_usage_recorded: Default::default(),
             }
             .map(|event| {
                 event.event.map_err(|error| {

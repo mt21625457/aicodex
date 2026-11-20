@@ -1139,6 +1139,13 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::TurnStartResponse,
     },
+    #[experimental("turn/startIfIdle")]
+    #[doc = "Start a turn only when the thread can accept a new turn without steering."]
+    TurnStartIfIdle => "turn/startIfIdle" {
+        params: v2::TurnStartIfIdleParams,
+        serialization: thread_id(params.start.thread_id),
+        response: v2::TurnStartIfIdleResponse,
+    },
     #[experimental("turn/settings/update")]
     TurnSettingsUpdate => "turn/settings/update" {
         params: v2::TurnSettingsUpdateParams,
