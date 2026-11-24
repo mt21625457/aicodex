@@ -18,6 +18,7 @@ use crate::tools::registry::ToolExposure;
 use crate::tools::registry::ToolRegistry;
 #[cfg(test)]
 use crate::tools::spec_plan::finalize_tool_router;
+use crate::tools::tool_namespaces_info::TOOL_SEARCH_FUNCTION_NAME;
 use codex_otel::SessionTelemetry;
 use codex_otel::TOOL_REGISTRATIONS_METRIC;
 use codex_otel::TOOL_REGISTRATIONS_METRIC_BUCKETS;
@@ -30,8 +31,10 @@ use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ToolMode;
 use codex_tools::DiscoverableTool;
 use codex_tools::ResponsesApiNamespaceTool;
+use codex_tools::TOOL_SEARCH_TOOL_NAME;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
+use serde::Deserialize;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -275,6 +278,54 @@ impl ToolRouter {
 
     pub(crate) fn registered_tool(&self, tool_name: &ToolName) -> Option<&RegisteredTool> {
         self.registry.registered_tool(tool_name)
+    }
+
+    /// 服务端有时将原生搜索的保留名称编码成普通函数。仅在本轮声明了
+    /// 客户端搜索时修正该调用，使执行、持久化与后续请求使用同一协议。
+    pub(crate) fn normalize_client_tool_search_call(&self, item: &mut ResponseItem) {
+        let ResponseItem::FunctionCall {
+            name,
+            namespace: Some(namespace),
+            arguments,
+            id,
+            call_id,
+            status,
+            encrypted_content: None,
+            encrypted_function_args: None,
+            internal_chat_message_metadata_passthrough,
+        } = item
+        else {
+            return;
+        };
+        if namespace != TOOL_SEARCH_TOOL_NAME
+            || name != TOOL_SEARCH_FUNCTION_NAME
+            || call_id.trim().is_empty()
+            || status.as_deref().is_some_and(|status| status != "completed")
+            || !self.model_visible_specs.iter().any(|spec| {
+                matches!(spec, ToolSpec::ToolSearch { execution, .. } if execution == "client")
+            })
+        {
+            return;
+        }
+        let Ok(arguments) = serde_json::from_str::<serde_json::Value>(arguments) else {
+            return;
+        };
+        if !arguments.is_object() || SearchToolCallParams::deserialize(&arguments).is_err() {
+            return;
+        }
+        // 保留普通调用的条目 ID 以关联本地记录和原始响应；请求格式化会
+        // 移除与原生搜索类型不匹配的 fc ID，避免分配并回放一个不存在的 ID。
+        tracing::debug!(event = "client_tool_search_call_normalized");
+        *item = ResponseItem::ToolSearchCall {
+            id: id.take(),
+            call_id: Some(std::mem::take(call_id)),
+            execution: "client".to_string(),
+            arguments,
+            status: status.take(),
+            encrypted_content: None,
+            internal_chat_message_metadata_passthrough: internal_chat_message_metadata_passthrough
+                .take(),
+        };
     }
 
     #[instrument(level = "trace", skip_all, err)]

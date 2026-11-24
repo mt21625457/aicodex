@@ -353,13 +353,18 @@ pub(crate) fn apply_answer_moderation(
 #[instrument(level = "trace", skip_all)]
 pub(crate) async fn handle_output_item_done(
     ctx: &mut HandleOutputCtx,
-    item: ResponseItem,
+    mut item: ResponseItem,
     previously_active_item: Option<TurnItem>,
     moderation: Option<&codex_protocol::protocol::TargetedAnswerModeration>,
 ) -> Result<OutputItemResult> {
     let mut output = OutputItemResult::default();
     let plan_mode = ctx.step_context.turn.mode() == ModeKind::Plan;
 
+    // 在持久化和分派前统一调用类型。连接层仍保留原始响应项：
+    // 若 WebSocket 服务端缓存的是普通调用，前缀不匹配会触发完整历史回放。
+    ctx.step_context
+        .tool_router
+        .normalize_client_tool_search_call(&mut item);
     match ctx.step_context.tool_router.build_tool_call(item.clone()) {
         // The model emitted a tool call; log it, persist the item immediately, and queue the tool execution.
         Ok(Some(call)) => {

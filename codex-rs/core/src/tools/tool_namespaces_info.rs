@@ -13,7 +13,7 @@ use codex_tools::TOOL_SEARCH_TOOL_NAME;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 
-const TOOL_SEARCH_FUNCTION_NAME: &str = "tool_search_tool";
+pub(super) const TOOL_SEARCH_FUNCTION_NAME: &str = "tool_search_tool";
 
 pub(super) fn collect_tool_namespaces_info(
     registry: &ToolRegistry,
