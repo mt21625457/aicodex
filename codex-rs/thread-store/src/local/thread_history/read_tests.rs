@@ -669,6 +669,28 @@ INSERT INTO thread_realtime_items (
         .expect("insert realtime item");
     }
 
+    // Older databases can still hold projections using the original receipt spelling.
+    let legacy_receipt = r#"{
+        "type": "session_end_input_saved",
+        "id": "legacy-receipt",
+        "realtime_session_id": "voice-1",
+        "source_event_ids": [],
+        "input_item_id": "saved-input",
+        "input": "Saved voice input"
+    }"#;
+    sqlx::query(
+        r#"
+INSERT INTO thread_realtime_items (
+    thread_id, item_id, rollout_ordinal, created_at_ms, item_type, item_json
+) VALUES (?, 'legacy-receipt', 29, 29000, 'session_end_input_saved', ?)
+        "#,
+    )
+    .bind(thread_id.to_string())
+    .bind(legacy_receipt)
+    .execute(db)
+    .await
+    .expect("insert legacy model input receipt");
+
     let latest = store
         .list_timeline(ListTimelineParams {
             thread_id,

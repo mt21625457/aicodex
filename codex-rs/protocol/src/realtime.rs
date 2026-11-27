@@ -14,7 +14,47 @@ pub struct RealtimeItem {
     #[ts(type = "number | null", optional)]
     pub observed_at_ms: Option<i64>,
     #[serde(flatten)]
+    #[serde(deserialize_with = "deserialize_persisted_item_content")]
     pub content: RealtimeItemContent,
+}
+
+fn deserialize_persisted_item_content<'de, D>(
+    deserializer: D,
+) -> Result<RealtimeItemContent, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(tag = "type", rename_all = "snake_case")]
+    enum LegacyItemContent {
+        SessionEndInputSaved {
+            source_event_ids: Vec<String>,
+            input_item_id: String,
+            input: String,
+        },
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum PersistedItemContent {
+        Current(RealtimeItemContent),
+        Legacy(LegacyItemContent),
+    }
+
+    // Keep the 0.171.0 receipt readable without adding its discriminator to the current schema.
+    Ok(match PersistedItemContent::deserialize(deserializer)? {
+        PersistedItemContent::Current(content) => content,
+        PersistedItemContent::Legacy(LegacyItemContent::SessionEndInputSaved {
+            source_event_ids,
+            input_item_id,
+            input,
+        }) => RealtimeItemContent::SessionInputSaved {
+            reason: SessionInputReason::SessionEnd,
+            source_event_ids,
+            input_item_id,
+            input,
+        },
+    })
 }
 
 /// A frame holds one or more payloads, at most one per channel. They share one ID,

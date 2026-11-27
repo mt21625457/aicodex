@@ -271,6 +271,75 @@ fn settings_applied_during_turn_override_stale_compaction_approval_policy() {
 }
 
 #[test]
+fn settings_applied_during_turn_do_not_restore_stale_read_only_permissions() {
+    let mut update = settings_item(
+        /*thread_id*/ None,
+        AskForApproval::Never,
+        ApprovalsReviewer::User,
+        /*active_permission_profile*/ None,
+    );
+    let RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) = &mut update else {
+        unreachable!("fixture must be a settings update");
+    };
+    event.thread_settings.permission_profile = PermissionProfile::Disabled;
+    let history = [
+        turn_started_item("turn-1"),
+        update,
+        turn_context_item(
+            "turn-1",
+            AskForApproval::OnRequest,
+            Some(ApprovalsReviewer::AutoReview),
+            /*active_permission_profile*/ None,
+        ),
+    ];
+
+    assert_eq!(
+        PersistedResumeSettings::from_history(&history, ThreadId::new()),
+        Some(PersistedResumeSettings {
+            approval_policy: AskForApproval::Never,
+            approvals_reviewer: Some(ApprovalsReviewer::User),
+            active_permission_profile: None,
+            unnamed_permission_profile: None,
+        })
+    );
+}
+
+#[test]
+fn stale_compaction_fallback_does_not_look_past_a_foreign_settings_snapshot() {
+    let history = [
+        turn_started_item("turn-1"),
+        settings_item(
+            /*thread_id*/ None,
+            AskForApproval::Never,
+            ApprovalsReviewer::AutoReview,
+            Some(ActivePermissionProfile::new("legacy-workspace")),
+        ),
+        settings_item(
+            Some(ThreadId::new()),
+            AskForApproval::OnRequest,
+            ApprovalsReviewer::User,
+            /*active_permission_profile*/ None,
+        ),
+        turn_context_item(
+            "turn-1",
+            AskForApproval::OnRequest,
+            Some(ApprovalsReviewer::User),
+            /*active_permission_profile*/ None,
+        ),
+    ];
+
+    assert_eq!(
+        PersistedResumeSettings::from_history(&history, ThreadId::new()),
+        Some(PersistedResumeSettings {
+            approval_policy: AskForApproval::OnRequest,
+            approvals_reviewer: Some(ApprovalsReviewer::User),
+            active_permission_profile: None,
+            unnamed_permission_profile: Some(PermissionProfile::read_only()),
+        })
+    );
+}
+
+#[test]
 fn later_turn_context_wins_over_earlier_turn_settings_update() {
     let history = vec![
         turn_started_item("turn-1"),

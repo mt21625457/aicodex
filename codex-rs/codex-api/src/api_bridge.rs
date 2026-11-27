@@ -87,13 +87,6 @@ fn http_quota_error(status: http::StatusCode, body: &str) -> Option<CodexErr> {
     if error.error_type.as_deref() == Some("usage_not_included") {
         return Some(CodexErr::UsageNotIncluded);
     }
-    // 429 的 usage_limit_reached 还带 resets_at、plan_type 和限速头。
-    // 它与额度 code 同时出现时，留给后面的窗口解析，不能先收成 QuotaExceeded。
-    if status == http::StatusCode::TOO_MANY_REQUESTS
-        && error.error_type.as_deref() == Some("usage_limit_reached")
-    {
-        return None;
-    }
     if error.error_type.as_deref() == Some("insufficient_quota")
         || matches!(
             error.code.as_deref(),
@@ -210,7 +203,43 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                 let body_text = body.unwrap_or_default();
                 let parsed_body = serde_json::from_str::<Value>(&body_text).ok();
                 let provider_error = parsed_body.as_ref().and_then(|body| body.get("error"));
-                if let Some(error) = parse_terminal_provider_error(provider_error, Some(status)) {
+                let terminal_error = parse_terminal_provider_error(provider_error, Some(status));
+                // Preserve reset-window metadata when a 429 also names a spend scope.
+                if status == http::StatusCode::TOO_MANY_REQUESTS
+                    && matches!(terminal_error, None | Some(ApiError::SpendLimitExceeded(_)))
+                    && provider_error.is_some_and(|error| error["type"] == "usage_limit_reached")
+                    && let Ok(UsageErrorResponse { error: usage }) =
+                        serde_json::from_str(&body_text)
+                {
+                    let limit_id = extract_header(headers.as_ref(), ACTIVE_LIMIT_HEADER);
+                    let promo_message = headers.as_ref().and_then(parse_promo_message);
+                    let rate_limit_reached_type =
+                        headers.as_ref().and_then(parse_rate_limit_reached_type);
+                    let rate_limits = headers
+                        .as_ref()
+                        .and_then(|map| parse_rate_limit_for_limit(map, limit_id.as_deref()))
+                        .map(|mut snapshot| {
+                            snapshot.rate_limit_reached_type = rate_limit_reached_type;
+                            snapshot
+                        });
+                    let resets_at = usage
+                        .resets_at
+                        .and_then(|seconds| DateTime::<Utc>::from_timestamp(seconds, 0));
+                    return CodexErr::UsageLimitReached(UsageLimitReachedError {
+                        plan_type: usage.plan_type,
+                        resets_at,
+                        limit_window_minutes: usage
+                            .limit_window_minutes
+                            .as_ref()
+                            .and_then(Value::as_u64)
+                            .and_then(|minutes| u16::try_from(minutes).ok()),
+                        rate_limits: rate_limits.map(Box::new),
+                        promo_message,
+                        rate_limit_reached_type,
+                    });
+                }
+
+                if let Some(error) = terminal_error {
                     return map_api_error_details(error);
                 }
                 if let Some(error) = http_quota_error(status, &body_text) {
@@ -304,39 +333,6 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                 } else if status == http::StatusCode::INTERNAL_SERVER_ERROR {
                     CodexErr::InternalServerError
                 } else if status == http::StatusCode::TOO_MANY_REQUESTS {
-                    if let Ok(err) = serde_json::from_str::<UsageErrorResponse>(&body_text)
-                        && err.error.error_type.as_deref() == Some("usage_limit_reached")
-                    {
-                        let limit_id = extract_header(headers.as_ref(), ACTIVE_LIMIT_HEADER);
-                        let promo_message = headers.as_ref().and_then(parse_promo_message);
-                        let rate_limit_reached_type =
-                            headers.as_ref().and_then(parse_rate_limit_reached_type);
-                        let rate_limits = headers
-                            .as_ref()
-                            .and_then(|map| parse_rate_limit_for_limit(map, limit_id.as_deref()))
-                            .map(|mut snapshot| {
-                                snapshot.rate_limit_reached_type = rate_limit_reached_type;
-                                snapshot
-                            });
-                        let resets_at = err
-                            .error
-                            .resets_at
-                            .and_then(|seconds| DateTime::<Utc>::from_timestamp(seconds, 0));
-                        return CodexErr::UsageLimitReached(UsageLimitReachedError {
-                            plan_type: err.error.plan_type,
-                            resets_at,
-                            limit_window_minutes: err
-                                .error
-                                .limit_window_minutes
-                                .as_ref()
-                                .and_then(Value::as_u64)
-                                .and_then(|minutes| u16::try_from(minutes).ok()),
-                            rate_limits: rate_limits.map(Box::new),
-                            promo_message,
-                            rate_limit_reached_type,
-                        });
-                    }
-
                     CodexErr::RetryLimit(RetryLimitReachedError {
                         status,
                         request_id: extract_request_tracking_id(headers.as_ref()),

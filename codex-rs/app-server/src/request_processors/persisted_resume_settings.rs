@@ -4,6 +4,7 @@ use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::ThreadSettingsAppliedEvent;
 use codex_protocol::protocol::ThreadSettingsSnapshot;
 use codex_rollout::InitialHistory;
 use codex_rollout::RolloutItem;
@@ -78,7 +79,7 @@ fn latest_persisted_resume_settings(history: &[RolloutItem]) -> Option<Persisted
         .rev()
         .find_map(|(index, item)| match item {
             RolloutItem::TurnContext(turn_context) => {
-                let updated_approval_policy = turn_context.turn_id.as_ref().and_then(|turn_id| {
+                let updated_settings = turn_context.turn_id.as_ref().and_then(|turn_id| {
                     let turn_start = history[..index].iter().rposition(|item| {
                         matches!(
                             item,
@@ -91,14 +92,20 @@ fn latest_persisted_resume_settings(history: &[RolloutItem]) -> Option<Persisted
                         .rev()
                         .find_map(|item| match item {
                             RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
-                                Some(event.thread_settings.approval_policy)
+                                Some(event)
                             }
                             _ => None,
                         })
+                        // An explicitly owned snapshot bounds the legacy lookback.
+                        .filter(|event| event.thread_id.is_none())
                 });
+                if let Some(event) = updated_settings {
+                    // Compaction can append the active turn's original settings after a live
+                    // update. Use one snapshot so its policy and permission profile agree.
+                    return Some(resume_settings_without_ownership(event));
+                }
                 Some(PersistedResumeSettings {
-                    approval_policy: updated_approval_policy
-                        .unwrap_or(turn_context.approval_policy),
+                    approval_policy: turn_context.approval_policy,
                     approvals_reviewer: turn_context.approvals_reviewer.or_else(|| {
                         history[..index].iter().rev().find_map(|item| match item {
                             RolloutItem::TurnContext(turn_context) => {
@@ -121,27 +128,33 @@ fn latest_persisted_resume_settings(history: &[RolloutItem]) -> Option<Persisted
                 })
             }
             RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
-                let settings = &event.thread_settings;
-                Some(PersistedResumeSettings {
-                    approval_policy: settings.approval_policy,
-                    approvals_reviewer: Some(
-                        settings
-                            .requested_approvals_reviewer
-                            .unwrap_or(settings.approvals_reviewer),
-                    ),
-                    active_permission_profile: settings.active_permission_profile.clone(),
-                    unnamed_permission_profile: if event.thread_id.is_none() {
-                        unattributed_read_only_profile(
-                            &settings.permission_profile,
-                            settings.active_permission_profile.as_ref(),
-                        )
-                    } else {
-                        None
-                    },
-                })
+                Some(resume_settings_without_ownership(event))
             }
             _ => None,
         })
+}
+
+fn resume_settings_without_ownership(
+    event: &ThreadSettingsAppliedEvent,
+) -> PersistedResumeSettings {
+    let snapshot = &event.thread_settings;
+    PersistedResumeSettings {
+        approval_policy: snapshot.approval_policy,
+        approvals_reviewer: Some(
+            snapshot
+                .requested_approvals_reviewer
+                .unwrap_or(snapshot.approvals_reviewer),
+        ),
+        active_permission_profile: snapshot.active_permission_profile.clone(),
+        unnamed_permission_profile: if event.thread_id.is_none() {
+            unattributed_read_only_profile(
+                &snapshot.permission_profile,
+                snapshot.active_permission_profile.as_ref(),
+            )
+        } else {
+            None
+        },
+    }
 }
 
 fn unattributed_read_only_profile(

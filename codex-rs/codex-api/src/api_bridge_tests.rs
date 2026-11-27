@@ -850,6 +850,18 @@ fn map_api_error_distinguishes_http_quota_errors_from_rate_limits() {
             UsageLimitExceeded,
         ),
         (
+            serde_json::json!({"type": "usage_limit_reached", "code": "flex_unavailable"}),
+            CodexErrorInfo::FlexUnavailable,
+        ),
+        (
+            serde_json::json!({
+                "type": "usage_limit_reached",
+                "code": "insufficient_quota",
+                "resets_at": "invalid-timestamp",
+            }),
+            rate_limit.clone(),
+        ),
+        (
             serde_json::json!({"type": "rate_limit_error", "code": "rate_limit_exceeded"}),
             rate_limit.clone(),
         ),
@@ -872,37 +884,46 @@ fn map_api_error_distinguishes_http_quota_errors_from_rate_limits() {
 
 #[test]
 fn map_api_error_keeps_usage_limit_window_when_quota_code_is_also_present() {
-    let err = map_api_error(ApiError::Transport(TransportError::Http {
-        retry_after: None,
-        status: http::StatusCode::TOO_MANY_REQUESTS,
-        url: None,
-        headers: None,
-        body: Some(
-            serde_json::json!({
-                "error": {
-                    "type": "usage_limit_reached",
-                    "code": "insufficient_quota",
-                    "plan_type": "pro",
-                    "resets_at": 1_700_000_000
-                }
-            })
-            .to_string(),
-        ),
-    }));
+    for code in [
+        "insufficient_quota",
+        "api_key_spend_limit_exceeded",
+        "project_spend_limit_exceeded",
+        "organization_spend_limit_exceeded",
+    ] {
+        let err = map_api_error(ApiError::Transport(TransportError::Http {
+            retry_after: None,
+            status: http::StatusCode::TOO_MANY_REQUESTS,
+            url: None,
+            headers: None,
+            body: Some(
+                serde_json::json!({
+                    "error": {
+                        "type": "usage_limit_reached",
+                        "code": code,
+                        "plan_type": "pro",
+                        "resets_at": 1_700_000_000,
+                        "limit_window_minutes": 300
+                    }
+                })
+                .to_string(),
+            ),
+        }));
 
-    let CodexErrorDetails::UsageLimitReached(usage_limit) = err.details() else {
-        panic!("expected usage-limit window, got {err:?}");
-    };
-    assert_eq!(
-        usage_limit.plan_type,
-        Some(codex_protocol::auth::PlanType::Known(
-            codex_protocol::auth::KnownPlan::Pro
-        ))
-    );
-    assert_eq!(
-        usage_limit.resets_at.map(|time| time.timestamp()),
-        Some(1_700_000_000)
-    );
+        let CodexErrorDetails::UsageLimitReached(usage_limit) = err.details() else {
+            panic!("expected usage-limit window for {code}, got {err:?}");
+        };
+        assert_eq!(
+            usage_limit.plan_type,
+            Some(codex_protocol::auth::PlanType::Known(
+                codex_protocol::auth::KnownPlan::Pro
+            ))
+        );
+        assert_eq!(
+            usage_limit.resets_at.map(|time| time.timestamp()),
+            Some(1_700_000_000)
+        );
+        assert_eq!(usage_limit.limit_window_minutes, Some(300));
+    }
 }
 
 #[test]
@@ -1044,6 +1065,7 @@ fn map_api_error_copies_rate_limit_reached_type_to_usage_limit_snapshot() {
         let body = serde_json::json!({
             "error": {
                 "type": "usage_limit_reached",
+                "code": active_limit.map(|_| "project_spend_limit_exceeded"),
                 "plan_type": "pro",
             }
         })
