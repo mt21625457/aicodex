@@ -15,7 +15,7 @@ use serde_json::json;
 
 #[tokio::test]
 async fn terminal_provider_errors_persist_a_non_active_goal() -> anyhow::Result<()> {
-    let errors = [
+    let turn_errors = [
         CodexErrorInfo::HttpConnectionFailed {
             http_status_code: Some(403),
         },
@@ -40,9 +40,22 @@ async fn terminal_provider_errors_persist_a_non_active_goal() -> anyhow::Result<
         CodexErrorInfo::ContextWindowExceeded,
         CodexErrorInfo::ServerOverloaded,
         CodexErrorInfo::InternalServerError,
-        CodexErrorInfo::UsageLimitExceeded,
     ];
-    for error in errors {
+    let usage_limit_errors = [
+        CodexErrorInfo::UsageLimitExceeded,
+        CodexErrorInfo::ApiKeySpendLimitExceeded,
+        CodexErrorInfo::ProjectSpendLimitExceeded,
+        CodexErrorInfo::OrganizationSpendLimitExceeded,
+    ];
+    let cases = turn_errors
+        .into_iter()
+        .map(|error| (error, codex_state::ThreadGoalStatus::Blocked))
+        .chain(
+            usage_limit_errors
+                .into_iter()
+                .map(|error| (error, codex_state::ThreadGoalStatus::UsageLimited)),
+        );
+    for (error, expected) in cases {
         let runtime = test_runtime().await?;
         let thread_id = test_thread_id()?;
         seed_thread_metadata(runtime.as_ref(), thread_id).await?;
@@ -84,11 +97,6 @@ async fn terminal_provider_errors_persist_a_non_active_goal() -> anyhow::Result<
             .get_thread_goal(thread_id)
             .await?
             .expect("goal exists");
-        let expected = if error == CodexErrorInfo::UsageLimitExceeded {
-            codex_state::ThreadGoalStatus::UsageLimited
-        } else {
-            codex_state::ThreadGoalStatus::Blocked
-        };
         assert_eq!(goal.status, expected, "{error:?}");
         assert_eq!(goal.objective, "finish fixture task");
     }

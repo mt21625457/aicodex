@@ -21,7 +21,8 @@ pub enum EventPersistenceMode {
     Extended,
 }
 
-const PERSISTED_MCP_RESULT_MAX_BYTES: usize = 64 * 1024;
+/// Maximum encoded size of an untruncated MCP result in durable history.
+pub const PERSISTED_MCP_RESULT_MAX_BYTES: usize = 64 * 1024;
 pub(super) const PERSISTED_COMMAND_OUTPUT_MAX_BYTES: usize = 64 * 1024;
 const PERSISTED_COMMAND_OUTPUT_TRUNCATION_MARKER: &str =
     "\n... command output truncated for persistence ...\n";

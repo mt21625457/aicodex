@@ -32,7 +32,7 @@ impl RequestBudget {
         }
     }
 
-    fn limit(self, model: &str) -> usize {
+    pub(crate) fn limit(self, model: &str) -> usize {
         if is_deepseek_model(model) {
             self.route_bytes.min(40 * MIB)
         } else {

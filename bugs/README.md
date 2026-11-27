@@ -14,6 +14,7 @@
 | [CORE-006](CORE-006-upstream-0169-merge-compatibility.md) | 0.169.0 合并接口兼容与 SDK 测试隔离 | 当前修复先提交；完整验收未通过，测试停止 | 会话路由、认证、压缩、协议与测试 |
 | [CORE-007](CORE-007-stream-recovery-visibility.md) | 首次断流提示缺失、恢复预算与默认流超时 | 源码及聚焦 55 项通过，安装待验收 | 默认 provider、Responses 重试 |
 | [CORE-008](CORE-008-upstream-0171-merge-compatibility.md) | 合并 0.171.0 后接口、模型目录和验收夹具兼容 | 全量已执行，发布验收受 V8 资产阻塞 | 内核、协议、模型目录、持久化与发布 |
+| [CORE-009](CORE-009-upstream-0172-merge-compatibility.md) | 合并 0.172.0 后接口、协议产物和回归夹具兼容 | 工作区编译和本机聚焦回归通过，安装验收待完成 | Responses、会话恢复、持久化与 SDK |
 
 ## 记录和关闭要求
 

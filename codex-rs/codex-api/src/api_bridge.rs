@@ -45,6 +45,7 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
         | ApiError::ContentFilter
         | ApiError::ResponseIncomplete(_)
         | ApiError::ContextWindowExceeded
+        | ApiError::SpendLimitExceeded(_)
         | ApiError::QuotaExceeded
         | ApiError::UsageNotIncluded
         | ApiError::SessionBudgetExceeded
@@ -113,6 +114,9 @@ fn http_quota_error(status: http::StatusCode, body: &str) -> Option<CodexErr> {
 fn map_api_error_details(err: ApiError) -> CodexErr {
     match err {
         ApiError::ContextWindowExceeded => CodexErr::ContextWindowExceeded,
+        ApiError::SpendLimitExceeded(scope) => {
+            CodexErrorDetails::APISpendLimitExceeded(scope).into()
+        }
         ApiError::QuotaExceeded => CodexErr::QuotaExceeded,
         ApiError::UsageNotIncluded => CodexErr::UsageNotIncluded,
         ApiError::MalformedResponse { message } => CodexErr::MalformedProviderResponse(message),
@@ -204,14 +208,13 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                 ..
             } => {
                 let body_text = body.unwrap_or_default();
-                if let Some(error) = http_quota_error(status, &body_text) {
-                    return error;
-                }
-
                 let parsed_body = serde_json::from_str::<Value>(&body_text).ok();
                 let provider_error = parsed_body.as_ref().and_then(|body| body.get("error"));
                 if let Some(error) = parse_terminal_provider_error(provider_error, Some(status)) {
                     return map_api_error_details(error);
+                }
+                if let Some(error) = http_quota_error(status, &body_text) {
+                    return error;
                 }
 
                 if let Some(kind) = ProviderMediaErrorKind::classify(Some(status), &body_text) {

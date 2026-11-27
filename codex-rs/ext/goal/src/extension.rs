@@ -30,7 +30,6 @@ use codex_extension_api::TurnStopInput;
 use codex_otel::MetricsClient;
 use codex_protocol::ThreadId;
 use codex_protocol::items::TurnItem;
-use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadGoalStatus;
@@ -422,12 +421,12 @@ where
                 return;
             };
 
-            let reason = match input.error {
-                CodexErrorInfo::UsageLimitExceeded => ActiveGoalStopReason::UsageLimit,
-                // 此回调只处理回合最终失败，单轮内部已负责传输恢复策略。
-                // 即使原因为临时故障，也必须持久化停止状态；否则 idle 会新建
-                // 回合并重置重试预算，导致无上限的请求、压缩和历史增长。
-                _ => ActiveGoalStopReason::TurnError,
+            let reason = if input.error.is_usage_limit() {
+                ActiveGoalStopReason::UsageLimit
+            } else {
+                // A new idle turn would reset the retry budget after this terminal
+                // error, causing unbounded requests and history growth.
+                ActiveGoalStopReason::TurnError
             };
             if let Err(err) = runtime
                 .stop_active_goal_for_turn(input.turn_id, reason)

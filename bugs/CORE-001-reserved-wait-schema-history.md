@@ -118,3 +118,7 @@ WebSocket 的错误帧可能没有 HTTP 状态，或在连接成功后携带 `st
 合并提交复审将 `response.failed`、SSE 独立错误帧和无失败 HTTP 状态的 WebSocket 错误帧接入同一结构化分类。新增 `websocket_non_http_errors_preserve_structured_errors_and_retry_advice` 覆盖限流、容量和额度耗尽。复审构件通过 API 单测 289 项，核心 `wait_` 52 项和 `client_` 41 项。真实网关和安装后验收仍待执行。
 
 第二轮补齐顶层 `error` 和 `response.error` 错误帧。新增和扩展的模拟测试覆盖已知错误、未知错误的服务端消息及紧随失败的完成帧。`cargo test -p codex-api --locked --offline --tests` 通过 290 项单测和 36 项集成测试。
+
+## 0.172.0 合并回归
+
+保留两代等待工具的公开 `number` 契约、旧历史请求副本修正和 SSE/WebSocket 参数错误终态。合并后的结构化错误分类补齐上游分级支出限额，并保持畸形 `response.failed` 帧的结构校验。完整 `codex-api` 335 项通过，Nextest 450 项聚焦全过，包含两代等待工具以及新旧声明混合和原始记录保留回归。变更及验收边界见 [CORE-009](CORE-009-upstream-0172-merge-compatibility.md)。

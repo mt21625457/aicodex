@@ -969,7 +969,10 @@ impl TurnRequestProcessor {
             approval_policy.map(codex_app_server_protocol::AskForApproval::to_core);
         let approvals_reviewer =
             approvals_reviewer.map(codex_app_server_protocol::ApprovalsReviewer::to_core);
-        let sandbox_policy = sandbox_policy.map(|policy| policy.to_core());
+        let sandbox_policy = sandbox_policy
+            .map(|policy| policy.try_to_core())
+            .transpose()
+            .map_err(|err| invalid_request(format!("invalid sandboxPolicy: {err}")))?;
         let (permission_profile, active_permission_profile, profile_workspace_roots) =
             if let Some(permissions) = permissions {
                 let Some(snapshot) = snapshot.as_ref() else {
@@ -1660,9 +1663,16 @@ impl TurnRequestProcessor {
             .await
         {
             Ok(stored_thread) => {
-                let (thread, _) =
-                    thread_from_stored_thread_with_config(stored_thread, &self.config);
-                Some(thread)
+                match thread_from_stored_thread_with_config(stored_thread, &self.config) {
+                    Ok((thread, _)) => Some(thread),
+                    Err(err) => {
+                        tracing::warn!(
+                            "failed to build summary for review thread {thread_id}: {}",
+                            err.message
+                        );
+                        None
+                    }
+                }
             }
             Err(err) => {
                 tracing::warn!("failed to load summary for review thread {thread_id}: {err}");
@@ -1672,7 +1682,7 @@ impl TurnRequestProcessor {
 
         if let Some(mut thread) = stored_thread {
             let config_snapshot = review_thread.config_snapshot().await;
-            apply_live_thread_settings(&mut thread, &config_snapshot);
+            apply_live_thread_settings(&mut thread, &review_thread, &config_snapshot);
             thread.session_id = review_thread.startup_metadata().session_id.to_string();
             self.thread_watch_manager
                 .upsert_thread_silently(&thread.id)

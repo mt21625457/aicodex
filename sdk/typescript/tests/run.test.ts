@@ -845,13 +845,13 @@ describe("Codex", () => {
       await close();
     }
   });
-  it("throws ThreadRunError on turn failures", async () => {
+  it("throws with the provider message on a rate-limited turn", async () => {
     const { url, close } = await startResponsesTestProxy({
       statusCode: 200,
       responseBodies: (function* (): Generator<SseResponseBody> {
         yield sse(responseStarted("response_1"));
         while (true) {
-          yield sse(responseFailed("rate limit exceeded"));
+          yield sse(responseFailed("provider rate limit"));
         }
       })(),
     });
@@ -859,7 +859,7 @@ describe("Codex", () => {
 
     try {
       const thread = client.startThread();
-      await expect(thread.run("fail")).rejects.toThrow("stream disconnected before completion:");
+      await expect(thread.run("fail")).rejects.toThrow("rate limit exceeded: provider rate limit");
     } finally {
       cleanup();
       await close();

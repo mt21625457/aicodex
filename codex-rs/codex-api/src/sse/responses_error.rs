@@ -6,7 +6,6 @@ use crate::error::ProviderMediaErrorKind;
 use crate::error::parse_terminal_provider_error;
 use crate::responses_headers::json_headers_to_http_headers;
 use codex_http_client::RetryAfter;
-use codex_protocol::protocol::MisalignmentErrorDetails;
 use serde::Deserialize;
 use serde_json::Value;
 use std::time::Duration;
@@ -27,7 +26,7 @@ struct Error {
 pub(super) fn parse_failed_response(response: Option<Value>) -> ApiError {
     let error = response.as_ref().and_then(|response| response.get("error"));
     let retry_after_header = stream_retry_after(error, /*envelope_headers*/ None);
-    if let Some(error) = classify_stream_error(error, retry_after_header) {
+    if let Some(error) = parse_terminal_provider_error(error, /*status*/ None) {
         return error;
     }
     let Some(error) = error.and_then(|error| Error::deserialize(error).ok()) else {
@@ -41,6 +40,13 @@ pub(super) fn parse_failed_response(response: Option<Value>) -> ApiError {
         };
     };
 
+    if let Some(classified) = classify_retryable_stream_error(
+        error.code.as_deref(),
+        error.message.as_deref(),
+        retry_after_header,
+    ) {
+        return classified;
+    }
     let message = error.message.unwrap_or_default();
     if let Some(kind) = ProviderMediaErrorKind::classify(/*status*/ None, &message) {
         return ApiError::ProviderMedia { kind, message };
@@ -72,74 +78,42 @@ pub(super) fn classify_stream_error(
     if let Some(error) = parse_terminal_provider_error(error, /*status*/ None) {
         return Some(error);
     }
-    let error = Error::deserialize(error?).ok()?;
-    let error = match error.code.as_deref() {
-        Some(
-            "insufficient_quota"
-            | "credit_balance_exhausted"
-            | "organization_spend_limit_exceeded"
-            | "project_spend_limit_exceeded",
-        ) => ApiError::QuotaExceeded,
-        Some("usage_not_included") => ApiError::UsageNotIncluded,
-        Some("cyber_policy") => ApiError::CyberPolicy {
-            message: cyber_policy_message(error.message),
-        },
-        Some("bio_policy") => {
-            let message = error
-                .message
-                .filter(|message| !message.trim().is_empty())
-                .unwrap_or_else(|| {
-                    "This content was flagged for possible biological risk.".to_string()
-                });
-            ApiError::BioPolicy { message }
-        }
-        Some("misalignment_policy_violation") => {
-            let message = error
-                .message
-                .filter(|message| !message.trim().is_empty())
-                .unwrap_or_else(|| {
-                    "This request was blocked due to a misalignment policy violation.".to_string()
-                });
-            ApiError::MisalignmentPolicyViolation {
-                message,
-                misalignment: error.misalignment.and_then(|details| {
-                    serde_json::from_value::<MisalignmentErrorDetails>(details).ok()
-                }),
-            }
-        }
-        Some("invalid_prompt") => {
-            let message = error
-                .message
-                .unwrap_or_else(|| "Invalid request.".to_string());
-            match ProviderMediaErrorKind::classify(/*status*/ None, &message) {
-                Some(kind) => ApiError::ProviderMedia { kind, message },
-                None => ApiError::InvalidPrompt { message },
-            }
-        }
-        Some("policy_capacity_unavailable") => ApiError::PolicyCapacityUnavailable {
+    let error = error?;
+    classify_retryable_stream_error(
+        error.get("code").and_then(Value::as_str),
+        error.get("message").and_then(Value::as_str),
+        retry_after_header,
+    )
+}
+
+fn classify_retryable_stream_error(
+    code: Option<&str>,
+    message: Option<&str>,
+    retry_after_header: Option<RetryAfter>,
+) -> Option<ApiError> {
+    let classified = match code? {
+        "policy_capacity_unavailable" => ApiError::PolicyCapacityUnavailable {
             retry_after: retry_after_header,
         },
-        Some("server_is_overloaded") => ApiError::ServerOverloaded {
+        "server_is_overloaded" => ApiError::ServerOverloaded {
             retry_after: retry_after_header,
         },
-        Some("rate_limit_exceeded" | "slow_down") => {
+        "rate_limit_exceeded" | "slow_down" => {
             let retry_after = retry_after_header
-                .or_else(|| try_parse_retry_delay(&error).and_then(RetryAfter::from_delay));
+                .or_else(|| try_parse_retry_delay(message?).and_then(RetryAfter::from_delay));
             ApiError::RateLimitExceeded {
-                message: error.message.unwrap_or_default(),
+                message: message.unwrap_or_default().to_owned(),
                 retry_after,
             }
         }
         _ => return None,
     };
-    Some(error)
+    Some(classified)
 }
 
-fn try_parse_retry_delay(err: &Error) -> Option<Duration> {
+fn try_parse_retry_delay(message: &str) -> Option<Duration> {
     let re = rate_limit_regex();
-    if let Some(message) = &err.message
-        && let Some(captures) = re.captures(message)
-    {
+    if let Some(captures) = re.captures(message) {
         let seconds = captures.get(1);
         let unit = captures.get(2);
 
@@ -155,16 +129,6 @@ fn try_parse_retry_delay(err: &Error) -> Option<Duration> {
         }
     }
     None
-}
-
-fn cyber_policy_fallback_message() -> String {
-    "This request has been flagged for possible cybersecurity risk.".to_string()
-}
-
-fn cyber_policy_message(message: Option<String>) -> String {
-    message
-        .filter(|message| !message.trim().is_empty())
-        .unwrap_or_else(cyber_policy_fallback_message)
 }
 
 fn rate_limit_regex() -> &'static regex_lite::Regex {

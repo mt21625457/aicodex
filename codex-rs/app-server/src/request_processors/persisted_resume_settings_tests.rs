@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::PersistedResumeSettings;
 use super::latest_persisted_resume_settings;
 use codex_protocol::ThreadId;
@@ -236,7 +238,7 @@ fn older_reviewer_is_used_when_latest_turn_context_omits_it() {
             approval_policy: AskForApproval::OnRequest,
             approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
             active_permission_profile: None,
-            unnamed_permission_profile: None,
+            unnamed_permission_profile: Some(PermissionProfile::read_only()),
         })
     );
 }
@@ -259,9 +261,12 @@ fn settings_applied_during_turn_override_stale_compaction_approval_policy() {
         ),
     ];
 
+    let settings = PersistedResumeSettings::from_history(&history, ThreadId::new())
+        .expect("legacy settings from an active turn");
+    assert_eq!(settings.approval_policy, AskForApproval::Never);
     assert_eq!(
-        latest_persisted_resume_settings(&history).map(|settings| settings.approval_policy),
-        Some(AskForApproval::Never)
+        settings.unnamed_permission_profile,
+        Some(PermissionProfile::read_only())
     );
 }
 
@@ -297,14 +302,29 @@ fn later_turn_context_wins_over_earlier_turn_settings_update() {
 }
 
 #[test]
-fn an_unattributed_snapshot_does_not_restore_unnamed_permissions() {
-    let history = [settings_item(
+fn an_unattributed_snapshot_restores_only_portable_read_only_permissions() {
+    let mut item = settings_item(
         /*thread_id*/ None,
         AskForApproval::OnRequest,
         ApprovalsReviewer::User,
         /*active_permission_profile*/ None,
-    )];
+    );
+    let thread_id = ThreadId::new();
+    let expected = PersistedResumeSettings {
+        approval_policy: AskForApproval::OnRequest,
+        approvals_reviewer: Some(ApprovalsReviewer::User),
+        active_permission_profile: None,
+        unnamed_permission_profile: Some(PermissionProfile::read_only()),
+    };
+    assert_eq!(
+        PersistedResumeSettings::from_history(std::slice::from_ref(&item), thread_id),
+        Some(expected)
+    );
+    let RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) = &mut item else {
+        unreachable!("fixture must be a settings update");
+    };
+    event.thread_settings.permission_profile = PermissionProfile::Disabled;
     let settings =
-        PersistedResumeSettings::from_history(&history, ThreadId::new()).expect("legacy settings");
+        PersistedResumeSettings::from_history(&[item], thread_id).expect("legacy settings");
     assert_eq!(settings.unnamed_permission_profile, None);
 }

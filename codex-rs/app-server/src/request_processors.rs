@@ -629,12 +629,16 @@ use token_usage_replay::send_thread_token_usage_update_to_connection;
 
 pub(crate) fn apply_live_thread_settings(
     thread: &mut Thread,
+    loaded_thread: &CodexThread,
     config_snapshot: &ThreadConfigSnapshot,
 ) {
+    thread.can_accept_direct_input = Some(thread_input::loaded_thread_can_accept_direct_input());
     thread.model_provider = config_snapshot.model_provider_id.clone();
     thread.model_id = Some(config_snapshot.model.clone());
     thread.wire_api = Some(config_snapshot.wire_api.to_string());
     thread.effort = config_snapshot.reasoning_effort.clone();
+    thread.daybreak_program_propagation_enrolled =
+        Some(loaded_thread.daybreak_program_propagation_enrolled());
     thread.model = Some(config_snapshot.model.clone());
     thread.reasoning_effort = config_snapshot.reasoning_effort.clone();
     thread.environments = Some(

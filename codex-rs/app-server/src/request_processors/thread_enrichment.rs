@@ -1,5 +1,4 @@
 use super::apply_live_thread_settings;
-use super::thread_input::loaded_thread_can_accept_direct_input;
 use crate::thread_status::ThreadWatchManager;
 use crate::thread_status::resolve_thread_status;
 use codex_app_server_protocol::SessionSource;
@@ -56,8 +55,7 @@ async fn enrich_loaded_thread(
         return;
     };
     let config_snapshot = loaded_thread.config_snapshot().await;
-    apply_live_thread_settings(thread, &config_snapshot);
-    thread.can_accept_direct_input = Some(loaded_thread_can_accept_direct_input());
+    apply_live_thread_settings(thread, &loaded_thread, &config_snapshot);
     if !matches!(
         &thread.source,
         SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })

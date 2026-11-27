@@ -7,6 +7,7 @@ use crate::common::ResponseStream;
 use crate::common::ResponsesWsRequest;
 use crate::common::SafetyBufferingTreatment;
 use crate::common::WS_REQUEST_HEADER_TRACEPARENT_CLIENT_METADATA_KEY;
+use crate::common::with_tool_results;
 use crate::endpoint::responses_websocket_probe::ResponsesWebsocketClose;
 use crate::endpoint::responses_websocket_probe::ResponsesWebsocketProbe;
 use crate::endpoint::responses_websocket_probe::ResponsesWebsocketProbeError;
@@ -59,6 +60,7 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 use tracing::instrument;
+use tracing::instrument::WithSubscriber;
 use tracing::trace;
 use tungstenite::extensions::ExtensionsConfig;
 use tungstenite::extensions::compression::deflate::DeflateConfig;
@@ -73,9 +75,14 @@ struct WsStream {
     pump_task: tokio::task::JoinHandle<()>,
 }
 
+struct WsRequestText {
+    text: Utf8Bytes,
+    private: bool,
+}
+
 enum WsCommand {
     Send {
-        message: Message,
+        request: WsRequestText,
         tx_result: oneshot::Sender<Result<(), WsError>>,
     },
 }
@@ -125,8 +132,14 @@ impl WsStream {
                             break;
                         };
                         match command {
-                            WsCommand::Send { message, tx_result } => {
-                                let result = send_message(&mut inner, message).await;
+                            WsCommand::Send { request, tx_result } => {
+                                let send = send_message(&mut inner, Message::Text(request.text));
+                                // Tungstenite traces frame payloads from inside this future.
+                                let result = if request.private {
+                                    send.with_subscriber(tracing::Dispatch::none()).await
+                                } else {
+                                    send.await
+                                };
                                 let should_break = result.is_err();
                                 let _ = tx_result.send(result);
                                 if should_break {
@@ -194,8 +207,8 @@ impl WsStream {
         Err(WsError::ConnectionClosed)
     }
 
-    async fn send(&mut self, message: Message) -> Result<(), WsError> {
-        self.request(|tx_result| WsCommand::Send { message, tx_result })
+    async fn send(&mut self, request: WsRequestText) -> Result<(), WsError> {
+        self.request(|tx_result| WsCommand::Send { request, tx_result })
             .await
     }
 
@@ -301,7 +314,7 @@ impl ResponsesWebsocketConnection {
             .await
     }
 
-    /// Gives the observer a shared copy of the exact JSON before transport dispatch.
+    /// Gives the observer the serialized request before private tool results are attached.
     #[instrument(
         name = "responses_websocket.stream_request",
         level = "info",
@@ -363,6 +376,9 @@ impl ResponsesWebsocketConnection {
             stream = trace_summary.stream,
             "websocket request"
         );
+        let budget = self.request_budget.limit(ws_request.model);
+        let ResponsesWsRequest::ResponseCreate(ws_request) = request;
+        let tool_results = ws_request.tool_results;
 
         let current_span = Span::current();
         tokio::spawn(
@@ -417,6 +433,14 @@ impl ResponsesWebsocketConnection {
                         )))
                         .await;
                     return;
+                };
+                let limit = ws_stream
+                    .max_message_bytes
+                    .map_or(budget, |limit| budget.min(limit));
+                let enriched = with_tool_results(request_text.as_str(), &tool_results, limit);
+                let request_text = WsRequestText {
+                    private: enriched.is_some(),
+                    text: enriched.map(Utf8Bytes::from).unwrap_or(request_text),
                 };
                 let mut completion = None;
                 let result = {
@@ -881,7 +905,7 @@ fn is_websocket_receive_failure(
 async fn run_websocket_response_stream(
     ws_stream: &mut WsStream,
     tx_event: mpsc::Sender<std::result::Result<ResponseEvent, ApiError>>,
-    request_text: Utf8Bytes,
+    request_text: WsRequestText,
     idle_timeout: Duration,
     telemetry: Option<Arc<dyn WebsocketTelemetry>>,
     turn_state: Option<&OnceLock<String>>,
@@ -923,11 +947,14 @@ async fn run_websocket_response_stream(
                 interruption = Some(request);
                 send_websocket_request(
                     ws_stream,
-                    serde_json::json!({
-                        "type": "response.interrupt",
-                        "response_id": response_id,
-                        "mode": "discard_partial_items",
-                    }).to_string().into(),
+                    WsRequestText {
+                        text: serde_json::json!({
+                            "type": "response.interrupt",
+                            "response_id": response_id,
+                            "mode": "discard_partial_items",
+                        }).to_string().into(),
+                        private: false,
+                    },
                     idle_timeout,
                     /*telemetry*/ None,
                     timing_log_context.connection_reused,
@@ -1154,19 +1181,19 @@ fn safety_buffering_for_event(
 
 async fn send_websocket_request(
     ws_stream: &mut WsStream,
-    request_text: Utf8Bytes,
+    request_text: WsRequestText,
     idle_timeout: Duration,
     telemetry: Option<&Arc<dyn WebsocketTelemetry>>,
     connection_reused: bool,
 ) -> Result<(), ApiError> {
     if ws_stream
         .max_message_bytes
-        .is_some_and(|limit| request_text.len() > limit)
+        .is_some_and(|limit| request_text.text.len() > limit)
     {
         return Err(ApiError::WebsocketMessageTooLarge);
     }
     let request_start = Instant::now();
-    let result = tokio::time::timeout(idle_timeout, ws_stream.send(Message::Text(request_text)))
+    let result = tokio::time::timeout(idle_timeout, ws_stream.send(request_text))
         .await
         .map_err(|_| ApiError::Stream("idle timeout sending websocket request".into()))
         .and_then(|result| result.map_err(map_ws_stream_error));

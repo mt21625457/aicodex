@@ -151,6 +151,7 @@ pub use persistence_metrics::RolloutPersistenceTelemetry;
 pub use persistence_metrics::measure_and_filter_rollout_items;
 pub use persistence_metrics::measure_and_filter_rollout_items_with_mode;
 pub use policy::EventPersistenceMode;
+pub use policy::PERSISTED_MCP_RESULT_MAX_BYTES;
 pub use policy::into_persisted_rollout_items;
 pub use policy::into_persisted_rollout_items_with_mode;
 pub use policy::is_persisted_rollout_item;
